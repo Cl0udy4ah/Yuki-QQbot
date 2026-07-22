@@ -1,0 +1,157 @@
+"""Command behavior, cancellation, and send-failure semantics."""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+from tests.conftest import MemorySender, build_harness, make_settings
+
+from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.services.processor import UNSUPPORTED_MESSAGE
+
+
+def inbound(
+    text: str,
+    *,
+    message_id: str,
+    user_id: str = "1001",
+    group_id: str | None = None,
+    mentions_bot: bool = False,
+    unsupported: bool = False,
+) -> InboundMessage:
+    from qq_ai_bot.domain.messages import AttachmentKind, MessageAttachment
+
+    return InboundMessage(
+        message_id=message_id,
+        event_type="message:test",
+        scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id),
+        text=text,
+        group_id=group_id,
+        mentions_bot=mentions_bot,
+        attachments=(MessageAttachment(AttachmentKind.IMAGE, "image"),) if unsupported else (),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("help", "QQ AI 助手命令"),
+        ("status", "服务版本"),
+        ("ping", "pong"),
+        ("stop", "当前没有正在处理"),
+    ],
+)
+async def test_basic_commands(
+    database: Database,
+    command: str,
+    expected: str,
+) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    sender = MemorySender()
+    result = await harness.processor.handle(
+        inbound(f"/ai {command}", message_id=f"cmd-{command}"), sender
+    )
+    assert result.handled and result.sent_messages == 1
+    assert expected in sender.messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_new_clears_only_current_conversation(database: Database) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    first = ConversationIdentity.private("1001")
+    second = ConversationIdentity.private("1002")
+    await harness.conversations.add_message(first, role="user", content="one")
+    await harness.conversations.add_message(second, role="user", content="two")
+    sender = MemorySender()
+    await harness.processor.handle(inbound("/ai new", message_id="new-1"), sender)
+    assert await harness.conversations.count_messages(first) == 0
+    assert await harness.conversations.count_messages(second) == 1
+
+
+@pytest.mark.asyncio
+async def test_superuser_on_off_and_permission(database: Database) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    super_sender = MemorySender()
+    await harness.processor.handle(
+        inbound("/ai on", message_id="on", user_id="9000", group_id="2999"),
+        super_sender,
+    )
+    assert (await harness.groups.get("2999")).enabled  # type: ignore[union-attr]
+    await harness.processor.handle(
+        inbound("/ai off", message_id="off", user_id="9000", group_id="2999"),
+        super_sender,
+    )
+    assert not (await harness.groups.get("2999")).enabled  # type: ignore[union-attr]
+
+    denied_sender = MemorySender()
+    await harness.processor.handle(
+        inbound("/ai on", message_id="denied", user_id="1001", group_id="2001"),
+        denied_sender,
+    )
+    assert "权限不足" in denied_sender.messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_only_current_task(database: Database) -> None:
+    provider = FakeLLMProvider(delay_seconds=5)
+    harness = build_harness(database, make_settings(database.url), provider)
+    chat_sender = MemorySender()
+    chat_task = asyncio.create_task(
+        harness.processor.handle(inbound("slow", message_id="slow"), chat_sender)
+    )
+    identity = ConversationIdentity.private("1001")
+    for _ in range(100):
+        if harness.concurrency.is_processing(identity.key):
+            break
+        await asyncio.sleep(0.01)
+    assert harness.concurrency.is_processing(identity.key)
+
+    stop_sender = MemorySender()
+    await harness.processor.handle(inbound("/ai stop", message_id="stop"), stop_sender)
+    result = await chat_task
+    assert result.reason == "cancelled"
+    assert "已取消" in stop_sender.messages[0].text
+    assert not harness.concurrency.is_processing(identity.key)
+
+
+@pytest.mark.asyncio
+async def test_empty_model_response_is_user_safe(database: Database) -> None:
+    provider = FakeLLMProvider(lambda _request: "   ")
+    harness = build_harness(database, make_settings(database.url), provider)
+    sender = MemorySender()
+    result = await harness.processor.handle(inbound("hello", message_id="empty"), sender)
+    assert result.reason == "empty_llm_response"
+    assert "空内容" in sender.messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_unsupported_message_degrades_without_calling_llm(database: Database) -> None:
+    provider = FakeLLMProvider()
+    harness = build_harness(database, make_settings(database.url), provider)
+    sender = MemorySender()
+    result = await harness.processor.handle(
+        inbound("", message_id="image", unsupported=True), sender
+    )
+    assert result.reason == "unsupported"
+    assert sender.messages[0].text == UNSUPPORTED_MESSAGE
+    assert not provider.requests
+
+
+@pytest.mark.asyncio
+async def test_send_failure_is_not_retried_or_persisted_as_assistant(database: Database) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    sender = MemorySender(fail=True)
+    result = await harness.processor.handle(inbound("hello", message_id="send-fail"), sender)
+    assert result.reason == "send_or_storage_failure"
+    assert sender.calls == 1
+    identity = ConversationIdentity.private("1001")
+    history = await harness.conversations.list_context(
+        identity, max_messages=10, max_characters=1000
+    )
+    assert [(item.role, item.content) for item in history] == [("user", "hello")]

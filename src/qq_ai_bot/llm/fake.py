@@ -1,0 +1,37 @@
+"""Deterministic LLM used by tests and offline development."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+
+from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
+from qq_ai_bot.llm.base import LLMEmptyResponseError, LLMProvider
+
+
+class FakeLLMProvider(LLMProvider):
+    """Return a deterministic response without any network access."""
+
+    def __init__(
+        self,
+        responder: Callable[[ChatRequest], str] | None = None,
+        *,
+        delay_seconds: float = 0,
+    ) -> None:
+        self._responder = responder or self._default_response
+        self._delay_seconds = delay_seconds
+        self.requests: list[ChatRequest] = []
+
+    @staticmethod
+    def _default_response(request: ChatRequest) -> str:
+        user_messages = [message.content for message in request.messages if message.role == "user"]
+        return f"FakeLLM: {user_messages[-1] if user_messages else ''}"
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        if self._delay_seconds:
+            await asyncio.sleep(self._delay_seconds)
+        content = self._responder(request).strip()
+        if not content:
+            raise LLMEmptyResponseError("model returned empty content")
+        return ChatResponse(content=content, latency_seconds=self._delay_seconds)

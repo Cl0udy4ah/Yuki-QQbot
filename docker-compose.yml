@@ -1,0 +1,64 @@
+name: qq-ai-bot
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      DATABASE_URL: sqlite+aiosqlite:////app/data/qq_ai_bot.db
+      NAPCAT_CONFIG_OUTPUT: /app/napcat-config/onebot11.json
+      NAPCAT_REVERSE_WS_URL: ws://bot:8080/onebot/v11/ws
+      ONEBOT_ACCESS_TOKEN: ${ONEBOT_ACCESS_TOKEN:-replace-with-a-long-random-token}
+    expose:
+      - "8080"
+    volumes:
+      - ./data:/app/data
+      - ./napcat-config:/app/napcat-config
+    networks:
+      - qq-ai-bot-network
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    stop_grace_period: 20s
+
+  napcat:
+    image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
+    restart: unless-stopped
+    init: true
+    depends_on:
+      bot:
+        condition: service_healthy
+    environment:
+      NAPCAT_UID: ${NAPCAT_UID:-0}
+      NAPCAT_GID: ${NAPCAT_GID:-0}
+      WEBUI_TOKEN: ${NAPCAT_WEBUI_TOKEN:-replace-with-a-long-random-webui-token}
+      WEBUI_PREFIX: ""
+    ports:
+      - "127.0.0.1:6099:6099"
+    volumes:
+      - ./napcat-data:/app/.config/QQ
+      - ./napcat-config:/app/napcat/config
+      - ./napcat-plugins:/app/napcat/plugins
+    networks:
+      - qq-ai-bot-network
+    stop_grace_period: 30s
+
+networks:
+  qq-ai-bot-network:
+    name: qq-ai-bot-network
+    driver: bridge
