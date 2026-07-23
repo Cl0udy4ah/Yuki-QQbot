@@ -79,12 +79,7 @@ class ChatService:
                 max_characters=self._settings.max_output_characters,
             )
             chunks = split_qq_message(rendered, limit=self._settings.max_qq_message_chars)
-            for index, chunk in enumerate(chunks):
-                await sender.send(
-                    OutboundMessage(
-                        text=chunk,
-                        reply_to_message_id=inbound.message_id if index == 0 else None,
-                    )
-                )
+            for chunk in chunks:
+                await sender.send(OutboundMessage(text=chunk))
             await self._conversations.add_message(identity, role="assistant", content=rendered)
             return len(chunks)
