@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from functools import cached_property
 from pathlib import Path
+from typing import Self
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,6 +50,7 @@ class Settings(BaseSettings):
         "你是一个运行在 QQ 中的 AI 助手。请只输出给用户的最终回答，不要输出隐藏的推理过程。"
         "不要声称执行了工具、代码、命令、文件访问或网络操作。"
     )
+    system_prompt_file: Path | None = None
 
     database_url: str = "sqlite+aiosqlite:///./data/qq_ai_bot.db"
     processed_event_ttl_seconds: int = 86400
@@ -96,6 +98,21 @@ class Settings(BaseSettings):
         if value < 0:
             raise ValueError("must not be negative")
         return value
+
+    @model_validator(mode="after")
+    def _load_system_prompt_file(self) -> Self:
+        """Load a UTF-8 prompt file when explicitly configured."""
+
+        if self.system_prompt_file is None:
+            return self
+        try:
+            prompt = self.system_prompt_file.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ValueError(f"cannot read SYSTEM_PROMPT_FILE: {self.system_prompt_file}") from exc
+        if not prompt:
+            raise ValueError("SYSTEM_PROMPT_FILE must not be empty")
+        self.system_prompt = prompt
+        return self
 
     @cached_property
     def superusers(self) -> frozenset[str]:

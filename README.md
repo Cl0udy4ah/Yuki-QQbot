@@ -72,6 +72,23 @@ Copy-Item .env.example .env
 
 `.env` 已被 Git 忽略；不要提交它。可用 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 分别生成两个 Token。
 
+较长的系统提示词建议使用 Markdown 文件：
+
+```powershell
+Copy-Item config/system_prompt.example.md config/system_prompt.md
+```
+
+编辑 `config/system_prompt.md`，然后在 `.env` 中设置：
+
+```dotenv
+SYSTEM_PROMPT_FILE=config/system_prompt.md
+```
+
+Compose 会把整个 `config/` 目录只读挂载到容器的 `/app/config`。真实的
+`config/system_prompt.md` 同时被 Git 和 Docker 构建上下文忽略，仓库只保留
+`config/system_prompt.example.md`。文件必须是非空 UTF-8 文本；设置文件路径后，
+文件内容优先于 `SYSTEM_PROMPT`。
+
 ## 本地开发
 
 ```bash
@@ -173,10 +190,15 @@ OneBot v11 消息事件没有可靠、统一的“发送者是其他机器人”
 | `LLM_MAX_OUTPUT_TOKENS` | 供应商输出 Token 上限 | `1024` |
 | `LLM_THINKING_ENABLED` | 可选思考开关；DeepSeek 建议日常聊天设为 `false` | 不发送 |
 | `SYSTEM_PROMPT` | 系统提示词 | 见 `.env.example` |
+| `SYSTEM_PROMPT_FILE` | UTF-8 Markdown 提示词文件；设置后优先于 `SYSTEM_PROMPT` | 空 |
 
 只对连接错误、超时和明确的 HTTP 5xx 使用带抖动的指数退避；4xx 不重试。MVP 不发送 tools/functions 字段，不提供 Shell、Python、浏览器、本地文件或任意抓取能力。
 
 DeepSeek V4 默认开启思考模式。QQ 日常聊天可设置 `LLM_THINKING_ENABLED=false`，让 API 直接返回最终回答；删除该变量则保持供应商默认行为。该扩展字段只在变量被显式配置时发送，因此不会影响其他 OpenAI-compatible 服务。
+
+修改 `config/system_prompt.md` 后不需要重建镜像，只需执行
+`docker compose up -d --no-deps --force-recreate bot`。为避免旧对话风格继续影响回复，
+可在对应 QQ 会话中发送 `/ai new`。
 
 ### 容量与安全边界
 
