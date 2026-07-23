@@ -87,7 +87,7 @@ class MessageProcessor:
             category=category,
         )
         if not rate.allowed:
-            sent = await self._safe_send(sender, RATE_LIMIT_MESSAGE, message.message_id)
+            sent = await self._safe_send(sender, RATE_LIMIT_MESSAGE)
             self._log_result(
                 event_key,
                 identity,
@@ -116,13 +116,12 @@ class MessageProcessor:
                 content = f"[回复的消息]\n{quoted}\n\n{content}".strip()
         if not content:
             response = UNSUPPORTED_MESSAGE if message.attachments else "请输入要发送给 AI 的内容。"
-            sent = await self._safe_send(sender, response, message.message_id)
+            sent = await self._safe_send(sender, response)
             return ProcessResult(True, int(sent), "unsupported" if message.attachments else "empty")
         if len(content) > self._settings.max_input_characters:
             sent = await self._safe_send(
                 sender,
                 f"消息过长，请控制在 {self._settings.max_input_characters} 个字符以内。",
-                message.message_id,
             )
             return ProcessResult(True, int(sent), "input_too_long")
 
@@ -140,20 +139,14 @@ class MessageProcessor:
             )
             return ProcessResult(True, reason="cancelled")
         except LLMConfigurationError:
-            sent = await self._safe_send(
-                sender, "AI 服务尚未配置，请联系管理员。", message.message_id
-            )
+            sent = await self._safe_send(sender, "AI 服务尚未配置，请联系管理员。")
             return ProcessResult(True, int(sent), "llm_not_configured")
         except LLMEmptyResponseError:
-            sent = await self._safe_send(
-                sender, "AI 返回了空内容，请稍后重试。", message.message_id
-            )
+            sent = await self._safe_send(sender, "AI 返回了空内容，请稍后重试。")
             return ProcessResult(True, int(sent), "empty_llm_response")
         except LLMError as exc:
             logger.warning("llm_failure exception_category=%s", type(exc).__name__)
-            sent = await self._safe_send(
-                sender, "AI 服务暂时不可用，请稍后重试。", message.message_id
-            )
+            sent = await self._safe_send(sender, "AI 服务暂时不可用，请稍后重试。")
             return ProcessResult(True, int(sent), "llm_failure")
         except (OSError, RuntimeError) as exc:
             logger.error("message_send_or_storage_failure", exc_info=exc)
@@ -233,7 +226,7 @@ class MessageProcessor:
         else:
             text = "未知命令，请使用 /ai help 查看帮助。"
 
-        sent = await self._safe_send(sender, text, message.message_id)
+        sent = await self._safe_send(sender, text)
         self._log_result(
             event_key,
             identity,
@@ -249,10 +242,9 @@ class MessageProcessor:
     async def _safe_send(
         sender: OutboundSender,
         text: str,
-        reply_to_message_id: str | None,
     ) -> bool:
         try:
-            await sender.send(OutboundMessage(text=text, reply_to_message_id=reply_to_message_id))
+            await sender.send(OutboundMessage(text=text))
             return True
         except (OSError, RuntimeError) as exc:
             logger.error("outbound_send_failed", exc_info=exc)

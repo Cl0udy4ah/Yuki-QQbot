@@ -22,6 +22,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./napcat-config:/app/napcat-config
+      - ./config:/app/config:ro
     networks:
       - qq-ai-bot-network
     healthcheck:

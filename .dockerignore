@@ -1,6 +1,7 @@
 .git
 .venv
 .env
+config/system_prompt.md
 data
 napcat-data
 napcat-config

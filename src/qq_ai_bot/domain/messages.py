@@ -73,7 +73,6 @@ class OutboundMessage:
     """Transport-independent outbound text."""
 
     text: str
-    reply_to_message_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
