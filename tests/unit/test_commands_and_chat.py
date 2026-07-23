@@ -98,6 +98,134 @@ async def test_superuser_on_off_and_permission(database: Database) -> None:
 
 
 @pytest.mark.asyncio
+async def test_superuser_can_persistently_toggle_private_users(database: Database) -> None:
+    harness = build_harness(
+        database,
+        make_settings(database.url, allowed_private_users_csv="10010001"),
+    )
+
+    enabled_sender = MemorySender()
+    await harness.processor.handle(
+        inbound(
+            "/ai private 12345678 on",
+            message_id="private-on",
+            user_id="9000",
+        ),
+        enabled_sender,
+    )
+    assert enabled_sender.messages[0].text == "已开启指定 QQ 用户的私聊权限。"
+    assert "12345678" not in enabled_sender.messages[0].text
+
+    target_sender = MemorySender()
+    allowed = await harness.processor.handle(
+        inbound("hello", message_id="new-private-user", user_id="12345678"),
+        target_sender,
+    )
+    assert allowed.reason == "chat"
+
+    disabled_sender = MemorySender()
+    await harness.processor.handle(
+        inbound(
+            "/ai private 10010001 off",
+            message_id="private-off",
+            user_id="9000",
+        ),
+        disabled_sender,
+    )
+    denied = await harness.processor.handle(
+        inbound("hello", message_id="env-user-disabled", user_id="10010001"),
+        MemorySender(),
+    )
+    assert not denied.handled and denied.reason == "private_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_superuser_can_toggle_any_group_by_id(database: Database) -> None:
+    harness = build_harness(
+        database,
+        make_settings(database.url, enabled_groups_csv="20010001"),
+    )
+
+    await harness.processor.handle(
+        inbound(
+            "/ai group 29999999 on",
+            message_id="target-group-on",
+            user_id="9000",
+        ),
+        MemorySender(),
+    )
+    enabled = await harness.processor.handle(
+        inbound(
+            "hello",
+            message_id="new-group-message",
+            group_id="29999999",
+            mentions_bot=True,
+        ),
+        MemorySender(),
+    )
+    assert enabled.reason == "chat"
+
+    await harness.processor.handle(
+        inbound(
+            "/ai group 20010001 off",
+            message_id="target-group-off",
+            user_id="9000",
+        ),
+        MemorySender(),
+    )
+    disabled = await harness.processor.handle(
+        inbound(
+            "hello",
+            message_id="env-group-disabled",
+            group_id="20010001",
+            mentions_bot=True,
+        ),
+        MemorySender(),
+    )
+    assert not disabled.handled and disabled.reason == "group_disabled"
+
+
+@pytest.mark.asyncio
+async def test_access_commands_validate_permission_target_and_switch(database: Database) -> None:
+    harness = build_harness(database, make_settings(database.url))
+
+    non_admin_sender = MemorySender()
+    await harness.processor.handle(
+        inbound("/ai private 12345678 on", message_id="not-admin"),
+        non_admin_sender,
+    )
+    assert "权限不足" in non_admin_sender.messages[0].text
+    assert await harness.private_users.get("12345678") is None
+
+    invalid_sender = MemorySender()
+    await harness.processor.handle(
+        inbound(
+            "/ai group not-a-group maybe",
+            message_id="invalid-group",
+            user_id="9000",
+        ),
+        invalid_sender,
+    )
+    assert "格式错误" in invalid_sender.messages[0].text
+
+    protected_harness = build_harness(
+        database,
+        make_settings(database.url, superusers_csv="90000"),
+    )
+    protected_sender = MemorySender()
+    await protected_harness.processor.handle(
+        inbound(
+            "/ai private 90000 off",
+            message_id="protected-superuser",
+            user_id="90000",
+        ),
+        protected_sender,
+    )
+    assert protected_sender.messages[0].text == "不能关闭超级用户的私聊权限。"
+    assert await protected_harness.private_users.get("90000") is None
+
+
+@pytest.mark.asyncio
 async def test_stop_cancels_only_current_task(database: Database) -> None:
     provider = FakeLLMProvider(delay_seconds=5)
     harness = build_harness(database, make_settings(database.url), provider)

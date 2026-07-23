@@ -10,13 +10,16 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode, ScopeType
+from qq_ai_bot.domain.memories import GroupMemory, GroupMemoryUpsert
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ConversationModel,
+    GroupMemoryModel,
     GroupSettingModel,
     MessageModel,
+    PrivateUserSettingModel,
     ProcessedEventModel,
     UserGroupProfileModel,
     UserProfileModel,
@@ -223,6 +226,143 @@ class GroupSettingsRepository:
             require_mention=row.require_mention,
             conversation_mode=ConversationMode(row.conversation_mode),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateUserSetting:
+    """Domain projection of one private-chat access override."""
+
+    user_id: str
+    enabled: bool
+
+
+class PrivateUserSettingsRepository:
+    """Persist explicit private-chat access overrides."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def get(self, user_id: str) -> PrivateUserSetting | None:
+        """Fetch the exact user's access override."""
+
+        async with self._database.sessions() as session:
+            row = await session.get(PrivateUserSettingModel, user_id)
+            if row is None:
+                return None
+            return PrivateUserSetting(user_id=row.user_id, enabled=row.enabled)
+
+    async def set_enabled(self, user_id: str, enabled: bool) -> PrivateUserSetting:
+        """Upsert an explicit private-chat access override."""
+
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            row = await session.get(PrivateUserSettingModel, user_id)
+            if row is None:
+                row = PrivateUserSettingModel(
+                    user_id=user_id,
+                    enabled=enabled,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+            else:
+                row.enabled = enabled
+                row.updated_at = now
+        return PrivateUserSetting(user_id=user_id, enabled=enabled)
+
+
+class GroupMemoryRepository:
+    """Store a bounded set of extracted facts for one explicit group."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def list_recent(self, group_id: str, *, limit: int) -> tuple[GroupMemory, ...]:
+        """Return only the requested group's newest facts, in stable prompt order."""
+
+        async with self._database.sessions() as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(GroupMemoryModel)
+                        .where(GroupMemoryModel.group_id == group_id)
+                        .order_by(GroupMemoryModel.updated_at.desc(), GroupMemoryModel.id.desc())
+                        .limit(limit)
+                    )
+                ).all()
+            )
+        rows.reverse()
+        return tuple(
+            GroupMemory(
+                id=row.id,
+                group_id=row.group_id,
+                memory_key=row.memory_key,
+                content=row.content,
+                updated_at=row.updated_at,
+            )
+            for row in rows
+        )
+
+    async def apply_updates(
+        self,
+        group_id: str,
+        *,
+        upserts: tuple[GroupMemoryUpsert, ...],
+        delete_keys: tuple[str, ...],
+        limit: int,
+    ) -> None:
+        """Apply fact changes atomically, then trim the group to its hard limit."""
+
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            if delete_keys:
+                await session.execute(
+                    delete(GroupMemoryModel).where(
+                        GroupMemoryModel.group_id == group_id,
+                        GroupMemoryModel.memory_key.in_(delete_keys),
+                    )
+                )
+            for update in upserts:
+                statement = insert(GroupMemoryModel).values(
+                    group_id=group_id,
+                    memory_key=update.memory_key,
+                    content=update.content,
+                    created_at=now,
+                    updated_at=now,
+                )
+                await session.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=[
+                            GroupMemoryModel.group_id,
+                            GroupMemoryModel.memory_key,
+                        ],
+                        set_={
+                            "content": statement.excluded.content,
+                            "updated_at": now,
+                        },
+                    )
+                )
+            stale_ids = (
+                await session.scalars(
+                    select(GroupMemoryModel.id)
+                    .where(GroupMemoryModel.group_id == group_id)
+                    .order_by(GroupMemoryModel.updated_at.desc(), GroupMemoryModel.id.desc())
+                    .offset(limit)
+                )
+            ).all()
+            if stale_ids:
+                await session.execute(
+                    delete(GroupMemoryModel).where(GroupMemoryModel.id.in_(stale_ids))
+                )
+
+    async def count(self, group_id: str) -> int:
+        """Count facts in exactly one group."""
+
+        async with self._database.sessions() as session:
+            count = await session.scalar(
+                select(func.count(GroupMemoryModel.id)).where(GroupMemoryModel.group_id == group_id)
+            )
+            return int(count or 0)
 
 
 class ProcessedEventRepository:

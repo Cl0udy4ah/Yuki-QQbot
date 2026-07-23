@@ -3,7 +3,12 @@
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.services.policies import CommandName, EffectiveGroupPolicy, evaluate_message
+from qq_ai_bot.services.policies import (
+    CommandName,
+    EffectiveGroupPolicy,
+    EffectivePrivatePolicy,
+    evaluate_message,
+)
 
 
 def message(
@@ -45,6 +50,27 @@ def test_private_allowlist_and_superuser() -> None:
     assert denied.reason == "private_not_allowed"
 
 
+def test_private_database_policy_overrides_environment_but_not_superusers() -> None:
+    enabled = evaluate_message(
+        message(user_id="5555"),
+        settings(),
+        private_policy=EffectivePrivatePolicy(enabled=True),
+    )
+    disabled = evaluate_message(
+        message(user_id="1001"),
+        settings(),
+        private_policy=EffectivePrivatePolicy(enabled=False),
+    )
+    superuser = evaluate_message(
+        message(user_id="9000"),
+        settings(),
+        private_policy=EffectivePrivatePolicy(enabled=False),
+    )
+    assert enabled.should_respond
+    assert not disabled.should_respond
+    assert superuser.should_respond
+
+
 def test_group_mention_triggers_but_plain_message_does_not() -> None:
     policy = EffectiveGroupPolicy(enabled=True)
     mentioned = evaluate_message(
@@ -80,6 +106,21 @@ def test_prefix_and_commands_trigger_group() -> None:
     )
     assert command.command is CommandName.STATUS
     assert prefixed.content == "hello"
+
+
+def test_superuser_access_command_bypasses_disabled_group() -> None:
+    decision = evaluate_message(
+        message(
+            user_id="9000",
+            scope=ScopeType.GROUP,
+            group_id="2999",
+            text="/ai group 12345678 on",
+        ),
+        settings(),
+        group_policy=EffectiveGroupPolicy(enabled=False),
+    )
+    assert decision.should_respond
+    assert decision.command is CommandName.GROUP
 
 
 def test_self_and_known_bot_messages_are_rejected() -> None:

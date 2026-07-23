@@ -22,6 +22,8 @@ class CommandName(StrEnum):
     PING = "ping"
     WHOAMI = "whoami"
     FORGETME = "forgetme"
+    PRIVATE = "private"
+    GROUP = "group"
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +43,13 @@ class EffectiveGroupPolicy:
     enabled: bool
     require_mention: bool = True
     conversation_mode: ConversationMode = ConversationMode.PER_USER
+
+
+@dataclass(frozen=True, slots=True)
+class EffectivePrivatePolicy:
+    """Effective private-chat state after a database override."""
+
+    enabled: bool
 
 
 def _command_and_content(text: str, ai_prefix: str) -> tuple[CommandName | None, str, bool]:
@@ -71,6 +80,7 @@ def evaluate_message(
     settings: Settings,
     *,
     group_policy: EffectiveGroupPolicy | None = None,
+    private_policy: EffectivePrivatePolicy | None = None,
 ) -> PolicyDecision:
     """Apply self/bot, allowlist, group, mention, prefix, and command rules."""
 
@@ -81,17 +91,22 @@ def evaluate_message(
     is_superuser = message.sender.user_id in settings.superusers
 
     if message.scope_type is ScopeType.PRIVATE:
-        if message.sender.user_id not in settings.allowed_private_users:
+        private_policy_effective = private_policy or EffectivePrivatePolicy(
+            message.sender.user_id in settings.allowed_private_users
+        )
+        if not is_superuser and not private_policy_effective.enabled:
             return PolicyDecision(False, reason="private_not_allowed")
         return PolicyDecision(True, content=content, command=command, reason="private_allowed")
 
     if message.group_id is None:
         return PolicyDecision(False, reason="missing_group_id")
-    policy = group_policy or EffectiveGroupPolicy(message.group_id in settings.enabled_groups)
+    group_policy_effective = group_policy or EffectiveGroupPolicy(
+        message.group_id in settings.enabled_groups
+    )
 
-    if command in {CommandName.ON, CommandName.OFF} and is_superuser:
+    if command is not None and command_requires_superuser(command) and is_superuser:
         return PolicyDecision(True, command=command, reason="superuser_group_command")
-    if not policy.enabled:
+    if not group_policy_effective.enabled:
         return PolicyDecision(False, reason="group_disabled")
     if message.mentions_bot or prefix_triggered:
         return PolicyDecision(
@@ -106,4 +121,9 @@ def evaluate_message(
 def command_requires_superuser(command: CommandName) -> bool:
     """Return whether a command mutates group-wide state."""
 
-    return command in {CommandName.ON, CommandName.OFF}
+    return command in {
+        CommandName.ON,
+        CommandName.OFF,
+        CommandName.PRIVATE,
+        CommandName.GROUP,
+    }

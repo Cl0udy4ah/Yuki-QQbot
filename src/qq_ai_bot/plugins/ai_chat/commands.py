@@ -12,4 +12,6 @@ COMMAND_DESCRIPTIONS: dict[CommandName, str] = {
     CommandName.PING: "返回 pong 和内部处理耗时",
     CommandName.WHOAMI: "查看机器人识别到的当前身份",
     CommandName.FORGETME: "删除自己的昵称和全部群名片资料",
+    CommandName.PRIVATE: "超级用户开启或关闭指定 QQ 用户的私聊权限",
+    CommandName.GROUP: "超级用户开启或关闭指定群的 AI",
 }

@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     daily_chat_split_max_messages: int = 4
     daily_chat_message_delay_min_seconds: float = 3.0
     daily_chat_message_delay_max_seconds: float = 5.0
+    group_memory_enabled: bool = True
+    group_memory_max_entries: int = 30
 
     @field_validator(
         "app_port",
@@ -85,6 +87,7 @@ class Settings(BaseSettings):
         "max_qq_message_chars",
         "daily_chat_split_max_characters",
         "daily_chat_split_max_messages",
+        "group_memory_max_entries",
     )
     @classmethod
     def _positive_integer(cls, value: int) -> int:
@@ -123,6 +126,12 @@ class Settings(BaseSettings):
                 "DAILY_CHAT_MESSAGE_DELAY_MIN_SECONDS must not exceed "
                 "DAILY_CHAT_MESSAGE_DELAY_MAX_SECONDS"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_group_memory_limit(self) -> Self:
+        if self.group_memory_max_entries > 50:
+            raise ValueError("GROUP_MEMORY_MAX_ENTRIES must not exceed 50")
         return self
 
     @model_validator(mode="after")

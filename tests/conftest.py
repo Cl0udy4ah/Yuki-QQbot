@@ -14,13 +14,17 @@ from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     ConversationRepository,
+    GroupMemoryRepository,
     GroupSettingsRepository,
+    PrivateUserSettingsRepository,
     ProcessedEventRepository,
     UserProfileRepository,
 )
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
+from qq_ai_bot.services.group_members import GroupMemberService
+from qq_ai_bot.services.group_memories import GroupMemoryService
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
 from qq_ai_bot.services.user_profiles import UserProfileService
@@ -47,7 +51,9 @@ class Harness:
     database: Database
     conversations: ConversationRepository
     groups: GroupSettingsRepository
+    private_users: PrivateUserSettingsRepository
     profiles: UserProfileRepository
+    group_memories: GroupMemoryRepository
     provider: LLMProvider
     concurrency: ConcurrencyManager
     processor: MessageProcessor
@@ -79,22 +85,34 @@ def build_harness(
 ) -> Harness:
     conversations = ConversationRepository(database)
     groups = GroupSettingsRepository(database)
+    private_users = PrivateUserSettingsRepository(database)
     profiles = UserProfileRepository(database)
     user_profiles = UserProfileService(profiles)
+    group_members = GroupMemberService(profiles)
+    group_memories = GroupMemoryRepository(database)
     processed_events = ProcessedEventRepository(database)
     llm = provider or FakeLLMProvider()
     concurrency = ConcurrencyManager(settings.global_llm_concurrency)
+    group_memory_service = GroupMemoryService(
+        settings=settings,
+        repository=group_memories,
+        provider=llm,
+        concurrency=concurrency,
+    )
     chat = ChatService(
         settings=settings,
         conversations=conversations,
         provider=llm,
         concurrency=concurrency,
+        group_memories=group_memory_service,
     )
     processor = MessageProcessor(
         settings=settings,
         conversations=conversations,
         groups=groups,
+        private_users=private_users,
         user_profiles=user_profiles,
+        group_members=group_members,
         chat=chat,
         deduplication=DeduplicationService(
             processed_events,
@@ -112,7 +130,9 @@ def build_harness(
         database,
         conversations,
         groups,
+        private_users,
         profiles,
+        group_memories,
         llm,
         concurrency,
         processor,

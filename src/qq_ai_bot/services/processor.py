@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -14,13 +15,19 @@ from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMod
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.llm.base import LLMConfigurationError, LLMEmptyResponseError, LLMError
-from qq_ai_bot.persistence.repositories import ConversationRepository, GroupSettingsRepository
+from qq_ai_bot.persistence.repositories import (
+    ConversationRepository,
+    GroupSettingsRepository,
+    PrivateUserSettingsRepository,
+)
 from qq_ai_bot.services.chat import ChatService, OutboundSender
 from qq_ai_bot.services.concurrency import ConcurrencyManager, RequestCancelledError
 from qq_ai_bot.services.deduplication import DeduplicationService, build_event_key
+from qq_ai_bot.services.group_members import GroupMemberResolver, GroupMemberService
 from qq_ai_bot.services.policies import (
     CommandName,
     EffectiveGroupPolicy,
+    EffectivePrivatePolicy,
     command_requires_superuser,
     evaluate_message,
 )
@@ -36,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 UNSUPPORTED_MESSAGE = "当前版本暂不支持该消息类型。"
 RATE_LIMIT_MESSAGE = "请求过于频繁，请稍后再试。"
+_NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +64,9 @@ class MessageProcessor:
         settings: Settings,
         conversations: ConversationRepository,
         groups: GroupSettingsRepository,
+        private_users: PrivateUserSettingsRepository,
         user_profiles: UserProfileService,
+        group_members: GroupMemberService,
         chat: ChatService,
         deduplication: DeduplicationService,
         rate_limiter: SlidingWindowRateLimiter,
@@ -66,7 +76,9 @@ class MessageProcessor:
         self._settings = settings
         self._conversations = conversations
         self._groups = groups
+        self._private_users = private_users
         self._user_profiles = user_profiles
+        self._group_members = group_members
         self._chat = chat
         self._deduplication = deduplication
         self._rate_limiter = rate_limiter
@@ -78,12 +90,19 @@ class MessageProcessor:
         message: InboundMessage,
         sender: OutboundSender,
         profile_resolver: UserProfileResolver | None = None,
+        group_member_resolver: GroupMemberResolver | None = None,
     ) -> ProcessResult:
         """Process one normalized message without leaking transport objects."""
 
         started = time.perf_counter()
         group_policy = await self._effective_group_policy(message.group_id)
-        decision = evaluate_message(message, self._settings, group_policy=group_policy)
+        private_policy = await self._effective_private_policy(message)
+        decision = evaluate_message(
+            message,
+            self._settings,
+            group_policy=group_policy,
+            private_policy=private_policy,
+        )
         if not decision.should_respond:
             return ProcessResult(False, reason=decision.reason)
 
@@ -145,8 +164,19 @@ class MessageProcessor:
             )
             return ProcessResult(True, int(sent), "input_too_long")
 
+        mentioned_members = await self._group_members.resolve(
+            message,
+            group_member_resolver,
+        )
         try:
-            sent_count = await self._chat.respond(message, identity, profile, content, sender)
+            sent_count = await self._chat.respond(
+                message,
+                identity,
+                profile,
+                mentioned_members,
+                content,
+                sender,
+            )
         except RequestCancelledError:
             self._log_result(
                 event_key,
@@ -195,6 +225,19 @@ class MessageProcessor:
             conversation_mode=setting.conversation_mode,
         )
 
+    async def _effective_private_policy(
+        self,
+        message: InboundMessage,
+    ) -> EffectivePrivatePolicy | None:
+        if message.scope_type is not ScopeType.PRIVATE:
+            return None
+        setting = await self._private_users.get(message.sender.user_id)
+        if setting is None:
+            return EffectivePrivatePolicy(
+                enabled=message.sender.user_id in self._settings.allowed_private_users
+            )
+        return EffectivePrivatePolicy(enabled=setting.enabled)
+
     async def _handle_command(
         self,
         command: CommandName,
@@ -219,7 +262,9 @@ class MessageProcessor:
                 "/ai ping - 连通性检查\n"
                 "/ai whoami - 查看当前身份\n"
                 "/ai forgetme - 删除自己的身份资料\n"
-                "/ai on | off - 超级用户启用或停用当前群"
+                "/ai on | off - 超级用户启用或停用当前群\n"
+                "/ai private <QQ号> on|off - 超级用户开关私聊权限\n"
+                "/ai group <群号> on|off - 超级用户开关指定群"
             )
         elif command is CommandName.NEW:
             async with self._concurrency.conversation(identity.key):
@@ -244,6 +289,29 @@ class MessageProcessor:
                 enabled = command is CommandName.ON
                 await self._groups.set_enabled(message.group_id, enabled)
                 text = "已在当前群启用 AI。" if enabled else "已在当前群停用 AI。"
+        elif command in {CommandName.PRIVATE, CommandName.GROUP}:
+            parsed = self._parse_access_switch(command_argument)
+            if parsed is None:
+                noun = "QQ号" if command is CommandName.PRIVATE else "群号"
+                text = f"格式错误，请使用 /ai {command.value} <{noun}> on|off。"
+            else:
+                target_id, enabled = parsed
+                if (
+                    command is CommandName.PRIVATE
+                    and target_id in self._settings.superusers
+                    and not enabled
+                ):
+                    text = "不能关闭超级用户的私聊权限。"
+                elif command is CommandName.PRIVATE:
+                    await self._private_users.set_enabled(target_id, enabled)
+                    text = (
+                        "已开启指定 QQ 用户的私聊权限。"
+                        if enabled
+                        else "已关闭指定 QQ 用户的私聊权限。"
+                    )
+                else:
+                    await self._groups.set_enabled(target_id, enabled)
+                    text = "已启用指定群的 AI。" if enabled else "已停用指定群的 AI。"
         elif command is CommandName.PING:
             elapsed_ms = (time.perf_counter() - started) * 1000
             text = f"pong ({elapsed_ms:.1f} ms)"
@@ -295,6 +363,17 @@ class MessageProcessor:
             exception_category=None if sent else "SendError",
         )
         return ProcessResult(True, int(sent), f"command_{command.value}")
+
+    @staticmethod
+    def _parse_access_switch(argument: str) -> tuple[str, bool] | None:
+        """Parse a numeric platform id and an explicit on/off switch."""
+
+        parts = argument.casefold().split()
+        if len(parts) != 2 or _NUMERIC_PLATFORM_ID.fullmatch(parts[0]) is None:
+            return None
+        if parts[1] not in {"on", "off"}:
+            return None
+        return parts[0], parts[1] == "on"
 
     @staticmethod
     def _event_profile(message: InboundMessage) -> UserProfileSnapshot:

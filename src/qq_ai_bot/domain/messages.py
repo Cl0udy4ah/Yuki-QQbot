@@ -59,6 +59,7 @@ class InboundMessage:
     mentions_bot: bool = False
     is_self_message: bool = False
     reply_text: str | None = None
+    mentioned_user_ids: tuple[str, ...] = ()
     attachments: tuple[MessageAttachment, ...] = ()
     received_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 

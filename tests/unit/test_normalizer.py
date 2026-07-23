@@ -74,6 +74,24 @@ def test_group_mention_uses_original_message_after_nonebot_strips_at() -> None:
     assert normalized.text == "question"
 
 
+def test_other_member_mentions_use_opaque_placeholders() -> None:
+    normalized = normalize_event(
+        group_event(
+            Message(
+                [
+                    MessageSegment.at(9999),
+                    MessageSegment.at(12345678),
+                    MessageSegment.text("叫小明"),
+                ]
+            )
+        )
+    )
+
+    assert normalized.mentioned_user_ids == ("12345678",)
+    assert "[提及成员1]叫小明" in normalized.text
+    assert "12345678" not in normalized.text
+
+
 def test_reply_text_and_face_placeholder_are_supported() -> None:
     message = Message([MessageSegment.at(9999), MessageSegment.face(14), MessageSegment.text("ok")])
     event = group_event(message)

@@ -16,13 +16,17 @@ from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     ConversationRepository,
+    GroupMemoryRepository,
     GroupSettingsRepository,
+    PrivateUserSettingsRepository,
     ProcessedEventRepository,
     UserProfileRepository,
 )
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
+from qq_ai_bot.services.group_members import GroupMemberService
+from qq_ai_bot.services.group_memories import GroupMemoryService
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
 from qq_ai_bot.services.user_profiles import UserProfileService
@@ -39,8 +43,11 @@ class ApplicationContainer:
         self.database = Database(settings.database_url)
         self.conversations = ConversationRepository(self.database)
         self.groups = GroupSettingsRepository(self.database)
+        self.private_users = PrivateUserSettingsRepository(self.database)
         self.user_profile_repository = UserProfileRepository(self.database)
         self.user_profiles = UserProfileService(self.user_profile_repository)
+        self.group_members = GroupMemberService(self.user_profile_repository)
+        self.group_memory_repository = GroupMemoryRepository(self.database)
         self.processed_events = ProcessedEventRepository(self.database)
         self.provider = self._build_provider(settings)
         self.concurrency = ConcurrencyManager(settings.global_llm_concurrency)
@@ -52,17 +59,26 @@ class ApplicationContainer:
             per_user=settings.per_user_requests_per_minute,
             per_group=settings.per_group_requests_per_minute,
         )
+        self.group_memories = GroupMemoryService(
+            settings=settings,
+            repository=self.group_memory_repository,
+            provider=self.provider,
+            concurrency=self.concurrency,
+        )
         self.chat = ChatService(
             settings=settings,
             conversations=self.conversations,
             provider=self.provider,
             concurrency=self.concurrency,
+            group_memories=self.group_memories,
         )
         self.processor = MessageProcessor(
             settings=settings,
             conversations=self.conversations,
             groups=self.groups,
+            private_users=self.private_users,
             user_profiles=self.user_profiles,
+            group_members=self.group_members,
             chat=self.chat,
             deduplication=self.deduplication,
             rate_limiter=self.rate_limiter,

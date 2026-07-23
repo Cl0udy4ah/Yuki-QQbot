@@ -9,11 +9,13 @@ from typing import Protocol
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity
+from qq_ai_bot.domain.memories import MentionedMember
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage, OutboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.persistence.repositories import ConversationRepository
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.services.group_memories import GroupMemoryService
 from qq_ai_bot.services.renderer import (
     clean_model_output,
     split_daily_chat_sentences,
@@ -38,17 +40,20 @@ class ChatService:
         conversations: ConversationRepository,
         provider: LLMProvider,
         concurrency: ConcurrencyManager,
+        group_memories: GroupMemoryService,
     ) -> None:
         self._settings = settings
         self._conversations = conversations
         self._provider = provider
         self._concurrency = concurrency
+        self._group_memories = group_memories
 
     async def respond(
         self,
         inbound: InboundMessage,
         identity: ConversationIdentity,
         profile: UserProfileSnapshot,
+        mentioned_members: tuple[MentionedMember, ...],
         content: str,
         sender: OutboundSender,
     ) -> int:
@@ -72,9 +77,14 @@ class ChatService:
                     ChatMessage(role="system", content=self._settings.system_prompt),
                     *history,
                 )
+            group_context = await self._group_memories.build_context(
+                inbound,
+                mentioned_members,
+            )
             messages = (
                 messages[0],
                 self._identity_context(profile),
+                *group_context,
                 *messages[1:],
             )
             request = ChatRequest(
@@ -118,6 +128,12 @@ class ChatService:
                         await asyncio.sleep(delay)
                 await sender.send(OutboundMessage(text=chunk))
             await self._conversations.add_message(identity, role="assistant", content=rendered)
+            await self._group_memories.extract_and_update(
+                inbound=inbound,
+                profile=profile,
+                content=content,
+                mentioned_members=mentioned_members,
+            )
             return len(chunks)
 
     @staticmethod

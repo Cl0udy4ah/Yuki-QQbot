@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -71,6 +72,34 @@ class GroupSettingModel(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
     require_mention: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     conversation_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PrivateUserSettingModel(Base):
+    """Dynamic private-chat access override controlled by superusers."""
+
+    __tablename__ = "private_user_settings"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class GroupMemoryModel(Base):
+    """One bounded, model-extracted fact isolated to a single group."""
+
+    __tablename__ = "group_memories"
+    __table_args__ = (
+        UniqueConstraint("group_id", "memory_key", name="uq_group_memories_group_key"),
+        Index("ix_group_memories_group_updated", "group_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    memory_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
