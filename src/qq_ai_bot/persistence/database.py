@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -23,7 +24,18 @@ class Database:
         self.url = url
         self._ensure_sqlite_parent(url)
         self.engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
+        if url.startswith("sqlite+aiosqlite:///"):
+            event.listen(self.engine.sync_engine, "connect", self._enable_sqlite_foreign_keys)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
+
+    @staticmethod
+    def _enable_sqlite_foreign_keys(
+        dbapi_connection: Any,
+        _connection_record: Any,
+    ) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
     @staticmethod
     def _ensure_sqlite_parent(url: str) -> None:

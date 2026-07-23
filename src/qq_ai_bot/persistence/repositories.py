@@ -6,16 +6,20 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 
-from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode
+from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage
+from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ConversationModel,
     GroupSettingModel,
     MessageModel,
     ProcessedEventModel,
+    UserGroupProfileModel,
+    UserProfileModel,
 )
 
 
@@ -257,3 +261,108 @@ class ProcessedEventRepository:
                 delete(ProcessedEventModel).where(ProcessedEventModel.expires_at <= cutoff)
             )
             return int(count or 0)
+
+
+class UserProfileRepository:
+    """Persist only explicitly identified user and per-group profile rows."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def upsert(
+        self,
+        *,
+        user_id: str,
+        nickname: str,
+        group_id: str | None = None,
+        group_card: str = "",
+        nickname_known: bool = True,
+        group_card_known: bool = True,
+    ) -> None:
+        """Store the latest non-empty values without retaining profile history."""
+
+        now = datetime.now(UTC)
+        user_insert = insert(UserProfileModel).values(
+            user_id=user_id,
+            nickname=nickname,
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+        nickname_update = (
+            user_insert.excluded.nickname if nickname_known else UserProfileModel.nickname
+        )
+        async with self._database.sessions() as session, session.begin():
+            await session.execute(
+                user_insert.on_conflict_do_update(
+                    index_elements=[UserProfileModel.user_id],
+                    set_={
+                        "nickname": nickname_update,
+                        "last_seen_at": now,
+                    },
+                )
+            )
+            if group_id is not None:
+                group_insert = insert(UserGroupProfileModel).values(
+                    user_id=user_id,
+                    group_id=group_id,
+                    group_card=group_card,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                )
+                group_card_update = (
+                    group_insert.excluded.group_card
+                    if group_card_known
+                    else UserGroupProfileModel.group_card
+                )
+                await session.execute(
+                    group_insert.on_conflict_do_update(
+                        index_elements=[
+                            UserGroupProfileModel.user_id,
+                            UserGroupProfileModel.group_id,
+                        ],
+                        set_={
+                            "group_card": group_card_update,
+                            "last_seen_at": now,
+                        },
+                    )
+                )
+
+    async def get(
+        self,
+        *,
+        user_id: str,
+        group_id: str | None = None,
+    ) -> UserProfileSnapshot | None:
+        """Fetch one caller and, when requested, only that caller's exact group row."""
+
+        async with self._database.sessions() as session:
+            user = await session.get(UserProfileModel, user_id)
+            if user is None:
+                return None
+            group_card = ""
+            if group_id is not None:
+                group = await session.get(
+                    UserGroupProfileModel,
+                    {"user_id": user_id, "group_id": group_id},
+                )
+                if group is not None:
+                    group_card = group.group_card
+            return UserProfileSnapshot(
+                user_id=user.user_id,
+                scope_type=ScopeType.GROUP if group_id is not None else ScopeType.PRIVATE,
+                nickname=user.nickname,
+                group_id=group_id,
+                group_card=group_card,
+            )
+
+    async def delete_user(self, user_id: str) -> bool:
+        """Delete exactly one user's global and cascading group profile rows."""
+
+        async with self._database.sessions() as session, session.begin():
+            exists = await session.scalar(
+                select(UserProfileModel.user_id).where(UserProfileModel.user_id == user_id)
+            )
+            await session.execute(
+                delete(UserProfileModel).where(UserProfileModel.user_id == user_id)
+            )
+            return exists is not None

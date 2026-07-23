@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     max_input_characters: int = 4000
     max_output_characters: int = 12000
     max_qq_message_chars: int = 1800
+    split_daily_chat_sentences: bool = True
+    daily_chat_split_max_characters: int = 240
+    daily_chat_split_max_messages: int = 4
+    daily_chat_message_delay_min_seconds: float = 3.0
+    daily_chat_message_delay_max_seconds: float = 5.0
 
     @field_validator(
         "app_port",
@@ -78,6 +83,8 @@ class Settings(BaseSettings):
         "max_input_characters",
         "max_output_characters",
         "max_qq_message_chars",
+        "daily_chat_split_max_characters",
+        "daily_chat_split_max_messages",
     )
     @classmethod
     def _positive_integer(cls, value: int) -> int:
@@ -98,6 +105,25 @@ class Settings(BaseSettings):
         if value < 0:
             raise ValueError("must not be negative")
         return value
+
+    @field_validator(
+        "daily_chat_message_delay_min_seconds",
+        "daily_chat_message_delay_max_seconds",
+    )
+    @classmethod
+    def _non_negative_delay(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("must not be negative")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_daily_chat_delay_range(self) -> Self:
+        if self.daily_chat_message_delay_min_seconds > self.daily_chat_message_delay_max_seconds:
+            raise ValueError(
+                "DAILY_CHAT_MESSAGE_DELAY_MIN_SECONDS must not exceed "
+                "DAILY_CHAT_MESSAGE_DELAY_MAX_SECONDS"
+            )
+        return self
 
     @model_validator(mode="after")
     def _load_system_prompt_file(self) -> Self:

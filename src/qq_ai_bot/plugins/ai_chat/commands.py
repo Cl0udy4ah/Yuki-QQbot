@@ -10,4 +10,6 @@ COMMAND_DESCRIPTIONS: dict[CommandName, str] = {
     CommandName.ON: "超级用户在当前群启用 AI",
     CommandName.OFF: "超级用户在当前群停用 AI",
     CommandName.PING: "返回 pong 和内部处理耗时",
+    CommandName.WHOAMI: "查看机器人识别到的当前身份",
+    CommandName.FORGETME: "删除自己的昵称和全部群名片资料",
 }

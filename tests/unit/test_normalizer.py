@@ -56,8 +56,10 @@ def test_private_text_and_group_mention_normalize() -> None:
         group_event(Message([MessageSegment.at(9999), MessageSegment.text(" question")]))
     )
     assert private.scope_type is ScopeType.PRIVATE and private.text == "hello"
+    assert private.sender.nickname == "tester" and not private.sender.group_card
     assert group.scope_type is ScopeType.GROUP and group.mentions_bot
     assert group.text == "question" and group.group_id == "2001"
+    assert group.sender.nickname == "tester" and group.sender.group_card == "card"
 
 
 def test_group_mention_uses_original_message_after_nonebot_strips_at() -> None:

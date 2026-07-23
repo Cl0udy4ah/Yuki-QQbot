@@ -39,3 +39,16 @@ def test_system_prompt_file_must_not_be_empty(tmp_path: Path) -> None:
 
     with pytest.raises(ValidationError, match="SYSTEM_PROMPT_FILE must not be empty"):
         Settings.model_validate({"system_prompt_file": prompt_file})
+
+
+def test_daily_chat_delay_range_must_be_ordered() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="DAILY_CHAT_MESSAGE_DELAY_MIN_SECONDS must not exceed",
+    ):
+        Settings.model_validate(
+            {
+                "daily_chat_message_delay_min_seconds": 3,
+                "daily_chat_message_delay_max_seconds": 1,
+            }
+        )

@@ -43,6 +43,48 @@ async def test_private_and_group_mention_end_to_end(database: Database) -> None:
 
 
 @pytest.mark.asyncio
+async def test_short_plain_chat_is_sent_as_one_message_per_sentence(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delay_bounds: list[tuple[float, float]] = []
+    delays: list[float] = []
+
+    def fake_uniform(minimum: float, maximum: float) -> float:
+        delay_bounds.append((minimum, maximum))
+        return 4.0
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr("qq_ai_bot.services.chat.random.uniform", fake_uniform)
+    monkeypatch.setattr("qq_ai_bot.services.chat.asyncio.sleep", fake_sleep)
+    provider = FakeLLMProvider(lambda _request: "第一句。第二句！")
+    settings = make_settings(
+        database.url,
+        daily_chat_message_delay_min_seconds=3,
+        daily_chat_message_delay_max_seconds=5,
+    )
+    harness = build_harness(database, settings, provider)
+    sender = MemorySender()
+    event = normalize_event(private_event(Message("聊聊天"), message_id=103))
+
+    result = await harness.processor.handle(event, sender)
+
+    assert result.reason == "chat"
+    assert result.sent_messages == 2
+    assert [message.text for message in sender.messages] == ["第一句。", "第二句！"]
+    assert delay_bounds == [(3.0, 5.0)]
+    assert delays == [4.0]
+    history = await harness.conversations.list_context(
+        ConversationIdentity.private("1001"),
+        max_messages=10,
+        max_characters=1000,
+    )
+    assert history[-1].content == "第一句。第二句！"
+
+
+@pytest.mark.asyncio
 async def test_ten_concurrent_conversations_do_not_cross_context(database: Database) -> None:
     provider = FakeLLMProvider()
     harness = build_harness(database, make_settings(database.url), provider)

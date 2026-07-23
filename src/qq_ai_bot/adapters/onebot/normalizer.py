@@ -81,7 +81,6 @@ def normalize_event(
     text, _, attachments = _extract_segments(event.message, self_id=self_id)
     _, mentions_bot, _ = _extract_segments(event.original_message, self_id=self_id)
     sender_user_id = str(event.sender.user_id or event.user_id)
-    display_name = event.sender.card or event.sender.nickname or ""
     reply_message = event.reply.message if event.reply is not None else None
 
     if isinstance(event, GroupMessageEvent):
@@ -99,7 +98,8 @@ def normalize_event(
         scope_type=scope,
         sender=SenderIdentity(
             user_id=sender_user_id,
-            display_name=display_name,
+            nickname=event.sender.nickname or "",
+            group_card=event.sender.card or "",
             is_bot=sender_user_id in ignored_bot_users,
         ),
         text=text,

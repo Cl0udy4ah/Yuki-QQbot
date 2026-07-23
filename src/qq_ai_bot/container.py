@@ -18,12 +18,14 @@ from qq_ai_bot.persistence.repositories import (
     ConversationRepository,
     GroupSettingsRepository,
     ProcessedEventRepository,
+    UserProfileRepository,
 )
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
+from qq_ai_bot.services.user_profiles import UserProfileService
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,8 @@ class ApplicationContainer:
         self.database = Database(settings.database_url)
         self.conversations = ConversationRepository(self.database)
         self.groups = GroupSettingsRepository(self.database)
+        self.user_profile_repository = UserProfileRepository(self.database)
+        self.user_profiles = UserProfileService(self.user_profile_repository)
         self.processed_events = ProcessedEventRepository(self.database)
         self.provider = self._build_provider(settings)
         self.concurrency = ConcurrencyManager(settings.global_llm_concurrency)
@@ -58,6 +62,7 @@ class ApplicationContainer:
             settings=settings,
             conversations=self.conversations,
             groups=self.groups,
+            user_profiles=self.user_profiles,
             chat=self.chat,
             deduplication=self.deduplication,
             rate_limiter=self.rate_limiter,

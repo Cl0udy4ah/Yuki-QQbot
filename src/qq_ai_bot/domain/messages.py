@@ -34,8 +34,15 @@ class SenderIdentity:
     """Platform-neutral sender identity."""
 
     user_id: str
-    display_name: str = ""
+    nickname: str = ""
+    group_card: str = ""
     is_bot: bool = False
+
+    @property
+    def display_name(self) -> str:
+        """Return the event-provided display name without database fallback."""
+
+        return self.group_card or self.nickname
 
 
 @dataclass(frozen=True, slots=True)

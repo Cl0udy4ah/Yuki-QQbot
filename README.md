@@ -2,6 +2,8 @@
 
 一个面向单账号、单进程部署的 QQ AI 聊天机器人。项目使用 Python 3.12、NoneBot2、OneBot v11、异步 SQLAlchemy 和 OpenAI-compatible Chat Completions API；个人 QQ 由外部 NapCatQQ 容器登录，本仓库不复制、修改或内置 NapCat 源码。
 
+项目的重要功能和配置变更记录在 [CHANGELOG.md](CHANGELOG.md)。
+
 > **重要风险提示**：NapCat 属于个人 QQ 协议端，不等同于腾讯官方 QQ Bot。个人账号自动化可能受到平台规则、风控、协议变更和封号风险影响。请只使用自己的账号，控制频率，遵守适用法律、腾讯平台规则和 NapCat 许可。本项目不处理验证码、不绕过登录验证、不保存 QQ 密码；登录必须由用户在 WebUI 手动扫码完成。
 
 ## 架构
@@ -13,9 +15,9 @@ NapCatQQ（外部容器，手动扫码）
   ↓ OneBot v11 反向 WebSocket
 NoneBot2 接入层
   ↓
-消息标准化 → 触发/权限 → 去重/限流 → 会话锁
-  ↓                                ↓
-SQLite 会话历史 ← Chat Service → LLM Provider
+消息标准化 → 触发/权限 → 去重 → 当前用户资料 → 限流/会话锁
+  ↓                         ↓                    ↓
+SQLite 会话历史与身份资料 ← Chat Service → LLM Provider
   ↓
 回复清理/分段 → OneBot v11 → QQ
 ```
@@ -212,8 +214,19 @@ DeepSeek V4 默认开启思考模式。QQ 日常聊天可设置 `LLM_THINKING_EN
 | `MAX_INPUT_CHARACTERS` | 单次清理后输入字符上限 | `4000` |
 | `MAX_OUTPUT_CHARACTERS` | 模型回复总字符上限 | `12000` |
 | `MAX_QQ_MESSAGE_CHARS` | 单条 QQ 消息字符上限 | `1800` |
+| `SPLIT_DAILY_CHAT_SENTENCES` | 是否将短日常回复按句拆成多条普通消息 | `true` |
+| `DAILY_CHAT_SPLIT_MAX_CHARACTERS` | 允许按句拆分的回复总字符上限 | `240` |
+| `DAILY_CHAT_SPLIT_MAX_MESSAGES` | 单次日常回复最多拆出的消息数 | `4` |
+| `DAILY_CHAT_MESSAGE_DELAY_MIN_SECONDS` | 日常分句消息之间的最短等待秒数 | `3` |
+| `DAILY_CHAT_MESSAGE_DELAY_MAX_SECONDS` | 日常分句消息之间的最长等待秒数 | `5` |
 
 命令和普通聊天使用不同限流桶。超级用户不会绕过全局 LLM 并发限制。
+
+日常分句使用保守启发式：只有短篇纯文本能够拆成 2–4 个完整句子时才逐句发送；
+代码围栏、列表、表格、长回复或句子过多的内容仍按原有 QQ 长度规则发送。关闭
+`SPLIT_DAILY_CHAT_SENTENCES` 即可恢复只按长度分段。第一句立即发送，后续每句发送前
+会在 `DAILY_CHAT_MESSAGE_DELAY_MIN_SECONDS` 与
+`DAILY_CHAT_MESSAGE_DELAY_MAX_SECONDS` 之间随机异步等待；该等待不会阻塞其他会话。
 
 ## 消息与会话规则
 
@@ -222,6 +235,8 @@ DeepSeek V4 默认开启思考模式。QQ 日常聊天可设置 `LLM_THINKING_EN
 - 默认群会话键为 `group:{group_id}:user:{user_id}`，不同成员不共享历史。
 - 数据库已预留 `group:{group_id}:shared` 和 `conversation_mode`，MVP 不提供切换界面。
 - 未触发的普通群聊不会进入去重表或消息表，也不会写日志正文。
+- 只在允许的私聊或明确触发机器人的群消息中更新发送者身份；普通群聊不查询
+  NapCat，也不写入用户资料表。
 - 支持文本、@后的文本、回复消息文本和 QQ 表情占位符。
 - 图片、语音、视频、文件、合并转发、XML/JSON 卡片只记录类型元数据，不下载；仅含这些内容时回复“当前版本暂不支持该消息类型。”
 
@@ -236,8 +251,34 @@ DeepSeek V4 默认开启思考模式。QQ 日常聊天可设置 `LLM_THINKING_EN
 | `/ai on` | 超级用户在当前群启用 AI |
 | `/ai off` | 超级用户在当前群停用 AI |
 | `/ai ping` | 返回 pong 和内部处理耗时 |
+| `/ai whoami` | 查看机器人在当前私聊或当前群识别到的本人身份 |
+| `/ai forgetme` | 删除本人的昵称和全部群名片资料；不删除聊天记录 |
 
 状态命令不会显示 API Key、数据库路径、完整系统提示词或 QQ 登录凭据。
+`whoami` 不接受目标用户参数，只能查看发送者本人；按当前配置会显示完整 QQ 号。
+需要同时清除当前聊天记录时，另行执行 `/ai new`。
+
+## 用户身份与群名片
+
+NapCat 的 OneBot v11 消息事件通常直接提供发送者 QQ 昵称和当前群名片，无需安装插件。
+当触发机器人的消息缺少这些字段时，bot 只查询当前发送者：
+
+- 群聊调用 `get_group_member_info(group_id, user_id, no_cache=false)`。
+- 私聊调用 `get_stranger_info(user_id, no_cache=false)`。
+- 查询失败会退回当前事件和已保存的当前场景资料，不影响聊天；不会拉取完整群成员列表。
+
+资料只保留最新值，不保存修改历史：
+
+| 表 | 主键 | 内容 |
+|---|---|---|
+| `user_profiles` | `user_id` | 最新 QQ 昵称、首次和最后识别时间 |
+| `user_group_profiles` | `(user_id, group_id)` | 用户在该群的最新群名片、首次和最后识别时间 |
+
+同一个用户在不同群的群名片完全分开。模型调用时只临时注入当前场景显示名称：
+群聊按“本群群名片 → 当前事件/API 的 QQ 昵称 → 当前用户”选择，私聊按
+“QQ 昵称 → 当前用户”选择。该临时系统消息不会写入聊天历史，不包含 QQ 号；
+名称按不可信元数据处理，清除控制字符、压平换行并限制长度。群聊不会拿私聊中
+保存的昵称作回退，也不会读取其他用户或其他群的名片。
 
 ## 健康检查
 
@@ -332,13 +373,20 @@ uv run pytest
 docker compose config
 ```
 
-测试覆盖私聊/群聊权限、@触发、全部命令、会话隔离、去重、用户/群限流、长回复分段、取消、超时、5xx 有限重试、空回复、附件降级、数据库重启恢复、发送失败不重试，以及至少十个并发独立会话。
+测试覆盖私聊/群聊权限、@触发、全部命令、会话与身份隔离、不同群名片、
+未触发消息零采集、NapCat 缺失字段补全、资料删除、模型身份脱敏、Alembic 升级、
+去重、用户/群限流、长回复分段、取消、超时、5xx 有限重试、空回复、附件降级、
+数据库重启恢复、发送失败不重试，以及至少十个并发独立会话。
 
 ## 隐私与日志
 
 - 默认不记录用户正文或模型完整回复；`LOG_MESSAGE_CONTENT=false`。
 - 结构化日志记录事件键、会话键哈希、消息类型、处理器、耗时、结果与异常类别。
 - API Key 和 QQ 登录凭据从不进入业务日志。
+- 完整 QQ 号只在发送者主动执行 `/ai whoami` 时显示给当前会话，不传给模型，
+  也不写入普通业务日志。
+- 用户资料没有列表、搜索或代查接口；所有资料读取必须绑定当前发送者，
+  群名片还必须同时绑定当前群。
 - 用户消息中的控制字符会被清理；链接和代码只作为文本发送给模型，项目不会执行它们。
 - 助手回复只有在所有 QQ 分段发送成功后才写入 assistant 历史；发送失败不自动无限重试。
 

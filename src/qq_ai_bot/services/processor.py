@@ -12,6 +12,7 @@ from qq_ai_bot import __version__
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
+from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.llm.base import LLMConfigurationError, LLMEmptyResponseError, LLMError
 from qq_ai_bot.persistence.repositories import ConversationRepository, GroupSettingsRepository
 from qq_ai_bot.services.chat import ChatService, OutboundSender
@@ -25,6 +26,11 @@ from qq_ai_bot.services.policies import (
 )
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
 from qq_ai_bot.services.renderer import sanitize_input
+from qq_ai_bot.services.user_profiles import (
+    UserProfileResolver,
+    UserProfileService,
+    sanitize_profile_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +56,7 @@ class MessageProcessor:
         settings: Settings,
         conversations: ConversationRepository,
         groups: GroupSettingsRepository,
+        user_profiles: UserProfileService,
         chat: ChatService,
         deduplication: DeduplicationService,
         rate_limiter: SlidingWindowRateLimiter,
@@ -59,13 +66,19 @@ class MessageProcessor:
         self._settings = settings
         self._conversations = conversations
         self._groups = groups
+        self._user_profiles = user_profiles
         self._chat = chat
         self._deduplication = deduplication
         self._rate_limiter = rate_limiter
         self._concurrency = concurrency
         self._onebot_connected = onebot_connected
 
-    async def handle(self, message: InboundMessage, sender: OutboundSender) -> ProcessResult:
+    async def handle(
+        self,
+        message: InboundMessage,
+        sender: OutboundSender,
+        profile_resolver: UserProfileResolver | None = None,
+    ) -> ProcessResult:
         """Process one normalized message without leaking transport objects."""
 
         started = time.perf_counter()
@@ -79,6 +92,11 @@ class MessageProcessor:
         event_key = build_event_key(message, identity.key)
         if not await self._deduplication.claim(event_key):
             return ProcessResult(False, reason="duplicate")
+
+        if decision.command is CommandName.FORGETME:
+            profile = self._event_profile(message)
+        else:
+            profile = await self._user_profiles.capture(message, profile_resolver)
 
         category = "command" if decision.command is not None else "chat"
         rate = await self._rate_limiter.check(
@@ -104,6 +122,8 @@ class MessageProcessor:
                 decision.command,
                 message,
                 identity,
+                profile,
+                decision.content,
                 sender,
                 event_key,
                 started,
@@ -126,7 +146,7 @@ class MessageProcessor:
             return ProcessResult(True, int(sent), "input_too_long")
 
         try:
-            sent_count = await self._chat.respond(message, identity, content, sender)
+            sent_count = await self._chat.respond(message, identity, profile, content, sender)
         except RequestCancelledError:
             self._log_result(
                 event_key,
@@ -180,6 +200,8 @@ class MessageProcessor:
         command: CommandName,
         message: InboundMessage,
         identity: ConversationIdentity,
+        profile: UserProfileSnapshot,
+        command_argument: str,
         sender: OutboundSender,
         event_key: str,
         started: float,
@@ -195,6 +217,8 @@ class MessageProcessor:
                 "/ai status - 查看状态\n"
                 "/ai stop - 取消当前请求\n"
                 "/ai ping - 连通性检查\n"
+                "/ai whoami - 查看当前身份\n"
+                "/ai forgetme - 删除自己的身份资料\n"
                 "/ai on | off - 超级用户启用或停用当前群"
             )
         elif command is CommandName.NEW:
@@ -223,6 +247,40 @@ class MessageProcessor:
         elif command is CommandName.PING:
             elapsed_ms = (time.perf_counter() - started) * 1000
             text = f"pong ({elapsed_ms:.1f} ms)"
+        elif command is CommandName.WHOAMI:
+            if command_argument:
+                text = "该命令不接受参数，只能查看发送者自己的身份。"
+            elif message.scope_type is ScopeType.GROUP:
+                text = (
+                    f"QQ号：{profile.user_id}\n"
+                    f"QQ昵称：{profile.nickname or '未获取'}\n"
+                    f"本群群名片：{profile.group_card or '未设置'}\n"
+                    f"当前识别名称：{profile.display_name}\n"
+                    f"场景：群聊（群号 {profile.group_id}）"
+                )
+            else:
+                text = (
+                    f"QQ号：{profile.user_id}\n"
+                    f"QQ昵称：{profile.nickname or '未获取'}\n"
+                    f"当前识别名称：{profile.display_name}\n"
+                    "场景：私聊"
+                )
+        elif command is CommandName.FORGETME:
+            if command_argument:
+                text = "该命令不接受参数，只能删除发送者自己的身份资料。"
+            else:
+                deleted = await self._user_profiles.forget(message.sender.user_id)
+                if deleted is None:
+                    text = "身份资料暂时无法删除，请稍后重试。"
+                elif deleted:
+                    text = (
+                        "已删除你的昵称和全部群名片资料。聊天记录未删除；"
+                        "如需清空当前会话，请使用 /ai new。"
+                    )
+                else:
+                    text = (
+                        "没有找到你的身份资料。聊天记录未删除；如需清空当前会话，请使用 /ai new。"
+                    )
         else:
             text = "未知命令，请使用 /ai help 查看帮助。"
 
@@ -237,6 +295,18 @@ class MessageProcessor:
             exception_category=None if sent else "SendError",
         )
         return ProcessResult(True, int(sent), f"command_{command.value}")
+
+    @staticmethod
+    def _event_profile(message: InboundMessage) -> UserProfileSnapshot:
+        """Build a current-event snapshot without reading or writing storage."""
+
+        return UserProfileSnapshot(
+            user_id=message.sender.user_id,
+            scope_type=message.scope_type,
+            nickname=sanitize_profile_name(message.sender.nickname),
+            group_id=message.group_id,
+            group_card=sanitize_profile_name(message.sender.group_card),
+        )
 
     @staticmethod
     async def _safe_send(

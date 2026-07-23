@@ -11,6 +11,9 @@ _MARKDOWN_LINK = re.compile(r"\[([^\]]+)]\((?:https?://|mailto:)[^)]+\)")
 _HEADING = re.compile(r"(?m)^\s{0,3}#{1,6}\s+")
 _HORIZONTAL_RULE = re.compile(r"(?m)^\s*[-*_]{3,}\s*$")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")
+_STRUCTURED_OUTPUT = re.compile(r"(?m)^\s*(?:```|~~~|[-*+]\s+|\d+[.)、]\s+|>\s+|\|.*\|\s*$)")
+_DAILY_SENTENCE_ENDINGS = frozenset("。！？!?")
+_SENTENCE_CLOSERS = frozenset('”’"』】）)]')
 
 
 def sanitize_input(text: str) -> str:
@@ -34,6 +37,59 @@ def clean_model_output(text: str, *, max_characters: int) -> str:
     if not cleaned:
         raise LLMEmptyResponseError("model returned empty content")
     return cleaned[:max_characters]
+
+
+def _plain_sentences(text: str) -> tuple[str, ...]:
+    """Split plain conversational prose while preserving sentence punctuation."""
+
+    normalized = re.sub(r"\s+", " ", text).strip()
+    sentences: list[str] = []
+    start = 0
+    index = 0
+    while index < len(normalized):
+        character = normalized[index]
+        boundary = character in _DAILY_SENTENCE_ENDINGS
+        end = index + 1
+        while end < len(normalized) and (
+            normalized[end] in _DAILY_SENTENCE_ENDINGS or normalized[end] in _SENTENCE_CLOSERS
+        ):
+            end += 1
+        if character == ".":
+            boundary = end == len(normalized) or normalized[end].isspace()
+        if boundary:
+            sentence = normalized[start:end].strip()
+            if sentence:
+                sentences.append(sentence)
+            start = end
+            index = end
+        else:
+            index += 1
+    tail = normalized[start:].strip()
+    if tail:
+        sentences.append(tail)
+    return tuple(sentences)
+
+
+def split_daily_chat_sentences(
+    text: str,
+    *,
+    max_characters: int,
+    max_messages: int,
+) -> tuple[str, ...]:
+    """Split short plain chat into sentences, otherwise preserve the original text."""
+
+    if (
+        not text
+        or len(text) > max_characters
+        or "```" in text
+        or "~~~" in text
+        or _STRUCTURED_OUTPUT.search(text)
+    ):
+        return (text,) if text else ()
+    sentences = _plain_sentences(text)
+    if len(sentences) < 2 or len(sentences) > max_messages:
+        return (text,)
+    return sentences
 
 
 def _split_hard(text: str, limit: int) -> list[str]:

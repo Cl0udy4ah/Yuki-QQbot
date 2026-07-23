@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -75,3 +84,41 @@ class ProcessedEventModel(Base):
     event_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class UserProfileModel(Base):
+    """Latest global nickname for one stable QQ user id."""
+
+    __tablename__ = "user_profiles"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    nickname: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    group_profiles: Mapped[list[UserGroupProfileModel]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class UserGroupProfileModel(Base):
+    """Latest group card for one user in one exact group."""
+
+    __tablename__ = "user_group_profiles"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id"],
+            ["user_profiles.user_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    group_card: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    user: Mapped[UserProfileModel] = relationship(back_populates="group_profiles")

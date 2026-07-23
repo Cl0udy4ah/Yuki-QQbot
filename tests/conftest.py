@@ -16,12 +16,14 @@ from qq_ai_bot.persistence.repositories import (
     ConversationRepository,
     GroupSettingsRepository,
     ProcessedEventRepository,
+    UserProfileRepository,
 )
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
+from qq_ai_bot.services.user_profiles import UserProfileService
 
 
 class MemorySender:
@@ -45,6 +47,7 @@ class Harness:
     database: Database
     conversations: ConversationRepository
     groups: GroupSettingsRepository
+    profiles: UserProfileRepository
     provider: LLMProvider
     concurrency: ConcurrencyManager
     processor: MessageProcessor
@@ -62,6 +65,8 @@ def make_settings(database_url: str, **overrides: object) -> Settings:
         "global_llm_concurrency": 4,
         "per_user_requests_per_minute": 20,
         "per_group_requests_per_minute": 50,
+        "daily_chat_message_delay_min_seconds": 0,
+        "daily_chat_message_delay_max_seconds": 0,
     }
     values.update(overrides)
     return Settings.model_validate(values)
@@ -74,6 +79,8 @@ def build_harness(
 ) -> Harness:
     conversations = ConversationRepository(database)
     groups = GroupSettingsRepository(database)
+    profiles = UserProfileRepository(database)
+    user_profiles = UserProfileService(profiles)
     processed_events = ProcessedEventRepository(database)
     llm = provider or FakeLLMProvider()
     concurrency = ConcurrencyManager(settings.global_llm_concurrency)
@@ -87,6 +94,7 @@ def build_harness(
         settings=settings,
         conversations=conversations,
         groups=groups,
+        user_profiles=user_profiles,
         chat=chat,
         deduplication=DeduplicationService(
             processed_events,
@@ -99,7 +107,16 @@ def build_harness(
         concurrency=concurrency,
         onebot_connected=lambda: True,
     )
-    return Harness(settings, database, conversations, groups, llm, concurrency, processor)
+    return Harness(
+        settings,
+        database,
+        conversations,
+        groups,
+        profiles,
+        llm,
+        concurrency,
+        processor,
+    )
 
 
 @pytest_asyncio.fixture

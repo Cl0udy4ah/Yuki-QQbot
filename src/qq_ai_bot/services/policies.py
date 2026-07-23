@@ -20,6 +20,8 @@ class CommandName(StrEnum):
     ON = "on"
     OFF = "off"
     PING = "ping"
+    WHOAMI = "whoami"
+    FORGETME = "forgetme"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,9 +53,11 @@ def _command_and_content(text: str, ai_prefix: str) -> tuple[CommandName | None,
         remainder = stripped[3:].strip()
         if not remainder:
             return CommandName.HELP, "", True
-        first = remainder.split(maxsplit=1)[0].casefold()
+        command_parts = remainder.split(maxsplit=1)
+        first = command_parts[0].casefold()
+        argument = command_parts[1].strip() if len(command_parts) > 1 else ""
         try:
-            return CommandName(first), "", True
+            return CommandName(first), argument, True
         except ValueError:
             return None, remainder, True
     if ai_prefix and (stripped == ai_prefix or stripped.startswith(f"{ai_prefix} ")):

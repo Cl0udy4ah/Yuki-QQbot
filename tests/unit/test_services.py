@@ -12,7 +12,12 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import ConversationRepository, ProcessedEventRepository
 from qq_ai_bot.services.deduplication import DeduplicationService
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
-from qq_ai_bot.services.renderer import clean_model_output, sanitize_input, split_qq_message
+from qq_ai_bot.services.renderer import (
+    clean_model_output,
+    sanitize_input,
+    split_daily_chat_sentences,
+    split_qq_message,
+)
 
 
 @pytest.mark.asyncio
@@ -49,6 +54,41 @@ def test_long_reply_splits_by_paragraph_sentence_and_character() -> None:
     assert chunks
     assert all(len(chunk) <= 10 for chunk in chunks)
     assert "".join(chunks).replace("\n", "") == text.replace("\n", "")
+
+
+def test_short_plain_chat_splits_into_one_message_per_sentence() -> None:
+    chunks = split_daily_chat_sentences(
+        "你好！她说“今天也要加油。”明天见？",
+        max_characters=240,
+        max_messages=4,
+    )
+    assert chunks == ("你好！", "她说“今天也要加油。”", "明天见？")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "- 第一步\n- 第二步",
+        "```python\nprint('hello')\n```",
+        "| 名称 | 值 |\n|---|---|\n| A | B |",
+        "第一句。第二句。第三句。第四句。第五句。",
+    ],
+)
+def test_structured_or_excessive_output_is_not_split_as_daily_chat(text: str) -> None:
+    assert split_daily_chat_sentences(
+        text,
+        max_characters=240,
+        max_messages=4,
+    ) == (text,)
+
+
+def test_long_plain_output_is_not_split_as_daily_chat() -> None:
+    text = "第一句。" + "很长" * 120 + "第二句。"
+    assert split_daily_chat_sentences(
+        text,
+        max_characters=240,
+        max_messages=4,
+    ) == (text,)
 
 
 def test_markdown_cleanup_and_control_character_sanitization() -> None:
