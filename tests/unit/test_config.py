@@ -54,9 +54,7 @@ def test_daily_chat_delay_range_must_be_ordered() -> None:
         )
 
 
-def test_group_memory_limit_must_not_exceed_fifty() -> None:
-    with pytest.raises(
-        ValidationError,
-        match="GROUP_MEMORY_MAX_ENTRIES must not exceed 50",
-    ):
-        Settings.model_validate({"group_memory_max_entries": 51})
+def test_v1_memory_limits_accept_group_hundred_and_reject_member_over_fifty() -> None:
+    assert Settings.model_validate({"group_memory_max_entries": 100})
+    with pytest.raises(ValidationError, match="PERSON_GROUP_MEMORY_MAX_ENTRIES"):
+        Settings.model_validate({"person_group_memory_max_entries": 51})

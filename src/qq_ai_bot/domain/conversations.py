@@ -46,8 +46,10 @@ class ConversationIdentity:
         """Create an isolated or shared group conversation identity."""
 
         if mode is ConversationMode.SHARED:
-            key = f"group:{group_id}:shared"
-            owner_user_id = ""
+            # The event history is group-wide, while context cut points and
+            # cancellation remain scoped to the current person in that group.
+            key = f"group:{group_id}:user:{user_id}"
+            owner_user_id = user_id
         else:
             key = f"group:{group_id}:user:{user_id}"
             owner_user_id = user_id

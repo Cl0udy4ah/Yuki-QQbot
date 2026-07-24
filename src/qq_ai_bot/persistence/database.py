@@ -51,6 +51,45 @@ class Database:
 
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
+            await self._create_fts_schema(connection)
+
+    @staticmethod
+    async def _create_fts_schema(connection: Any) -> None:
+        """Create the external-content FTS index used by the event ledger."""
+
+        statements = (
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS chat_events_fts USING fts5(
+                content,
+                content='chat_events',
+                content_rowid='id',
+                tokenize='trigram'
+            )
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS chat_events_fts_ai
+            AFTER INSERT ON chat_events BEGIN
+                INSERT INTO chat_events_fts(rowid, content) VALUES (new.id, new.content);
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS chat_events_fts_ad
+            AFTER DELETE ON chat_events BEGIN
+                INSERT INTO chat_events_fts(chat_events_fts, rowid, content)
+                VALUES ('delete', old.id, old.content);
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS chat_events_fts_au
+            AFTER UPDATE OF content ON chat_events BEGIN
+                INSERT INTO chat_events_fts(chat_events_fts, rowid, content)
+                VALUES ('delete', old.id, old.content);
+                INSERT INTO chat_events_fts(rowid, content) VALUES (new.id, new.content);
+            END
+            """,
+        )
+        for statement in statements:
+            await connection.execute(text(statement))
 
     async def ping(self) -> bool:
         """Check database connectivity without exposing its path."""

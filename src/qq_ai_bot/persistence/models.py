@@ -1,4 +1,4 @@
-"""SQLAlchemy schema for conversations, settings, and event deduplication."""
+"""SQLAlchemy schema for the person-centric event ledger and memories."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -22,73 +23,174 @@ class Base(DeclarativeBase):
     """Declarative metadata root."""
 
 
-class ConversationModel(Base):
-    """One durable, isolated conversation."""
+class PersonModel(Base):
+    """One human identity permanently keyed by a QQ number string."""
 
-    __tablename__ = "conversations"
+    __tablename__ = "people"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    conversation_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
-    group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    mode: Mapped[str] = mapped_column(String(16), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_active_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    nickname: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_bot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    messages: Mapped[list[MessageModel]] = relationship(
-        back_populates="conversation",
+    aliases: Mapped[list[PersonAliasModel]] = relationship(
+        back_populates="person",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    memberships: Mapped[list[MembershipModel]] = relationship(
+        back_populates="person",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    memories: Mapped[list[PersonMemoryModel]] = relationship(
+        back_populates="person",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    preferences: Mapped[list[PersonPreferenceModel]] = relationship(
+        back_populates="person",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
 
 
-class MessageModel(Base):
-    """Persisted system, user, or assistant message."""
+class PersonAliasModel(Base):
+    """A nickname or group card previously observed for one QQ identity."""
 
-    __tablename__ = "messages"
-    __table_args__ = (Index("ix_messages_conversation_created", "conversation_id", "created_at"),)
+    __tablename__ = "person_aliases"
+    __table_args__ = (
+        UniqueConstraint("user_id", "group_scope", "alias", name="uq_person_alias_scope"),
+        Index("ix_person_aliases_user_last_seen", "user_id", "last_seen_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    conversation_id: Mapped[int] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
     )
-    role: Mapped[str] = mapped_column(String(16), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    platform_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    character_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    group_scope: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    alias: Mapped[str] = mapped_column(String(128), nullable=False)
+    alias_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
-    conversation: Mapped[ConversationModel] = relationship(back_populates="messages")
+    person: Mapped[PersonModel] = relationship(back_populates="aliases")
 
 
-class GroupSettingModel(Base):
-    """Dynamic per-group behavior controlled by superusers."""
+class GroupModel(Base):
+    """A QQ group and its observation/participation settings."""
 
-    __tablename__ = "group_settings"
+    __tablename__ = "groups"
 
     group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     require_mention: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    conversation_mode: Mapped[str] = mapped_column(String(16), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    autonomous_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+    memberships: Mapped[list[MembershipModel]] = relationship(
+        back_populates="group",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    memories: Mapped[list[GroupMemoryModel]] = relationship(
+        back_populates="group",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
-class PrivateUserSettingModel(Base):
-    """Dynamic private-chat access override controlled by superusers."""
 
-    __tablename__ = "private_user_settings"
+class MembershipModel(Base):
+    """One person as known inside one exact group."""
 
-    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    __tablename__ = "memberships"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    group_id: Mapped[str] = mapped_column(
+        ForeignKey("groups.group_id", ondelete="CASCADE"), primary_key=True
+    )
+    group_card: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    person: Mapped[PersonModel] = relationship(back_populates="memberships")
+    group: Mapped[GroupModel] = relationship(back_populates="memberships")
+
+
+class ChatEventModel(Base):
+    """An immutable inbound or outbound QQ message in the permanent ledger."""
+
+    __tablename__ = "chat_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "bot_user_id",
+            "platform_message_id",
+            name="uq_chat_events_bot_platform_message",
+        ),
+        Index("ix_chat_events_scope_time", "scope_type", "occurred_at"),
+        Index("ix_chat_events_group_time", "group_id", "occurred_at"),
+        Index("ix_chat_events_sender_time", "sender_user_id", "occurred_at"),
+        Index("ix_chat_events_private_peer_time", "private_peer_user_id", "occurred_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    platform_message_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    group_id: Mapped[str | None] = mapped_column(
+        ForeignKey("groups.group_id", ondelete="CASCADE"), nullable=True
+    )
+    private_peer_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=True
+    )
+    sender_user_id: Mapped[str] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
+    )
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    segments_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    reply_to_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PersonMemoryModel(Base):
+    """A durable cross-scope memory about one QQ identity."""
+
+    __tablename__ = "person_memories"
+    __table_args__ = (
+        UniqueConstraint("user_id", "memory_key", name="uq_person_memories_user_key"),
+        Index("ix_person_memories_user_updated", "user_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
+    )
+    memory_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="fact")
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    importance: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False, default="automatic")
+    source_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    person: Mapped[PersonModel] = relationship(back_populates="memories")
 
 
 class GroupMemoryModel(Base):
-    """One bounded, model-extracted fact isolated to a single group."""
+    """A durable shared memory about one group."""
 
     __tablename__ = "group_memories"
     __table_args__ = (
@@ -97,15 +199,126 @@ class GroupMemoryModel(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[str] = mapped_column(
+        ForeignKey("groups.group_id", ondelete="CASCADE"), nullable=False
+    )
+    subject_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=True
+    )
+    memory_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="fact")
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    importance: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False, default="automatic")
+    source_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    group: Mapped[GroupModel] = relationship(back_populates="memories")
+
+
+class PersonGroupMemoryModel(Base):
+    """A durable memory about one person's identity inside one group."""
+
+    __tablename__ = "person_group_memories"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "group_id"],
+            ["memberships.user_id", "memberships.group_id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "group_id",
+            "memory_key",
+            name="uq_person_group_memories_scope_key",
+        ),
+        Index(
+            "ix_person_group_memories_scope_updated",
+            "user_id",
+            "group_id",
+            "updated_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     group_id: Mapped[str] = mapped_column(String(64), nullable=False)
     memory_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False, default="fact")
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    importance: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False, default="automatic")
+    source_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PersonPreferenceModel(Base):
+    """An explicit or inferred interaction preference for one person."""
+
+    __tablename__ = "person_preferences"
+    __table_args__ = (
+        UniqueConstraint("user_id", "preference_key", name="uq_person_preferences_user_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
+    )
+    preference_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False, default="explicit")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+    person: Mapped[PersonModel] = relationship(back_populates="preferences")
+
+
+class MemoryJobModel(Base):
+    """A persistent background job that derives memories from one event."""
+
+    __tablename__ = "memory_jobs"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_memory_jobs_event"),
+        Index("ix_memory_jobs_status_next", "status", "next_attempt_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class ContextResetModel(Base):
+    """A context cutoff that preserves the permanent event ledger."""
+
+    __tablename__ = "context_resets"
+
+    context_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
+    )
+    group_id: Mapped[str | None] = mapped_column(
+        ForeignKey("groups.group_id", ondelete="CASCADE"), nullable=True
+    )
+    reset_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
 
 class ProcessedEventModel(Base):
-    """Durable idempotency record for OneBot events."""
+    """Durable idempotency record for incoming OneBot events."""
 
     __tablename__ = "processed_events"
     __table_args__ = (Index("ix_processed_events_expires_at", "expires_at"),)
@@ -115,39 +328,21 @@ class ProcessedEventModel(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class UserProfileModel(Base):
-    """Latest global nickname for one stable QQ user id."""
+class AgentActionModel(Base):
+    """A bounded audit entry for a model-issued OneBot action."""
 
-    __tablename__ = "user_profiles"
+    __tablename__ = "agent_actions"
+    __table_args__ = (Index("ix_agent_actions_actor_created", "actor_user_id", "created_at"),)
 
-    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    nickname: Mapped[str] = mapped_column(String(128), nullable=False, default="")
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-    group_profiles: Mapped[list[UserGroupProfileModel]] = relationship(
-        back_populates="user",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action: Mapped[str] = mapped_column(String(128), nullable=False)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class UserGroupProfileModel(Base):
-    """Latest group card for one user in one exact group."""
-
-    __tablename__ = "user_group_profiles"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["user_id"],
-            ["user_profiles.user_id"],
-            ondelete="CASCADE",
-        ),
-    )
-
-    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    group_card: Mapped[str] = mapped_column(String(128), nullable=False, default="")
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-    user: Mapped[UserProfileModel] = relationship(back_populates="group_profiles")
+# Source-compatibility aliases for integrations that only inspect the old profile types.
+UserProfileModel = PersonModel
+UserGroupProfileModel = MembershipModel

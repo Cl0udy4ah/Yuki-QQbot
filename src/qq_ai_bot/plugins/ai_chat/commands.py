@@ -14,4 +14,6 @@ COMMAND_DESCRIPTIONS: dict[CommandName, str] = {
     CommandName.FORGETME: "删除自己的昵称和全部群名片资料",
     CommandName.PRIVATE: "超级用户开启或关闭指定 QQ 用户的私聊权限",
     CommandName.GROUP: "超级用户开启或关闭指定群的 AI",
+    CommandName.MEMORY: "查看、增加、修改或删除人物记忆",
+    CommandName.PREFERENCE: "查看、设置或删除交互偏好",
 }

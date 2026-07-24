@@ -42,12 +42,12 @@ def settings() -> Settings:
     )
 
 
-def test_private_allowlist_and_superuser() -> None:
+def test_all_private_users_are_allowed_by_default() -> None:
     assert evaluate_message(message(user_id="1001"), settings()).should_respond
     assert evaluate_message(message(user_id="9000"), settings()).should_respond
-    denied = evaluate_message(message(user_id="5555"), settings())
-    assert not denied.should_respond
-    assert denied.reason == "private_not_allowed"
+    new_user = evaluate_message(message(user_id="5555"), settings())
+    assert new_user.should_respond
+    assert new_user.reason == "private_allowed"
 
 
 def test_private_database_policy_overrides_environment_but_not_superusers() -> None:
@@ -143,4 +143,4 @@ def test_conversation_keys_are_isolated() -> None:
     assert ConversationIdentity.group("9", "1").key == "group:9:user:1"
     assert ConversationIdentity.group("9", "1").key != ConversationIdentity.group("9", "2").key
     shared = ConversationIdentity.group("9", "1", ConversationMode.SHARED)
-    assert shared.key == "group:9:shared"
+    assert shared.key == "group:9:user:1"

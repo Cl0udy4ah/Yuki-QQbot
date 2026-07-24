@@ -1,0 +1,84 @@
+"""Destructively rebuild storage around people and a permanent event ledger.
+
+Revision ID: 0005
+Revises: 0004
+Create Date: 2026-07-25
+"""
+
+from collections.abc import Sequence
+
+from alembic import op
+from sqlalchemy import inspect
+
+from qq_ai_bot.persistence.models import Base
+
+revision: str = "0005"
+down_revision: str | None = "0004"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+
+def upgrade() -> None:
+    """Discard pre-1.0 business data and create the person-centric schema."""
+
+    bind = op.get_bind()
+    op.execute("DROP TRIGGER IF EXISTS chat_events_fts_ai")
+    op.execute("DROP TRIGGER IF EXISTS chat_events_fts_ad")
+    op.execute("DROP TRIGGER IF EXISTS chat_events_fts_au")
+    op.execute("DROP TABLE IF EXISTS chat_events_fts")
+
+    existing = set(inspect(bind).get_table_names())
+    for table_name in (
+        "user_group_profiles",
+        "private_user_settings",
+        "messages",
+        "conversations",
+        "group_memories",
+        "group_settings",
+        "processed_events",
+        "user_profiles",
+    ):
+        if table_name in existing:
+            op.drop_table(table_name)
+
+    Base.metadata.create_all(bind=bind, checkfirst=True)
+    op.execute(
+        """
+        CREATE VIRTUAL TABLE chat_events_fts USING fts5(
+            content,
+            content='chat_events',
+            content_rowid='id',
+            tokenize='trigram'
+        )
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER chat_events_fts_ai AFTER INSERT ON chat_events BEGIN
+            INSERT INTO chat_events_fts(rowid, content) VALUES (new.id, new.content);
+        END
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER chat_events_fts_ad AFTER DELETE ON chat_events BEGIN
+            INSERT INTO chat_events_fts(chat_events_fts, rowid, content)
+            VALUES ('delete', old.id, old.content);
+        END
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER chat_events_fts_au AFTER UPDATE OF content ON chat_events BEGIN
+            INSERT INTO chat_events_fts(chat_events_fts, rowid, content)
+            VALUES ('delete', old.id, old.content);
+            INSERT INTO chat_events_fts(rowid, content) VALUES (new.id, new.content);
+        END
+        """
+    )
+
+
+def downgrade() -> None:
+    """Refuse a lossy downgrade after the intentional 1.0 reset."""
+
+    raise RuntimeError("revision 0005 is an irreversible destructive data reset")

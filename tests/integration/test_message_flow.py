@@ -81,7 +81,7 @@ async def test_short_plain_chat_is_sent_as_one_message_per_sentence(
         max_messages=10,
         max_characters=1000,
     )
-    assert history[-1].content == "第一句。第二句！"
+    assert [item.content for item in history[-2:]] == ["第一句。", "第二句！"]
 
 
 @pytest.mark.asyncio
@@ -114,5 +114,6 @@ async def test_ten_concurrent_conversations_do_not_cross_context(database: Datab
             identity, max_messages=10, max_characters=1000
         )
         contents = [item.content for item in history]
-        assert contents == [f"unique-{index}", f"FakeLLM: unique-{index}"]
-        assert senders[index].messages[0].text == f"FakeLLM: unique-{index}"
+        expected = f"FakeLLM: [QQ {1001 + index}] unique-{index}"
+        assert contents == [f"unique-{index}", expected]
+        assert senders[index].messages[0].text == expected

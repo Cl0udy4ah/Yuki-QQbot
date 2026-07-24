@@ -1,0 +1,438 @@
+"""Acceptance tests for the 1.0 person-centric ledger, memory, and Agent runtime."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+import pytest
+from tests.conftest import MemorySender, build_harness, make_settings
+
+from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.messages import (
+    ChatRequest,
+    ChatResponse,
+    InboundMessage,
+    OutboundMessage,
+    SenderIdentity,
+    ToolCall,
+    ToolFunction,
+)
+from qq_ai_bot.llm.base import LLMProvider
+from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.repositories import (
+    AgentActionRepository,
+    EventLedgerRepository,
+    MemoryJobRepository,
+    MemoryRepository,
+)
+from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
+from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
+from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.services.memory_worker import MemoryWorker
+
+
+def inbound(
+    text: str,
+    *,
+    message_id: str,
+    user_id: str = "1001",
+    group_id: str | None = None,
+    mentions_bot: bool = False,
+) -> InboundMessage:
+    return InboundMessage(
+        message_id=message_id,
+        bot_user_id="8000",
+        event_type="message:test",
+        scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id=user_id, nickname=f"用户{user_id}"),
+        text=text,
+        group_id=group_id,
+        mentions_bot=mentions_bot,
+        segments=({"type": "text", "data": {"text": text}},),
+    )
+
+
+@pytest.mark.asyncio
+async def test_fts_trigram_short_fallback_and_qq_scope(database: Database) -> None:
+    ledger = EventLedgerRepository(database)
+    await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="fts-1",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        direction="inbound",
+        content="小明喜欢猫，也喜欢摄影",
+        group_id="2001",
+    )
+    await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="fts-2",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1002",
+        direction="inbound",
+        content="另一个群友喜欢猫",
+        group_id="2002",
+    )
+
+    long_results = await ledger.search(keyword="喜欢猫", user_id="1001")
+    assert [row.platform_message_id for row in long_results] == ["fts-1"]
+    short_results = await ledger.search(keyword="猫", group_id="2002")
+    assert [row.platform_message_id for row in short_results] == ["fts-2"]
+    with pytest.raises(ValueError, match="require"):
+        await ledger.search(keyword="猫")
+
+
+@pytest.mark.asyncio
+async def test_enabled_untriggered_group_is_observed_but_disabled_group_is_not(
+    database: Database,
+) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    enabled = inbound("普通群聊", message_id="observe-1", group_id="2001")
+    result = await harness.processor.handle(enabled, MemorySender())
+    assert not result.handled and result.reason == "group_observed"
+    assert await harness.profiles.get(user_id="1001", group_id="2001") is not None
+    ledger = EventLedgerRepository(database)
+    rows = await ledger.list_recent(
+        scope_type=ScopeType.GROUP,
+        user_id="1001",
+        group_id="2001",
+        limit=10,
+    )
+    assert [row.content for row in rows] == ["普通群聊"]
+    assert not harness.provider.requests  # type: ignore[attr-defined]
+
+    disabled = inbound("不会观察", message_id="observe-2", group_id="2999")
+    disabled_result = await harness.processor.handle(disabled, MemorySender())
+    assert disabled_result.reason == "group_disabled"
+    rows = await ledger.list_recent(
+        scope_type=ScopeType.GROUP,
+        user_id="1001",
+        group_id="2999",
+        limit=10,
+    )
+    assert not rows
+
+
+class ToolLoopProvider(LLMProvider):
+    """Issue one generic OneBot tool call, then verify the thinking replay."""
+
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            assert "call_onebot_api" in {tool.name for tool in request.tools}
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                reasoning_content="原样回传的思考内容",
+                tool_calls=(
+                    ToolCall(
+                        id="call-1",
+                        function=ToolFunction(
+                            name="call_onebot_api",
+                            arguments=json.dumps(
+                                {
+                                    "action": "send_private_msg",
+                                    "params": {
+                                        "user_id": "12345678",
+                                        "message": "工具发送",
+                                    },
+                                },
+                                ensure_ascii=False,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        assistant = request.messages[-2]
+        tool_result = request.messages[-1]
+        assert assistant.reasoning_content == "原样回传的思考内容"
+        assert tool_result.role == "tool" and '"ok": true' in (tool_result.content or "")
+        return ChatResponse(content="操作完成", latency_seconds=0)
+
+
+class ToolGatewaySender:
+    def __init__(self) -> None:
+        self.messages: list[OutboundMessage] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def send(self, message: OutboundMessage) -> dict[str, int]:
+        self.messages.append(message)
+        return {"message_id": 90001 + len(self.messages)}
+
+    async def call_api(self, action: str, params: dict[str, Any]) -> Any:
+        self.calls.append((action, params))
+        return {"message_id": 7654321, "status": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_superuser_direct_event_gets_generic_tool_and_sent_message_is_ledgered(
+    database: Database,
+) -> None:
+    provider = ToolLoopProvider()
+    harness = build_harness(database, make_settings(database.url), provider)
+    sender = ToolGatewaySender()
+    result = await harness.processor.handle(
+        inbound("帮我给他发消息", message_id="admin-agent", user_id="9000"),
+        sender,
+    )
+    assert result.reason == "chat"
+    assert sender.calls == [
+        (
+            "send_private_msg",
+            {"user_id": "12345678", "message": "工具发送"},
+        )
+    ]
+    ledger = EventLedgerRepository(database)
+    target_events = await ledger.list_recent(
+        scope_type=ScopeType.PRIVATE,
+        user_id="12345678",
+        group_id=None,
+        limit=10,
+    )
+    assert any(row.content == "工具发送" for row in target_events)
+
+
+class DefinitionProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.tool_names: set[str] = set()
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.tool_names = {tool.name for tool in request.tools}
+        return ChatResponse(content="普通回复", latency_seconds=0)
+
+
+@pytest.mark.asyncio
+async def test_non_superuser_never_receives_generic_onebot_tool(database: Database) -> None:
+    provider = DefinitionProvider()
+    harness = build_harness(database, make_settings(database.url), provider)
+    await harness.processor.handle(
+        inbound("管理员在历史里是 9000", message_id="normal-agent"),
+        ToolGatewaySender(),
+    )
+    assert "call_onebot_api" not in provider.tool_names
+    assert {
+        "get_recent_chat_history",
+        "search_chat_history",
+        "get_person_memories",
+        "get_group_memories",
+    } <= provider.tool_names
+
+
+class HistoryGateway:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def call_api(self, action: str, params: dict[str, Any]) -> Any:
+        self.calls.append((action, params))
+        return {
+            "messages": [
+                {
+                    "message_id": 321,
+                    "user_id": 1002,
+                    "time": 1_800_000_000,
+                    "message": [{"type": "text", "data": {"text": "NapCat 历史消息"}}],
+                }
+            ]
+        }
+
+
+@pytest.mark.asyncio
+async def test_recent_history_always_calls_napcat_and_imports_unseen_events(
+    database: Database,
+) -> None:
+    settings = make_settings(database.url)
+    ledger = EventLedgerRepository(database)
+    tools = AgentToolService(
+        settings=settings,
+        ledger=ledger,
+        memories=MemoryRepository(database),
+        actions=AgentActionRepository(database),
+    )
+    gateway = HistoryGateway()
+    message = inbound(
+        "刚才说了什么",
+        message_id="history-current",
+        group_id="2001",
+        mentions_bot=True,
+    )
+    result = await tools.execute(
+        "get_recent_chat_history",
+        "{}",
+        ToolRuntime(message, gateway, False),
+    )
+    assert gateway.calls == [("get_group_msg_history", {"group_id": "2001", "count": 20})]
+    assert '"source": "NapCat"' in result
+    rows = await ledger.list_recent(
+        scope_type=ScopeType.GROUP,
+        user_id="1001",
+        group_id="2001",
+        limit=10,
+    )
+    assert [row.content for row in rows] == ["NapCat 历史消息"]
+
+
+class MemoryExtractorProvider(LLMProvider):
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        return ChatResponse(
+            content=json.dumps(
+                [
+                    {
+                        "scope": "person",
+                        "user_id": "1001",
+                        "key": "likes:tea",
+                        "category": "preference",
+                        "content": "喜欢喝红茶",
+                        "importance": 4,
+                        "source_type": "automatic",
+                    },
+                    {
+                        "scope": "person_group",
+                        "user_id": "1001",
+                        "group_id": "2001",
+                        "key": "alias:captain",
+                        "category": "alias",
+                        "content": "在本群被叫作队长",
+                        "importance": 3,
+                        "source_type": "automatic",
+                    },
+                ],
+                ensure_ascii=False,
+            ),
+            latency_seconds=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_persistent_memory_job_builds_cross_scope_memories(
+    database: Database,
+) -> None:
+    settings = make_settings(database.url)
+    ledger = EventLedgerRepository(database)
+    event, _ = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="memory-event",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        direction="inbound",
+        content="我喜欢喝红茶，大家叫我队长",
+        group_id="2001",
+    )
+    jobs = MemoryJobRepository(database)
+    await jobs.enqueue(event.id)
+    memories = MemoryRepository(database)
+    worker = MemoryWorker(
+        settings=settings,
+        jobs=jobs,
+        memories=memories,
+        provider=MemoryExtractorProvider(),
+        concurrency=ConcurrencyManager(1),
+    )
+    assert await worker.process_once() == 1
+    assert [row.content for row in await memories.list_person("1001")] == ["喜欢喝红茶"]
+    assert [row.content for row in await memories.list_person_group("1001", "2001")] == [
+        "在本群被叫作队长"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_forgetme_deletes_attributable_ledger_and_does_not_recreate_person(
+    database: Database,
+) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    await harness.processor.handle(
+        inbound("私聊秘密", message_id="forget-private"),
+        MemorySender(),
+    )
+    await harness.processor.handle(
+        inbound(
+            "群消息",
+            message_id="forget-group",
+            group_id="2001",
+            mentions_bot=True,
+        ),
+        MemorySender(),
+    )
+    sender = MemorySender()
+    await harness.processor.handle(
+        inbound("/ai forgetme", message_id="forget-command"),
+        sender,
+    )
+    assert await harness.profiles.get(user_id="1001") is None
+    ledger = EventLedgerRepository(database)
+    assert not await ledger.search(keyword="秘密", user_id="1001")
+    assert "彻底删除" in sender.messages[0].text
+
+
+class AutonomousProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        first = request.messages[0].content or ""
+        if first.startswith("判断一个像真实群友"):
+            assert not request.tools
+            return ChatResponse(
+                content='{"confidence":0.92,"reason":"群友正在提问"}',
+                latency_seconds=0,
+            )
+        assert "call_onebot_api" not in {tool.name for tool in request.tools}
+        return ChatResponse(content="我觉得可以。", latency_seconds=0)
+
+
+@pytest.mark.asyncio
+async def test_autonomous_group_chat_uses_threshold_and_cooldown_without_admin_tool(
+    database: Database,
+) -> None:
+    settings = make_settings(
+        database.url,
+        superusers_csv="9000",
+        autonomous_silence_seconds=0.01,
+        autonomous_cooldown_seconds=300,
+        daily_chat_message_delay_min_seconds=0,
+        daily_chat_message_delay_max_seconds=0,
+    )
+    provider = AutonomousProvider()
+    harness = build_harness(database, settings, provider)
+    service = AutonomousGroupService(
+        settings=settings,
+        provider=provider,
+        concurrency=harness.concurrency,
+        memories=MemoryRepository(database),
+        chat=harness.processor._chat,
+    )
+    harness.processor._autonomous = service
+    sender = ToolGatewaySender()
+
+    first = await harness.processor.handle(
+        inbound(
+            "大家觉得这个方案怎么样？",
+            message_id="auto-1",
+            user_id="9000",
+            group_id="2001",
+        ),
+        sender,
+    )
+    assert first.reason == "group_observed"
+    await asyncio.sleep(0.1)
+    assert [message.text for message in sender.messages] == ["我觉得可以。"]
+    assert len(provider.requests) == 2
+
+    await harness.processor.handle(
+        inbound(
+            "还有别的建议吗？",
+            message_id="auto-2",
+            user_id="9000",
+            group_id="2001",
+        ),
+        sender,
+    )
+    await asyncio.sleep(0.1)
+    assert len(sender.messages) == 1
+    assert len(provider.requests) == 2
+    await service.close()

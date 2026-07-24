@@ -22,6 +22,26 @@ class OneBotUserProfileResolver:
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
 
+    async def resolve_group_name(self, group_id: str) -> str:
+        """Fetch a group name once when the group is first observed."""
+
+        try:
+            payload = await self._bot.call_api(
+                "get_group_info",
+                group_id=int(group_id),
+                no_cache=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "onebot_group_lookup_failed exception_category=%s",
+                type(exc).__name__,
+            )
+            return ""
+        if not isinstance(payload, Mapping):
+            return ""
+        group_name = payload.get("group_name")
+        return group_name if isinstance(group_name, str) else ""
+
     async def resolve(self, message: InboundMessage) -> ProfileResolution:
         """Query only the current user, never a group member list."""
 

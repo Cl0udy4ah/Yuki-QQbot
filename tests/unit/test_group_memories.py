@@ -74,7 +74,7 @@ async def test_repository_updates_and_hard_limits_each_group(database: Database)
 
 
 @pytest.mark.asyncio
-async def test_triggered_group_chat_extracts_updates_and_reuses_memory(
+async def test_triggered_group_chat_queues_memory_instead_of_extracting_synchronously(
     database: Database,
 ) -> None:
     extraction_count = 0
@@ -103,12 +103,8 @@ async def test_triggered_group_chat_extracts_updates_and_reuses_memory(
 
     assert first_result.reason == "chat"
     memories = await harness.group_memories.list_recent("2001", limit=30)
-    assert [memory.content for memory in memories] == ["被提及成员在本群叫小明"]
-    assert all(
-        "12345678" not in message.content
-        for request in provider.requests
-        for message in request.messages
-    )
+    assert not memories
+    assert len(provider.requests) == 1
 
     second = group_message(
         "[提及成员1]现在叫老明",
@@ -117,15 +113,8 @@ async def test_triggered_group_chat_extracts_updates_and_reuses_memory(
     )
     await harness.processor.handle(second, MemorySender())
     memories = await harness.group_memories.list_recent("2001", limit=30)
-    assert len(memories) == 1
-    assert memories[0].content == "被提及成员在本群叫老明"
-
-    second_main_request = provider.requests[2]
-    assert any(
-        "被提及成员在本群叫小明" in message.content
-        for message in second_main_request.messages
-        if message.role == "system"
-    )
+    assert not memories
+    assert len(provider.requests) == 2
 
 
 @pytest.mark.asyncio
@@ -142,13 +131,21 @@ async def test_group_memories_never_cross_group_or_private_scope(database: Datab
         group_message("我们喜欢猫", message_id="group-one"),
         MemorySender(),
     )
+    await harness.group_memories.apply_updates(
+        "2001",
+        upserts=(GroupMemoryUpsert(memory_key="group:topic", content="一群喜欢猫"),),
+        delete_keys=(),
+        limit=100,
+    )
 
     await harness.processor.handle(
         group_message("另一个群", message_id="group-two", group_id="2002"),
         MemorySender(),
     )
-    second_group_main = provider.requests[2]
-    assert all("一群喜欢猫" not in message.content for message in second_group_main.messages)
+    second_group_main = provider.requests[1]
+    assert all(
+        "一群喜欢猫" not in (message.content or "") for message in second_group_main.messages
+    )
 
     private = InboundMessage(
         message_id="private-no-memory",
@@ -158,12 +155,14 @@ async def test_group_memories_never_cross_group_or_private_scope(database: Datab
         text="私聊",
     )
     await harness.processor.handle(private, MemorySender())
-    private_request = provider.requests[4]
-    assert all("一群喜欢猫" not in message.content for message in private_request.messages)
+    private_request = provider.requests[2]
+    assert all("一群喜欢猫" not in (message.content or "") for message in private_request.messages)
 
 
 @pytest.mark.asyncio
-async def test_untriggered_group_chat_is_not_extracted(database: Database) -> None:
+async def test_untriggered_group_chat_is_observed_without_synchronous_extraction(
+    database: Database,
+) -> None:
     provider = FakeLLMProvider()
     harness = build_harness(database, make_settings(database.url), provider)
     message = group_message("普通群聊", message_id="not-triggered")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 from nonebot.adapters.onebot.v11 import (
     GroupMessageEvent,
@@ -79,6 +80,28 @@ def _reply_text(reply_message: Message | None, *, self_id: str) -> str | None:
     return text or None
 
 
+def _json_value(value: Any) -> object:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_value(item) for item in value]
+    return str(value)
+
+
+def _serialize_segments(message: Message) -> tuple[dict[str, object], ...]:
+    """Preserve safe media/message metadata without downloading payloads."""
+
+    return tuple(
+        {
+            "type": segment.type,
+            "data": _json_value(dict(segment.data)),
+        }
+        for segment in message
+    )
+
+
 def normalize_event(
     event: MessageEvent,
     *,
@@ -120,6 +143,7 @@ def normalize_event(
             is_bot=sender_user_id in ignored_bot_users,
         ),
         text=text,
+        bot_user_id=self_id,
         raw_text=event.raw_message,
         group_id=group_id,
         mentions_bot=mentions_bot,
@@ -127,4 +151,15 @@ def normalize_event(
         reply_text=_reply_text(reply_message, self_id=self_id),
         mentioned_user_ids=mentioned_user_ids,
         attachments=attachments,
+        segments=_serialize_segments(event.original_message),
+        reply_to_message_id=(
+            str(event.reply.message_id)
+            if event.reply is not None and event.reply.message_id is not None
+            else None
+        ),
+        reply_sender_user_id=(
+            str(event.reply.sender.user_id)
+            if event.reply is not None and event.reply.sender.user_id is not None
+            else None
+        ),
     )

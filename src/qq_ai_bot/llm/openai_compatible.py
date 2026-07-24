@@ -14,7 +14,7 @@ from tenacity import (
     wait_random_exponential,
 )
 
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
+from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.base import (
     LLMConfigurationError,
     LLMEmptyResponseError,
@@ -78,23 +78,56 @@ class OpenAICompatibleProvider(LLMProvider):
 
         latency = time.perf_counter() - started
         logger.info("llm_request_complete latency_seconds=%.3f success=true", latency)
-        content, request_id = self._parse_response(response)
+        content, request_id, tool_calls, reasoning_content = self._parse_response(response)
         return ChatResponse(
             content=content,
             latency_seconds=latency,
             provider_request_id=request_id,
+            tool_calls=tool_calls,
+            reasoning_content=reasoning_content,
         )
 
     async def _post(self, request: ChatRequest) -> httpx.Response:
+        messages: list[dict[str, Any]] = []
+        for message in request.messages:
+            item: dict[str, Any] = {"role": message.role, "content": message.content}
+            if message.tool_calls:
+                item["tool_calls"] = [
+                    {
+                        "id": call.id,
+                        "type": call.type,
+                        "function": {
+                            "name": call.function.name,
+                            "arguments": call.function.arguments,
+                        },
+                    }
+                    for call in message.tool_calls
+                ]
+            if message.tool_call_id:
+                item["tool_call_id"] = message.tool_call_id
+            if message.reasoning_content is not None:
+                item["reasoning_content"] = message.reasoning_content
+            messages.append(item)
         payload: dict[str, Any] = {
             "model": request.model,
-            "messages": [
-                {"role": message.role, "content": message.content} for message in request.messages
-            ],
+            "messages": messages,
             "temperature": request.temperature,
             "max_tokens": request.max_output_tokens,
             "stream": False,
         }
+        if request.tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    },
+                }
+                for tool in request.tools
+            ]
+            payload["tool_choice"] = request.tool_choice or "auto"
         if request.thinking_enabled is not None:
             payload["thinking"] = {"type": "enabled" if request.thinking_enabled else "disabled"}
         response = await self._client.post(
@@ -109,7 +142,9 @@ class OpenAICompatibleProvider(LLMProvider):
         return response
 
     @staticmethod
-    def _parse_response(response: httpx.Response) -> tuple[str, str | None]:
+    def _parse_response(
+        response: httpx.Response,
+    ) -> tuple[str, str | None, tuple[ToolCall, ...], str | None]:
         try:
             payload: dict[str, Any] = response.json()
             choices = payload.get("choices")
@@ -122,10 +157,43 @@ class OpenAICompatibleProvider(LLMProvider):
             if not isinstance(message, dict):
                 raise LLMEmptyResponseError("provider returned no message")
             raw_content = message.get("content")
-            if not isinstance(raw_content, str) or not raw_content.strip():
+            raw_tool_calls = message.get("tool_calls", [])
+            tool_calls: list[ToolCall] = []
+            if isinstance(raw_tool_calls, list):
+                for item in raw_tool_calls:
+                    if not isinstance(item, dict):
+                        continue
+                    function = item.get("function")
+                    if not isinstance(function, dict):
+                        continue
+                    call_id = item.get("id")
+                    name = function.get("name")
+                    arguments = function.get("arguments")
+                    if (
+                        not isinstance(call_id, str)
+                        or not isinstance(name, str)
+                        or not isinstance(arguments, str)
+                    ):
+                        continue
+                    tool_calls.append(
+                        ToolCall(
+                            id=call_id,
+                            type=str(item.get("type", "function")),
+                            function=ToolFunction(name=name, arguments=arguments),
+                        )
+                    )
+            content = raw_content.strip() if isinstance(raw_content, str) else ""
+            if not content and not tool_calls:
                 raise LLMEmptyResponseError("provider returned empty content")
             request_id = payload.get("id")
-            return raw_content.strip(), request_id if isinstance(request_id, str) else None
+            raw_reasoning = message.get("reasoning_content")
+            reasoning = raw_reasoning if isinstance(raw_reasoning, str) else None
+            return (
+                content,
+                request_id if isinstance(request_id, str) else None,
+                tuple(tool_calls),
+                reasoning,
+            )
         except ValueError as exc:
             raise LLMError("provider returned invalid JSON") from exc
 

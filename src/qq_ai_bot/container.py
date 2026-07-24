@@ -15,18 +15,25 @@ from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
+    AgentActionRepository,
     ConversationRepository,
+    EventLedgerRepository,
     GroupMemoryRepository,
     GroupSettingsRepository,
+    MemoryJobRepository,
+    MemoryRepository,
     PrivateUserSettingsRepository,
     ProcessedEventRepository,
     UserProfileRepository,
 )
+from qq_ai_bot.services.agent_tools import AgentToolService
+from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
 from qq_ai_bot.services.group_members import GroupMemberService
 from qq_ai_bot.services.group_memories import GroupMemoryService
+from qq_ai_bot.services.memory_worker import MemoryWorker
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
 from qq_ai_bot.services.user_profiles import UserProfileService
@@ -45,10 +52,15 @@ class ApplicationContainer:
         self.groups = GroupSettingsRepository(self.database)
         self.private_users = PrivateUserSettingsRepository(self.database)
         self.user_profile_repository = UserProfileRepository(self.database)
+        self.people = self.user_profile_repository
         self.user_profiles = UserProfileService(self.user_profile_repository)
         self.group_members = GroupMemberService(self.user_profile_repository)
         self.group_memory_repository = GroupMemoryRepository(self.database)
         self.processed_events = ProcessedEventRepository(self.database)
+        self.ledger = EventLedgerRepository(self.database)
+        self.memories = MemoryRepository(self.database)
+        self.memory_jobs = MemoryJobRepository(self.database)
+        self.agent_actions = AgentActionRepository(self.database)
         self.provider = self._build_provider(settings)
         self.concurrency = ConcurrencyManager(settings.global_llm_concurrency)
         self.deduplication = DeduplicationService(
@@ -65,12 +77,34 @@ class ApplicationContainer:
             provider=self.provider,
             concurrency=self.concurrency,
         )
+        self.agent_tools = AgentToolService(
+            settings=settings,
+            ledger=self.ledger,
+            memories=self.memories,
+            actions=self.agent_actions,
+        )
         self.chat = ChatService(
             settings=settings,
-            conversations=self.conversations,
             provider=self.provider,
             concurrency=self.concurrency,
-            group_memories=self.group_memories,
+            ledger=self.ledger,
+            people=self.people,
+            memories=self.memories,
+            tools=self.agent_tools,
+        )
+        self.memory_worker = MemoryWorker(
+            settings=settings,
+            jobs=self.memory_jobs,
+            memories=self.memories,
+            provider=self.provider,
+            concurrency=self.concurrency,
+        )
+        self.autonomous_groups = AutonomousGroupService(
+            settings=settings,
+            provider=self.provider,
+            concurrency=self.concurrency,
+            memories=self.memories,
+            chat=self.chat,
         )
         self.processor = MessageProcessor(
             settings=settings,
@@ -84,6 +118,11 @@ class ApplicationContainer:
             rate_limiter=self.rate_limiter,
             concurrency=self.concurrency,
             onebot_connected=self.onebot_connected,
+            ledger=self.ledger,
+            people=self.people,
+            memories=self.memories,
+            memory_worker=self.memory_worker,
+            autonomous_groups=self.autonomous_groups,
         )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -110,6 +149,7 @@ class ApplicationContainer:
         self._cleanup_task = asyncio.create_task(
             self._cleanup_loop(), name="processed-event-cleanup"
         )
+        await self.memory_worker.start()
 
     async def _cleanup_loop(self) -> None:
         while not self._cleanup_stop.is_set():
@@ -133,6 +173,8 @@ class ApplicationContainer:
         self._cleanup_stop.set()
         if self._cleanup_task is not None:
             await self._cleanup_task
+        await self.autonomous_groups.close()
+        await self.memory_worker.close()
         await self.provider.close()
         await self.database.close()
 

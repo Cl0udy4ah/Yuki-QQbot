@@ -54,6 +54,7 @@ class InboundMessage:
     scope_type: ScopeType
     sender: SenderIdentity
     text: str
+    bot_user_id: str = ""
     raw_text: str = ""
     group_id: str | None = None
     mentions_bot: bool = False
@@ -61,6 +62,9 @@ class InboundMessage:
     reply_text: str | None = None
     mentioned_user_ids: tuple[str, ...] = ()
     attachments: tuple[MessageAttachment, ...] = ()
+    segments: tuple[dict[str, object], ...] = ()
+    reply_to_message_id: str | None = None
+    reply_sender_user_id: str | None = None
     received_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def conversation(self, *, shared_group: bool = False) -> ConversationIdentity:
@@ -85,10 +89,39 @@ class OutboundMessage:
 
 @dataclass(frozen=True, slots=True)
 class ChatMessage:
-    """A single role/content pair sent to a chat completion API."""
+    """A message sent to a chat completion API, including tool-call turns."""
 
     role: str
-    content: str
+    content: str | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_call_id: str | None = None
+    reasoning_content: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolFunction:
+    """A provider-neutral function tool call."""
+
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """A provider-neutral tool call."""
+
+    id: str
+    function: ToolFunction
+    type: str = "function"
+
+
+@dataclass(frozen=True, slots=True)
+class ChatTool:
+    """A JSON-schema function tool exposed to the model."""
+
+    name: str
+    description: str
+    parameters: dict[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +133,8 @@ class ChatRequest:
     temperature: float
     max_output_tokens: int
     thinking_enabled: bool | None = None
+    tools: tuple[ChatTool, ...] = ()
+    tool_choice: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,3 +144,5 @@ class ChatResponse:
     content: str
     latency_seconds: float
     provider_request_id: str | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
+    reasoning_content: str | None = None

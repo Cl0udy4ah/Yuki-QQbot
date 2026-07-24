@@ -24,7 +24,9 @@ class FakeLLMProvider(LLMProvider):
 
     @staticmethod
     def _default_response(request: ChatRequest) -> str:
-        user_messages = [message.content for message in request.messages if message.role == "user"]
+        user_messages = [
+            message.content or "" for message in request.messages if message.role == "user"
+        ]
         return f"FakeLLM: {user_messages[-1] if user_messages else ''}"
 
     async def complete(self, request: ChatRequest) -> ChatResponse:

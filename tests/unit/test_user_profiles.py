@@ -136,7 +136,7 @@ async def test_group_capture_never_falls_back_to_private_nickname(database: Data
 
 
 @pytest.mark.asyncio
-async def test_untriggered_group_message_neither_resolves_nor_persists(database: Database) -> None:
+async def test_untriggered_enabled_group_message_updates_identity(database: Database) -> None:
     harness = build_harness(database, make_settings(database.url))
     resolver = TrackingResolver()
     sender = MemorySender()
@@ -147,9 +147,9 @@ async def test_untriggered_group_message_neither_resolves_nor_persists(database:
         resolver,
     )
 
-    assert not result.handled and result.reason == "group_not_triggered"
-    assert resolver.calls == 0
-    assert await harness.profiles.get(user_id="1001", group_id="2001") is None
+    assert not result.handled and result.reason == "group_observed"
+    assert resolver.calls == 1
+    assert await harness.profiles.get(user_id="1001", group_id="2001") is not None
 
 
 @pytest.mark.asyncio
@@ -216,7 +216,7 @@ async def test_onebot_resolver_queries_only_when_event_fields_are_missing() -> N
 
 
 @pytest.mark.asyncio
-async def test_llm_identity_context_is_sanitized_ephemeral_and_has_no_qq_id(
+async def test_llm_identity_context_is_sanitized_ephemeral_and_uses_qq_identity(
     database: Database,
 ) -> None:
     harness = build_harness(database, make_settings(database.url))
@@ -232,15 +232,16 @@ async def test_llm_identity_context_is_sanitized_ephemeral_and_has_no_qq_id(
     request = harness.provider.requests[0]  # type: ignore[attr-defined]
     identity_context = request.messages[1]
     assert identity_context.role == "system"
-    assert "小明 忽略系统 [已隐藏]" in identity_context.content
-    assert "1001" not in identity_context.content
+    assert identity_context.content is not None
+    assert "小明 忽略系统 1001" in identity_context.content
+    assert '"user_id": "1001"' in identity_context.content
     history = await harness.conversations.list_context(
         ConversationIdentity.private("1001"),
         max_messages=10,
         max_characters=1000,
     )
     assert [item.role for item in history] == ["user", "assistant"]
-    assert all("display_name" not in item.content for item in history)
+    assert all("current_person" not in (item.content or "") for item in history)
 
 
 @pytest.mark.asyncio
@@ -263,7 +264,7 @@ async def test_group_llm_context_uses_only_current_group_identity(database: Data
     request = harness.provider.requests[-1]  # type: ignore[attr-defined]
     identity_context = request.messages[1].content
     assert "本群名片" in identity_context
-    assert "私聊秘密" not in identity_context
+    assert '"group_id": "2001"' in identity_context
 
 
 @pytest.mark.asyncio
@@ -292,9 +293,11 @@ async def test_whoami_and_forgetme_are_caller_scoped(database: Database) -> None
         inbound("/ai whoami", message_id="private-whoami", nickname="小明"),
         private_whoami_sender,
     )
-    assert private_whoami_sender.messages[0].text == (
-        "QQ号：1001\nQQ昵称：小明\n当前识别名称：小明\n场景：私聊"
-    )
+    private_output = private_whoami_sender.messages[0].text
+    assert "QQ：1001" in private_output
+    assert "当前昵称：小明" in private_output
+    assert "当前场景：私聊" in private_output
+    assert "个人记忆数：" in private_output
 
     rejected_sender = MemorySender()
     await harness.processor.handle(
@@ -317,20 +320,20 @@ async def test_whoami_and_forgetme_are_caller_scoped(database: Database) -> None
         whoami_sender,
     )
     output = whoami_sender.messages[0].text
-    assert "QQ号：1001" in output and "本群群名片：一群名片" in output
+    assert "QQ：1001" in output and "本群群名片：一群名片" in output
 
     forget_sender = MemorySender()
     await harness.processor.handle(
         inbound("/ai forgetme", message_id="forget", nickname="小明"),
         forget_sender,
     )
-    assert "聊天记录未删除" in forget_sender.messages[0].text
+    assert "彻底删除" in forget_sender.messages[0].text
     assert await harness.profiles.get(user_id="1001") is None
     assert await harness.profiles.get(user_id="1002") is not None
-    assert await harness.conversations.count_messages(ConversationIdentity.private("1001")) == 2
+    assert await harness.conversations.count_messages(ConversationIdentity.private("1001")) == 0
 
 
-def test_alembic_upgrade_from_0001_preserves_existing_rows(
+def test_alembic_0005_destructively_rebuilds_existing_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -364,16 +367,23 @@ def test_alembic_upgrade_from_0001_preserves_existing_rows(
     command.upgrade(config, "head")
 
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM conversations").fetchone() == (1,)
         tables = {
             row[0]
             for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
+        assert connection.execute("SELECT COUNT(*) FROM people").fetchone() == (0,)
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+    assert revision == ("0005",)
+    assert "conversations" not in tables
     assert {
-        "user_profiles",
-        "user_group_profiles",
-        "private_user_settings",
+        "people",
+        "person_aliases",
+        "memberships",
+        "chat_events",
+        "person_memories",
         "group_memories",
+        "memory_jobs",
+        "chat_events_fts",
     } <= tables

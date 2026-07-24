@@ -70,7 +70,26 @@ class Settings(BaseSettings):
     daily_chat_message_delay_min_seconds: float = 3.0
     daily_chat_message_delay_max_seconds: float = 5.0
     group_memory_enabled: bool = True
-    group_memory_max_entries: int = 30
+    group_memory_max_entries: int = 100
+
+    observe_enabled_groups: bool = True
+    autonomous_group_chat_enabled: bool = True
+    autonomous_silence_seconds: float = 8.0
+    autonomous_confidence_threshold: float = 0.85
+    autonomous_cooldown_seconds: int = 300
+    autonomous_max_per_hour: int = 3
+    recent_history_tool_limit: int = 20
+    local_context_event_limit: int = 30
+    related_people_limit: int = 5
+    person_memory_max_entries: int = 100
+    person_group_memory_max_entries: int = 50
+    preference_max_entries: int = 30
+    memory_batch_seconds: float = 30.0
+    memory_batch_trigger_count: int = 10
+    memory_batch_max_events: int = 20
+    agent_max_tool_calls: int = 5
+    agent_max_model_requests: int = 6
+    agent_tool_result_max_characters: int = 32000
 
     @field_validator(
         "app_port",
@@ -88,6 +107,19 @@ class Settings(BaseSettings):
         "daily_chat_split_max_characters",
         "daily_chat_split_max_messages",
         "group_memory_max_entries",
+        "autonomous_cooldown_seconds",
+        "autonomous_max_per_hour",
+        "recent_history_tool_limit",
+        "local_context_event_limit",
+        "related_people_limit",
+        "person_memory_max_entries",
+        "person_group_memory_max_entries",
+        "preference_max_entries",
+        "memory_batch_trigger_count",
+        "memory_batch_max_events",
+        "agent_max_tool_calls",
+        "agent_max_model_requests",
+        "agent_tool_result_max_characters",
     )
     @classmethod
     def _positive_integer(cls, value: int) -> int:
@@ -112,6 +144,8 @@ class Settings(BaseSettings):
     @field_validator(
         "daily_chat_message_delay_min_seconds",
         "daily_chat_message_delay_max_seconds",
+        "autonomous_silence_seconds",
+        "memory_batch_seconds",
     )
     @classmethod
     def _non_negative_delay(cls, value: float) -> float:
@@ -128,10 +162,29 @@ class Settings(BaseSettings):
             )
         return self
 
+    @field_validator("autonomous_confidence_threshold")
+    @classmethod
+    def _probability(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("must be between zero and one")
+        return value
+
     @model_validator(mode="after")
-    def _validate_group_memory_limit(self) -> Self:
-        if self.group_memory_max_entries > 50:
-            raise ValueError("GROUP_MEMORY_MAX_ENTRIES must not exceed 50")
+    def _validate_memory_limits(self) -> Self:
+        if self.person_memory_max_entries > 100:
+            raise ValueError("PERSON_MEMORY_MAX_ENTRIES must not exceed 100")
+        if self.group_memory_max_entries > 100:
+            raise ValueError("GROUP_MEMORY_MAX_ENTRIES must not exceed 100")
+        if self.related_people_limit > 5:
+            raise ValueError("RELATED_PEOPLE_LIMIT must not exceed 5")
+        if self.person_group_memory_max_entries > 50:
+            raise ValueError("PERSON_GROUP_MEMORY_MAX_ENTRIES must not exceed 50")
+        if self.preference_max_entries > 30:
+            raise ValueError("PREFERENCE_MAX_ENTRIES must not exceed 30")
+        if self.memory_batch_max_events > 20:
+            raise ValueError("MEMORY_BATCH_MAX_EVENTS must not exceed 20")
+        if self.agent_max_tool_calls > 5:
+            raise ValueError("AGENT_MAX_TOOL_CALLS must not exceed 5")
         return self
 
     @model_validator(mode="after")

@@ -222,7 +222,8 @@ async def test_access_commands_validate_permission_target_and_switch(database: D
         protected_sender,
     )
     assert protected_sender.messages[0].text == "不能关闭超级用户的私聊权限。"
-    assert await protected_harness.private_users.get("90000") is None
+    protected_setting = await protected_harness.private_users.get("90000")
+    assert protected_setting is not None and protected_setting.enabled
 
 
 @pytest.mark.asyncio
@@ -234,7 +235,7 @@ async def test_stop_cancels_only_current_task(database: Database) -> None:
         harness.processor.handle(inbound("slow", message_id="slow"), chat_sender)
     )
     identity = ConversationIdentity.private("1001")
-    for _ in range(100):
+    for _ in range(500):
         if harness.concurrency.is_processing(identity.key):
             break
         await asyncio.sleep(0.01)

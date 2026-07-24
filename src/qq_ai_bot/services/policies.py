@@ -24,6 +24,8 @@ class CommandName(StrEnum):
     FORGETME = "forgetme"
     PRIVATE = "private"
     GROUP = "group"
+    MEMORY = "memory"
+    PREFERENCE = "preference"
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +45,7 @@ class EffectiveGroupPolicy:
     enabled: bool
     require_mention: bool = True
     conversation_mode: ConversationMode = ConversationMode.PER_USER
+    autonomous_enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,9 +94,7 @@ def evaluate_message(
     is_superuser = message.sender.user_id in settings.superusers
 
     if message.scope_type is ScopeType.PRIVATE:
-        private_policy_effective = private_policy or EffectivePrivatePolicy(
-            message.sender.user_id in settings.allowed_private_users
-        )
+        private_policy_effective = private_policy or EffectivePrivatePolicy(True)
         if not is_superuser and not private_policy_effective.enabled:
             return PolicyDecision(False, reason="private_not_allowed")
         return PolicyDecision(True, content=content, command=command, reason="private_allowed")
@@ -104,9 +105,17 @@ def evaluate_message(
         message.group_id in settings.enabled_groups
     )
 
-    if command is not None and command_requires_superuser(command) and is_superuser:
-        return PolicyDecision(True, command=command, reason="superuser_group_command")
     if not group_policy_effective.enabled:
+        is_enable_command = command is CommandName.ON or (
+            command is CommandName.GROUP and content.casefold().endswith(" on")
+        )
+        if is_superuser and is_enable_command:
+            return PolicyDecision(
+                True,
+                content=content,
+                command=command,
+                reason="superuser_group_enable",
+            )
         return PolicyDecision(False, reason="group_disabled")
     if message.mentions_bot or prefix_triggered:
         return PolicyDecision(
