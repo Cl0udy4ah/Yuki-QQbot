@@ -4,6 +4,67 @@
 
 项目的重要功能和配置变更记录在 [CHANGELOG.md](CHANGELOG.md)。
 
+## 快速启动（Docker）
+
+已经完成 `.env` 配置和 NapCat 扫码登录时，在项目根目录执行：
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+首次启动请按以下步骤操作：
+
+1. 安装并启动 Docker Desktop，或在 Linux 服务器上启动 Docker Engine。
+2. 在项目根目录创建 `.env`。已有 `.env` 时不要覆盖：
+
+   ```powershell
+   # Windows PowerShell
+   if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+   ```
+
+   ```bash
+   # Linux / macOS
+   test -f .env || cp .env.example .env
+   ```
+
+3. 编辑 `.env`，至少填写 `ONEBOT_ACCESS_TOKEN`、`NAPCAT_WEBUI_TOKEN`、
+   `SUPERUSERS`、`LLM_BASE_URL`、`LLM_API_KEY` 和 `LLM_MODEL`。
+4. 构建并启动项目：
+
+   ```bash
+   docker compose config
+   docker compose up -d --build
+   docker compose ps
+   ```
+
+5. 打开 <http://127.0.0.1:6099/webui/>，使用
+   `NAPCAT_WEBUI_TOKEN` 登录并扫码登录机器人 QQ。
+6. 查看连接和运行日志：
+
+   ```bash
+   docker compose logs -f bot napcat
+   ```
+
+看到 NapCat 反向 WebSocket 已连接后，即可在 QQ 中测试。按 `Ctrl+C` 只会退出
+日志查看，不会停止容器。
+
+以后日常启动无需重新构建：
+
+```bash
+docker compose up -d
+```
+
+停止项目：
+
+```bash
+docker compose down
+```
+
+该命令不会删除 `data/` 和 `napcat-data/` 中的数据库及 QQ 登录数据。不要添加
+`-v`，除非明确需要清理 Docker 数据。远程服务器访问 WebUI 的方式和完整部署说明
+见下方“Docker 部署”章节。
+
 > **重要风险提示**：NapCat 属于个人 QQ 协议端，不等同于腾讯官方 QQ Bot。个人账号自动化可能受到平台规则、风控、协议变更和封号风险影响。请只使用自己的账号，控制频率，遵守适用法律、腾讯平台规则和 NapCat 许可。本项目不处理验证码、不绕过登录验证、不保存 QQ 密码；登录必须由用户在 WebUI 手动扫码完成。
 
 ## 架构
