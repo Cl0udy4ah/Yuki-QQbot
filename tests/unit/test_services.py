@@ -94,7 +94,7 @@ def test_long_plain_output_is_not_split_as_daily_chat() -> None:
 def test_markdown_cleanup_and_control_character_sanitization() -> None:
     assert (
         clean_model_output("# 标题\n[链接](https://example.test)", max_characters=100)
-        == "标题\n链接"
+        == "标题\n链接 (https://example.test)"
     )
     assert sanitize_input("a\x00b\r\nc") == "ab\nc"
 

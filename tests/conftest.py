@@ -13,13 +13,18 @@ from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
+    AgentActionRepository,
     ConversationRepository,
+    EventLedgerRepository,
     GroupMemoryRepository,
     GroupSettingsRepository,
+    MemoryRepository,
     PrivateUserSettingsRepository,
     ProcessedEventRepository,
     UserProfileRepository,
+    WebSearchSourceRepository,
 )
+from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
@@ -27,7 +32,10 @@ from qq_ai_bot.services.group_members import GroupMemberService
 from qq_ai_bot.services.group_memories import GroupMemoryService
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
+from qq_ai_bot.services.source_policy import SourceDisplayPolicy
+from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.user_profiles import UserProfileService
+from qq_ai_bot.web.base import WebSearchProvider
 
 
 class MemorySender:
@@ -82,6 +90,8 @@ def build_harness(
     database: Database,
     settings: Settings,
     provider: LLMProvider | None = None,
+    *,
+    web_provider: WebSearchProvider | None = None,
 ) -> Harness:
     conversations = ConversationRepository(database)
     groups = GroupSettingsRepository(database)
@@ -91,6 +101,9 @@ def build_harness(
     group_members = GroupMemberService(profiles)
     group_memories = GroupMemoryRepository(database)
     processed_events = ProcessedEventRepository(database)
+    ledger = EventLedgerRepository(database)
+    memories = MemoryRepository(database)
+    web_sources = WebSearchSourceRepository(database)
     llm = provider or FakeLLMProvider()
     concurrency = ConcurrencyManager(settings.global_llm_concurrency)
     group_memory_service = GroupMemoryService(
@@ -99,11 +112,25 @@ def build_harness(
         provider=llm,
         concurrency=concurrency,
     )
+    agent_tools = AgentToolService(
+        settings=settings,
+        ledger=ledger,
+        memories=memories,
+        actions=AgentActionRepository(database),
+        web_provider=web_provider,
+        web_sources=web_sources,
+    )
     chat = ChatService(
         settings=settings,
-        conversations=conversations,
         provider=llm,
         concurrency=concurrency,
+        ledger=ledger,
+        people=profiles,
+        memories=memories,
+        tools=agent_tools,
+        web_sources=web_sources,
+        source_policy=SourceDisplayPolicy(),
+        source_renderer=SourceRenderer(),
         group_memories=group_memory_service,
     )
     processor = MessageProcessor(
@@ -124,6 +151,9 @@ def build_harness(
         ),
         concurrency=concurrency,
         onebot_connected=lambda: True,
+        ledger=ledger,
+        people=profiles,
+        memories=memories,
     )
     return Harness(
         settings,

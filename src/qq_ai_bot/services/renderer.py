@@ -7,7 +7,7 @@ import re
 from qq_ai_bot.llm.base import LLMEmptyResponseError
 
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_MARKDOWN_LINK = re.compile(r"\[([^\]]+)]\((?:https?://|mailto:)[^)]+\)")
+_MARKDOWN_LINK = re.compile(r"\[([^\]]+)]\(((?:https?://|mailto:)[^)]+)\)")
 _HEADING = re.compile(r"(?m)^\s{0,3}#{1,6}\s+")
 _HORIZONTAL_RULE = re.compile(r"(?m)^\s*[-*_]{3,}\s*$")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")
@@ -30,7 +30,7 @@ def clean_model_output(text: str, *, max_characters: int) -> str:
     cleaned = sanitize_input(text)
     if not cleaned:
         raise LLMEmptyResponseError("model returned empty content")
-    cleaned = _MARKDOWN_LINK.sub(r"\1", cleaned)
+    cleaned = _MARKDOWN_LINK.sub(r"\1 (\2)", cleaned)
     cleaned = _HEADING.sub("", cleaned)
     cleaned = _HORIZONTAL_RULE.sub("", cleaned)
     cleaned = cleaned.strip()

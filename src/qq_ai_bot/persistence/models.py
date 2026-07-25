@@ -343,6 +343,63 @@ class AgentActionModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class WebSearchRunModel(Base):
+    """One successful Agent web tool call in an isolated conversation."""
+
+    __tablename__ = "web_search_runs"
+    __table_args__ = (
+        Index(
+            "ix_web_search_runs_conversation_created",
+            "conversation_key",
+            "created_at",
+        ),
+        Index(
+            "ix_web_search_runs_conversation_trigger",
+            "conversation_key",
+            "trigger_message_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    trigger_message_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    partial_failure: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    sources: Mapped[list[WebSearchSourceModel]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class WebSearchSourceModel(Base):
+    """Display-safe metadata for one real source used by a web tool."""
+
+    __tablename__ = "web_search_sources"
+    __table_args__ = (
+        UniqueConstraint("run_id", "url", name="uq_web_search_sources_run_url"),
+        Index("ix_web_search_sources_run_ordinal", "run_id", "ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("web_search_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    snippet: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    run: Mapped[WebSearchRunModel] = relationship(back_populates="sources")
+
+
 # Source-compatibility aliases for integrations that only inspect the old profile types.
 UserProfileModel = PersonModel
 UserGroupProfileModel = MembershipModel

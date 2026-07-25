@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **1.0 升级警告：**首次运行 Alembic `0005` 会永久清空 1.0 之前的会话、资料、权限和记忆表，再创建人物中心数据库。先备份 `data/`。
+> **升级提示：**从 1.0 升级到 1.1 的 Alembic `0006` 只新增联网来源表，不会删除现有人物、聊天或记忆。若从 1.0 之前的版本直接升级，仍会经过不可逆的 `0005` 数据重建；始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -28,7 +28,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -37,6 +37,7 @@ Yuki-QQbot 1.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite
 - 私聊默认向所有 QQ 开放；`/ai private <QQ> off` 用于阻止指定用户。
 - 个人记忆可以在私聊与群聊间自然复用，群记忆和群成员记忆仍按群隔离。
 - 机器人支持 DeepSeek 普通/思考模式的多轮工具调用。
+- 可选接入 Tavily 受控联网搜索，由后端严格控制来源保存、隔离和显示。
 
 本版本不下载或识别图片、语音、视频和文件，但会保存其 OneBot 消息段元数据，为后续多模态版本保留基础。
 
@@ -88,7 +89,7 @@ SYSTEM_PROMPT_FILE=config/system_prompt.md
 docker compose up -d --no-deps --force-recreate bot
 ```
 
-## 1.0 数据模型
+## 1.x 数据模型
 
 `0005` 会创建以下主要数据：
 
@@ -107,6 +108,8 @@ docker compose up -d --no-deps --force-recreate bot
 | `memory_jobs` | 持久化后台记忆任务 |
 | `context_resets` | `/ai new` 的上下文切点 |
 | `agent_actions` | 通用 OneBot 工具的最小审计记录 |
+| `web_search_runs` | 按会话隔离的联网工具运行记录，不保存网页正文 |
+| `web_search_sources` | 真实来源的标题、URL、域名、摘要和发布时间 |
 
 消息到达后的顺序是：
 
@@ -127,6 +130,7 @@ docker compose up -d --no-deps --force-recreate bot
 - 该 QQ 发送的群事件；
 - 该 QQ 私聊中的双方事件；
 - 以该 QQ 为主体的群记忆、检索索引和后台任务；
+- 该 QQ 私聊及各群成员会话中的联网来源记录；
 - 其余事件正文中出现的精确 QQ 文本会替换为删除标记。
 
 ## 聊天上下文与记忆
@@ -150,17 +154,57 @@ docker compose up -d --no-deps --force-recreate bot
 - `get_person_memories`：按 QQ 读取人物记忆。
 - `get_group_memories`：按群号读取群记忆。
 
+启用联网后，普通聊天轮还可使用：
+
+- `web_search`：搜索当前公开信息，并在一次调用内批量提取最多 3 个网页的查询相关正文。
+- `read_webpage`：通过 Tavily Extract 读取用户明确发送或本轮搜索真实返回的网页。
+
 只有当前真实 OneBot 事件的 `sender.user_id` 属于 `SUPERUSERS` 时，该触发轮还会获得：
 
 - `call_onebot_api(action, params)`：通过现有反向 WebSocket 调用任意 NapCat/OneBot action，不设 action denylist，也不二次确认。
 
-引用管理员消息、历史里出现管理员 QQ、模型转述和自主群聊批次都不能获得管理员工具。每轮最多执行 5 次工具、6 次模型请求，单次工具结果最多 32,000 字符。通用 OneBot 调用只记录 actor QQ、action、成功状态、耗时和错误类别，不记录完整结果。
+引用管理员消息、历史里出现管理员 QQ、模型转述和自主群聊批次都不能获得管理员工具。每轮最多执行 5 次工具、6 次模型请求，其中联网工具最多 3 次。只要本轮执行过联网工具，后续 OneBot 管理工具就会被撤销，网页内容不能触发管理操作。通用 OneBot 调用只记录 actor QQ、action、成功状态、耗时和错误类别，不记录完整结果。
 
 实现依据：
 
 - [DeepSeek Tool Calls](https://api-docs.deepseek.com/guides/tool_calls/)
 - [DeepSeek 思考模式](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/)
 - [NapCat API 列表](https://napneko.github.io/onebot/api)
+- [Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search)
+- [Tavily Extract API](https://docs.tavily.com/documentation/api-reference/endpoint/extract)
+
+## 受控联网搜索
+
+联网默认关闭。申请 Tavily API Key 后，在 `.env` 中设置：
+
+```dotenv
+WEB_ENABLED=true
+TAVILY_API_KEY=你的Tavily密钥
+WEB_SEARCH_DEPTH=advanced
+```
+
+然后只重建 Bot 容器：
+
+```bash
+docker compose up -d --no-deps --force-recreate bot
+```
+
+配置规则：
+
+- `WEB_ENABLED=false` 时不向模型注册联网工具。
+- `WEB_ENABLED=true` 但 `TAVILY_API_KEY` 为空时会明确拒绝启动。
+- 搜索词最多 400 字符，不会自动拼入完整聊天历史、人物记忆或系统提示词。
+- 只接受公开 HTTP(S) URL；拒绝凭据 URL、localhost、私有 IP、链路本地地址和内部 Docker 主机名。
+- 搜索结果正文只存在于当轮 LLM 工具上下文，不写入聊天账本或人物/群记忆。
+- 数据库只保存实际使用来源的标题、URL、简短摘要和时间，每个会话最多保留最近 10 次，默认清理 7 天前记录。
+
+来源由后端控制：
+
+- 普通联网问题只发送总结，不显示 URL、引用编号或来源列表。
+- 明确要求“来源、出处、原文链接、参考资料、引用、网址”等内容时，正文后会再发送一条由后端生成的真实来源消息。
+- 下一条只问“来源呢”“链接”“把网址发我”等短追问时，不调用 LLM、不重新搜索，直接读取当前隔离会话最近一次来源。
+- 私聊用户之间、不同群之间、同一群的不同成员之间都不能互相读取来源记录。
+- 模型自行生成的来源段落或虚构链接不会进入后端来源列表。
 
 ## 群聊观察与自主参与
 
@@ -228,6 +272,17 @@ docker compose up -d --no-deps --force-recreate bot
 | `AGENT_MAX_TOOL_CALLS` | `5` |
 | `AGENT_MAX_MODEL_REQUESTS` | `6` |
 | `AGENT_TOOL_RESULT_MAX_CHARACTERS` | `32000` |
+| `WEB_ENABLED` | `false` |
+| `WEB_SEARCH_DEPTH` | `advanced` |
+| `WEB_SEARCH_MAX_RESULTS` | `5` |
+| `WEB_EXTRACT_MAX_RESULTS` | `3` |
+| `WEB_TIMEOUT_SECONDS` | `20` |
+| `WEB_MAX_RETRIES` | `1` |
+| `WEB_GLOBAL_CONCURRENCY` | `4` |
+| `WEB_MAX_CALLS_PER_TURN` | `3` |
+| `WEB_TOOL_RESULT_MAX_CHARACTERS` | `16000` |
+| `WEB_SOURCE_RETENTION_DAYS` | `7` |
+| `WEB_SOURCE_MAX_RUNS_PER_CONVERSATION` | `10` |
 
 `ALLOWED_PRIVATE_USERS` 仅为旧配置兼容保留，1.0 不再把它当白名单；所有新 QQ 私聊默认准入。
 
@@ -252,7 +307,7 @@ docker compose up -d
 docker compose ps
 ```
 
-健康检查不会请求模型或暴露密钥：
+健康检查不会请求模型或 Tavily，也不会暴露密钥；返回值中的 `web_configured` 表示联网是否已启用并配置密钥：
 
 ```bash
 docker compose exec bot python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz').read().decode())"
@@ -271,13 +326,13 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 - 定期离线备份 `data/`、`napcat-data/` 和 `napcat-config/`。
 - NapCat 是个人 QQ 协议端，不等同于腾讯官方 QQ Bot，存在协议变化、风控和封号风险；请控制频率并使用你有权控制的账号。
 
-## 1.0 升级步骤
+## 1.1 升级步骤
 
 1. 停止写入：`docker compose stop bot napcat`。
 2. 完整备份 `data/`、`napcat-data/` 和 `napcat-config/`。
-3. 明确认可旧业务数据全部废弃。
-4. 执行 `docker compose up -d --build`；bot 启动脚本会自动运行 `alembic upgrade head`。
+3. 如需联网，在 `.env` 中填写 `WEB_ENABLED=true` 和 `TAVILY_API_KEY`；否则保持默认关闭。
+4. 执行 `docker compose up -d --build`；Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0006`。
 5. 检查 `docker compose ps`、`/healthz` 和日志。
-6. 依次人工验证：私聊、两个群、改昵称/群名片、记忆命令、历史工具和 `forgetme`。
+6. 依次人工验证：私聊、两个群、改昵称/群名片、记忆命令、历史工具、`forgetme`，以及联网默认隐藏/明确显示/后续追问来源。
 
-版本 `0005` 是不可逆的破坏性迁移；需要回退时只能停止服务并恢复升级前备份。
+`0006` 可以回退且只删除联网来源表，不影响人物、聊天和记忆。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。

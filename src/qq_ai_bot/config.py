@@ -48,7 +48,8 @@ class Settings(BaseSettings):
     llm_thinking_enabled: bool | None = None
     system_prompt: str = (
         "你是一个运行在 QQ 中的 AI 助手。请只输出给用户的最终回答，不要输出隐藏的推理过程。"
-        "不要声称执行了工具、代码、命令、文件访问或网络操作。"
+        "不要声称执行了未实际成功的工具、代码、命令或文件访问。"
+        "只有联网工具实际成功时，才能说明已经搜索或读取网页。"
     )
     system_prompt_file: Path | None = None
 
@@ -91,6 +92,19 @@ class Settings(BaseSettings):
     agent_max_model_requests: int = 6
     agent_tool_result_max_characters: int = 32000
 
+    web_enabled: bool = False
+    tavily_api_key: str = Field(default="", repr=False)
+    web_search_depth: str = "advanced"
+    web_search_max_results: int = 5
+    web_extract_max_results: int = 3
+    web_timeout_seconds: float = 20.0
+    web_max_retries: int = 1
+    web_global_concurrency: int = 4
+    web_max_calls_per_turn: int = 3
+    web_tool_result_max_characters: int = 16000
+    web_source_retention_days: int = 7
+    web_source_max_runs_per_conversation: int = 10
+
     @field_validator(
         "app_port",
         "llm_max_output_tokens",
@@ -120,6 +134,13 @@ class Settings(BaseSettings):
         "agent_max_tool_calls",
         "agent_max_model_requests",
         "agent_tool_result_max_characters",
+        "web_search_max_results",
+        "web_extract_max_results",
+        "web_global_concurrency",
+        "web_max_calls_per_turn",
+        "web_tool_result_max_characters",
+        "web_source_retention_days",
+        "web_source_max_runs_per_conversation",
     )
     @classmethod
     def _positive_integer(cls, value: int) -> int:
@@ -127,14 +148,14 @@ class Settings(BaseSettings):
             raise ValueError("must be greater than zero")
         return value
 
-    @field_validator("llm_timeout_seconds")
+    @field_validator("llm_timeout_seconds", "web_timeout_seconds")
     @classmethod
     def _positive_timeout(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("must be greater than zero")
         return value
 
-    @field_validator("llm_max_retries")
+    @field_validator("llm_max_retries", "web_max_retries")
     @classmethod
     def _non_negative_retries(cls, value: int) -> int:
         if value < 0:
@@ -169,6 +190,14 @@ class Settings(BaseSettings):
             raise ValueError("must be between zero and one")
         return value
 
+    @field_validator("web_search_depth")
+    @classmethod
+    def _web_search_depth(cls, value: str) -> str:
+        normalized = value.casefold()
+        if normalized not in {"basic", "advanced"}:
+            raise ValueError("WEB_SEARCH_DEPTH must be basic or advanced")
+        return normalized
+
     @model_validator(mode="after")
     def _validate_memory_limits(self) -> Self:
         if self.person_memory_max_entries > 100:
@@ -185,6 +214,24 @@ class Settings(BaseSettings):
             raise ValueError("MEMORY_BATCH_MAX_EVENTS must not exceed 20")
         if self.agent_max_tool_calls > 5:
             raise ValueError("AGENT_MAX_TOOL_CALLS must not exceed 5")
+        if self.web_search_max_results > 5:
+            raise ValueError("WEB_SEARCH_MAX_RESULTS must not exceed 5")
+        if self.web_extract_max_results > 3:
+            raise ValueError("WEB_EXTRACT_MAX_RESULTS must not exceed 3")
+        if self.web_max_retries > 1:
+            raise ValueError("WEB_MAX_RETRIES must not exceed 1")
+        if self.web_max_calls_per_turn > 3:
+            raise ValueError("WEB_MAX_CALLS_PER_TURN must not exceed 3")
+        if self.web_tool_result_max_characters > 16000:
+            raise ValueError("WEB_TOOL_RESULT_MAX_CHARACTERS must not exceed 16000")
+        if self.web_source_max_runs_per_conversation > 10:
+            raise ValueError("WEB_SOURCE_MAX_RUNS_PER_CONVERSATION must not exceed 10")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_web_configuration(self) -> Self:
+        if self.web_enabled and not self.tavily_api_key:
+            raise ValueError("TAVILY_API_KEY is required when WEB_ENABLED=true")
         return self
 
     @model_validator(mode="after")
@@ -234,3 +281,9 @@ class Settings(BaseSettings):
         if self.llm_provider.casefold() == "fake":
             return True
         return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
+
+    @property
+    def web_configured(self) -> bool:
+        """Whether controlled web search is enabled with provider credentials."""
+
+        return bool(self.web_enabled and self.tavily_api_key)

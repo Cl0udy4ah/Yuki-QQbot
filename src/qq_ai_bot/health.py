@@ -16,6 +16,7 @@ class HealthPayload(TypedDict):
     version: str
     database: str
     llm_configured: bool
+    web_configured: bool
     onebot_connected: bool
     uptime_seconds: int
 
@@ -29,6 +30,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         version=__version__,
         database="ok" if database_ok else "unavailable",
         llm_configured=container.settings.llm_configured,
+        web_configured=container.settings.web_configured,
         onebot_connected=container.onebot_connected(),
         uptime_seconds=max(0, int(time.monotonic() - container.started_at)),
     )

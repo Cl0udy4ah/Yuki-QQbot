@@ -41,7 +41,14 @@ def upgrade() -> None:
         if table_name in existing:
             op.drop_table(table_name)
 
-    Base.metadata.create_all(bind=bind, checkfirst=True)
+    # Later revisions add tables to the shared ORM metadata. Keep this historical
+    # migration deterministic so a fresh install does not create future tables early.
+    v1_tables = [
+        table
+        for table in Base.metadata.sorted_tables
+        if table.name not in {"web_search_runs", "web_search_sources"}
+    ]
+    Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)
     op.execute(
         """
         CREATE VIRTUAL TABLE chat_events_fts USING fts5(

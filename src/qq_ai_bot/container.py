@@ -25,6 +25,7 @@ from qq_ai_bot.persistence.repositories import (
     PrivateUserSettingsRepository,
     ProcessedEventRepository,
     UserProfileRepository,
+    WebSearchSourceRepository,
 )
 from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
@@ -36,7 +37,11 @@ from qq_ai_bot.services.group_memories import GroupMemoryService
 from qq_ai_bot.services.memory_worker import MemoryWorker
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
+from qq_ai_bot.services.source_policy import SourceDisplayPolicy
+from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.user_profiles import UserProfileService
+from qq_ai_bot.web.base import WebSearchProvider
+from qq_ai_bot.web.tavily import TavilyWebSearchProvider
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +66,9 @@ class ApplicationContainer:
         self.memories = MemoryRepository(self.database)
         self.memory_jobs = MemoryJobRepository(self.database)
         self.agent_actions = AgentActionRepository(self.database)
+        self.web_sources = WebSearchSourceRepository(self.database)
         self.provider = self._build_provider(settings)
+        self.web_provider = self._build_web_provider(settings)
         self.concurrency = ConcurrencyManager(settings.global_llm_concurrency)
         self.deduplication = DeduplicationService(
             self.processed_events,
@@ -82,6 +89,8 @@ class ApplicationContainer:
             ledger=self.ledger,
             memories=self.memories,
             actions=self.agent_actions,
+            web_provider=self.web_provider,
+            web_sources=self.web_sources,
         )
         self.chat = ChatService(
             settings=settings,
@@ -91,6 +100,9 @@ class ApplicationContainer:
             people=self.people,
             memories=self.memories,
             tools=self.agent_tools,
+            web_sources=self.web_sources,
+            source_policy=SourceDisplayPolicy(),
+            source_renderer=SourceRenderer(),
         )
         self.memory_worker = MemoryWorker(
             settings=settings,
@@ -138,6 +150,19 @@ class ApplicationContainer:
             max_retries=settings.llm_max_retries,
         )
 
+    @staticmethod
+    def _build_web_provider(settings: Settings) -> WebSearchProvider | None:
+        if not settings.web_enabled:
+            return None
+        return TavilyWebSearchProvider(
+            api_key=settings.tavily_api_key,
+            search_depth=settings.web_search_depth,
+            extract_max_results=settings.web_extract_max_results,
+            timeout_seconds=settings.web_timeout_seconds,
+            max_retries=settings.web_max_retries,
+            global_concurrency=settings.web_global_concurrency,
+        )
+
     def onebot_connected(self) -> bool:
         """Return whether NoneBot currently has at least one connected adapter bot."""
 
@@ -157,6 +182,11 @@ class ApplicationContainer:
                 deleted = await self.processed_events.cleanup_expired()
                 if deleted:
                     logger.info("processed_events_cleaned count=%d", deleted)
+                web_deleted = await self.web_sources.cleanup_expired(
+                    retention_days=self.settings.web_source_retention_days
+                )
+                if web_deleted:
+                    logger.info("web_source_runs_cleaned count=%d", web_deleted)
             except (SQLAlchemyError, OSError, RuntimeError) as exc:
                 logger.error("processed_event_cleanup_failed", exc_info=exc)
             try:
@@ -175,6 +205,8 @@ class ApplicationContainer:
             await self._cleanup_task
         await self.autonomous_groups.close()
         await self.memory_worker.close()
+        if self.web_provider is not None:
+            await self.web_provider.close()
         await self.provider.close()
         await self.database.close()
 

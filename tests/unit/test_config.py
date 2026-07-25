@@ -58,3 +58,26 @@ def test_v1_memory_limits_accept_group_hundred_and_reject_member_over_fifty() ->
     assert Settings.model_validate({"group_memory_max_entries": 100})
     with pytest.raises(ValidationError, match="PERSON_GROUP_MEMORY_MAX_ENTRIES"):
         Settings.model_validate({"person_group_memory_max_entries": 51})
+
+
+def test_web_enabled_requires_tavily_key_and_hides_it_from_repr() -> None:
+    with pytest.raises(ValidationError, match="TAVILY_API_KEY"):
+        Settings.model_validate({"web_enabled": True, "tavily_api_key": ""})
+
+    settings = Settings.model_validate(
+        {
+            "web_enabled": True,
+            "tavily_api_key": "tvly-sensitive-test-value",
+        }
+    )
+    assert settings.web_configured
+    assert "tvly-sensitive-test-value" not in repr(settings)
+
+
+def test_web_limits_are_bounded() -> None:
+    with pytest.raises(ValidationError, match="WEB_EXTRACT_MAX_RESULTS"):
+        Settings.model_validate({"web_extract_max_results": 4})
+    with pytest.raises(ValidationError, match="WEB_MAX_CALLS_PER_TURN"):
+        Settings.model_validate({"web_max_calls_per_turn": 4})
+    with pytest.raises(ValidationError, match="WEB_SEARCH_DEPTH"):
+        Settings.model_validate({"web_search_depth": "unbounded"})

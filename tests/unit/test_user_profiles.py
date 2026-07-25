@@ -333,7 +333,7 @@ async def test_whoami_and_forgetme_are_caller_scoped(database: Database) -> None
     assert await harness.conversations.count_messages(ConversationIdentity.private("1001")) == 0
 
 
-def test_alembic_0005_destructively_rebuilds_existing_rows(
+def test_alembic_head_destructively_rebuilds_v1_rows_then_adds_web_sources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -374,8 +374,9 @@ def test_alembic_0005_destructively_rebuilds_existing_rows(
             ).fetchall()
         }
         assert connection.execute("SELECT COUNT(*) FROM people").fetchone() == (0,)
+        assert {"web_search_runs", "web_search_sources"} <= tables
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision == ("0005",)
+    assert revision == ("0006",)
     assert "conversations" not in tables
     assert {
         "people",
