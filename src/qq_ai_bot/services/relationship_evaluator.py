@@ -6,6 +6,7 @@ import json
 import re
 from typing import Any, Protocol
 
+from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
 from qq_ai_bot.domain.relationships import RelationshipEvaluation
@@ -80,10 +81,12 @@ class LLMRelationshipEvaluator:
         settings: Settings,
         provider: LLMProvider,
         concurrency: ConcurrencyManager,
+        runtime_config: RuntimeConfigService | None = None,
     ) -> None:
         self._settings = settings
         self._provider = provider
         self._concurrency = concurrency
+        self._runtime_config = runtime_config
 
     async def evaluate(
         self,
@@ -91,6 +94,14 @@ class LLMRelationshipEvaluator:
     ) -> dict[int, RelationshipEvaluation]:
         if not jobs:
             return {}
+        runtime_by_job = {}
+        if self._runtime_config is not None:
+            for job in jobs:
+                runtime_by_job[job.job_id] = await self._runtime_config.snapshot(
+                    user_id=job.user_id,
+                    group_id=job.trigger_event.group_id,
+                )
+        first_runtime = runtime_by_job.get(jobs[0].job_id)
         payload = [
             {
                 "job_id": job.job_id,
@@ -110,9 +121,17 @@ class LLMRelationshipEvaluator:
             for job in jobs
         ]
         request = ChatRequest(
-            model=self._settings.llm_model or "fake",
+            model=(first_runtime.llm.model if first_runtime else self._settings.llm_model)
+            or "fake",
             temperature=0.1,
-            max_output_tokens=min(self._settings.llm_max_output_tokens, 2048),
+            max_output_tokens=min(
+                (
+                    first_runtime.llm.max_output_tokens
+                    if first_runtime
+                    else self._settings.llm_max_output_tokens
+                ),
+                2048,
+            ),
             thinking_enabled=False,
             messages=(
                 ChatMessage(
@@ -141,7 +160,29 @@ class LLMRelationshipEvaluator:
         known = {job.job_id: job for job in jobs}
         result: dict[int, RelationshipEvaluation] = {}
         for item in decoded:
-            evaluation = self._parse_item(item, known)
+            job_id_value = item.get("job_id")
+            runtime = (
+                runtime_by_job.get(job_id_value)
+                if isinstance(job_id_value, int) and not isinstance(job_id_value, bool)
+                else None
+            )
+            evaluation = self._parse_item(
+                item,
+                known,
+                confidence_threshold=(
+                    runtime.relationship.confidence_threshold
+                    if runtime
+                    else self._settings.relationship_confidence_threshold
+                ),
+                max_auto_delta=(
+                    runtime.relationship.max_auto_delta
+                    if runtime
+                    else min(
+                        self._settings.affection_max_auto_delta,
+                        self._settings.trust_max_auto_delta,
+                    )
+                ),
+            )
             if evaluation is None:
                 continue
             job_id, value = evaluation
@@ -167,6 +208,9 @@ class LLMRelationshipEvaluator:
         self,
         item: dict[str, Any],
         known: dict[int, RelationshipJobRecord],
+        *,
+        confidence_threshold: float,
+        max_auto_delta: int,
     ) -> tuple[int, RelationshipEvaluation] | None:
         job_id = item.get("job_id")
         affection_delta = item.get("affection_delta")
@@ -195,9 +239,9 @@ class LLMRelationshipEvaluator:
         return job_id, validate_evaluation(
             known[job_id],
             evaluation,
-            confidence_threshold=self._settings.relationship_confidence_threshold,
-            affection_max_delta=self._settings.affection_max_auto_delta,
-            trust_max_delta=self._settings.trust_max_auto_delta,
+            confidence_threshold=confidence_threshold,
+            affection_max_delta=max_auto_delta,
+            trust_max_delta=max_auto_delta,
         )
 
 

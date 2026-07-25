@@ -1,0 +1,204 @@
+"""Domain models for explicit administrator capabilities and runtime settings."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+from typing import Literal
+
+from qq_ai_bot.config import Settings
+
+ConfigValue = str | int | float | bool | None
+ConfigValueType = Literal["string", "integer", "number", "boolean", "enum"]
+
+
+class ConfigApplyMode(StrEnum):
+    """How a registered configuration value becomes effective."""
+
+    HOT = "hot"
+    FUTURE_ONLY = "future_only"
+    RESTART_REQUIRED = "restart_required"
+    IMMUTABLE = "immutable"
+    SECRET = "secret"
+
+
+class ConfigScopeType(StrEnum):
+    """Supported override scopes, ordered elsewhere by specificity."""
+
+    GLOBAL = "global"
+    GROUP = "group"
+    USER = "user"
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigSpec:
+    """One explicitly exposed configuration capability."""
+
+    key: str
+    display_name: str
+    description: str
+    aliases: tuple[str, ...]
+    value_type: ConfigValueType
+    minimum: float | None
+    maximum: float | None
+    choices: tuple[str, ...]
+    allowed_scopes: tuple[ConfigScopeType, ...]
+    apply_mode: ConfigApplyMode
+    permission: str
+    sensitive: bool
+    env_alias: str | None
+    default_getter: Callable[[Settings], ConfigValue]
+    settings_fields: tuple[str, ...] = ()
+    category: str = ""
+
+    @property
+    def mutable(self) -> bool:
+        """Return whether a validated database override may be written."""
+
+        return self.apply_mode not in {
+            ConfigApplyMode.IMMUTABLE,
+            ConfigApplyMode.SECRET,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveConfigValue:
+    """A resolved value plus provenance, without leaking secret material."""
+
+    key: str
+    value: ConfigValue
+    source: str
+    scope_type: ConfigScopeType | None
+    scope_id: str
+    apply_mode: ConfigApplyMode
+    pending_restart: bool = False
+    configured: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigChangeResult:
+    """Truthful result returned by deterministic commands and model tools."""
+
+    success: bool
+    key: str
+    scope_type: ConfigScopeType
+    scope_id: str
+    before: ConfigValue = None
+    after: ConfigValue = None
+    apply_mode: ConfigApplyMode | None = None
+    pending_restart: bool = False
+    change_id: int | None = None
+    version: int | None = None
+    error_category: str | None = None
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AdminOperationEvent:
+    """Safe projection of one persisted administrator operation."""
+
+    id: int
+    actor_user_id: str
+    trigger_message_id: str
+    conversation_key: str
+    capability: str
+    operation: str
+    target_type: str
+    target_id: str
+    before: object
+    after: object
+    success: bool
+    error_category: str | None
+    duration_seconds: float
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AdminActor:
+    """Authority derived only from the current transport event."""
+
+    user_id: str
+    is_superuser: bool
+    trigger_message_id: str
+    conversation_key: str
+    current_group_id: str | None = None
+    mentioned_user_ids: tuple[str, ...] = ()
+    current_message_text: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AutonomousRuntimeConfig:
+    enabled: bool
+    silence_seconds: float
+    confidence_threshold: float
+    cooldown_seconds: int
+    max_per_hour: int
+
+
+@dataclass(frozen=True, slots=True)
+class ContextRuntimeConfig:
+    local_event_limit: int
+    related_people_limit: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReplyRuntimeConfig:
+    daily_split_enabled: bool
+    daily_split_max_characters: int
+    daily_split_max_messages: int
+    delay_min_seconds: float
+    delay_max_seconds: float
+    max_qq_message_chars: int
+
+
+@dataclass(frozen=True, slots=True)
+class LLMRuntimeConfig:
+    model: str
+    timeout_seconds: float
+    max_retries: int
+    temperature: float
+    max_output_tokens: int
+    thinking_enabled: bool | None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRuntimeConfig:
+    max_tool_calls: int
+    max_model_requests: int
+    tool_result_max_characters: int
+
+
+@dataclass(frozen=True, slots=True)
+class WebRuntimeConfig:
+    search_max_results: int
+    extract_max_results: int
+    max_calls_per_turn: int
+    tool_result_max_characters: int
+    source_retention_days: int
+    source_max_runs_per_conversation: int
+
+
+@dataclass(frozen=True, slots=True)
+class RelationshipRuntimeConfig:
+    confidence_threshold: float
+    max_auto_delta: int
+    daily_positive_cap: int
+    daily_negative_cap: int
+    conflict_preference_min_gap: int
+    initial_affection: int
+    initial_trust: int
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeConfigSnapshot:
+    """One internally consistent runtime view for an incoming message."""
+
+    autonomous: AutonomousRuntimeConfig
+    context: ContextRuntimeConfig
+    reply: ReplyRuntimeConfig
+    llm: LLMRuntimeConfig
+    agent: AgentRuntimeConfig
+    web: WebRuntimeConfig
+    relationship: RelationshipRuntimeConfig

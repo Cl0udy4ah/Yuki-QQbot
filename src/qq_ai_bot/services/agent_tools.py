@@ -6,10 +6,14 @@ import json
 import re
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
+from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.admin.models import RuntimeConfigSnapshot
+from qq_ai_bot.admin.permission_catalog import CapabilityReport, PermissionCatalogService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage
@@ -28,6 +32,10 @@ from qq_ai_bot.web.models import (
 )
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
+_RUNTIME_SNAPSHOT: ContextVar[RuntimeConfigSnapshot | None] = ContextVar(
+    "agent_tool_runtime_snapshot",
+    default=None,
+)
 
 
 class OneBotToolGateway(Protocol):
@@ -44,9 +52,15 @@ class ToolRuntime:
     inbound: InboundMessage
     gateway: OneBotToolGateway | None
     allow_generic_onebot: bool
+    allow_admin_actions: bool = False
     conversation_key: str = ""
     trigger_message_id: str = ""
     source_display_requested: bool = False
+    actor_user_id: str = ""
+    actor_is_superuser: bool = False
+    current_group_id: str | None = None
+    mentioned_user_ids: tuple[str, ...] = ()
+    runtime_config: RuntimeConfigSnapshot | None = None
 
 
 def _object_schema(
@@ -74,6 +88,8 @@ class AgentToolService:
         actions: AgentActionRepository,
         web_provider: WebSearchProvider | None = None,
         web_sources: WebSearchSourceRepository | None = None,
+        runtime_config: RuntimeConfigService | None = None,
+        permission_catalog: PermissionCatalogService | None = None,
     ) -> None:
         self._settings = settings
         self._ledger = ledger
@@ -81,9 +97,37 @@ class AgentToolService:
         self._actions = actions
         self._web_provider = web_provider
         self._web_sources = web_sources
+        self._runtime_config = runtime_config or RuntimeConfigService(
+            settings=settings,
+            database=ledger._database,
+        )
+        self._permission_catalog = permission_catalog or PermissionCatalogService(
+            settings=settings,
+            config_registry=self._runtime_config.registry,
+        )
 
     def definitions(self, runtime: ToolRuntime) -> tuple[ChatTool, ...]:
         tools = [
+            ChatTool(
+                name="get_my_capabilities",
+                description=(
+                    "给 Yuki 当前模型轮内部查询真实发送者本人能够修改、管理和读取的权限。"
+                    "当用户问‘我能改什么’‘有哪些设置’‘权限范围’‘能改多少参数’"
+                    "或类似问题时必须调用。结果不得原样复制给用户，也不会写入长期上下文；"
+                    "默认 summary，具体问题用 focused+category/query，只有明确要求完整清单"
+                    "才用 full。不能查询他人。"
+                ),
+                parameters=_object_schema(
+                    {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["summary", "focused", "full"],
+                        },
+                        "category": {"type": "string"},
+                        "query": {"type": "string", "maxLength": 64},
+                    }
+                ),
+            ),
             ChatTool(
                 name="get_recent_chat_history",
                 description=(
@@ -213,32 +257,103 @@ class AgentToolService:
     ) -> str:
         """Execute one tool and return JSON, including safe model-readable errors."""
 
+        snapshot = runtime.runtime_config or await self._runtime_config.snapshot(
+            user_id=runtime.inbound.sender.user_id,
+            group_id=runtime.inbound.group_id,
+        )
+        token = _RUNTIME_SNAPSHOT.set(snapshot)
         try:
-            arguments = json.loads(arguments_json)
-        except json.JSONDecodeError:
-            return self._result(error="invalid_json", detail="工具参数不是有效 JSON")
-        if not isinstance(arguments, dict):
-            return self._result(error="invalid_arguments", detail="工具参数必须是对象")
+            try:
+                arguments = json.loads(arguments_json)
+            except json.JSONDecodeError:
+                return self._result(error="invalid_json", detail="工具参数不是有效 JSON")
+            if not isinstance(arguments, dict):
+                return self._result(error="invalid_arguments", detail="工具参数必须是对象")
+            try:
+                if name == "get_my_capabilities":
+                    return self._my_capabilities(arguments, runtime)
+                if name == "get_recent_chat_history":
+                    return await self._recent_history(runtime)
+                if name == "search_chat_history":
+                    return await self._search(arguments, runtime)
+                if name == "get_person_memories":
+                    return await self._person_memories(arguments)
+                if name == "get_group_memories":
+                    return await self._group_memories(arguments)
+                if name == "web_search":
+                    return await self._web_search(arguments, runtime)
+                if name == "read_webpage":
+                    return await self._read_webpage(arguments, runtime)
+                if name == "call_onebot_api":
+                    return await self._call_onebot(arguments, runtime)
+                return self._result(error="unknown_tool", detail=f"未知工具：{name}")
+            except WebSearchError as exc:
+                return self._web_result(error=exc.code, detail=exc.detail)
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                return self._result(error=type(exc).__name__, detail="工具执行失败")
+        finally:
+            _RUNTIME_SNAPSHOT.reset(token)
+
+    def _my_capabilities(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+        """Return only the report derived from this authoritative inbound event."""
+
         try:
-            if name == "get_recent_chat_history":
-                return await self._recent_history(runtime)
-            if name == "search_chat_history":
-                return await self._search(arguments, runtime)
-            if name == "get_person_memories":
-                return await self._person_memories(arguments)
-            if name == "get_group_memories":
-                return await self._group_memories(arguments)
-            if name == "web_search":
-                return await self._web_search(arguments, runtime)
-            if name == "read_webpage":
-                return await self._read_webpage(arguments, runtime)
-            if name == "call_onebot_api":
-                return await self._call_onebot(arguments, runtime)
-            return self._result(error="unknown_tool", detail=f"未知工具：{name}")
-        except WebSearchError as exc:
-            return self._web_result(error=exc.code, detail=exc.detail)
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            return self._result(error=type(exc).__name__, detail="工具执行失败")
+            mode, category, query = self._capability_options(arguments)
+            report = self._capability_report(runtime, category=category, query=query)
+        except PermissionError:
+            return self._result(
+                error="permission_context_mismatch",
+                detail="权限查询没有绑定到当前真实消息发送者",
+            )
+        except ValueError as exc:
+            return self._result(error="invalid_arguments", detail=str(exc))
+        return self._result(data=report.to_model_dict(mode))
+
+    @staticmethod
+    def _capability_options(
+        arguments: dict[str, Any],
+    ) -> tuple[Literal["summary", "focused", "full"], str | None, str | None]:
+        extra = set(arguments) - {"mode", "category", "query"}
+        if extra:
+            raise ValueError("权限查询只接受 mode、category、query")
+        raw_mode = arguments.get("mode", "summary")
+        if raw_mode not in {"summary", "focused", "full"}:
+            raise ValueError("mode 必须是 summary、focused 或 full")
+        category = arguments.get("category")
+        query = arguments.get("query")
+        if category is not None and not isinstance(category, str):
+            raise ValueError("category 必须是字符串")
+        if query is not None and not isinstance(query, str):
+            raise ValueError("query 必须是字符串")
+        if raw_mode == "focused" and not (category or query):
+            raise ValueError("focused 模式必须提供 category 或 query")
+        return cast(Literal["summary", "focused", "full"], raw_mode), category, query
+
+    def _capability_report(
+        self,
+        runtime: ToolRuntime,
+        *,
+        category: str | None = None,
+        query: str | None = None,
+    ) -> CapabilityReport:
+        """Resolve the current sender after validating all event-bound fields."""
+
+        inbound = runtime.inbound
+        actual_superuser = inbound.sender.user_id in self._settings.superusers
+        if (
+            not runtime.actor_user_id
+            or runtime.actor_user_id != inbound.sender.user_id
+            or runtime.actor_is_superuser != actual_superuser
+            or runtime.trigger_message_id != inbound.message_id
+            or runtime.current_group_id != inbound.group_id
+            or tuple(runtime.mentioned_user_ids) != tuple(inbound.mentioned_user_ids)
+        ):
+            raise PermissionError("权限查询没有绑定到当前真实消息发送者")
+        return self._permission_catalog.report_for_message(
+            inbound,
+            category=category,
+            query=query,
+        )
 
     async def _recent_history(self, runtime: ToolRuntime) -> str:
         if runtime.gateway is None:
@@ -436,7 +551,12 @@ class AgentToolService:
         )
 
     async def _call_onebot(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
-        if not runtime.allow_generic_onebot:
+        if (
+            not runtime.allow_generic_onebot
+            or not runtime.actor_is_superuser
+            or runtime.actor_user_id != runtime.inbound.sender.user_id
+            or runtime.actor_user_id not in self._settings.superusers
+        ):
             return self._result(error="permission_denied", detail="当前轮次不是超级管理员直发")
         if runtime.gateway is None:
             return self._result(error="onebot_unavailable", detail="当前没有 OneBot 连接")
@@ -451,7 +571,7 @@ class AgentToolService:
             result = await runtime.gateway.call_api(action, params)
         except (OSError, RuntimeError) as exc:
             await self._actions.record(
-                actor_user_id=runtime.inbound.sender.user_id,
+                actor_user_id=runtime.actor_user_id,
                 action=action,
                 success=False,
                 duration_seconds=time.perf_counter() - started,
@@ -459,7 +579,7 @@ class AgentToolService:
             )
             raise
         await self._actions.record(
-            actor_user_id=runtime.inbound.sender.user_id,
+            actor_user_id=runtime.actor_user_id,
             action=action,
             success=True,
             duration_seconds=time.perf_counter() - started,
@@ -500,7 +620,8 @@ class AgentToolService:
                 time_range=time_range,
                 start_date=start_date,
                 end_date=end_date,
-                max_results=self._settings.web_search_max_results,
+                max_results=self._runtime().web.search_max_results,
+                extract_max_results=self._runtime().web.extract_max_results,
             )
         )
         await self._persist_web_response(response, runtime, sources)
@@ -567,7 +688,7 @@ class AgentToolService:
             trigger_message_id=runtime.trigger_message_id,
             provider="tavily",
             response=response,
-            max_runs=self._settings.web_source_max_runs_per_conversation,
+            max_runs=self._runtime().web.source_max_runs_per_conversation,
         )
 
     @staticmethod
@@ -715,10 +836,18 @@ class AgentToolService:
             {"ok": False, "error": error, "detail": detail} if error else {"ok": True, "data": data}
         )
         rendered = json.dumps(payload, ensure_ascii=False, default=str)
-        limit = self._settings.agent_tool_result_max_characters
-        if len(rendered) > limit:
-            rendered = rendered[:limit] + "\n[工具结果已截断]"
-        return rendered
+        limit = self._runtime().agent.tool_result_max_characters
+        if len(rendered) <= limit:
+            return rendered
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "result_too_large",
+                "detail": "工具结果超过本轮字符上限，请缩小查询范围",
+                "original_characters": len(rendered),
+            },
+            ensure_ascii=False,
+        )
 
     def _web_result(
         self,
@@ -730,7 +859,7 @@ class AgentToolService:
         payload: dict[str, Any] = (
             {"ok": False, "error": error, "detail": detail} if error else {"ok": True, "data": data}
         )
-        limit = self._settings.web_tool_result_max_characters
+        limit = self._runtime().web.tool_result_max_characters
         rendered = json.dumps(payload, ensure_ascii=False, default=str)
         if len(rendered) <= limit:
             return rendered
@@ -763,8 +892,15 @@ class AgentToolService:
                 {
                     "ok": False,
                     "error": "result_too_large",
-                    "detail": "联网工具结果超过长度限制",
+                    "detail": "工具结果超过长度限制",
                 },
                 ensure_ascii=False,
             )
         return rendered
+
+    @staticmethod
+    def _runtime() -> RuntimeConfigSnapshot:
+        runtime = _RUNTIME_SNAPSHOT.get()
+        if runtime is None:
+            raise RuntimeError("agent tool runtime snapshot is missing")
+        return runtime

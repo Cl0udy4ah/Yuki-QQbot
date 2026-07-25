@@ -72,7 +72,12 @@ class TavilyWebSearchProvider:
         candidates = self._search_sources(data, query)
         if not candidates:
             raise WebSearchError("empty_results", "没有找到可用的联网结果")
-        selected = candidates[: self._extract_max_results]
+        extract_limit = (
+            self._extract_max_results
+            if request.extract_max_results is None
+            else max(1, min(request.extract_max_results, 3))
+        )
+        selected = candidates[:extract_limit]
         extracted: dict[str, str] = {}
         partial_failure = False
         try:

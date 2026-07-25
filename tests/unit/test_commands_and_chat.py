@@ -62,6 +62,44 @@ async def test_basic_commands(
 
 
 @pytest.mark.asyncio
+async def test_capabilities_reports_complete_range_for_current_real_qq(
+    database: Database,
+) -> None:
+    harness = build_harness(database, make_settings(database.url))
+
+    user_sender = MemorySender()
+    await harness.processor.handle(
+        inbound("/ai capabilities", message_id="user-capabilities"),
+        user_sender,
+    )
+    user_text = user_sender.messages[0].text
+    assert "当前权限：普通用户" in user_text
+    assert "可修改运行时配置参数：0 项" in user_text
+    assert "本人确定性自助接口：16 项，其中修改型 7 项" in user_text
+    assert "memory.add" in user_text
+    assert "autonomous.max_per_hour" not in user_text
+
+    admin_sender = MemorySender()
+    await harness.processor.handle(
+        inbound(
+            "/ai capabilities",
+            message_id="admin-capabilities",
+            user_id="9000",
+        ),
+        admin_sender,
+    )
+    admin_text = admin_sender.messages[0].text
+    assert "当前权限：超级管理员" in admin_text
+    assert "可修改运行时配置参数：39 项" in admin_text
+    assert "管理员业务接口：18 项，其中修改型 14 项" in admin_text
+    assert "autonomous.max_per_hour" in admin_text
+    assert "relationship.set_affection" in admin_text
+    assert "受保护配置（11 项，不可修改）" in admin_text
+    assert "NapCat/OneBot 通用全接口网关：1 项" in admin_text
+    assert "call_onebot_api:any_public_action" in admin_text
+
+
+@pytest.mark.asyncio
 async def test_new_clears_only_current_conversation(database: Database) -> None:
     harness = build_harness(database, make_settings(database.url))
     first = ConversationIdentity.private("1001")

@@ -52,7 +52,9 @@ def _extract_segments(
             target = str(data.get("qq", ""))
             if target == self_id:
                 mentions_bot = True
-            elif target:
+            elif target == "all":
+                text_parts.append("[提及全体成员]")
+            elif target.isdecimal():
                 if target not in mentioned_user_ids:
                     mentioned_user_ids.append(target)
                 index = mentioned_user_ids.index(target) + 1

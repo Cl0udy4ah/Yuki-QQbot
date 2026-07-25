@@ -10,6 +10,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
+from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage
@@ -45,12 +47,17 @@ class AutonomousGroupService:
         concurrency: ConcurrencyManager,
         memories: MemoryRepository,
         chat: ChatService,
+        runtime_config: RuntimeConfigService | None = None,
     ) -> None:
         self._settings = settings
         self._provider = provider
         self._concurrency = concurrency
         self._memories = memories
         self._chat = chat
+        self._runtime_config = runtime_config or RuntimeConfigService(
+            settings=settings,
+            database=memories._database,
+        )
         self._states: dict[str, _GroupState] = {}
 
     def observe(
@@ -59,7 +66,7 @@ class AutonomousGroupService:
         profile: UserProfileSnapshot,
         sender: OutboundSender,
     ) -> None:
-        if not self._settings.autonomous_group_chat_enabled or message.group_id is None:
+        if message.group_id is None:
             return
         state = self._states.setdefault(message.group_id, _GroupState())
         state.messages.append(message)
@@ -75,7 +82,13 @@ class AutonomousGroupService:
 
     async def _after_silence(self, group_id: str) -> None:
         try:
-            await asyncio.sleep(self._settings.autonomous_silence_seconds)
+            runtime = await self._runtime_config.snapshot(group_id=group_id)
+            if not runtime.autonomous.enabled:
+                return
+            await asyncio.sleep(runtime.autonomous.silence_seconds)
+            runtime = await self._runtime_config.snapshot(group_id=group_id)
+            if not runtime.autonomous.enabled:
+                return
             state = self._states.get(group_id)
             if state is None or not state.messages:
                 return
@@ -84,15 +97,15 @@ class AutonomousGroupService:
                 state.hourly_responses.popleft()
             if state.human_version <= state.last_response_human_version:
                 return
-            if now - state.last_response_at < self._settings.autonomous_cooldown_seconds:
+            if now - state.last_response_at < runtime.autonomous.cooldown_seconds:
                 return
-            if len(state.hourly_responses) >= self._settings.autonomous_max_per_hour:
+            if len(state.hourly_responses) >= runtime.autonomous.max_per_hour:
                 return
             last = state.messages[-1]
             if not await self._is_candidate(last):
                 return
-            confidence = await self._judge(tuple(state.messages))
-            if confidence < self._settings.autonomous_confidence_threshold:
+            confidence = await self._judge(tuple(state.messages), runtime)
+            if confidence < runtime.autonomous.confidence_threshold:
                 return
             profile = state.profiles[-1]
             sender = state.senders[-1]
@@ -110,6 +123,10 @@ class AutonomousGroupService:
                 f"以下是群聊刚刚的消息，请像普通群友一样谨慎参与：\n{batch}",
                 sender,
                 autonomous=True,
+                runtime_snapshot=await self._runtime_config.snapshot(
+                    user_id=last.sender.user_id,
+                    group_id=group_id,
+                ),
             )
             if sent:
                 finished = time.monotonic()
@@ -142,12 +159,16 @@ class AutonomousGroupService:
                     return True
         return False
 
-    async def _judge(self, messages: tuple[InboundMessage, ...]) -> float:
+    async def _judge(
+        self,
+        messages: tuple[InboundMessage, ...],
+        runtime: RuntimeConfigSnapshot,
+    ) -> float:
         transcript = [
             {"user_id": item.sender.user_id, "content": item.text} for item in messages[-20:]
         ]
         request = ChatRequest(
-            model=self._settings.llm_model or "fake",
+            model=runtime.llm.model or "fake",
             temperature=0,
             max_output_tokens=128,
             thinking_enabled=False,

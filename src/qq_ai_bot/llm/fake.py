@@ -14,7 +14,7 @@ class FakeLLMProvider(LLMProvider):
 
     def __init__(
         self,
-        responder: Callable[[ChatRequest], str] | None = None,
+        responder: Callable[[ChatRequest], str | ChatResponse] | None = None,
         *,
         delay_seconds: float = 0,
     ) -> None:
@@ -33,7 +33,10 @@ class FakeLLMProvider(LLMProvider):
         self.requests.append(request)
         if self._delay_seconds:
             await asyncio.sleep(self._delay_seconds)
-        content = self._responder(request).strip()
+        response = self._responder(request)
+        if isinstance(response, ChatResponse):
+            return response
+        content = response.strip()
         if not content:
             raise LLMEmptyResponseError("model returned empty content")
         return ChatResponse(content=content, latency_seconds=self._delay_seconds)

@@ -167,6 +167,38 @@ async def test_automatic_changes_have_no_daily_cumulative_cap(database: Database
 
 
 @pytest.mark.asyncio
+async def test_runtime_daily_caps_are_optional_and_clamp_each_direction(
+    database: Database,
+) -> None:
+    repository = RelationshipRepository(database)
+    for index in range(2):
+        event_id = await append_user_event(database, message_id=f"capped-positive-{index}")
+        await repository.apply_automatic(
+            user_id="1001",
+            source_event_id=event_id,
+            evaluation=RelationshipEvaluation(2, 2, "care", 0.99),
+            daily_positive_cap=3,
+            daily_negative_cap=2,
+        )
+    increased = await repository.get("1001")
+    assert increased is not None
+    assert (increased.affection_score, increased.trust_score) == (53, 53)
+
+    for index in range(2):
+        event_id = await append_user_event(database, message_id=f"capped-negative-{index}")
+        await repository.apply_automatic(
+            user_id="1001",
+            source_event_id=event_id,
+            evaluation=RelationshipEvaluation(-2, -2, "insult", 0.99),
+            daily_positive_cap=3,
+            daily_negative_cap=2,
+        )
+    decreased = await repository.get("1001")
+    assert decreased is not None
+    assert (decreased.affection_score, decreased.trust_score) == (51, 51)
+
+
+@pytest.mark.asyncio
 async def test_automatic_single_change_is_bounded_and_total_score_is_clamped(
     database: Database,
 ) -> None:

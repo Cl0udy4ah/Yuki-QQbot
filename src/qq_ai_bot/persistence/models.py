@@ -447,6 +447,99 @@ class AgentActionModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class RuntimeConfigOverrideModel(Base):
+    """One validated runtime configuration override at an exact scope."""
+
+    __tablename__ = "runtime_config_overrides"
+    __table_args__ = (
+        UniqueConstraint(
+            "config_key",
+            "scope_type",
+            "scope_id",
+            name="uq_runtime_config_override_scope",
+        ),
+        CheckConstraint(
+            "scope_type IN ('global', 'group', 'user')",
+            name="ck_runtime_config_overrides_scope_type",
+        ),
+        CheckConstraint(
+            "(scope_type = 'global' AND scope_id = '') OR "
+            "(scope_type IN ('group', 'user') AND scope_id <> '')",
+            name="ck_runtime_config_overrides_scope_id",
+        ),
+        CheckConstraint(
+            "value_type IN ('string', 'integer', 'number', 'boolean', 'enum')",
+            name="ck_runtime_config_overrides_value_type",
+        ),
+        CheckConstraint(
+            "apply_mode IN ('hot', 'future_only', 'restart_required')",
+            name="ck_runtime_config_overrides_apply_mode",
+        ),
+        CheckConstraint("version >= 1", name="ck_runtime_config_overrides_version"),
+        Index(
+            "ix_runtime_config_overrides_scope_key",
+            "scope_type",
+            "scope_id",
+            "config_key",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    config_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    scope_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    value_json: Mapped[str] = mapped_column(Text, nullable=False)
+    value_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    apply_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class AdminOperationEventModel(Base):
+    """A redacted, append-only audit event for administrator capabilities."""
+
+    __tablename__ = "admin_operation_events"
+    __table_args__ = (
+        CheckConstraint(
+            "duration_seconds >= 0",
+            name="ck_admin_operation_events_duration",
+        ),
+        Index(
+            "ix_admin_operation_events_actor_created",
+            "actor_user_id",
+            "created_at",
+        ),
+        Index(
+            "ix_admin_operation_events_target_created",
+            "target_type",
+            "target_id",
+            "created_at",
+        ),
+        Index(
+            "ix_admin_operation_events_capability_created",
+            "capability",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    trigger_message_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    conversation_key: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    capability: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    before_json: Mapped[str] = mapped_column(Text, nullable=False, default="null")
+    after_json: Mapped[str] = mapped_column(Text, nullable=False, default="null")
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class WebSearchRunModel(Base):
     """One successful Agent web tool call in an isolated conversation."""
 

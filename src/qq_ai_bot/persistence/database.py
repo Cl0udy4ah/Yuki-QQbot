@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,10 @@ class Database:
     def __init__(self, url: str) -> None:
         self.url = url
         self._ensure_sqlite_parent(url)
+        # Runtime configuration mutations share one process-wide database owner.
+        # Keeping the lock here prevents separately constructed service facades from
+        # racing their read/validate/write/audit sequence.
+        self.runtime_config_mutation_lock = asyncio.Lock()
         self.engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
         if url.startswith("sqlite+aiosqlite:///"):
             event.listen(self.engine.sync_engine, "connect", self._enable_sqlite_foreign_keys)

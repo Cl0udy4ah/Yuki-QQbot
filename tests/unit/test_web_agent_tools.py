@@ -131,6 +131,57 @@ async def test_web_search_persists_current_sources_with_strict_isolation(
     )
 
 
+@pytest.mark.asyncio
+async def test_get_my_capabilities_is_event_bound_and_accepts_no_target(
+    database: Database,
+) -> None:
+    tools, _repository = build_tools(database, provider=None, enabled=False)
+    event = inbound("我能修改什么？")
+    bound_runtime = ToolRuntime(
+        inbound=event,
+        gateway=None,
+        allow_generic_onebot=False,
+        conversation_key="private:1001",
+        trigger_message_id=event.message_id,
+        actor_user_id="1001",
+        actor_is_superuser=False,
+        current_group_id=None,
+        mentioned_user_ids=(),
+    )
+    assert "get_my_capabilities" in {
+        definition.name for definition in tools.definitions(bound_runtime)
+    }
+
+    report = json.loads(await tools.execute("get_my_capabilities", "{}", bound_runtime))
+    assert report["ok"]
+    assert report["data"]["permission_level"] == "user"
+    assert report["data"]["counts"]["mutable_configurations"] == 0
+    assert report["data"]["counts"]["self_service_operations"] == 16
+
+    targeted = json.loads(
+        await tools.execute(
+            "get_my_capabilities",
+            json.dumps({"user_id": "9000"}),
+            bound_runtime,
+        )
+    )
+    assert targeted["error"] == "invalid_arguments"
+
+    forged_runtime = ToolRuntime(
+        inbound=event,
+        gateway=None,
+        allow_generic_onebot=False,
+        conversation_key="private:1001",
+        trigger_message_id=event.message_id,
+        actor_user_id="9000",
+        actor_is_superuser=True,
+        current_group_id=None,
+        mentioned_user_ids=(),
+    )
+    forged = json.loads(await tools.execute("get_my_capabilities", "{}", forged_runtime))
+    assert forged["error"] == "permission_context_mismatch"
+
+
 def test_web_enabled_false_does_not_register_web_tools(database: Database) -> None:
     tools, _repository = build_tools(database, provider=None, enabled=False)
     names = {definition.name for definition in tools.definitions(runtime())}

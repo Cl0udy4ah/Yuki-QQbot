@@ -9,6 +9,11 @@ import time
 from nonebot import get_bots
 from sqlalchemy.exc import SQLAlchemyError
 
+from qq_ai_bot.admin.action_service import ActionRegistry, AdminActionService
+from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.capabilities import AdminCapabilityService
+from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
@@ -29,6 +34,12 @@ from qq_ai_bot.persistence.repositories import (
     UserProfileRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.services.admin.config_admin import ConfigAdminService
+from qq_ai_bot.services.admin.group_admin import GroupAdminService
+from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
+from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
+from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminService
+from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
 from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.chat import ChatService
@@ -57,10 +68,26 @@ logger = logging.getLogger(__name__)
 class ApplicationContainer:
     """Own all external resources for the NoneBot application lifespan."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        database: Database | None = None,
+        runtime_config: RuntimeConfigService | None = None,
+    ) -> None:
         self.settings = settings
         self.started_at = time.monotonic()
-        self.database = Database(settings.database_url)
+        self.database = database or Database(settings.database_url)
+        self.runtime_config = runtime_config or RuntimeConfigService(
+            settings=settings,
+            database=self.database,
+        )
+        self.admin_action_registry = ActionRegistry()
+        self.permission_catalog = PermissionCatalogService(
+            settings=settings,
+            config_registry=self.runtime_config.registry,
+            action_registry=self.admin_action_registry,
+        )
         self.conversations = ConversationRepository(self.database)
         self.groups = GroupSettingsRepository(self.database)
         self.private_users = PrivateUserSettingsRepository(
@@ -74,7 +101,10 @@ class ApplicationContainer:
             initial_trust=settings.relationship_initial_trust,
         )
         self.people = self.user_profile_repository
-        self.user_profiles = UserProfileService(self.user_profile_repository)
+        self.user_profiles = UserProfileService(
+            self.user_profile_repository,
+            self.runtime_config,
+        )
         self.group_members = GroupMemberService(self.user_profile_repository)
         self.group_memory_repository = GroupMemoryRepository(self.database)
         self.processed_events = ProcessedEventRepository(self.database)
@@ -106,6 +136,7 @@ class ApplicationContainer:
                 settings=settings,
                 provider=self.provider,
                 concurrency=self.concurrency,
+                runtime_config=self.runtime_config,
             )
         self.deduplication = DeduplicationService(
             self.processed_events,
@@ -128,6 +159,8 @@ class ApplicationContainer:
             actions=self.agent_actions,
             web_provider=self.web_provider,
             web_sources=self.web_sources,
+            runtime_config=self.runtime_config,
+            permission_catalog=self.permission_catalog,
         )
         self.chat = ChatService(
             settings=settings,
@@ -141,6 +174,7 @@ class ApplicationContainer:
             web_sources=self.web_sources,
             source_policy=SourceDisplayPolicy(),
             source_renderer=SourceRenderer(),
+            runtime_config=self.runtime_config,
         )
         self.memory_worker = MemoryWorker(
             settings=settings,
@@ -154,6 +188,7 @@ class ApplicationContainer:
             jobs=self.relationship_jobs,
             relationships=self.relationships,
             evaluator=self.relationship_evaluator,
+            runtime_config=self.runtime_config,
         )
         self.autonomous_groups = AutonomousGroupService(
             settings=settings,
@@ -161,7 +196,55 @@ class ApplicationContainer:
             concurrency=self.concurrency,
             memories=self.memories,
             chat=self.chat,
+            runtime_config=self.runtime_config,
         )
+        self.admin_audit = AdminAuditService(self.database)
+        self.relationship_admin = RelationshipAdminService(
+            settings=settings,
+            relationships=self.relationships,
+            audit=self.admin_audit,
+            runtime_config=self.runtime_config,
+        )
+        self.memory_admin = MemoryAdminService(
+            settings=settings,
+            memories=self.memories,
+            audit=self.admin_audit,
+        )
+        self.preference_admin = PreferenceAdminService(
+            settings=settings,
+            memories=self.memories,
+            audit=self.admin_audit,
+        )
+        self.group_admin = GroupAdminService(
+            settings=settings,
+            groups=self.groups,
+            runtime_config=self.runtime_config,
+            audit=self.admin_audit,
+        )
+        self.private_access_admin = PrivateAccessAdminService(
+            settings=settings,
+            private_users=self.private_users,
+            audit=self.admin_audit,
+            runtime_config=self.runtime_config,
+        )
+        self.config_admin = ConfigAdminService(self.runtime_config)
+        self.admin_actions = AdminActionService(
+            settings=settings,
+            relationships=self.relationship_admin,
+            memories=self.memory_admin,
+            preferences=self.preference_admin,
+            groups=self.group_admin,
+            private_access=self.private_access_admin,
+            registry=self.admin_action_registry,
+        )
+        self.admin_capabilities = AdminCapabilityService(
+            settings=settings,
+            runtime_config=self.runtime_config,
+            actions=self.admin_actions,
+            audit=self.admin_audit,
+            permission_catalog=self.permission_catalog,
+        )
+        self.chat.set_admin_tools(self.admin_capabilities)
         self.processor = MessageProcessor(
             settings=settings,
             conversations=self.conversations,
@@ -181,9 +264,40 @@ class ApplicationContainer:
             relationships=self.relationships,
             relationship_worker=self.relationship_worker,
             autonomous_groups=self.autonomous_groups,
+            runtime_config=self.runtime_config,
+            relationship_admin=self.relationship_admin,
+            memory_admin=self.memory_admin,
+            preference_admin=self.preference_admin,
+            group_admin=self.group_admin,
+            private_access_admin=self.private_access_admin,
+            config_admin=self.config_admin,
+            permission_catalog=self.permission_catalog,
         )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
+
+    @classmethod
+    async def create(cls, settings: Settings) -> ApplicationContainer:
+        """Load restart overrides before constructing long-lived clients and limits."""
+
+        database = Database(settings.database_url)
+        runtime_config = RuntimeConfigService(
+            settings=settings,
+            database=database,
+        )
+        try:
+            await runtime_config.initialize()
+            active_settings = settings.model_copy(
+                update=await runtime_config.startup_settings_updates()
+            )
+            return cls(
+                active_settings,
+                database=database,
+                runtime_config=runtime_config,
+            )
+        except Exception:
+            await database.close()
+            raise
 
     @staticmethod
     def _build_provider(settings: Settings) -> LLMProvider:
@@ -229,8 +343,9 @@ class ApplicationContainer:
                 deleted = await self.processed_events.cleanup_expired()
                 if deleted:
                     logger.info("processed_events_cleaned count=%d", deleted)
+                runtime = await self.runtime_config.snapshot()
                 web_deleted = await self.web_sources.cleanup_expired(
-                    retention_days=self.settings.web_source_retention_days
+                    retention_days=runtime.web.source_retention_days
                 )
                 if web_deleted:
                     logger.info("web_source_runs_cleaned count=%d", web_deleted)

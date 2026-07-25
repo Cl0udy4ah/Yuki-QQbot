@@ -30,7 +30,7 @@ def bootstrap(settings: Settings | None = None) -> None:
 
     @driver.on_startup
     async def startup() -> None:
-        container = ApplicationContainer(app_settings)
+        container = await ApplicationContainer.create(app_settings)
         set_container(container)
         await container.start()
 

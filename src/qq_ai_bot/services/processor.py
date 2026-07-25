@@ -14,6 +14,16 @@ from typing import cast
 from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot import __version__
+from qq_ai_bot.admin.action_service import ActionRegistry
+from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.admin.models import (
+    AdminActor,
+    ConfigApplyMode,
+    ConfigChangeResult,
+    EffectiveConfigValue,
+)
+from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
@@ -30,6 +40,12 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipJobRepository,
     RelationshipRepository,
 )
+from qq_ai_bot.services.admin.config_admin import ConfigAdminService
+from qq_ai_bot.services.admin.group_admin import GroupAdminService
+from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
+from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
+from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminService
+from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.chat import ChatService, OutboundSender
 from qq_ai_bot.services.concurrency import ConcurrencyManager, RequestCancelledError
@@ -93,6 +109,14 @@ class MessageProcessor:
         relationships: RelationshipRepository | None = None,
         relationship_worker: RelationshipWorker | None = None,
         autonomous_groups: AutonomousGroupService | None = None,
+        runtime_config: RuntimeConfigService | None = None,
+        relationship_admin: RelationshipAdminService | None = None,
+        memory_admin: MemoryAdminService | None = None,
+        preference_admin: PreferenceAdminService | None = None,
+        group_admin: GroupAdminService | None = None,
+        private_access_admin: PrivateAccessAdminService | None = None,
+        config_admin: ConfigAdminService | None = None,
+        permission_catalog: PermissionCatalogService | None = None,
     ) -> None:
         database = conversations._database
         self._settings = settings
@@ -138,6 +162,45 @@ class MessageProcessor:
             ),
         )
         self._autonomous = autonomous_groups
+        self._runtime_config = runtime_config or RuntimeConfigService(
+            settings=settings,
+            database=database,
+        )
+        audit = AdminAuditService(database)
+        self._relationship_admin = relationship_admin or RelationshipAdminService(
+            settings=settings,
+            relationships=self._relationships,
+            audit=audit,
+            runtime_config=self._runtime_config,
+        )
+        self._memory_admin = memory_admin or MemoryAdminService(
+            settings=settings,
+            memories=self._memories,
+            audit=audit,
+        )
+        self._preference_admin = preference_admin or PreferenceAdminService(
+            settings=settings,
+            memories=self._memories,
+            audit=audit,
+        )
+        self._group_admin = group_admin or GroupAdminService(
+            settings=settings,
+            groups=self._groups,
+            runtime_config=self._runtime_config,
+            audit=audit,
+        )
+        self._private_access_admin = private_access_admin or PrivateAccessAdminService(
+            settings=settings,
+            private_users=self._private_users,
+            audit=audit,
+            runtime_config=self._runtime_config,
+        )
+        self._config_admin = config_admin or ConfigAdminService(self._runtime_config)
+        self._permission_catalog = permission_catalog or PermissionCatalogService(
+            settings=settings,
+            config_registry=self._runtime_config.registry,
+            action_registry=ActionRegistry(),
+        )
 
     async def handle(
         self,
@@ -159,10 +222,25 @@ class MessageProcessor:
         )
         if decision.reason == "bot_message":
             return ProcessResult(False, reason=decision.reason)
+        is_superuser = message.sender.user_id in self._settings.superusers
+        admin_candidate = bool(
+            is_superuser
+            and decision.command is None
+            and (
+                decision.should_respond
+                or (
+                    decision.reason == "group_disabled"
+                    and (
+                        message.mentions_bot
+                        or message.text.strip().startswith(self._settings.ai_prefix)
+                    )
+                )
+            )
+        )
         should_observe = (
             message.scope_type is ScopeType.PRIVATE and decision.should_respond
         ) or bool(self._settings.observe_enabled_groups and group_policy and group_policy.enabled)
-        if not decision.should_respond and not should_observe:
+        if not decision.should_respond and not should_observe and not admin_candidate:
             return ProcessResult(False, reason=decision.reason)
 
         identity = (
@@ -177,6 +255,11 @@ class MessageProcessor:
         event_key = build_event_key(message, identity.key)
         if not await self._deduplication.claim(event_key):
             return ProcessResult(False, reason="duplicate")
+
+        runtime_snapshot = await self._runtime_config.snapshot(
+            user_id=message.sender.user_id,
+            group_id=message.group_id,
+        )
 
         # forgetme is deliberately neither re-observed nor re-written to the ledger.
         if decision.command is CommandName.FORGETME:
@@ -204,7 +287,7 @@ class MessageProcessor:
         if created:
             await self._memory_worker.enqueue(record.id)
 
-        if not decision.should_respond:
+        if not decision.should_respond and not admin_candidate:
             if (
                 message.scope_type is ScopeType.GROUP
                 and group_policy is not None
@@ -236,7 +319,7 @@ class MessageProcessor:
                 started,
             )
 
-        content = sanitize_input(decision.content)
+        content = sanitize_input(decision.content or (message.text if admin_candidate else ""))
         if message.reply_text:
             quoted = sanitize_input(message.reply_text)
             if quoted:
@@ -262,6 +345,7 @@ class MessageProcessor:
                 mentioned_members,
                 content,
                 sender,
+                runtime_snapshot=runtime_snapshot,
             )
         except RequestCancelledError:
             return ProcessResult(True, reason="cancelled")
@@ -361,6 +445,15 @@ class MessageProcessor:
         started: float,
     ) -> ProcessResult:
         is_superuser = message.sender.user_id in self._settings.superusers
+        actor = AdminActor(
+            user_id=message.sender.user_id,
+            is_superuser=is_superuser,
+            trigger_message_id=message.message_id,
+            conversation_key=identity.key,
+            current_group_id=message.group_id,
+            mentioned_user_ids=message.mentioned_user_ids,
+            current_message_text=message.text,
+        )
         record_reply = command is not CommandName.FORGETME
         reset_after_reply = False
         if command_requires_superuser(command) and not is_superuser:
@@ -372,11 +465,13 @@ class MessageProcessor:
             reset_after_reply = True
         elif command is CommandName.STATUS:
             count = await self._conversations.count_messages(identity)
+            pending_restart = await self._runtime_config.pending_restart_count()
             text = (
                 f"OneBot 连接：{'已连接' if self._onebot_connected() else '未连接'}\n"
                 f"模型：{self._settings.llm_model or '未配置'}\n"
                 f"当前切点后的事件数：{count}\n"
                 f"请求处理中：{'是' if self._concurrency.is_processing(identity.key) else '否'}\n"
+                f"待重启配置数：{pending_restart}\n"
                 f"服务版本：{__version__}"
             )
         elif command is CommandName.STOP:
@@ -387,7 +482,10 @@ class MessageProcessor:
                 text = "该命令只能在群聊中使用。"
             else:
                 enabled = command is CommandName.ON
-                await self._groups.set_enabled(message.group_id, enabled)
+                if enabled:
+                    await self._group_admin.enable_current_group(actor, message.group_id)
+                else:
+                    await self._group_admin.disable_current_group(actor, message.group_id)
                 text = "已启用当前群。" if enabled else "已停用当前群。"
         elif command in {CommandName.PRIVATE, CommandName.GROUP}:
             parsed = self._parse_access_switch(argument)
@@ -396,22 +494,25 @@ class MessageProcessor:
                 text = f"格式错误，请使用 /ai {command.value} <{noun}> on|off。"
             else:
                 target_id, enabled = parsed
-                if (
-                    command is CommandName.PRIVATE
-                    and target_id in self._settings.superusers
-                    and not enabled
-                ):
-                    text = "不能关闭超级用户的私聊权限。"
-                elif command is CommandName.PRIVATE:
-                    await self._private_users.set_enabled(target_id, enabled)
-                    text = (
-                        "已开启指定 QQ 用户的私聊权限。"
-                        if enabled
-                        else "已关闭指定 QQ 用户的私聊权限。"
-                    )
-                else:
-                    await self._groups.set_enabled(target_id, enabled)
-                    text = f"已{'启用' if enabled else '停用'}群 {target_id}。"
+                try:
+                    if command is CommandName.PRIVATE:
+                        if enabled:
+                            await self._private_access_admin.enable_user(actor, target_id)
+                        else:
+                            await self._private_access_admin.disable_user(actor, target_id)
+                        text = (
+                            "已开启指定 QQ 用户的私聊权限。"
+                            if enabled
+                            else "已关闭指定 QQ 用户的私聊权限。"
+                        )
+                    else:
+                        if enabled:
+                            await self._group_admin.enable_current_group(actor, target_id)
+                        else:
+                            await self._group_admin.disable_current_group(actor, target_id)
+                        text = f"已{'启用' if enabled else '停用'}群 {target_id}。"
+                except ValueError as exc:
+                    text = str(exc)
         elif command is CommandName.PING:
             text = f"pong ({(time.perf_counter() - started) * 1000:.1f} ms)"
         elif command is CommandName.WHOAMI:
@@ -428,22 +529,23 @@ class MessageProcessor:
                 )
         elif command is CommandName.MEMORY:
             text = await self._memory_command(
-                actor=message.sender.user_id,
+                actor=actor,
                 argument=argument,
-                is_superuser=is_superuser,
             )
         elif command is CommandName.PREFERENCE:
             text = await self._preference_command(
-                actor=message.sender.user_id,
+                actor=actor,
                 argument=argument,
-                is_superuser=is_superuser,
             )
         elif command is CommandName.AFFECTION:
             text = await self._affection_command(
-                actor=message.sender.user_id,
+                actor=actor,
                 argument=argument,
-                is_superuser=is_superuser,
             )
+        elif command is CommandName.CAPABILITIES:
+            text = self._capabilities_command(message, argument)
+        elif command is CommandName.CONFIG:
+            text = await self._config_command(actor, argument)
         else:
             text = "未知命令，请使用 /ai help 查看帮助。"
 
@@ -460,15 +562,17 @@ class MessageProcessor:
         )
         return ProcessResult(True, int(sent), f"command_{command.value}")
 
-    async def _memory_command(self, *, actor: str, argument: str, is_superuser: bool) -> str:
-        parsed = self._parse_scoped_operation(argument, actor, is_superuser)
+    async def _memory_command(self, *, actor: AdminActor, argument: str) -> str:
+        parsed = self._parse_scoped_operation(
+            argument,
+            actor.user_id,
+            actor.is_superuser,
+        )
         if isinstance(parsed, str):
             return parsed
         operation, target, rest = parsed
         if operation == "list":
-            rows = await self._memories.list_person(
-                target, limit=self._settings.person_memory_max_entries
-            )
+            rows = await self._memory_admin.list_memories(actor, target)
             if not rows:
                 return f"QQ {target} 暂无人物记忆。"
             return "\n".join(f"{row.id}. [{row.source_type}] {row.content}" for row in rows)
@@ -476,95 +580,96 @@ class MessageProcessor:
             content = " ".join(rest).strip()
             if not content:
                 return "格式：/ai memory add <内容>"
-            if (
-                await self._memories.count_person(target)
-                >= self._settings.person_memory_max_entries
-            ):
-                return "人物记忆已达到上限，请先删除或合并旧记忆。"
-            row = await self._memories.upsert(
-                scope="person",
-                user_id=target,
-                memory_key=f"explicit-{uuid.uuid4()}",
-                content=content,
-                category="explicit",
-                importance=5,
-                source_type="explicit",
-                limit=self._settings.person_memory_max_entries,
-            )
+            try:
+                row = await self._memory_admin.add_memory(actor, target, content)
+            except ValueError as exc:
+                return str(exc)
             return f"已添加人物记忆 {row.id}。"
         if operation == "update":
             if len(rest) < 2 or not rest[0].isdigit():
                 return "格式：/ai memory update <记忆ID> <内容>"
-            updated = await self._memories.update_explicit(
-                int(rest[0]), user_id=target, content=" ".join(rest[1:])
+            updated = await self._memory_admin.update_memory(
+                actor,
+                target,
+                int(rest[0]),
+                " ".join(rest[1:]),
             )
             return "记忆已更新。" if updated else "没有找到可修改的记忆。"
         if operation == "delete":
             if len(rest) != 1 or not rest[0].isdigit():
                 return "格式：/ai memory delete <记忆ID>"
-            deleted = await self._memories.delete_person_memory(int(rest[0]), user_id=target)
+            deleted = await self._memory_admin.delete_memory(
+                actor,
+                target,
+                int(rest[0]),
+            )
             return "记忆已删除。" if deleted else "没有找到该记忆。"
         return "可用操作：list、add、update、delete。"
 
-    async def _preference_command(self, *, actor: str, argument: str, is_superuser: bool) -> str:
-        parsed = self._parse_scoped_operation(argument, actor, is_superuser)
+    async def _preference_command(self, *, actor: AdminActor, argument: str) -> str:
+        parsed = self._parse_scoped_operation(
+            argument,
+            actor.user_id,
+            actor.is_superuser,
+        )
         if isinstance(parsed, str):
             return parsed
         operation, target, rest = parsed
         if operation == "list":
-            rows = await self._memories.list_preferences(
-                target, limit=self._settings.preference_max_entries
-            )
+            rows = await self._preference_admin.list_preferences(actor, target)
             if not rows:
                 return f"QQ {target} 暂无交互偏好。"
             return "\n".join(f"{row.key} = {row.value}" for row in rows)
         if operation == "set":
             if len(rest) < 2:
                 return "格式：/ai preference set <键> <值>"
-            await self._memories.set_preference(
+            await self._preference_admin.set_preference(
+                actor,
                 target,
                 rest[0],
                 " ".join(rest[1:]),
-                limit=self._settings.preference_max_entries,
             )
             return f"偏好 {rest[0]} 已设置。"
         if operation == "delete":
             if len(rest) != 1:
                 return "格式：/ai preference delete <键>"
-            deleted = await self._memories.delete_preference(target, rest[0])
+            deleted = await self._preference_admin.delete_preference(
+                actor,
+                target,
+                rest[0],
+            )
             return "偏好已删除。" if deleted else "没有找到该偏好。"
         return "可用操作：list、set、delete。"
 
     async def _affection_command(
         self,
         *,
-        actor: str,
+        actor: AdminActor,
         argument: str,
-        is_superuser: bool,
     ) -> str:
         parts = argument.split()
         if not parts:
             return "格式：/ai affection show|history"
         operation = parts.pop(0).casefold()
         if operation in {"show", "history"}:
-            target = actor
+            target = actor.user_id
             if parts:
                 if len(parts) != 2 or parts[0].casefold() != "user":
                     return f"格式：/ai affection {operation} [user <QQ号>]"
-                if not is_superuser:
+                if not actor.is_superuser:
                     return "只有超级管理员可以查看其他 QQ 人物的关系数据。"
                 if _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None:
                     return "目标 QQ 号格式错误。"
                 target = parts[1]
             if operation == "show":
-                snapshot = await self._relationships.get_or_create(target)
+                snapshot = await self._relationship_admin.get_relationship(actor, target)
                 return (
                     f"好感度：{snapshot.affection_score}\n"
                     f"信任度：{snapshot.trust_score}\n"
                     f"有效信任度：{snapshot.effective_trust}\n"
                     f"当前关系阶段：{snapshot.stage.name}"
                 )
-            history = await self._relationships.history(target, limit=10)
+            history = await self._relationship_admin.get_history(actor, target, limit=10)
             if not history:
                 return "暂无关系变化记录。"
             return "\n".join(
@@ -578,7 +683,7 @@ class MessageProcessor:
 
         if operation not in {"set", "adjust", "trust"}:
             return "可用操作：show、history；超级管理员另可使用 set、adjust、trust。"
-        if not is_superuser:
+        if not actor.is_superuser:
             return "权限不足：只有超级管理员可以修改关系分数。"
         if (
             len(parts) != 3
@@ -593,23 +698,15 @@ class MessageProcessor:
         target = parts[1]
         try:
             if operation == "set":
-                snapshot = await self._relationships.set_affection(
-                    user_id=target,
-                    actor_user_id=actor,
-                    score=value,
-                )
+                _, snapshot = await self._relationship_admin.set_affection(actor, target, value)
             elif operation == "adjust":
-                snapshot = await self._relationships.adjust_affection(
-                    user_id=target,
-                    actor_user_id=actor,
-                    delta=value,
+                _, snapshot = await self._relationship_admin.adjust_affection(
+                    actor,
+                    target,
+                    value,
                 )
             else:
-                snapshot = await self._relationships.set_trust(
-                    user_id=target,
-                    actor_user_id=actor,
-                    score=value,
-                )
+                _, snapshot = await self._relationship_admin.set_trust(actor, target, value)
         except ValueError:
             return "好感度/信任度必须在 0～100；好感度单次调整必须在 -20～20。"
         return (
@@ -635,6 +732,159 @@ class MessageProcessor:
             target = candidate
             del parts[:2]
         return operation, target, parts
+
+    def _capabilities_command(self, message: InboundMessage, argument: str) -> str:
+        category = argument.strip() or None
+        report = self._permission_catalog.report_for_message(message, category=category)
+        return report.render_text()
+
+    async def _config_command(self, actor: AdminActor, argument: str) -> str:
+        parts = argument.split()
+        if not parts:
+            return (
+                "格式：/ai config list|get|set|unset|history|rollback ...\n"
+                "群级后缀：group current；用户级后缀：user <QQ号>"
+            )
+        operation = parts.pop(0).casefold()
+        if operation == "list":
+            category = parts[0] if parts else None
+            if len(parts) > 1:
+                return "格式：/ai config list [类别]"
+            specs = self._config_admin.list_capabilities(category)
+            if not specs:
+                return "没有找到该类别的配置。"
+            return "\n".join(
+                (f"{spec.key} [{spec.apply_mode.value}] {'可修改' if spec.mutable else '受保护'}")
+                for spec in specs
+            )
+        if operation == "get":
+            if not parts:
+                return "格式：/ai config get <key> [group current|user <QQ号>]"
+            key = parts.pop(0)
+            parsed_scope = self._parse_config_command_scope(parts, actor)
+            if isinstance(parsed_scope, str):
+                return parsed_scope
+            scope_type, scope_id = parsed_scope
+            try:
+                value = await self._config_admin.get(
+                    key,
+                    user_id=scope_id if scope_type == "user" else None,
+                    group_id=scope_id if scope_type == "group" else None,
+                )
+            except KeyError:
+                return "未知配置键；使用 /ai config list 查看注册项。"
+            return self._render_effective_config(value)
+        if operation == "set":
+            if len(parts) < 2:
+                return "格式：/ai config set <key> <value> [group current|user <QQ号>]"
+            key, raw_value = parts.pop(0), parts.pop(0)
+            parsed_scope = self._parse_config_command_scope(parts, actor)
+            if isinstance(parsed_scope, str):
+                return parsed_scope
+            scope_type, scope_id = parsed_scope
+            result = await self._config_admin.set(
+                actor,
+                key=key,
+                value=raw_value,
+                scope_type=scope_type,
+                scope_id=scope_id,
+            )
+            return self._render_config_change(result)
+        if operation == "unset":
+            if not parts:
+                return "格式：/ai config unset <key> [group current|user <QQ号>]"
+            key = parts.pop(0)
+            parsed_scope = self._parse_config_command_scope(parts, actor)
+            if isinstance(parsed_scope, str):
+                return parsed_scope
+            scope_type, scope_id = parsed_scope
+            result = await self._config_admin.unset(
+                actor,
+                key=key,
+                scope_type=scope_type,
+                scope_id=scope_id,
+            )
+            return self._render_config_change(result)
+        if operation == "history":
+            if len(parts) > 1:
+                return "格式：/ai config history [key]"
+            try:
+                rows = await self._config_admin.history(
+                    key=parts[0] if parts else None,
+                    actor_user_id=actor.user_id,
+                    limit=20,
+                )
+            except KeyError:
+                return "未知配置键。"
+            if not rows:
+                return "暂无配置修改记录。"
+            return "\n".join(
+                (
+                    f"{row.id}. {row.operation} {row.target_id} "
+                    f"{'成功' if row.success else '失败'} "
+                    f"{row.created_at:%Y-%m-%d %H:%M}"
+                )
+                for row in rows
+            )
+        if operation == "rollback":
+            if len(parts) != 1 or not parts[0].isdigit():
+                return "格式：/ai config rollback <change_id>"
+            result = await self._config_admin.rollback(actor, int(parts[0]))
+            return self._render_config_change(result)
+        return "可用操作：list、get、set、unset、history、rollback。"
+
+    @staticmethod
+    def _parse_config_command_scope(
+        parts: list[str],
+        actor: AdminActor,
+    ) -> tuple[str, str] | str:
+        if not parts:
+            return "global", ""
+        if len(parts) == 2 and parts[0].casefold() == "group":
+            if parts[1].casefold() != "current":
+                return "群级作用域只接受 group current。"
+            if actor.current_group_id is None:
+                return "当前消息不在群聊中。"
+            return "group", actor.current_group_id
+        if len(parts) == 2 and parts[0].casefold() == "user":
+            if _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None:
+                return "目标 QQ 号格式错误。"
+            return "user", parts[1]
+        return "作用域格式错误：使用 group current 或 user <QQ号>。"
+
+    @staticmethod
+    def _render_effective_config(value: EffectiveConfigValue) -> str:
+        if value.configured is not None:
+            rendered_value = "已配置" if value.configured else "未配置"
+        else:
+            rendered_value = str(value.value)
+        return (
+            f"{value.key} = {rendered_value}\n"
+            f"来源：{value.source}\n"
+            f"生效方式：{value.apply_mode.value}"
+        )
+
+    @staticmethod
+    def _render_config_change(result: ConfigChangeResult) -> str:
+        if not result.success:
+            return f"配置未修改：{result.detail or result.error_category or '未知错误'}"
+        suffix = (
+            "，需要重启 Bot 后生效"
+            if (result.apply_mode is ConfigApplyMode.RESTART_REQUIRED and result.pending_restart)
+            else (
+                "，只影响之后新建的记录或任务"
+                if result.apply_mode is ConfigApplyMode.FUTURE_ONLY
+                else (
+                    "，有效值未变化，无需重启"
+                    if result.apply_mode is ConfigApplyMode.RESTART_REQUIRED
+                    else "，已立即生效"
+                )
+            )
+        )
+        return (
+            f"已将 {result.key} 从 {result.before} 改为 {result.after}{suffix}。"
+            f" 变更编号：{result.change_id}"
+        )
 
     async def _whoami(
         self,
@@ -678,6 +928,8 @@ class MessageProcessor:
             "/ai preference list|set|delete\n"
             "/ai affection show|history\n"
             "/ai affection set|adjust|trust user <QQ号> <数值>（超级管理员）\n"
+            "/ai capabilities [类别]（查看当前 QQ 的完整权限与可改范围）\n"
+            "/ai config list|get|set|unset|history|rollback（超级管理员）\n"
             "/ai on|off（超级管理员，当前群）\n"
             "/ai group <群号> on|off（超级管理员）\n"
             "/ai private <QQ号> on|off（超级管理员；阻止/恢复私聊）\n"

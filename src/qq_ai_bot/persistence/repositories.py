@@ -27,6 +27,7 @@ from qq_ai_bot.domain.relationships import (
 )
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
+    AdminOperationEventModel,
     AgentActionModel,
     ChatEventModel,
     ContextResetModel,
@@ -43,6 +44,7 @@ from qq_ai_bot.persistence.models import (
     ProcessedEventModel,
     RelationshipEventModel,
     RelationshipJobModel,
+    RuntimeConfigOverrideModel,
     WebSearchRunModel,
     WebSearchSourceModel,
 )
@@ -331,6 +333,8 @@ class PeopleRepository:
         nickname_known: bool = True,
         group_card_known: bool = True,
         is_bot: bool = False,
+        initial_affection: int | None = None,
+        initial_trust: int | None = None,
     ) -> None:
         """Update current values and retain historical aliases."""
 
@@ -347,8 +351,10 @@ class PeopleRepository:
                 await _ensure_relationship(
                     session,
                     user_id,
-                    initial_affection=self._initial_affection,
-                    initial_trust=self._initial_trust,
+                    initial_affection=(
+                        self._initial_affection if initial_affection is None else initial_affection
+                    ),
+                    initial_trust=(self._initial_trust if initial_trust is None else initial_trust),
                     now=now,
                 )
             if nickname_known:
@@ -453,26 +459,52 @@ class PeopleRepository:
             )
             return int(value or 0)
 
-    async def set_enabled(self, user_id: str, enabled: bool) -> PrivateUserSetting:
+    async def set_enabled(
+        self,
+        user_id: str,
+        enabled: bool,
+        *,
+        initial_affection: int | None = None,
+        initial_trust: int | None = None,
+        session: AsyncSession | None = None,
+    ) -> PrivateUserSetting:
+        if session is None:
+            async with self._database.sessions() as owned_session, owned_session.begin():
+                return await self.set_enabled(
+                    user_id,
+                    enabled,
+                    initial_affection=initial_affection,
+                    initial_trust=initial_trust,
+                    session=owned_session,
+                )
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
-            person = await _ensure_person(session, user_id, now=now)
-            await _ensure_relationship(
-                session,
-                user_id,
-                initial_affection=self._initial_affection,
-                initial_trust=self._initial_trust,
-                now=now,
-            )
-            person.enabled = enabled
+        person = await _ensure_person(session, user_id, now=now)
+        await _ensure_relationship(
+            session,
+            user_id,
+            initial_affection=(
+                self._initial_affection if initial_affection is None else initial_affection
+            ),
+            initial_trust=(self._initial_trust if initial_trust is None else initial_trust),
+            now=now,
+        )
+        person.enabled = enabled
+        await session.flush()
         return PrivateUserSetting(user_id=user_id, enabled=enabled)
 
-    async def get_enabled(self, user_id: str) -> PrivateUserSetting | None:
-        async with self._database.sessions() as session:
-            person = await session.get(PersonModel, user_id)
-            if person is None:
-                return None
-            return PrivateUserSetting(user_id=user_id, enabled=person.enabled)
+    async def get_enabled(
+        self,
+        user_id: str,
+        *,
+        session: AsyncSession | None = None,
+    ) -> PrivateUserSetting | None:
+        if session is None:
+            async with self._database.sessions() as owned_session:
+                return await self.get_enabled(user_id, session=owned_session)
+        person = await session.get(PersonModel, user_id)
+        if person is None:
+            return None
+        return PrivateUserSetting(user_id=user_id, enabled=person.enabled)
 
     async def delete_person(self, user_id: str, *, marker: str = "[已删除用户]") -> bool:
         """Delete all attributable data and redact exact QQ text elsewhere."""
@@ -573,6 +605,38 @@ class PeopleRepository:
                     )
                 )
             )
+            await session.execute(
+                delete(RuntimeConfigOverrideModel).where(
+                    RuntimeConfigOverrideModel.scope_type == "user",
+                    RuntimeConfigOverrideModel.scope_id == user_id,
+                )
+            )
+            await session.execute(
+                update(RuntimeConfigOverrideModel)
+                .where(RuntimeConfigOverrideModel.updated_by == user_id)
+                .values(updated_by=marker)
+            )
+            audit_rows = (
+                await session.scalars(
+                    select(AdminOperationEventModel).where(
+                        or_(
+                            AdminOperationEventModel.actor_user_id == user_id,
+                            AdminOperationEventModel.target_id == user_id,
+                            AdminOperationEventModel.conversation_key.contains(user_id),
+                            AdminOperationEventModel.before_json.contains(user_id),
+                            AdminOperationEventModel.after_json.contains(user_id),
+                        )
+                    )
+                )
+            ).all()
+            for audit in audit_rows:
+                if audit.actor_user_id == user_id:
+                    audit.actor_user_id = marker
+                if audit.target_id == user_id:
+                    audit.target_id = marker
+                audit.conversation_key = audit.conversation_key.replace(user_id, marker)
+                audit.before_json = audit.before_json.replace(user_id, marker)
+                audit.after_json = audit.after_json.replace(user_id, marker)
             await session.delete(person)
             return True
 
@@ -589,6 +653,8 @@ class UserProfileRepository(PeopleRepository):
         group_card: str = "",
         nickname_known: bool = True,
         group_card_known: bool = True,
+        initial_affection: int | None = None,
+        initial_trust: int | None = None,
     ) -> None:
         await self.observe(
             user_id=user_id,
@@ -597,6 +663,8 @@ class UserProfileRepository(PeopleRepository):
             group_card=group_card,
             nickname_known=nickname_known,
             group_card_known=group_card_known,
+            initial_affection=initial_affection,
+            initial_trust=initial_trust,
         )
 
     async def delete_user(self, user_id: str) -> bool:
@@ -609,30 +677,76 @@ class GroupSettingsRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    async def get(self, group_id: str) -> GroupSetting | None:
-        async with self._database.sessions() as session:
-            row = await session.get(GroupModel, group_id)
-            if row is None:
-                return None
-            return GroupSetting(
-                group_id=group_id,
-                enabled=row.enabled,
-                require_mention=row.require_mention,
-                conversation_mode=ConversationMode.SHARED,
-                autonomous_enabled=row.autonomous_enabled,
-                name=row.name,
-            )
+    async def get(
+        self,
+        group_id: str,
+        *,
+        session: AsyncSession | None = None,
+    ) -> GroupSetting | None:
+        if session is None:
+            async with self._database.sessions() as owned_session:
+                return await self.get(group_id, session=owned_session)
+        row = await session.get(GroupModel, group_id)
+        if row is None:
+            return None
+        return GroupSetting(
+            group_id=group_id,
+            enabled=row.enabled,
+            require_mention=row.require_mention,
+            conversation_mode=ConversationMode.SHARED,
+            autonomous_enabled=row.autonomous_enabled,
+            name=row.name,
+        )
 
-    async def set_enabled(self, group_id: str, enabled: bool) -> GroupSetting:
+    async def set_enabled(
+        self,
+        group_id: str,
+        enabled: bool,
+        *,
+        session: AsyncSession | None = None,
+    ) -> GroupSetting:
+        if session is None:
+            async with self._database.sessions() as owned_session, owned_session.begin():
+                return await self.set_enabled(group_id, enabled, session=owned_session)
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
-            row = await _ensure_group(session, group_id, enabled=enabled, now=now)
+        row = await _ensure_group(session, group_id, enabled=enabled, now=now)
+        await session.flush()
         return GroupSetting(
             group_id=group_id,
             enabled=enabled,
             require_mention=row.require_mention,
             conversation_mode=ConversationMode.SHARED,
             autonomous_enabled=row.autonomous_enabled,
+            name=row.name,
+        )
+
+    async def set_autonomous_enabled(
+        self,
+        group_id: str,
+        enabled: bool,
+        *,
+        session: AsyncSession | None = None,
+    ) -> GroupSetting:
+        """Update only the group's autonomous participation switch."""
+
+        if session is None:
+            async with self._database.sessions() as owned_session, owned_session.begin():
+                return await self.set_autonomous_enabled(
+                    group_id,
+                    enabled,
+                    session=owned_session,
+                )
+        now = datetime.now(UTC)
+        row = await _ensure_group(session, group_id, now=now)
+        row.autonomous_enabled = enabled
+        row.updated_at = now
+        await session.flush()
+        return GroupSetting(
+            group_id=group_id,
+            enabled=row.enabled,
+            require_mention=row.require_mention,
+            conversation_mode=ConversationMode.SHARED,
+            autonomous_enabled=enabled,
             name=row.name,
         )
 
@@ -681,11 +795,30 @@ class PrivateUserSettingsRepository:
             initial_trust=initial_trust,
         )
 
-    async def get(self, user_id: str) -> PrivateUserSetting | None:
-        return await self._people.get_enabled(user_id)
+    async def get(
+        self,
+        user_id: str,
+        *,
+        session: AsyncSession | None = None,
+    ) -> PrivateUserSetting | None:
+        return await self._people.get_enabled(user_id, session=session)
 
-    async def set_enabled(self, user_id: str, enabled: bool) -> PrivateUserSetting:
-        return await self._people.set_enabled(user_id, enabled)
+    async def set_enabled(
+        self,
+        user_id: str,
+        enabled: bool,
+        *,
+        initial_affection: int | None = None,
+        initial_trust: int | None = None,
+        session: AsyncSession | None = None,
+    ) -> PrivateUserSetting:
+        return await self._people.set_enabled(
+            user_id,
+            enabled,
+            initial_affection=initial_affection,
+            initial_trust=initial_trust,
+            session=session,
+        )
 
 
 class EventLedgerRepository:
@@ -1010,19 +1143,31 @@ class MemoryRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    async def list_person(self, user_id: str, *, limit: int = 100) -> tuple[MemoryRecord, ...]:
-        async with self._database.sessions() as session:
-            rows = (
-                await session.scalars(
-                    select(PersonMemoryModel)
-                    .where(PersonMemoryModel.user_id == user_id)
-                    .order_by(
-                        PersonMemoryModel.importance.desc(),
-                        PersonMemoryModel.updated_at.desc(),
-                    )
-                    .limit(limit)
+    async def list_person(
+        self,
+        user_id: str,
+        *,
+        limit: int = 100,
+        session: AsyncSession | None = None,
+    ) -> tuple[MemoryRecord, ...]:
+        if session is None:
+            async with self._database.sessions() as owned_session:
+                return await self.list_person(
+                    user_id,
+                    limit=limit,
+                    session=owned_session,
                 )
-            ).all()
+        rows = (
+            await session.scalars(
+                select(PersonMemoryModel)
+                .where(PersonMemoryModel.user_id == user_id)
+                .order_by(
+                    PersonMemoryModel.importance.desc(),
+                    PersonMemoryModel.updated_at.desc(),
+                )
+                .limit(limit)
+            )
+        ).all()
         return tuple(self._project(row, "person") for row in rows)
 
     async def list_group(self, group_id: str, *, limit: int = 100) -> tuple[MemoryRecord, ...]:
@@ -1089,60 +1234,76 @@ class MemoryRepository:
         group_id: str | None = None,
         subject_user_id: str | None = None,
         limit: int,
+        session: AsyncSession | None = None,
     ) -> MemoryRecord:
-        now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
-            model, filters, values = await self._scope_values(
-                session,
-                scope=scope,
-                user_id=user_id,
-                group_id=group_id,
-                now=now,
-            )
-            existing = await session.scalar(
-                select(model).where(*filters, model.memory_key == memory_key)
-            )
-            if existing is None:
-                count = int(
-                    await session.scalar(select(func.count()).select_from(model).where(*filters))
-                    or 0
-                )
-                if count >= limit:
-                    oldest_automatic = await session.scalar(
-                        select(model)
-                        .where(*filters, model.source_type != "explicit")
-                        .order_by(model.importance.asc(), model.updated_at.asc())
-                        .limit(1)
-                    )
-                    if oldest_automatic is None:
-                        raise ValueError("memory capacity is occupied by explicit memories")
-                    await session.delete(oldest_automatic)
-                existing = model(
-                    **values,
+        if session is None:
+            async with self._database.sessions() as owned_session, owned_session.begin():
+                return await self.upsert(
+                    scope=scope,
                     memory_key=memory_key,
+                    content=content,
                     category=category,
-                    content=content[:4000],
-                    importance=max(1, min(5, importance)),
+                    importance=importance,
                     source_type=source_type,
                     source_event_id=source_event_id,
-                    created_at=now,
-                    updated_at=now,
+                    user_id=user_id,
+                    group_id=group_id,
+                    subject_user_id=subject_user_id,
+                    limit=limit,
+                    session=owned_session,
                 )
-                if scope == "group":
-                    existing.subject_user_id = subject_user_id
-                session.add(existing)
-                await session.flush()
-            elif not (existing.source_type == "explicit" and source_type != "explicit"):
-                existing.category = category
-                existing.content = content[:4000]
-                existing.importance = max(1, min(5, importance))
-                existing.source_type = source_type
-                existing.source_event_id = source_event_id
-                existing.updated_at = now
-                if scope == "group":
-                    existing.subject_user_id = subject_user_id
-            await self._trim(session, model, filters, limit)
-            return self._project(existing, scope)
+        now = datetime.now(UTC)
+        model, filters, values = await self._scope_values(
+            session,
+            scope=scope,
+            user_id=user_id,
+            group_id=group_id,
+            now=now,
+        )
+        existing = await session.scalar(
+            select(model).where(*filters, model.memory_key == memory_key)
+        )
+        if existing is None:
+            count = int(
+                await session.scalar(select(func.count()).select_from(model).where(*filters)) or 0
+            )
+            if count >= limit:
+                oldest_automatic = await session.scalar(
+                    select(model)
+                    .where(*filters, model.source_type != "explicit")
+                    .order_by(model.importance.asc(), model.updated_at.asc())
+                    .limit(1)
+                )
+                if oldest_automatic is None:
+                    raise ValueError("memory capacity is occupied by explicit memories")
+                await session.delete(oldest_automatic)
+            existing = model(
+                **values,
+                memory_key=memory_key,
+                category=category,
+                content=content[:4000],
+                importance=max(1, min(5, importance)),
+                source_type=source_type,
+                source_event_id=source_event_id,
+                created_at=now,
+                updated_at=now,
+            )
+            if scope == "group":
+                existing.subject_user_id = subject_user_id
+            session.add(existing)
+            await session.flush()
+        elif not (existing.source_type == "explicit" and source_type != "explicit"):
+            existing.category = category
+            existing.content = content[:4000]
+            existing.importance = max(1, min(5, importance))
+            existing.source_type = source_type
+            existing.source_event_id = source_event_id
+            existing.updated_at = now
+            if scope == "group":
+                existing.subject_user_id = subject_user_id
+        await self._trim(session, model, filters, limit)
+        await session.flush()
+        return self._project(existing, scope)
 
     async def _scope_values(
         self,
@@ -1219,38 +1380,75 @@ class MemoryRepository:
         if removable:
             await session.execute(delete(model).where(model.id.in_(removable)))
 
-    async def update_explicit(self, memory_id: int, *, user_id: str, content: str) -> bool:
-        async with self._database.sessions() as session, session.begin():
-            row = await session.get(PersonMemoryModel, memory_id)
-            if row is None or row.user_id != user_id:
-                return False
-            row.content = content
-            row.source_type = "explicit"
-            row.updated_at = datetime.now(UTC)
-            return True
-
-    async def delete_person_memory(self, memory_id: int, *, user_id: str) -> bool:
-        async with self._database.sessions() as session, session.begin():
-            result = await session.execute(
-                delete(PersonMemoryModel).where(
-                    PersonMemoryModel.id == memory_id,
-                    PersonMemoryModel.user_id == user_id,
+    async def update_explicit(
+        self,
+        memory_id: int,
+        *,
+        user_id: str,
+        content: str,
+        session: AsyncSession | None = None,
+    ) -> bool:
+        if session is None:
+            async with self._database.sessions() as owned_session, owned_session.begin():
+                return await self.update_explicit(
+                    memory_id,
+                    user_id=user_id,
+                    content=content,
+                    session=owned_session,
                 )
+        row = await session.get(PersonMemoryModel, memory_id)
+        if row is None or row.user_id != user_id:
+            return False
+        row.content = content
+        row.source_type = "explicit"
+        row.updated_at = datetime.now(UTC)
+        await session.flush()
+        return True
+
+    async def delete_person_memory(
+        self,
+        memory_id: int,
+        *,
+        user_id: str,
+        session: AsyncSession | None = None,
+    ) -> bool:
+        if session is None:
+            async with self._database.sessions() as owned_session, owned_session.begin():
+                return await self.delete_person_memory(
+                    memory_id,
+                    user_id=user_id,
+                    session=owned_session,
+                )
+        result = await session.execute(
+            delete(PersonMemoryModel).where(
+                PersonMemoryModel.id == memory_id,
+                PersonMemoryModel.user_id == user_id,
             )
-            return bool(cast(CursorResult[Any], result).rowcount)
+        )
+        return bool(cast(CursorResult[Any], result).rowcount)
 
     async def list_preferences(
-        self, user_id: str, *, limit: int = 30
+        self,
+        user_id: str,
+        *,
+        limit: int = 30,
+        session: AsyncSession | None = None,
     ) -> tuple[PreferenceRecord, ...]:
-        async with self._database.sessions() as session:
-            rows = (
-                await session.scalars(
-                    select(PersonPreferenceModel)
-                    .where(PersonPreferenceModel.user_id == user_id)
-                    .order_by(PersonPreferenceModel.updated_at.desc())
-                    .limit(limit)
+        if session is None:
+            async with self._database.sessions() as owned_session:
+                return await self.list_preferences(
+                    user_id,
+                    limit=limit,
+                    session=owned_session,
                 )
-            ).all()
+        rows = (
+            await session.scalars(
+                select(PersonPreferenceModel)
+                .where(PersonPreferenceModel.user_id == user_id)
+                .order_by(PersonPreferenceModel.updated_at.desc())
+                .limit(limit)
+            )
+        ).all()
         return tuple(
             PreferenceRecord(
                 id=row.id,
@@ -1270,80 +1468,109 @@ class MemoryRepository:
         *,
         limit: int = 30,
         source_type: str = "explicit",
+        session: AsyncSession | None = None,
     ) -> PreferenceRecord:
+        if session is None:
+            async with self._database.sessions() as owned_session, owned_session.begin():
+                return await self.set_preference(
+                    user_id,
+                    key,
+                    value,
+                    limit=limit,
+                    source_type=source_type,
+                    session=owned_session,
+                )
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
-            await _ensure_person(session, user_id, now=now)
-            statement = insert(PersonPreferenceModel).values(
-                user_id=user_id,
-                preference_key=key,
-                value=value[:2000],
-                source_type=source_type,
-                created_at=now,
-                updated_at=now,
+        await _ensure_person(session, user_id, now=now)
+        statement = insert(PersonPreferenceModel).values(
+            user_id=user_id,
+            preference_key=key,
+            value=value[:2000],
+            source_type=source_type,
+            created_at=now,
+            updated_at=now,
+        )
+        update_statement = statement.on_conflict_do_update(
+            index_elements=[
+                PersonPreferenceModel.user_id,
+                PersonPreferenceModel.preference_key,
+            ],
+            set_={
+                "value": value[:2000],
+                "source_type": source_type,
+                "updated_at": now,
+            },
+            where=(
+                PersonPreferenceModel.source_type != "explicit"
+                if source_type != "explicit"
+                else None
+            ),
+        )
+        await session.execute(update_statement)
+        stale = (
+            await session.scalars(
+                select(PersonPreferenceModel.id)
+                .where(PersonPreferenceModel.user_id == user_id)
+                .order_by(PersonPreferenceModel.updated_at.desc())
+                .offset(limit)
             )
-            update_statement = statement.on_conflict_do_update(
-                index_elements=[
-                    PersonPreferenceModel.user_id,
-                    PersonPreferenceModel.preference_key,
-                ],
-                set_={
-                    "value": value[:2000],
-                    "source_type": source_type,
-                    "updated_at": now,
-                },
-                where=(
-                    PersonPreferenceModel.source_type != "explicit"
-                    if source_type != "explicit"
-                    else None
-                ),
+        ).all()
+        if stale:
+            await session.execute(
+                delete(PersonPreferenceModel).where(PersonPreferenceModel.id.in_(stale))
             )
-            await session.execute(update_statement)
-            stale = (
-                await session.scalars(
-                    select(PersonPreferenceModel.id)
-                    .where(PersonPreferenceModel.user_id == user_id)
-                    .order_by(PersonPreferenceModel.updated_at.desc())
-                    .offset(limit)
-                )
-            ).all()
-            if stale:
-                await session.execute(
-                    delete(PersonPreferenceModel).where(PersonPreferenceModel.id.in_(stale))
-                )
-            row = await session.scalar(
-                select(PersonPreferenceModel).where(
-                    PersonPreferenceModel.user_id == user_id,
-                    PersonPreferenceModel.preference_key == key,
-                )
+        row = await session.scalar(
+            select(PersonPreferenceModel).where(
+                PersonPreferenceModel.user_id == user_id,
+                PersonPreferenceModel.preference_key == key,
             )
-            assert row is not None
-            return PreferenceRecord(
-                id=row.id,
-                key=row.preference_key,
-                value=row.value,
-                source_type=row.source_type,
-                updated_at=row.updated_at,
-            )
+        )
+        assert row is not None
+        return PreferenceRecord(
+            id=row.id,
+            key=row.preference_key,
+            value=row.value,
+            source_type=row.source_type,
+            updated_at=row.updated_at,
+        )
 
-    async def delete_preference(self, user_id: str, key: str) -> bool:
-        async with self._database.sessions() as session, session.begin():
-            result = await session.execute(
-                delete(PersonPreferenceModel).where(
-                    PersonPreferenceModel.user_id == user_id,
-                    PersonPreferenceModel.preference_key == key,
+    async def delete_preference(
+        self,
+        user_id: str,
+        key: str,
+        *,
+        session: AsyncSession | None = None,
+    ) -> bool:
+        if session is None:
+            async with self._database.sessions() as owned_session, owned_session.begin():
+                return await self.delete_preference(
+                    user_id,
+                    key,
+                    session=owned_session,
                 )
+        result = await session.execute(
+            delete(PersonPreferenceModel).where(
+                PersonPreferenceModel.user_id == user_id,
+                PersonPreferenceModel.preference_key == key,
             )
-            return bool(cast(CursorResult[Any], result).rowcount)
+        )
+        return bool(cast(CursorResult[Any], result).rowcount)
 
-    async def count_person(self, user_id: str) -> int:
-        async with self._database.sessions() as session:
-            value = await session.scalar(
-                select(func.count())
-                .select_from(PersonMemoryModel)
-                .where(PersonMemoryModel.user_id == user_id)
-            )
-            return int(value or 0)
+    async def count_person(
+        self,
+        user_id: str,
+        *,
+        session: AsyncSession | None = None,
+    ) -> int:
+        if session is None:
+            async with self._database.sessions() as owned_session:
+                return await self.count_person(user_id, session=owned_session)
+        value = await session.scalar(
+            select(func.count())
+            .select_from(PersonMemoryModel)
+            .where(PersonMemoryModel.user_id == user_id)
+        )
+        return int(value or 0)
 
 
 class GroupMemoryRepository:
@@ -1515,6 +1742,8 @@ class RelationshipRepository:
         user_id: str,
         *,
         now: datetime,
+        initial_affection: int | None = None,
+        initial_trust: int | None = None,
     ) -> PersonRelationshipModel:
         person = await session.get(PersonModel, user_id)
         if person is None:
@@ -1522,16 +1751,39 @@ class RelationshipRepository:
         return await _ensure_relationship(
             session,
             user_id,
-            initial_affection=self._initial_affection,
-            initial_trust=self._initial_trust,
+            initial_affection=(
+                self._initial_affection if initial_affection is None else initial_affection
+            ),
+            initial_trust=(self._initial_trust if initial_trust is None else initial_trust),
             now=now,
         )
 
-    async def get_or_create(self, user_id: str) -> RelationshipSnapshot:
+    async def get_or_create(
+        self,
+        user_id: str,
+        *,
+        initial_affection: int | None = None,
+        initial_trust: int | None = None,
+        session: AsyncSession | None = None,
+    ) -> RelationshipSnapshot:
+        if session is None:
+            async with self._database.sessions() as owned_session, owned_session.begin():
+                return await self.get_or_create(
+                    user_id,
+                    initial_affection=initial_affection,
+                    initial_trust=initial_trust,
+                    session=owned_session,
+                )
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
-            row = await self._ensure_row(session, user_id, now=now)
-            return _relationship_snapshot(row, trust_cap_offset=self._trust_cap_offset)
+        row = await self._ensure_row(
+            session,
+            user_id,
+            now=now,
+            initial_affection=initial_affection,
+            initial_trust=initial_trust,
+        )
+        await session.flush()
+        return _relationship_snapshot(row, trust_cap_offset=self._trust_cap_offset)
 
     async def get(self, user_id: str) -> RelationshipSnapshot | None:
         async with self._database.sessions() as session:
@@ -1566,10 +1818,16 @@ class RelationshipRepository:
         user_id: str,
         source_event_id: int,
         evaluation: RelationshipEvaluation,
+        max_auto_delta: int | None = None,
+        daily_positive_cap: int = 0,
+        daily_negative_cap: int = 0,
     ) -> tuple[RelationshipSnapshot, bool]:
-        """Apply one event at most once; daily cumulative changes are intentionally uncapped."""
+        """Apply one event once, with optional runtime daily caps (zero means unlimited)."""
 
-        self._validate_automatic_evaluation(evaluation)
+        self._validate_automatic_evaluation(
+            evaluation,
+            maximum=max_auto_delta,
+        )
         now = datetime.now(UTC)
         try:
             async with self._database.sessions() as session, session.begin():
@@ -1596,13 +1854,50 @@ class RelationshipRepository:
                 ):
                     raise ValueError("relationship source event does not belong to the user")
 
+                effective_evaluation = evaluation
+                if daily_positive_cap or daily_negative_cap:
+                    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                    daily_events = (
+                        await session.scalars(
+                            select(RelationshipEventModel).where(
+                                RelationshipEventModel.user_id == user_id,
+                                RelationshipEventModel.change_type == "automatic",
+                                RelationshipEventModel.created_at >= day_start,
+                            )
+                        )
+                    ).all()
+                    affection_delta = self._apply_daily_cap(
+                        evaluation.affection_delta,
+                        positive_used=sum(max(0, item.affection_delta) for item in daily_events),
+                        negative_used=sum(max(0, -item.affection_delta) for item in daily_events),
+                        positive_cap=daily_positive_cap,
+                        negative_cap=daily_negative_cap,
+                    )
+                    trust_delta = self._apply_daily_cap(
+                        evaluation.trust_delta,
+                        positive_used=sum(max(0, item.trust_delta) for item in daily_events),
+                        negative_used=sum(max(0, -item.trust_delta) for item in daily_events),
+                        positive_cap=daily_positive_cap,
+                        negative_cap=daily_negative_cap,
+                    )
+                    effective_evaluation = RelationshipEvaluation(
+                        affection_delta=affection_delta,
+                        trust_delta=trust_delta,
+                        reason_code=(
+                            evaluation.reason_code if affection_delta or trust_delta else "neutral"
+                        ),
+                        confidence=evaluation.confidence,
+                    )
                 affection_before = row.affection_score
                 trust_before = row.trust_score
                 row.affection_score = max(
                     0,
-                    min(100, affection_before + evaluation.affection_delta),
+                    min(100, affection_before + effective_evaluation.affection_delta),
                 )
-                row.trust_score = max(0, min(100, trust_before + evaluation.trust_delta))
+                row.trust_score = max(
+                    0,
+                    min(100, trust_before + effective_evaluation.trust_delta),
+                )
                 affection_delta = row.affection_score - affection_before
                 trust_delta = row.trust_score - trust_before
                 row.updated_at = now
@@ -1620,8 +1915,8 @@ class RelationshipRepository:
                         trust_before=trust_before,
                         trust_delta=trust_delta,
                         trust_after=row.trust_score,
-                        reason_code=evaluation.reason_code[:64],
-                        confidence=evaluation.confidence,
+                        reason_code=effective_evaluation.reason_code[:64],
+                        confidence=effective_evaluation.confidence,
                         created_at=now,
                     )
                 )
@@ -1637,16 +1932,23 @@ class RelationshipRepository:
             snapshot = await self.get_or_create(user_id)
             return snapshot, False
 
-    def _validate_automatic_evaluation(self, evaluation: RelationshipEvaluation) -> None:
+    def _validate_automatic_evaluation(
+        self,
+        evaluation: RelationshipEvaluation,
+        *,
+        maximum: int | None = None,
+    ) -> None:
+        affection_maximum = maximum or self._max_affection_auto_delta
+        trust_maximum = maximum or self._max_trust_auto_delta
         for value, maximum, name in (
             (
                 evaluation.affection_delta,
-                self._max_affection_auto_delta,
+                affection_maximum,
                 "affection_delta",
             ),
             (
                 evaluation.trust_delta,
-                self._max_trust_auto_delta,
+                trust_maximum,
                 "trust_delta",
             ),
         ):
@@ -1655,12 +1957,28 @@ class RelationshipRepository:
         if not 0 <= evaluation.confidence <= 1:
             raise ValueError("confidence must be between zero and one")
 
+    @staticmethod
+    def _apply_daily_cap(
+        delta: int,
+        *,
+        positive_used: int,
+        negative_used: int,
+        positive_cap: int,
+        negative_cap: int,
+    ) -> int:
+        if delta > 0 and positive_cap > 0:
+            return min(delta, max(0, positive_cap - positive_used))
+        if delta < 0 and negative_cap > 0:
+            return max(delta, -max(0, negative_cap - negative_used))
+        return delta
+
     async def set_affection(
         self,
         *,
         user_id: str,
         actor_user_id: str,
         score: int,
+        session: AsyncSession | None = None,
     ) -> RelationshipSnapshot:
         if not 0 <= score <= 100:
             raise ValueError("affection score must be between 0 and 100")
@@ -1669,6 +1987,7 @@ class RelationshipRepository:
             actor_user_id=actor_user_id,
             affection_score=score,
             reason_code="manual_set_affection",
+            session=session,
         )
 
     async def adjust_affection(
@@ -1677,6 +1996,7 @@ class RelationshipRepository:
         user_id: str,
         actor_user_id: str,
         delta: int,
+        session: AsyncSession | None = None,
     ) -> RelationshipSnapshot:
         if not -20 <= delta <= 20:
             raise ValueError("affection adjustment must be between -20 and 20")
@@ -1685,6 +2005,7 @@ class RelationshipRepository:
             actor_user_id=actor_user_id,
             affection_delta=delta,
             reason_code="manual_adjust_affection",
+            session=session,
         )
 
     async def set_trust(
@@ -1693,6 +2014,7 @@ class RelationshipRepository:
         user_id: str,
         actor_user_id: str,
         score: int,
+        session: AsyncSession | None = None,
     ) -> RelationshipSnapshot:
         if not 0 <= score <= 100:
             raise ValueError("trust score must be between 0 and 100")
@@ -1701,6 +2023,7 @@ class RelationshipRepository:
             actor_user_id=actor_user_id,
             trust_score=score,
             reason_code="manual_set_trust",
+            session=session,
         )
 
     async def _apply_manual(
@@ -1712,40 +2035,51 @@ class RelationshipRepository:
         affection_score: int | None = None,
         affection_delta: int = 0,
         trust_score: int | None = None,
+        session: AsyncSession | None = None,
     ) -> RelationshipSnapshot:
-        now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
-            row = await self._ensure_row(session, user_id, now=now)
-            affection_before = row.affection_score
-            trust_before = row.trust_score
-            row.affection_score = (
-                affection_score
-                if affection_score is not None
-                else max(0, min(100, affection_before + affection_delta))
-            )
-            row.trust_score = trust_score if trust_score is not None else trust_before
-            actual_affection_delta = row.affection_score - affection_before
-            actual_trust_delta = row.trust_score - trust_before
-            row.updated_at = now
-            session.add(
-                RelationshipEventModel(
+        if session is None:
+            async with self._database.sessions() as owned_session, owned_session.begin():
+                return await self._apply_manual(
                     user_id=user_id,
-                    source_event_id=None,
                     actor_user_id=actor_user_id,
-                    change_type="manual",
-                    affection_before=affection_before,
-                    affection_delta=actual_affection_delta,
-                    affection_after=row.affection_score,
-                    trust_before=trust_before,
-                    trust_delta=actual_trust_delta,
-                    trust_after=row.trust_score,
                     reason_code=reason_code,
-                    confidence=None,
-                    created_at=now,
+                    affection_score=affection_score,
+                    affection_delta=affection_delta,
+                    trust_score=trust_score,
+                    session=owned_session,
                 )
+        now = datetime.now(UTC)
+        row = await self._ensure_row(session, user_id, now=now)
+        affection_before = row.affection_score
+        trust_before = row.trust_score
+        row.affection_score = (
+            affection_score
+            if affection_score is not None
+            else max(0, min(100, affection_before + affection_delta))
+        )
+        row.trust_score = trust_score if trust_score is not None else trust_before
+        actual_affection_delta = row.affection_score - affection_before
+        actual_trust_delta = row.trust_score - trust_before
+        row.updated_at = now
+        session.add(
+            RelationshipEventModel(
+                user_id=user_id,
+                source_event_id=None,
+                actor_user_id=actor_user_id,
+                change_type="manual",
+                affection_before=affection_before,
+                affection_delta=actual_affection_delta,
+                affection_after=row.affection_score,
+                trust_before=trust_before,
+                trust_delta=actual_trust_delta,
+                trust_after=row.trust_score,
+                reason_code=reason_code,
+                confidence=None,
+                created_at=now,
             )
-            await session.flush()
-            return _relationship_snapshot(row, trust_cap_offset=self._trust_cap_offset)
+        )
+        await session.flush()
+        return _relationship_snapshot(row, trust_cap_offset=self._trust_cap_offset)
 
 
 class RelationshipJobRepository:

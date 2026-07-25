@@ -53,6 +53,8 @@ def upgrade() -> None:
             "person_relationships",
             "relationship_events",
             "relationship_jobs",
+            "runtime_config_overrides",
+            "admin_operation_events",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**从 1.1 升级到 1.2 的 Alembic `0007` 只新增关系系统表，并为现有人物补建初始好感度和信任度，不会删除人物、聊天、记忆或联网来源。若从 1.0 之前的版本直接升级，仍会经过不可逆的 `0005` 数据重建；始终先备份 `data/`。
+> **升级提示：**从 1.2.0 升级到 1.3.0 的 Alembic `0008` 只新增运行时配置覆盖和管理员审计表，不会删除或改写人物、聊天、记忆、联网来源或关系数据。若从 1.0 之前的版本直接升级，仍会经过不可逆的 `0005` 数据重建；始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -28,7 +28,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.3.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -40,6 +40,8 @@ Yuki-QQbot 1.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite
 - 可选接入 Tavily 受控联网搜索，由后端严格控制来源保存、隔离和显示。
 - 每个 QQ 拥有独立、持久化的好感度和信任度，关系阶段会自然影响 Yuki 的语气。
 - 关系分数不会改变程序权限；只有当前真实发送者属于 `SUPERUSERS` 才能获得管理员工具。
+- 超级管理员可以用自然语言管理注册配置、关系、记忆、偏好、群和私聊准入。
+- 运行时配置保存在 SQLite，不修改 `.env`；所有修改都有脱敏审计，配置覆盖可安全回滚。
 
 本版本不下载或识别图片、语音、视频和文件，但会保存其 OneBot 消息段元数据，为后续多模态版本保留基础。
 
@@ -115,6 +117,8 @@ docker compose up -d --no-deps --force-recreate bot
 | `agent_actions` | 通用 OneBot 工具的最小审计记录 |
 | `web_search_runs` | 按会话隔离的联网工具运行记录，不保存网页正文 |
 | `web_search_sources` | 真实来源的标题、URL、域名、摘要和发布时间 |
+| `runtime_config_overrides` | 按 global/group/user 保存显式注册的运行时配置覆盖与版本 |
+| `admin_operation_events` | 管理员操作、修改前后值、成功状态与错误类别的脱敏审计 |
 
 消息到达后的顺序是：
 
@@ -124,7 +128,9 @@ docker compose up -d --no-deps --force-recreate bot
   → 更新人物/群/成员
   → 写入永久事件账本
   → 记忆任务入队
-  → 确定性命令、显式回复或自主参与判断
+  → 确定性命令，或进入同一个正常聊天 Agent
+  → 当前真实发送者是超级管理员时，为该 Agent 动态增加管理员工具
+  → 显式回复或自主参与判断
   → 普通聊天成功发送后，关系评价任务入队
 ```
 
@@ -138,6 +144,7 @@ docker compose up -d --no-deps --force-recreate bot
 - 该 QQ 私聊中的双方事件；
 - 以该 QQ 为主体的群记忆、检索索引和后台任务；
 - 该 QQ 私聊及各群成员会话中的联网来源记录；
+- 该 QQ 的用户级运行时配置覆盖；保留的管理员审计和其他作用域配置会把精确 QQ 替换为删除标记；
 - 其余事件正文中出现的精确 QQ 文本会替换为删除标记。
 
 ## 聊天上下文与记忆
@@ -156,7 +163,7 @@ docker compose up -d --no-deps --force-recreate bot
 
 每个 QQ 的初始好感度和信任度均为 `50`，总分始终限制在 `0–100`。自动评价通常不改变分数，常见有效变化为 `±1`，只有明显事件允许 `±2`。置信度低于 `0.75`、普通搜索、命令、重复夸奖、反复示爱、单纯增加消息数量、未触发群观察消息，以及要求 Yuki 直接修改分数的文本都不会加分。
 
-本项目**不设置每日累计增加或降低上限**：同一天可以由多次独立、有效事件累计变化超过旧方案中的 `+3/-5`。单次自动变化上限和 `0–100` 总分边界仍然生效，同一聊天事件只能评价一次。
+默认仍然**不设置每日累计增加或降低上限**：`RELATIONSHIP_DAILY_POSITIVE_CAP=0`、`RELATIONSHIP_DAILY_NEGATIVE_CAP=0` 中的 `0` 表示不限额，因此保持 1.2 行为。管理员可以把对应运行时配置改为 `1–100`，让之后的自动评价按 UTC 自然日分别裁剪正向和负向累计变化；单次自动变化上限、`0–100` 总分边界和事件幂等始终生效。
 
 关系评价任务只在普通聊天回复成功发送后创建。Worker 默认每 60 秒或累计 5 条唤醒，每批最多 10 个会话，失败最多重试 3 次；每个任务只向评价器提供当前人物最近最多 5 条相关事件，不传完整系统提示词、不开放工具并关闭思考模式。评价失败不会影响已经发送的聊天回复。
 
@@ -186,6 +193,7 @@ relationship_weight = round(0.6 × affection_score + 0.4 × effective_trust)
 
 所有普通聊天轮都可使用：
 
+- `get_my_capabilities`：按当前真实消息发送者 QQ 查询本人完整权限能力、可改参数数量、接口、作用域和生效方式；不接受目标 QQ 或角色参数。
 - `get_recent_chat_history`：每次直接调用 NapCat 的 `get_friend_msg_history` 或 `get_group_msg_history`，读取当前场景最近 20 条；未见消息会去重补入账本。
 - `search_chat_history`：用 SQLite FTS5 搜索永久账本，可按 QQ、群号和时间范围约束；短于三个字符时使用有范围限制的 `LIKE`。
 - `get_person_memories`：按 QQ 读取人物记忆。
@@ -200,7 +208,23 @@ relationship_weight = round(0.6 × affection_score + 0.4 × effective_trust)
 
 - `call_onebot_api(action, params)`：通过现有反向 WebSocket 调用任意 NapCat/OneBot action，不设 action denylist，也不二次确认。
 
+这里的“任意 action”是独立的通用全接口网关：开放范围以当前 NapCat/OneBot 实际提供的全部公开 action 为准，不受权限目录中 18 项应用业务接口数量限制。能力目录是给 Yuki 的内部工具数据，不会原样发给用户或写入聊天账本；Yuki 读取后只输出自然语言结论或继续执行具体操作。
+
 引用管理员消息、历史里出现管理员 QQ、模型转述和自主群聊批次都不能获得管理员工具。每轮最多执行 5 次工具、6 次模型请求，其中联网工具最多 3 次。只要本轮执行过联网工具，后续 OneBot 管理工具就会被撤销，网页内容不能触发管理操作。通用 OneBot 调用只记录 actor QQ、action、成功状态、耗时和错误类别，不记录完整结果。
+
+1.3 的自然语言管理员能力直接并入上述同一个正常聊天 Agent，不创建第二套路由、隐藏会话或客服人格。只有当前真实发送者 QQ 属于 `SUPERUSERS` 时，该 Agent 的当前工具列表才会额外获得：
+
+- `admin_list_capabilities`
+- `admin_get_config`
+- `admin_set_config`
+- `admin_delete_config_override`
+- `admin_execute_action`
+- `admin_get_history`
+- `admin_rollback_change`
+
+管理员操作与日常聊天共享同一份系统提示词、人物关系、记忆和最近消息，因此 Yuki 在执行任务前后保持同一个人格，也能自然理解“先问目标 QQ、下一条再补 QQ”这样的多轮请求。权限不会从上下文继承：每次真正执行工具时，后端仍重新核对当前 OneBot 事件的真实发送者 QQ；普通用户即使看到管理员历史也得不到 `admin_*` 工具。
+
+管理员提出具体操作时，Yuki 会内部查找配置键/action、读取参数约束，然后继续调用 `admin_set_config` 或 `admin_execute_action`，不会把查询页当作最终回复。业务 action 的 `target`、`user_id`、`group_id`、`value`、`delta`、`memory_id`、`content` 和 `key` 都有显式 schema；安全的参数格式错误允许在同一轮修正后重试。同一轮可以按需多次查询能力目录，也可以先执行 `memory.list` 等只读 action 找到 ID，再继续执行对应修改；它们共同受每轮工具总次数限制。能力查询默认返回内部摘要，具体操作使用 `focused + category/query` 获取局部参数；原始工具 JSON 只存在于当前模型调用中，后端还会拦截误回显，不写入聊天账本。若只缺一个参数，Yuki 直接用正常语气追问，不建立额外待办。
 
 实现依据：
 
@@ -282,6 +306,15 @@ docker compose up -d --no-deps --force-recreate bot
 | `/ai affection set user <QQ号> <0-100>` | 超级管理员设置好感度 |
 | `/ai affection adjust user <QQ号> <-20到20>` | 超级管理员调整好感度 |
 | `/ai affection trust user <QQ号> <0-100>` | 超级管理员设置信任度 |
+| `/ai capabilities [类别]` | 所有用户按当前真实 QQ 查看完整权限、可改参数数量和接口范围 |
+| `/ai config list [类别]` | 列出显式注册的配置键和生效方式 |
+| `/ai config get <key>` | 读取全局有效值；凭证只显示是否已配置 |
+| `/ai config set <key> <value>` | 设置全局数据库覆盖 |
+| `/ai config set <key> <value> group current` | 设置当前群覆盖 |
+| `/ai config set <key> <value> user <QQ号>` | 设置指定用户覆盖 |
+| `/ai config unset <key> [...]` | 删除同一作用域覆盖，恢复较低优先级值 |
+| `/ai config history [key]` | 查看当前管理员的配置修改记录 |
+| `/ai config rollback <change_id>` | 回滚本人尚未被后续修改覆盖的配置变更 |
 | `/ai on` / `/ai off` | 超级管理员启用/停用当前群 |
 | `/ai group <群号> on\|off` | 超级管理员启用/停用指定群 |
 | `/ai private <QQ号> on\|off` | 超级管理员恢复/阻止指定 QQ 私聊 |
@@ -292,6 +325,75 @@ docker compose up -d --no-deps --force-recreate bot
 /ai memory list user 123456789
 /ai preference set user 123456789 reply_style 简短
 ```
+
+## 自然语言管理与运行时配置
+
+### 统一权限能力目录
+
+当用户问“我能修改什么”“有哪些设置”“我的权限范围”或“能改多少参数”时，Yuki 必须调用后端能力目录，不能根据提示词或聊天记忆猜测。普通用户的正常 Agent 使用只读工具 `get_my_capabilities`，超级管理员的同一个 Agent 使用 `admin_list_capabilities`；确定性诊断入口为 `/ai capabilities [类别]`。三个入口读取同一个 `PermissionCatalogService`，但自然语言工具结果只给当前模型轮内部使用。
+
+权限只从当前真实 OneBot 事件的 `sender.user_id` 解析：
+
+| 等级 | 当前状态 | 能力范围 |
+|---|---|---|
+| `user` | 已启用，所有普通 QQ | 16 项本人确定性自助接口，其中 7 项会修改本人上下文、记忆、偏好或可归属数据；不能修改运行时配置 |
+| `trusted` | 仅预留，当前不可分配 | 供未来介于普通用户与管理员之间的权限扩展 |
+| `moderator` | 仅预留，当前不可分配 | 供未来群管理能力扩展 |
+| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 39 项可修改配置、11 项受保护配置、18 项管理员业务接口（14 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
+
+能力目录直接遍历现有 `ConfigRegistry` 和 `ActionRegistry`，不会另复制配置键或业务 action。`summary` 只提供计数与类别，`focused` 提供命中项的 ID、别名、说明、类型、范围、作用域和生效方式，`full` 才提供全部 ID。`call_onebot_api(action, params)` 作为独立的 `onebot` 权限类别列出：真实超级管理员在直接触发、非自主群聊的普通 Agent 轮次中可调用全部公开 action，不设 action denylist，也不二次确认；使用网页工具后本轮会撤销网关，但不会缩减 action 范围。目录不读取配置值、API Key、凭证状态或他人权限。`trusted`、`moderator` 只有枚举和展示元数据，在执行层接入相同权限校验前不会被实际授予。
+
+管理员身份只在 `MessageProcessor` 中按当前真实 OneBot 事件验证：
+
+```text
+current_event.sender.user_id in 启动时加载的 SUPERUSERS
+```
+
+模型输入中的 QQ、引用发送者、`@管理员`、聊天历史、记忆、网页和“我是管理员”等文本都不能授权。配置值经过显式注册表、类型转换、数值范围、允许作用域和交叉字段校验后才会写库。模型不能修改 `.env`、`SUPERUSERS`、密钥或数据库地址，也没有 Shell、Python、文件写入、任意 SQL、任意 HTTP 管理或 Docker 控制工具。
+
+有效配置按以下顺序解析：
+
+```text
+用户级数据库覆盖
+  > 群级数据库覆盖
+  > 全局数据库覆盖
+  > .env 启动值
+  > 代码默认值
+```
+
+配置生效方式：
+
+| 模式 | 行为 |
+|---|---|
+| `HOT` | 下一条相关消息或下一次自主判断重新生成 `RuntimeConfigSnapshot`，无需重启 |
+| `FUTURE_ONLY` | 只在之后创建人物关系、来源记录或清理任务时读取，不追改旧记录 |
+| `RESTART_REQUIRED` | 覆盖立即保存为 pending，当前进程继续使用启动值；下次启动先加载覆盖再创建模型客户端、并发器和限流器 |
+
+`/ai status` 会显示待重启配置数。运行时覆盖在容器重建和应用重启后仍保留；`unset` 会恢复同一键的较低优先级值。
+
+首批可修改键：
+
+| 模式 | 配置键 |
+|---|---|
+| HOT | `autonomous.enabled`、`autonomous.silence_seconds`、`autonomous.confidence_threshold`、`autonomous.cooldown_seconds`、`autonomous.max_per_hour` |
+| HOT | `context.local_event_limit`、`context.related_people_limit` |
+| HOT | `reply.daily_split_enabled`、`reply.daily_split_max_characters`、`reply.daily_split_max_messages`、`reply.delay_min_seconds`、`reply.delay_max_seconds`、`reply.max_qq_message_chars` |
+| HOT | `llm.temperature`、`llm.max_output_tokens`、`llm.thinking_enabled` |
+| HOT | `agent.max_tool_calls`、`agent.max_model_requests`、`agent.tool_result_max_characters` |
+| HOT | `web.search_max_results`、`web.extract_max_results`、`web.max_calls_per_turn`、`web.tool_result_max_characters` |
+| HOT | `relationship.confidence_threshold`、`relationship.max_auto_delta`、`relationship.daily_positive_cap`、`relationship.daily_negative_cap`、`relationship.conflict_preference_min_gap` |
+| FUTURE_ONLY | `relationship.initial_affection`、`relationship.initial_trust`、`web.source_retention_days`、`web.source_max_runs_per_conversation` |
+| RESTART_REQUIRED | `llm.model`、`llm.timeout_seconds`、`llm.max_retries`、`global.llm_concurrency`、`web.global_concurrency`、`rate_limit.per_user_per_minute`、`rate_limit.per_group_per_minute` |
+
+不可通过管理员工具修改：
+
+- `app.host`、`app.port`、`database.url`、`superusers`、启动默认 `ENABLED_GROUPS`；
+- `LLM_API_KEY`、`TAVILY_API_KEY`、`ONEBOT_ACCESS_TOKEN`、`NAPCAT_WEBUI_TOKEN`、数据库密码和 QQ 登录凭据；
+- 系统提示词和任何未在 `ConfigRegistry` 显式登记的 `Settings` 字段。
+
+凭证查询最多返回“已配置/未配置”，不会返回真实内容。审计表保存真实管理员 QQ、触发消息 ID、会话键、能力、目标、脱敏前后状态、成功标记、错误类别和耗时；不保存 API Key、完整网页正文、系统提示词或隐藏推理。回滚只支持配置覆盖，且必须由原操作者执行、当前覆盖仍与原变更的 after 版本一致；记忆删除、关系变化、已发消息和 OneBot 操作不提供通用回滚。
+
+同一次模型响应不能批量混合修改操作，避免只执行一半；一次修改成功后会关闭本轮工具，只允许 Yuki 根据真实结果做最终表述。`memory.list`、`preference.list`、关系查询和配置读取等只读操作不会提前关闭工具，因此可以在当前用户请求明确要求时继续执行对应修改。只读结果中的人物记忆、偏好和历史文本始终是不可信资料，不能自行产生新的修改意图。修改失败时，后端会覆盖模型的成功措辞并明确提示操作未完成。
 
 ## 新配置默认值
 
@@ -328,6 +430,8 @@ docker compose up -d --no-deps --force-recreate bot
 | `TRUST_MAX_AUTO_DELTA` | `2` |
 | `TRUST_AFFECTION_CAP_OFFSET` | `10` |
 | `CONFLICT_PREFERENCE_MIN_GAP` | `15` |
+| `RELATIONSHIP_DAILY_POSITIVE_CAP` | `0`（不限额） |
+| `RELATIONSHIP_DAILY_NEGATIVE_CAP` | `0`（不限额） |
 | `WEB_ENABLED` | `false` |
 | `WEB_SEARCH_DEPTH` | `advanced` |
 | `WEB_SEARCH_MAX_RESULTS` | `5` |
@@ -382,13 +486,13 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 - 定期离线备份 `data/`、`napcat-data/` 和 `napcat-config/`。
 - NapCat 是个人 QQ 协议端，不等同于腾讯官方 QQ Bot，存在协议变化、风控和封号风险；请控制频率并使用你有权控制的账号。
 
-## 1.2 升级步骤
+## 1.3 升级步骤
 
 1. 停止写入：`docker compose stop bot napcat`。
 2. 完整备份 `data/`、`napcat-data/` 和 `napcat-config/`。
-3. 将 `.env.example` 中的 `RELATIONSHIP_*`、`AFFECTION_*`、`TRUST_*` 和 `CONFLICT_*` 配置同步到 `.env`；默认值即可直接使用。
-4. 执行 `docker compose up -d --build`；Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0007`。
+3. 可将 `.env.example` 新增的 `RELATIONSHIP_DAILY_POSITIVE_CAP` 和 `RELATIONSHIP_DAILY_NEGATIVE_CAP` 同步到 `.env`；缺省时同样按 `0`（不限额）运行。
+4. 执行 `docker compose up -d --build`；Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0008`。
 5. 检查 `docker compose ps`、`/healthz` 和日志。
-6. 依次人工验证：`affection show/history`、管理员调整、普通私聊与群聊关系风格、`forgetme` 级联删除，以及原有记忆、联网、历史和 OneBot 工具。
+6. 依次人工验证：`/ai capabilities`、配置读取/修改/撤销、自然语言好感度调整及跨消息补充 QQ、群级 HOT 配置隔离、重启型配置 pending 状态，以及原有记忆、联网、关系和 OneBot 工具。
 
-`0007` 可以回退且只删除三张关系系统表，不影响人物、聊天、记忆和联网来源。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。
+`0008` 可以回退且只删除 `runtime_config_overrides` 与 `admin_operation_events`，不会删除 `0007` 的关系表，也不影响人物、聊天、记忆和联网来源；但回退后所有数据库运行时覆盖与管理员审计都会丢失。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。

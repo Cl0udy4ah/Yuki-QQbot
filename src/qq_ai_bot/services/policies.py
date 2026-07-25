@@ -27,6 +27,8 @@ class CommandName(StrEnum):
     MEMORY = "memory"
     PREFERENCE = "preference"
     AFFECTION = "affection"
+    CAPABILITIES = "capabilities"
+    CONFIG = "config"
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,4 +138,5 @@ def command_requires_superuser(command: CommandName) -> bool:
         CommandName.OFF,
         CommandName.PRIVATE,
         CommandName.GROUP,
+        CommandName.CONFIG,
     }

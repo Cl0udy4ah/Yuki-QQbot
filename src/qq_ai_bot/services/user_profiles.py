@@ -9,6 +9,7 @@ from typing import Protocol
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
@@ -65,8 +66,13 @@ class ProfileResolution:
 class UserProfileService:
     """Capture profiles and enforce private/group lookup boundaries."""
 
-    def __init__(self, repository: UserProfileRepository) -> None:
+    def __init__(
+        self,
+        repository: UserProfileRepository,
+        runtime_config: RuntimeConfigService | None = None,
+    ) -> None:
         self._repository = repository
+        self._runtime_config = runtime_config
 
     async def capture(
         self,
@@ -114,6 +120,15 @@ class UserProfileService:
             group_card=group_card,
         )
         try:
+            initial_affection: int | None = None
+            initial_trust: int | None = None
+            if self._runtime_config is not None:
+                runtime = await self._runtime_config.snapshot(
+                    user_id=profile.user_id,
+                    group_id=profile.group_id,
+                )
+                initial_affection = runtime.relationship.initial_affection
+                initial_trust = runtime.relationship.initial_trust
             await self._repository.upsert(
                 user_id=profile.user_id,
                 nickname=nickname,
@@ -121,6 +136,8 @@ class UserProfileService:
                 group_card=group_card,
                 nickname_known=resolved.nickname_known,
                 group_card_known=resolved.group_card_known,
+                initial_affection=initial_affection,
+                initial_trust=initial_trust,
             )
         except (OSError, RuntimeError, SQLAlchemyError) as exc:
             logger.warning(

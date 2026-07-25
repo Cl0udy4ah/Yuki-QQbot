@@ -20,6 +20,14 @@ from qq_ai_bot.services.renderer import (
 )
 
 
+def test_application_cli_import_has_no_service_cycle() -> None:
+    """The installed CLI must import the complete application graph."""
+
+    from qq_ai_bot.main import run
+
+    assert callable(run)
+
+
 @pytest.mark.asyncio
 async def test_duplicate_event_is_claimed_once(database: Database) -> None:
     service = DeduplicationService(ProcessedEventRepository(database), ttl_seconds=60)

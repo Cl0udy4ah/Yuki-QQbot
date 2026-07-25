@@ -1,5 +1,40 @@
 # 更新日志
 
+## 1.3.0 - 2026-07-26
+
+### 自然语言管理员控制
+
+- 新增统一 `PermissionCatalogService` 与无参数只读工具 `get_my_capabilities`。用户询问自己能改什么、权限范围或参数数量时，Yuki 会按当前真实 QQ 返回完整能力报告，而不是根据提示词、历史或模型记忆猜测。
+- `/ai capabilities [类别]` 现在对所有用户开放，并与普通聊天工具、管理员 `admin_list_capabilities` 共用同一目录；普通用户获得 16 项本人自助能力，超级管理员准确获得 39 项可改配置、11 项受保护配置、18 项应用业务接口，以及无 action denylist 的 NapCat/OneBot 全接口网关。
+- 能力目录改为 Yuki 的当轮内部工具数据，不再把原始清单直接发送或写入聊天账本；新增 `summary/focused/full` 与 `category/query`，具体操作只加载相关参数，明确全量查询才加载全部 ID。
+- 管理员工具直接并入 Yuki 原有的单一聊天 Agent，不再创建隔离路由、隐藏会话、第二人格或短期待办；任务执行前后共享正常人格、记忆和聊天上下文。
+- 只缺目标 QQ 等参数时，Yuki 直接自然追问，下一条消息依靠正常聊天历史继续；每次真正执行仍由后端按当前真实发送者 QQ 重新校验 `SUPERUSERS` 权限。
+- Yuki 在内部查到配置键或业务 action 后会继续执行，而不是停在权限说明；`admin_execute_action` 新增明确的 target 与 action 参数 schema，安全的参数错误可在同一轮修正重试。
+- 后端会拦截模型误回显的内部权限 JSON；取消“每轮只能读取一次能力目录”的限制，同一轮可在工具总次数范围内多次局部查询，并允许只读业务 action 后继续执行修改。
+- `autonomous.max_per_hour` 的可配置上限由 20 提升到 100，支持“max per hour 改成 30”等自然语言设置。
+- 权限等级新增 `user < trusted < moderator < superuser` 的可扩展结构；`trusted` 与 `moderator` 当前仅预留且不可分配，执行权限仍只有普通用户本人能力和真实 `SUPERUSERS` 两级。
+- 只有当前真实 OneBot 事件发送者属于启动时加载的 `SUPERUSERS`，正常 Agent 才会临时获得管理员工具；引用、历史、@管理员、记忆、网页和模型文本均不能授予工具权限。
+- 新增显式 `CapabilityRegistry` 与 `ActionRegistry`，支持自然语言读取/修改配置，以及关系、记忆、偏好、群启停、自主群聊和私聊准入操作；不会向模型开放 Shell、Python、文件写入、任意 SQL、Docker 或任意配置键。
+- 管理意图可以使用正常聊天上下文理解，工具执行目标仍绑定当前正文、真实发送者 QQ、当前群号和真实 @成员；执行后继续由同一个 Yuki Agent 按真实结果回复。
+- 现有 `/ai` 管理命令与自然语言能力改为共用 `RelationshipAdminService`、`MemoryAdminService`、`PreferenceAdminService`、`GroupAdminService`、`PrivateAccessAdminService` 和 `ConfigAdminService`。
+- 新增 `/ai capabilities` 与 `/ai config list|get|set|unset|history|rollback`，`/ai status` 新增待重启配置计数。
+
+### 持久化运行时配置
+
+- 新增非破坏性 Alembic `0008`、`runtime_config_overrides` 和 `admin_operation_events`；保留人物、聊天、记忆、联网来源和关系数据。
+- 新增显式配置注册表与 `RuntimeConfigService`，按 `user > group > global > .env > 代码默认值` 解析，支持类型、范围、作用域和交叉字段校验。
+- HOT 配置在下一条消息或下一次任务快照立即生效；FUTURE_ONLY 只影响之后创建的人物关系、来源记录或清理任务；RESTART_REQUIRED 保存为 pending，并在下次启动创建长期组件前激活。
+- Chat、Agent、Web、来源渲染、关系评价/Worker、自主群聊和消息处理均接入按场景生成的运行时快照。
+- 密钥、`SUPERUSERS`、数据库连接、监听地址、NapCat 登录凭据和未注册设置不可读取或修改；凭证只能查询是否已配置，程序永不改写 `.env`。
+- 每次配置修改与管理员业务操作都会写入脱敏审计；配置覆盖支持原操作者回滚，并通过版本冲突检查避免覆盖后续变更。
+
+### 配置、关系与质量
+
+- 新增关系每日正向/负向累计上限，默认 `0` 表示不限额，保持 1.2.0 行为；可通过环境变量或运行时配置设置 `1–100`。
+- 新增管理员目标解析约束：`self`、当前群、真实 @成员，以及必须在当前正文明确出现的 QQ/群号；模型无法凭空构造目标。
+- `/ai forgetme` 会同步删除该 QQ 的用户级运行时配置覆盖，并在保留的配置/管理员审计中脱敏精确 QQ。
+- 版本提升至 `1.3.0`，同步 README、`.env.example`、系统提示词示例、命令帮助和完整回归测试。
+
 ## 1.2.0 - 2026-07-25
 
 ### 持久化关系系统

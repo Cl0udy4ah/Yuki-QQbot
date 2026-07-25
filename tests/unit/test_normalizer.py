@@ -92,6 +92,23 @@ def test_other_member_mentions_use_opaque_placeholders() -> None:
     assert "12345678" not in normalized.text
 
 
+def test_at_all_is_not_exposed_as_a_user_target() -> None:
+    normalized = normalize_event(
+        group_event(
+            Message(
+                [
+                    MessageSegment.at(9999),
+                    MessageSegment.at("all"),
+                    MessageSegment.text("看看"),
+                ]
+            )
+        )
+    )
+
+    assert normalized.mentioned_user_ids == ()
+    assert "[提及全体成员]看看" in normalized.text
+
+
 def test_reply_text_and_face_placeholder_are_supported() -> None:
     message = Message([MessageSegment.at(9999), MessageSegment.face(14), MessageSegment.text("ok")])
     event = group_event(message)

@@ -7,6 +7,7 @@ import logging
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.relationships import RelationshipEvaluation
 from qq_ai_bot.llm.base import LLMError
@@ -32,11 +33,16 @@ class RelationshipWorker:
         jobs: RelationshipJobRepository,
         relationships: RelationshipRepository,
         evaluator: RelationshipEvaluator,
+        runtime_config: RuntimeConfigService | None = None,
     ) -> None:
         self._settings = settings
         self._jobs = jobs
         self._relationships = relationships
         self._evaluator = evaluator
+        self._runtime_config = runtime_config or RuntimeConfigService(
+            settings=settings,
+            database=relationships._database,
+        )
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -105,6 +111,10 @@ class RelationshipWorker:
 
         completed = 0
         for job in jobs:
+            runtime = await self._runtime_config.snapshot(
+                user_id=job.user_id,
+                group_id=job.trigger_event.group_id,
+            )
             raw = evaluations.get(
                 job.job_id,
                 RelationshipEvaluation(0, 0, "neutral", 0.0),
@@ -112,15 +122,18 @@ class RelationshipWorker:
             evaluation = validate_evaluation(
                 job,
                 raw,
-                confidence_threshold=self._settings.relationship_confidence_threshold,
-                affection_max_delta=self._settings.affection_max_auto_delta,
-                trust_max_delta=self._settings.trust_max_auto_delta,
+                confidence_threshold=runtime.relationship.confidence_threshold,
+                affection_max_delta=runtime.relationship.max_auto_delta,
+                trust_max_delta=runtime.relationship.max_auto_delta,
             )
             try:
                 await self._relationships.apply_automatic(
                     user_id=job.user_id,
                     source_event_id=job.trigger_event.id,
                     evaluation=evaluation,
+                    max_auto_delta=runtime.relationship.max_auto_delta,
+                    daily_positive_cap=runtime.relationship.daily_positive_cap,
+                    daily_negative_cap=runtime.relationship.daily_negative_cap,
                 )
                 await self._jobs.complete((job.job_id,))
                 completed += 1

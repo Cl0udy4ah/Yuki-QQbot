@@ -102,6 +102,9 @@ class Settings(BaseSettings):
     relationship_confidence_threshold: float = 0.75
     affection_max_auto_delta: int = 2
     trust_max_auto_delta: int = 2
+    # Zero deliberately means unlimited, preserving the 1.2 relationship behavior.
+    relationship_daily_positive_cap: int = 0
+    relationship_daily_negative_cap: int = 0
     trust_affection_cap_offset: int = 10
     conflict_preference_min_gap: int = 15
 
@@ -178,6 +181,16 @@ class Settings(BaseSettings):
     def _non_negative_retries(cls, value: int) -> int:
         if value < 0:
             raise ValueError("must not be negative")
+        return value
+
+    @field_validator(
+        "relationship_daily_positive_cap",
+        "relationship_daily_negative_cap",
+    )
+    @classmethod
+    def _non_negative_relationship_cap(cls, value: int) -> int:
+        if value < 0 or value > 100:
+            raise ValueError("must be between zero and 100")
         return value
 
     @field_validator(

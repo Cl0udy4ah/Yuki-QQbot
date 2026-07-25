@@ -37,7 +37,7 @@ class SourceRenderer:
         if candidates:
             marker = min(candidates, key=lambda item: item.start())
             cleaned = cleaned[: marker.start()].rstrip()
-        for source in self._deduplicate(sources, maximum=5):
+        for source in self._deduplicate(sources, maximum=max(1, len(sources))):
             variants = {source.url}
             try:
                 normalized = normalize_public_url(source.url)
@@ -60,10 +60,15 @@ class SourceRenderer:
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
 
-    def render(self, sources: tuple[WebSearchSource, ...]) -> str:
-        """Render at most five real sources as one independent QQ message."""
+    def render(
+        self,
+        sources: tuple[WebSearchSource, ...],
+        *,
+        maximum: int = 5,
+    ) -> str:
+        """Render a bounded number of real sources as one independent QQ message."""
 
-        unique = self._deduplicate(sources, maximum=5)
+        unique = self._deduplicate(sources, maximum=max(1, min(maximum, 20)))
         if not unique:
             return ""
         lines = ["来源："]

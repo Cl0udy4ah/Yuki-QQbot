@@ -16,7 +16,11 @@ from qq_ai_bot.adapters.onebot.profiles import OneBotUserProfileResolver
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import UserGroupProfileModel
+from qq_ai_bot.persistence.models import (
+    AdminOperationEventModel,
+    RuntimeConfigOverrideModel,
+    UserGroupProfileModel,
+)
 from qq_ai_bot.persistence.repositories import UserProfileRepository
 from qq_ai_bot.services.user_profiles import (
     ProfileResolution,
@@ -316,6 +320,17 @@ async def test_whoami_and_forgetme_are_caller_scoped(database: Database) -> None
     assert await harness.profiles.get(user_id="1001") is not None
     assert await harness.profiles.get(user_id="1002") is not None
 
+    config_change = await harness.processor._runtime_config.set_override(
+        "reply.daily_split_enabled",
+        False,
+        scope_type="user",
+        scope_id="1001",
+        actor_user_id="9000",
+        trigger_message_id="configure-user",
+        conversation_key="private:1001",
+    )
+    assert config_change.success
+
     whoami_sender = MemorySender()
     await harness.processor.handle(
         inbound(
@@ -339,6 +354,29 @@ async def test_whoami_and_forgetme_are_caller_scoped(database: Database) -> None
     assert await harness.profiles.get(user_id="1001") is None
     assert await harness.profiles.get(user_id="1002") is not None
     assert await harness.conversations.count_messages(ConversationIdentity.private("1001")) == 0
+    async with database.sessions() as session:
+        forgotten_overrides = (
+            await session.scalars(
+                select(RuntimeConfigOverrideModel).where(
+                    RuntimeConfigOverrideModel.scope_type == "user",
+                    RuntimeConfigOverrideModel.scope_id == "1001",
+                )
+            )
+        ).all()
+        audit_rows = (await session.scalars(select(AdminOperationEventModel))).all()
+    assert not forgotten_overrides
+    assert audit_rows
+    assert all(
+        "1001"
+        not in (
+            row.actor_user_id
+            + row.target_id
+            + row.conversation_key
+            + row.before_json
+            + row.after_json
+        )
+        for row in audit_rows
+    )
 
 
 def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
@@ -382,9 +420,14 @@ def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
             ).fetchall()
         }
         assert connection.execute("SELECT COUNT(*) FROM people").fetchone() == (0,)
-        assert {"web_search_runs", "web_search_sources"} <= tables
+        assert {
+            "web_search_runs",
+            "web_search_sources",
+            "runtime_config_overrides",
+            "admin_operation_events",
+        } <= tables
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision == ("0007",)
+    assert revision == ("0008",)
     assert "conversations" not in tables
     assert {
         "people",
@@ -435,4 +478,4 @@ def test_0007_non_destructively_backfills_existing_people(
             """
         ).fetchone() == (50, 50)
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision == ("0007",)
+    assert revision == ("0008",)
