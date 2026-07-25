@@ -16,4 +16,5 @@ COMMAND_DESCRIPTIONS: dict[CommandName, str] = {
     CommandName.GROUP: "超级用户开启或关闭指定群的 AI",
     CommandName.MEMORY: "查看、增加、修改或删除人物记忆",
     CommandName.PREFERENCE: "查看、设置或删除交互偏好",
+    CommandName.AFFECTION: "查看好感度与信任度，或由超级管理员调整",
 }

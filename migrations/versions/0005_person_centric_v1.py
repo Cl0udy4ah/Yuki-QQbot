@@ -46,7 +46,14 @@ def upgrade() -> None:
     v1_tables = [
         table
         for table in Base.metadata.sorted_tables
-        if table.name not in {"web_search_runs", "web_search_sources"}
+        if table.name
+        not in {
+            "web_search_runs",
+            "web_search_sources",
+            "person_relationships",
+            "relationship_events",
+            "relationship_jobs",
+        }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)
     op.execute(

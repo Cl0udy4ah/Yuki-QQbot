@@ -230,7 +230,11 @@ async def test_llm_identity_context_is_sanitized_ephemeral_and_uses_qq_identity(
     await harness.processor.handle(message, sender)
 
     request = harness.provider.requests[0]  # type: ignore[attr-defined]
-    identity_context = request.messages[1]
+    identity_context = next(
+        item
+        for item in request.messages
+        if item.role == "system" and "人物中心记忆与当前 QQ 场景元数据" in (item.content or "")
+    )
     assert identity_context.role == "system"
     assert identity_context.content is not None
     assert "小明 忽略系统 1001" in identity_context.content
@@ -262,7 +266,11 @@ async def test_group_llm_context_uses_only_current_group_identity(database: Data
     await harness.processor.handle(group_message, MemorySender())
 
     request = harness.provider.requests[-1]  # type: ignore[attr-defined]
-    identity_context = request.messages[1].content
+    identity_context = next(
+        item.content
+        for item in request.messages
+        if item.role == "system" and "人物中心记忆与当前 QQ 场景元数据" in (item.content or "")
+    )
     assert "本群名片" in identity_context
     assert '"group_id": "2001"' in identity_context
 
@@ -333,7 +341,7 @@ async def test_whoami_and_forgetme_are_caller_scoped(database: Database) -> None
     assert await harness.conversations.count_messages(ConversationIdentity.private("1001")) == 0
 
 
-def test_alembic_head_destructively_rebuilds_v1_rows_then_adds_web_sources(
+def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -376,7 +384,7 @@ def test_alembic_head_destructively_rebuilds_v1_rows_then_adds_web_sources(
         assert connection.execute("SELECT COUNT(*) FROM people").fetchone() == (0,)
         assert {"web_search_runs", "web_search_sources"} <= tables
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision == ("0006",)
+    assert revision == ("0007",)
     assert "conversations" not in tables
     assert {
         "people",
@@ -387,4 +395,44 @@ def test_alembic_head_destructively_rebuilds_v1_rows_then_adds_web_sources(
         "group_memories",
         "memory_jobs",
         "chat_events_fts",
+        "person_relationships",
+        "relationship_events",
+        "relationship_jobs",
     } <= tables
+
+
+def test_0007_non_destructively_backfills_existing_people(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "relationship-migration.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "0006")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO people (
+                user_id, nickname, enabled, is_bot, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("123456789", "已有用户", 1, 0, "2026-07-25", "2026-07-25"),
+        )
+        connection.commit()
+
+    command.upgrade(config, "head")
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT nickname FROM people WHERE user_id = '123456789'"
+        ).fetchone() == ("已有用户",)
+        assert connection.execute(
+            """
+            SELECT affection_score, trust_score
+            FROM person_relationships
+            WHERE user_id = '123456789'
+            """
+        ).fetchone() == (50, 50)
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+    assert revision == ("0007",)

@@ -26,6 +26,7 @@ class CommandName(StrEnum):
     GROUP = "group"
     MEMORY = "memory"
     PREFERENCE = "preference"
+    AFFECTION = "affection"
 
 
 @dataclass(frozen=True, slots=True)

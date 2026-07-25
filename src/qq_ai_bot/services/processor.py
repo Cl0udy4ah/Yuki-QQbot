@@ -11,6 +11,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import cast
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from qq_ai_bot import __version__
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode, ScopeType
@@ -25,6 +27,8 @@ from qq_ai_bot.persistence.repositories import (
     MemoryRepository,
     PeopleRepository,
     PrivateUserSettingsRepository,
+    RelationshipJobRepository,
+    RelationshipRepository,
 )
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.chat import ChatService, OutboundSender
@@ -40,6 +44,8 @@ from qq_ai_bot.services.policies import (
     evaluate_message,
 )
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
+from qq_ai_bot.services.relationship_evaluator import LLMRelationshipEvaluator
+from qq_ai_bot.services.relationship_worker import RelationshipWorker
 from qq_ai_bot.services.renderer import sanitize_input
 from qq_ai_bot.services.user_profiles import (
     UserProfileResolver,
@@ -64,7 +70,7 @@ class ProcessResult:
 
 
 class MessageProcessor:
-    """Admission → dedup → identity → ledger → memory job → command/reply."""
+    """Admission → dedup → identity → ledger → memory → reply → relationship job."""
 
     def __init__(
         self,
@@ -84,6 +90,8 @@ class MessageProcessor:
         people: PeopleRepository | None = None,
         memories: MemoryRepository | None = None,
         memory_worker: MemoryWorker | None = None,
+        relationships: RelationshipRepository | None = None,
+        relationship_worker: RelationshipWorker | None = None,
         autonomous_groups: AutonomousGroupService | None = None,
     ) -> None:
         database = conversations._database
@@ -107,6 +115,27 @@ class MessageProcessor:
             memories=self._memories,
             provider=chat._provider,
             concurrency=concurrency,
+        )
+        self._relationships = relationships or RelationshipRepository(
+            database,
+            initial_affection=settings.relationship_initial_affection,
+            initial_trust=settings.relationship_initial_trust,
+            trust_cap_offset=settings.trust_affection_cap_offset,
+            max_affection_auto_delta=settings.affection_max_auto_delta,
+            max_trust_auto_delta=settings.trust_max_auto_delta,
+        )
+        self._relationship_worker = relationship_worker or RelationshipWorker(
+            settings=settings,
+            jobs=RelationshipJobRepository(
+                database,
+                max_attempts=settings.relationship_max_attempts,
+            ),
+            relationships=self._relationships,
+            evaluator=LLMRelationshipEvaluator(
+                settings=settings,
+                provider=chat._provider,
+                concurrency=concurrency,
+            ),
         )
         self._autonomous = autonomous_groups
 
@@ -250,6 +279,19 @@ class MessageProcessor:
             logger.error("message_send_or_storage_failure", exc_info=exc)
             return ProcessResult(True, reason="send_or_storage_failure")
 
+        if created and sent_count > 0:
+            try:
+                await self._relationship_worker.enqueue(
+                    trigger_event_id=record.id,
+                    user_id=message.sender.user_id,
+                    conversation_key=identity.key,
+                )
+            except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
+                logger.warning(
+                    "relationship_enqueue_failed exception_category=%s",
+                    type(exc).__name__,
+                )
+
         self._log_result(
             event_key,
             identity,
@@ -380,7 +422,7 @@ class MessageProcessor:
             else:
                 deleted = await self._people.delete_person(message.sender.user_id)
                 text = (
-                    "已彻底删除与你 QQ 号关联的人物、记忆、成员关系和可归属聊天事件。"
+                    "已彻底删除与你 QQ 号关联的人物、关系分数、记忆、成员关系和可归属聊天事件。"
                     if deleted
                     else "没有找到与你 QQ 号关联的数据。"
                 )
@@ -392,6 +434,12 @@ class MessageProcessor:
             )
         elif command is CommandName.PREFERENCE:
             text = await self._preference_command(
+                actor=message.sender.user_id,
+                argument=argument,
+                is_superuser=is_superuser,
+            )
+        elif command is CommandName.AFFECTION:
+            text = await self._affection_command(
                 actor=message.sender.user_id,
                 argument=argument,
                 is_superuser=is_superuser,
@@ -487,6 +535,88 @@ class MessageProcessor:
             return "偏好已删除。" if deleted else "没有找到该偏好。"
         return "可用操作：list、set、delete。"
 
+    async def _affection_command(
+        self,
+        *,
+        actor: str,
+        argument: str,
+        is_superuser: bool,
+    ) -> str:
+        parts = argument.split()
+        if not parts:
+            return "格式：/ai affection show|history"
+        operation = parts.pop(0).casefold()
+        if operation in {"show", "history"}:
+            target = actor
+            if parts:
+                if len(parts) != 2 or parts[0].casefold() != "user":
+                    return f"格式：/ai affection {operation} [user <QQ号>]"
+                if not is_superuser:
+                    return "只有超级管理员可以查看其他 QQ 人物的关系数据。"
+                if _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None:
+                    return "目标 QQ 号格式错误。"
+                target = parts[1]
+            if operation == "show":
+                snapshot = await self._relationships.get_or_create(target)
+                return (
+                    f"好感度：{snapshot.affection_score}\n"
+                    f"信任度：{snapshot.trust_score}\n"
+                    f"有效信任度：{snapshot.effective_trust}\n"
+                    f"当前关系阶段：{snapshot.stage.name}"
+                )
+            history = await self._relationships.history(target, limit=10)
+            if not history:
+                return "暂无关系变化记录。"
+            return "\n".join(
+                (
+                    f"{row.created_at:%Y-%m-%d %H:%M} "
+                    f"好感{row.affection_delta:+d} 信任{row.trust_delta:+d} "
+                    f"[{row.change_type}/{row.reason_code}]"
+                )
+                for row in history
+            )
+
+        if operation not in {"set", "adjust", "trust"}:
+            return "可用操作：show、history；超级管理员另可使用 set、adjust、trust。"
+        if not is_superuser:
+            return "权限不足：只有超级管理员可以修改关系分数。"
+        if (
+            len(parts) != 3
+            or parts[0].casefold() != "user"
+            or _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None
+        ):
+            return f"格式：/ai affection {operation} user <QQ号> <数值>"
+        try:
+            value = int(parts[2])
+        except ValueError:
+            return "分数必须是整数。"
+        target = parts[1]
+        try:
+            if operation == "set":
+                snapshot = await self._relationships.set_affection(
+                    user_id=target,
+                    actor_user_id=actor,
+                    score=value,
+                )
+            elif operation == "adjust":
+                snapshot = await self._relationships.adjust_affection(
+                    user_id=target,
+                    actor_user_id=actor,
+                    delta=value,
+                )
+            else:
+                snapshot = await self._relationships.set_trust(
+                    user_id=target,
+                    actor_user_id=actor,
+                    score=value,
+                )
+        except ValueError:
+            return "好感度/信任度必须在 0～100；好感度单次调整必须在 -20～20。"
+        return (
+            f"已更新 QQ {target}：好感度 {snapshot.affection_score}，"
+            f"信任度 {snapshot.trust_score}，阶段 {snapshot.stage.name}。"
+        )
+
     @staticmethod
     def _parse_scoped_operation(
         argument: str, actor: str, is_superuser: bool
@@ -546,6 +676,8 @@ class MessageProcessor:
             "/ai help | new | status | stop | ping | whoami | forgetme\n"
             "/ai memory list|add|update|delete\n"
             "/ai preference list|set|delete\n"
+            "/ai affection show|history\n"
+            "/ai affection set|adjust|trust user <QQ号> <数值>（超级管理员）\n"
             "/ai on|off（超级管理员，当前群）\n"
             "/ai group <群号> on|off（超级管理员）\n"
             "/ai private <QQ号> on|off（超级管理员；阻止/恢复私聊）\n"

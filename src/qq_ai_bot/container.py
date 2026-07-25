@@ -24,6 +24,8 @@ from qq_ai_bot.persistence.repositories import (
     MemoryRepository,
     PrivateUserSettingsRepository,
     ProcessedEventRepository,
+    RelationshipJobRepository,
+    RelationshipRepository,
     UserProfileRepository,
     WebSearchSourceRepository,
 )
@@ -37,6 +39,12 @@ from qq_ai_bot.services.group_memories import GroupMemoryService
 from qq_ai_bot.services.memory_worker import MemoryWorker
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
+from qq_ai_bot.services.relationship_evaluator import (
+    FakeRelationshipEvaluator,
+    LLMRelationshipEvaluator,
+    RelationshipEvaluator,
+)
+from qq_ai_bot.services.relationship_worker import RelationshipWorker
 from qq_ai_bot.services.source_policy import SourceDisplayPolicy
 from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.user_profiles import UserProfileService
@@ -55,8 +63,16 @@ class ApplicationContainer:
         self.database = Database(settings.database_url)
         self.conversations = ConversationRepository(self.database)
         self.groups = GroupSettingsRepository(self.database)
-        self.private_users = PrivateUserSettingsRepository(self.database)
-        self.user_profile_repository = UserProfileRepository(self.database)
+        self.private_users = PrivateUserSettingsRepository(
+            self.database,
+            initial_affection=settings.relationship_initial_affection,
+            initial_trust=settings.relationship_initial_trust,
+        )
+        self.user_profile_repository = UserProfileRepository(
+            self.database,
+            initial_affection=settings.relationship_initial_affection,
+            initial_trust=settings.relationship_initial_trust,
+        )
         self.people = self.user_profile_repository
         self.user_profiles = UserProfileService(self.user_profile_repository)
         self.group_members = GroupMemberService(self.user_profile_repository)
@@ -67,9 +83,30 @@ class ApplicationContainer:
         self.memory_jobs = MemoryJobRepository(self.database)
         self.agent_actions = AgentActionRepository(self.database)
         self.web_sources = WebSearchSourceRepository(self.database)
+        self.relationships = RelationshipRepository(
+            self.database,
+            initial_affection=settings.relationship_initial_affection,
+            initial_trust=settings.relationship_initial_trust,
+            trust_cap_offset=settings.trust_affection_cap_offset,
+            max_affection_auto_delta=settings.affection_max_auto_delta,
+            max_trust_auto_delta=settings.trust_max_auto_delta,
+        )
+        self.relationship_jobs = RelationshipJobRepository(
+            self.database,
+            max_attempts=settings.relationship_max_attempts,
+        )
         self.provider = self._build_provider(settings)
         self.web_provider = self._build_web_provider(settings)
         self.concurrency = ConcurrencyManager(settings.global_llm_concurrency)
+        self.relationship_evaluator: RelationshipEvaluator
+        if isinstance(self.provider, FakeLLMProvider):
+            self.relationship_evaluator = FakeRelationshipEvaluator()
+        else:
+            self.relationship_evaluator = LLMRelationshipEvaluator(
+                settings=settings,
+                provider=self.provider,
+                concurrency=self.concurrency,
+            )
         self.deduplication = DeduplicationService(
             self.processed_events,
             ttl_seconds=settings.processed_event_ttl_seconds,
@@ -99,6 +136,7 @@ class ApplicationContainer:
             ledger=self.ledger,
             people=self.people,
             memories=self.memories,
+            relationships=self.relationships,
             tools=self.agent_tools,
             web_sources=self.web_sources,
             source_policy=SourceDisplayPolicy(),
@@ -110,6 +148,12 @@ class ApplicationContainer:
             memories=self.memories,
             provider=self.provider,
             concurrency=self.concurrency,
+        )
+        self.relationship_worker = RelationshipWorker(
+            settings=settings,
+            jobs=self.relationship_jobs,
+            relationships=self.relationships,
+            evaluator=self.relationship_evaluator,
         )
         self.autonomous_groups = AutonomousGroupService(
             settings=settings,
@@ -134,6 +178,8 @@ class ApplicationContainer:
             people=self.people,
             memories=self.memories,
             memory_worker=self.memory_worker,
+            relationships=self.relationships,
+            relationship_worker=self.relationship_worker,
             autonomous_groups=self.autonomous_groups,
         )
         self._cleanup_stop = asyncio.Event()
@@ -175,6 +221,7 @@ class ApplicationContainer:
             self._cleanup_loop(), name="processed-event-cleanup"
         )
         await self.memory_worker.start()
+        await self.relationship_worker.start()
 
     async def _cleanup_loop(self) -> None:
         while not self._cleanup_stop.is_set():
@@ -204,6 +251,7 @@ class ApplicationContainer:
         if self._cleanup_task is not None:
             await self._cleanup_task
         await self.autonomous_groups.close()
+        await self.relationship_worker.close()
         await self.memory_worker.close()
         if self.web_provider is not None:
             await self.web_provider.close()

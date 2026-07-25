@@ -81,3 +81,24 @@ def test_web_limits_are_bounded() -> None:
         Settings.model_validate({"web_max_calls_per_turn": 4})
     with pytest.raises(ValidationError, match="WEB_SEARCH_DEPTH"):
         Settings.model_validate({"web_search_depth": "unbounded"})
+
+
+def test_relationship_defaults_have_no_daily_caps_and_keep_single_turn_bounds() -> None:
+    settings = Settings()
+    assert settings.relationship_initial_affection == 50
+    assert settings.relationship_initial_trust == 50
+    assert settings.affection_max_auto_delta == 2
+    assert settings.trust_max_auto_delta == 2
+    assert not hasattr(settings, "affection_daily_positive_cap")
+    assert not hasattr(settings, "affection_daily_negative_cap")
+    assert not hasattr(settings, "trust_daily_positive_cap")
+    assert not hasattr(settings, "trust_daily_negative_cap")
+
+
+def test_relationship_configuration_is_validated() -> None:
+    with pytest.raises(ValidationError, match="AFFECTION_MAX_AUTO_DELTA"):
+        Settings.model_validate({"affection_max_auto_delta": 3})
+    with pytest.raises(ValidationError, match="RELATIONSHIP_BATCH_MAX_TURNS"):
+        Settings.model_validate({"relationship_batch_max_turns": 11})
+    with pytest.raises(ValidationError, match="between zero and one"):
+        Settings.model_validate({"relationship_confidence_threshold": 1.1})

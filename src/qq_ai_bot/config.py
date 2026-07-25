@@ -92,6 +92,19 @@ class Settings(BaseSettings):
     agent_max_model_requests: int = 6
     agent_tool_result_max_characters: int = 32000
 
+    relationship_enabled: bool = True
+    relationship_initial_affection: int = 50
+    relationship_initial_trust: int = 50
+    relationship_batch_seconds: float = 60.0
+    relationship_batch_trigger_count: int = 5
+    relationship_batch_max_turns: int = 10
+    relationship_max_attempts: int = 3
+    relationship_confidence_threshold: float = 0.75
+    affection_max_auto_delta: int = 2
+    trust_max_auto_delta: int = 2
+    trust_affection_cap_offset: int = 10
+    conflict_preference_min_gap: int = 15
+
     web_enabled: bool = False
     tavily_api_key: str = Field(default="", repr=False)
     web_search_depth: str = "advanced"
@@ -134,6 +147,11 @@ class Settings(BaseSettings):
         "agent_max_tool_calls",
         "agent_max_model_requests",
         "agent_tool_result_max_characters",
+        "relationship_batch_trigger_count",
+        "relationship_batch_max_turns",
+        "relationship_max_attempts",
+        "affection_max_auto_delta",
+        "trust_max_auto_delta",
         "web_search_max_results",
         "web_extract_max_results",
         "web_global_concurrency",
@@ -167,6 +185,7 @@ class Settings(BaseSettings):
         "daily_chat_message_delay_max_seconds",
         "autonomous_silence_seconds",
         "memory_batch_seconds",
+        "relationship_batch_seconds",
     )
     @classmethod
     def _non_negative_delay(cls, value: float) -> float:
@@ -183,7 +202,10 @@ class Settings(BaseSettings):
             )
         return self
 
-    @field_validator("autonomous_confidence_threshold")
+    @field_validator(
+        "autonomous_confidence_threshold",
+        "relationship_confidence_threshold",
+    )
     @classmethod
     def _probability(cls, value: float) -> float:
         if not 0 <= value <= 1:
@@ -197,6 +219,18 @@ class Settings(BaseSettings):
         if normalized not in {"basic", "advanced"}:
             raise ValueError("WEB_SEARCH_DEPTH must be basic or advanced")
         return normalized
+
+    @field_validator(
+        "relationship_initial_affection",
+        "relationship_initial_trust",
+        "trust_affection_cap_offset",
+        "conflict_preference_min_gap",
+    )
+    @classmethod
+    def _relationship_score_or_gap(cls, value: int) -> int:
+        if not 0 <= value <= 100:
+            raise ValueError("must be between zero and 100")
+        return value
 
     @model_validator(mode="after")
     def _validate_memory_limits(self) -> Self:
@@ -214,6 +248,12 @@ class Settings(BaseSettings):
             raise ValueError("MEMORY_BATCH_MAX_EVENTS must not exceed 20")
         if self.agent_max_tool_calls > 5:
             raise ValueError("AGENT_MAX_TOOL_CALLS must not exceed 5")
+        if self.relationship_batch_max_turns > 10:
+            raise ValueError("RELATIONSHIP_BATCH_MAX_TURNS must not exceed 10")
+        if self.affection_max_auto_delta > 2:
+            raise ValueError("AFFECTION_MAX_AUTO_DELTA must not exceed 2")
+        if self.trust_max_auto_delta > 2:
+            raise ValueError("TRUST_MAX_AUTO_DELTA must not exceed 2")
         if self.web_search_max_results > 5:
             raise ValueError("WEB_SEARCH_MAX_RESULTS must not exceed 5")
         if self.web_extract_max_results > 3:

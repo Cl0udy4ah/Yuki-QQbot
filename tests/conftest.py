@@ -21,6 +21,8 @@ from qq_ai_bot.persistence.repositories import (
     MemoryRepository,
     PrivateUserSettingsRepository,
     ProcessedEventRepository,
+    RelationshipJobRepository,
+    RelationshipRepository,
     UserProfileRepository,
     WebSearchSourceRepository,
 )
@@ -32,6 +34,8 @@ from qq_ai_bot.services.group_members import GroupMemberService
 from qq_ai_bot.services.group_memories import GroupMemoryService
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
+from qq_ai_bot.services.relationship_evaluator import FakeRelationshipEvaluator
+from qq_ai_bot.services.relationship_worker import RelationshipWorker
 from qq_ai_bot.services.source_policy import SourceDisplayPolicy
 from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.user_profiles import UserProfileService
@@ -62,6 +66,9 @@ class Harness:
     private_users: PrivateUserSettingsRepository
     profiles: UserProfileRepository
     group_memories: GroupMemoryRepository
+    relationships: RelationshipRepository
+    relationship_jobs: RelationshipJobRepository
+    relationship_worker: RelationshipWorker
     provider: LLMProvider
     concurrency: ConcurrencyManager
     processor: MessageProcessor
@@ -95,17 +102,43 @@ def build_harness(
 ) -> Harness:
     conversations = ConversationRepository(database)
     groups = GroupSettingsRepository(database)
-    private_users = PrivateUserSettingsRepository(database)
-    profiles = UserProfileRepository(database)
+    private_users = PrivateUserSettingsRepository(
+        database,
+        initial_affection=settings.relationship_initial_affection,
+        initial_trust=settings.relationship_initial_trust,
+    )
+    profiles = UserProfileRepository(
+        database,
+        initial_affection=settings.relationship_initial_affection,
+        initial_trust=settings.relationship_initial_trust,
+    )
     user_profiles = UserProfileService(profiles)
     group_members = GroupMemberService(profiles)
     group_memories = GroupMemoryRepository(database)
     processed_events = ProcessedEventRepository(database)
     ledger = EventLedgerRepository(database)
     memories = MemoryRepository(database)
+    relationships = RelationshipRepository(
+        database,
+        initial_affection=settings.relationship_initial_affection,
+        initial_trust=settings.relationship_initial_trust,
+        trust_cap_offset=settings.trust_affection_cap_offset,
+        max_affection_auto_delta=settings.affection_max_auto_delta,
+        max_trust_auto_delta=settings.trust_max_auto_delta,
+    )
+    relationship_jobs = RelationshipJobRepository(
+        database,
+        max_attempts=settings.relationship_max_attempts,
+    )
     web_sources = WebSearchSourceRepository(database)
     llm = provider or FakeLLMProvider()
     concurrency = ConcurrencyManager(settings.global_llm_concurrency)
+    relationship_worker = RelationshipWorker(
+        settings=settings,
+        jobs=relationship_jobs,
+        relationships=relationships,
+        evaluator=FakeRelationshipEvaluator(),
+    )
     group_memory_service = GroupMemoryService(
         settings=settings,
         repository=group_memories,
@@ -127,6 +160,7 @@ def build_harness(
         ledger=ledger,
         people=profiles,
         memories=memories,
+        relationships=relationships,
         tools=agent_tools,
         web_sources=web_sources,
         source_policy=SourceDisplayPolicy(),
@@ -154,6 +188,8 @@ def build_harness(
         ledger=ledger,
         people=profiles,
         memories=memories,
+        relationships=relationships,
+        relationship_worker=relationship_worker,
     )
     return Harness(
         settings,
@@ -163,6 +199,9 @@ def build_harness(
         private_users,
         profiles,
         group_memories,
+        relationships,
+        relationship_jobs,
+        relationship_worker,
         llm,
         concurrency,
         processor,
