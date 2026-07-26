@@ -464,6 +464,22 @@ async def test_vision_restart_overrides_map_to_startup_settings(database: Databa
         "vision_media_download_timeout_seconds": 75.0,
         "vision_timeout_seconds": 45.0,
         "vision_max_output_tokens": 16384,
+        "automation_enabled": settings.automation_enabled,
+        "automation_poll_seconds": settings.automation_poll_seconds,
+        "automation_lease_seconds": settings.automation_lease_seconds,
+        "automation_max_active_per_superuser": settings.automation_max_active_per_superuser,
+        "automation_max_active_per_user": settings.automation_max_active_per_user,
+        "automation_max_steps": settings.automation_max_steps,
+        "automation_max_llm_calls_per_run": settings.automation_max_llm_calls_per_run,
+        "automation_max_tool_calls_per_run": settings.automation_max_tool_calls_per_run,
+        "automation_max_messages_per_run": settings.automation_max_messages_per_run,
+        "automation_max_runtime_seconds": settings.automation_max_runtime_seconds,
+        "automation_min_interval_seconds": settings.automation_min_interval_seconds,
+        "automation_default_misfire_grace_seconds": (
+            settings.automation_default_misfire_grace_seconds
+        ),
+        "automation_max_consecutive_failures": settings.automation_max_consecutive_failures,
+        "automation_run_retention_days": settings.automation_run_retention_days,
     }
 
 
@@ -1402,11 +1418,11 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
             )
         )
         assert payload["data"]["transient_internal_reference"] is True
-        assert payload["data"]["counts"]["mutable_configurations"] == 57
+        assert payload["data"]["counts"]["mutable_configurations"] == 71
         assert payload["data"]["counts"]["business_actions"] == 18
         assert payload["data"]["counts"]["onebot_api_gateways"] == 1
         return ChatResponse(
-            content="你有 57 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。",
+            content="你有 71 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。",
             latency_seconds=0,
         )
 
@@ -1421,7 +1437,7 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
     assert result.tool_calls == 1
     assert calls == 2
     assert result.text == (
-        "你有 57 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。"
+        "你有 71 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。"
     )
     assert "transient_internal_reference" not in result.text
 

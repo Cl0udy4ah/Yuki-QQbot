@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**1.4.2 新增非破坏性迁移 `0011`，用于创建持久化 `emoji_descriptions` 表情描述库；1.4.1 的 `0010` 为 `chat_events` 增加精简图片观察字段。两次迁移都不会删除或改写人物、聊天正文、记忆、联网来源、关系或运行时配置。视觉缓存版本仍为 `vision-observation-v3`，不会复用 1.4.0 的旧识别结果。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建；始终先备份 `data/`。
+> **升级提示：**1.5.0 新增非破坏性迁移 `0012`，用于创建可信时区与持久化自动化运行表，并为 `chat_events` 增加自动化来源字段；不会删除或改写现有人物、聊天、记忆、关系、联网、视觉或表情数据。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建；始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -28,7 +28,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.4.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.5.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -43,6 +43,8 @@ Yuki-QQbot 1.4.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 关系分数不会改变程序权限；只有当前真实发送者属于 `SUPERUSERS` 才能获得管理员工具。
 - 超级管理员可以用自然语言管理注册配置、关系、记忆、偏好、群和私聊准入。
 - 运行时配置保存在 SQLite，不修改 `.env`；所有修改都有脱敏审计，配置覆盖可安全回滚。
+- 每轮聊天获得后端可信当前时间；每个 QQ 可保存独立 IANA 时区，历史消息按本地时间显示。
+- 普通用户和超级管理员都可以用自然语言创建自己的持久化自动化任务；普通用户严格限于本人和当前群，超级管理员可显式委托现有管理员与 OneBot 能力。
 
 本版本只处理当前真实消息或其回复中的图片，不处理视频、语音、PDF 和普通文件，也不会主动回溯群历史中的任意旧图片。已启用群里未触发 Yuki 的普通图片只写入原有事件账本，不下载、不分析，也不会因此触发自主发言。
 
@@ -120,6 +122,23 @@ docker compose logs -f bot
 
 `VISION_ENABLED=true` 时，`VISION_BASE_URL`、`VISION_API_KEY` 和 `VISION_MODEL` 缺一不可。识图思考默认关闭；需要时可把 `VISION_THINKING_ENABLED` 改为 `true`，此时角色、表情包与图片问题会使用思考模式，普通描述结果低于 `VISION_LOW_CONFIDENCE_RETRY_THRESHOLD` 时会自动复核一次。Qwen 只接收本轮选中的图片 data URI 和当前用户的图片问题，不接收完整聊天历史、人物记忆、关系分数、系统提示词、管理员权限或 Agent 工具；DeepSeek 只接收 Qwen 返回的结构化文字观察，不接收图片 URL、Base64 或临时路径。
 
+### 可选：启用持久化自动化
+
+自动化默认关闭。需要让普通用户和超级管理员通过自然语言创建自己的任务时，在 `.env` 中设置：
+
+```dotenv
+AUTOMATION_ENABLED=true
+DEFAULT_TIMEZONE=Asia/Shanghai
+```
+
+然后只重建 Bot：
+
+```bash
+docker compose up -d --build --no-deps bot
+```
+
+普通用户可以创建提醒、定时生成文本、给自己发私聊，以及在创建消息所在的当前群执行受限任务；只能查看、修改和运行本人任务。超级管理员可以额外委托已登记的管理员业务接口、运行时配置和 NapCat/OneBot 全部公开 action。引用、历史、记忆、网页、OCR 和模型自行生成的 QQ/群号不能扩大目标范围。
+
 ## 1.x 数据模型
 
 `0005` 会创建以下主要数据：
@@ -130,7 +149,7 @@ docker compose logs -f bot
 | `person_aliases` | QQ 昵称和各群历史称呼 |
 | `groups` | 群名、启用状态和自主参与设置 |
 | `memberships` | `(user_id, group_id)` 当前群名片与活跃时间 |
-| `chat_events` | 永久保存收发消息、消息段、回复关系和时间；`0010` 增加与原始事件关联的精简图片摘要 |
+| `chat_events` | 永久保存收发消息、消息段、回复关系和时间；`0010` 增加图片摘要，`0012` 增加自动化来源、任务和运行 ID |
 | `chat_events_fts` | FTS5 `trigram` 全文索引 |
 | `person_memories` | 跨私聊和群聊的人物事实，最多 100 条 |
 | `group_memories` | 群共同事实，最多 100 条 |
@@ -148,6 +167,11 @@ docker compose logs -f bot
 | `admin_operation_events` | 管理员操作、修改前后值、成功状态与错误类别的脱敏审计 |
 | `media_analyses` | `0009` 新增的图片结构化观察缓存，不保存原图、Base64 或隐藏推理 |
 | `emoji_descriptions` | `0011` 新增的持久化 QQ 表情值与结构化描述库，不随短期图片缓存过期 |
+| `person_time_settings` | `0012` 新增的每个 QQ 的 IANA 时区设置 |
+| `automations` | 持久任务、调度、最小委托权限、租约和下一次执行时间 |
+| `automation_versions` | 每次脚本修改的不可变版本与稳定哈希 |
+| `automation_runs` | 幂等执行记录、资源计数、状态和脱敏结果摘要 |
+| `automation_step_runs` | 每个步骤的 capability、时间、状态和脱敏摘要 |
 
 消息到达后的顺序是：
 
@@ -159,6 +183,7 @@ docker compose logs -f bot
   → 记忆任务入队
   → 已触发且含图片时，按需解析、预处理并调用独立视觉前端
   → 确定性命令，或进入同一个正常聊天 Agent
+  → 纯文本轮次可按当前真实 QQ 创建或管理本人自动化任务
   → 当前真实发送者是超级管理员时，为该 Agent 动态增加管理员工具
   → 显式回复或自主参与判断
   → 普通聊天成功发送后，关系评价任务入队
@@ -265,6 +290,82 @@ relationship_weight = round(0.6 × affection_score + 0.4 × effective_trust)
 - 视觉流水线默认最多运行 4 个请求、等待 32 个请求，排队最长 120 秒；QQ 图片下载、排队和 Qwen HTTP 请求分别拥有独立的 120 秒超时，队列满时立即自然降级，避免请求无限堆积。
 - 纯图片失败会区分下载超时、NapCat 资源查询失败、下载失败、格式损坏、体积超限、队列繁忙、视觉模型超时和视觉模型不可用，不再把所有问题都描述成“图片不清晰”。
 - 日志只记录脱敏会话哈希、队列等待时间、排队/运行数量、图片/帧/字节计数、内容哈希前 12 位、模型、耗时、缓存或 single-flight 命中状态和错误类别，不记录完整图片 URL、签名参数、原始图片、Base64、完整 OCR 或私聊图片内容。
+
+## 可信时间与持久化自动化
+
+普通聊天每轮都会收到后端生成的可信时间对象：`utc`、`local`、`timezone`、`date` 和 `weekday`。数据库执行时间统一保存为 UTC，向用户展示和计算 `once/daily/weekly` 时使用任务保存的 IANA 时区；默认是 `Asia/Shanghai`。`time_get_current`、`time_get_timezone` 和 `time_set_timezone` 只作用于当前真实发送者。
+
+自然语言创建流程如下：
+
+```text
+真实普通文本消息
+  → 同一个 Yuki Agent 生成 AutomationScript JSON
+  → automation_create
+  → Schema、时间、来源目标、权限和模板污点校验
+  → SQLite 持久化脚本、版本和最小委托权限
+  → AutomationWorker 使用数据库租约领取
+  → AutomationExecutor 顺序执行已登记 capability
+  → 写运行/步骤审计；真实发送消息写回 chat_events
+```
+
+Automation DSL v1 的完整结构如下。所有对象均拒绝未声明字段：
+
+```json
+{
+  "version": 1,
+  "name": "任务名称，1–128 字符",
+  "timezone": "IANA 时区，例如 Asia/Shanghai",
+  "schedule": {
+    "type": "after | once | daily | weekly | interval",
+    "seconds": "after/interval 使用；interval 不少于 60",
+    "local_datetime": "once 使用的本地 ISO 时间",
+    "weekdays": "weekly 使用，星期一=1 到星期日=7",
+    "hour": "daily/weekly 使用，0–23",
+    "minute": "daily/weekly 使用，0–59",
+    "timezone": "once/daily/weekly 可覆盖脚本时区"
+  },
+  "context": {
+    "scene": "none | creator_private | current_group",
+    "include_relationship": false,
+    "include_memories": false,
+    "history_limit": 0
+  },
+  "steps": [
+    {
+      "id": "[a-z][a-z0-9_]{0,31}",
+      "call": "注册表中的固定 capability 名",
+      "arguments": {},
+      "save_as": "可选的结构化输出别名"
+    }
+  ],
+  "limits": {
+    "max_steps": 3,
+    "max_llm_calls": 1,
+    "max_tool_calls": 3,
+    "max_messages": 1,
+    "timeout_seconds": 60
+  }
+}
+```
+
+只允许 `$creator_user_id`、`$bot_user_id`、`$automation_id`、`$automation_run_id`、`$scheduled_for`、`$actual_started_at`、`$local_time`、`$current_group_id`，以及 `${step_id.field}` 形式的既有步骤输出。步骤输出可以进入最终消息文本，但不能进入 `user_id`、`group_id`、OneBot action、配置键、管理员 action 或自动化 ID。系统不执行 Python、Shell、JavaScript、`eval`、SQL、文件、Docker 或任意 HTTP 请求。
+
+首批 capability：
+
+| capability | 普通用户 | 超级管理员 | 说明 |
+|---|:---:|:---:|---|
+| `yuki.generate`、`yuki.agent` | ✓ | ✓ | 受运行次数和上下文声明约束的主模型生成/Agent |
+| `onebot.send_private_message` | 仅本人 | ✓ | 主动普通私聊，发送结果写事件账本 |
+| `onebot.send_group_message` | 仅创建时当前群 | ✓ | 主动普通群消息 |
+| `web.search`、`web.read_page` | ✓ | ✓ | 通过现有受控 Tavily Provider，不开放任意 HTTP |
+| `memory.get_person`、`memory.get_group`、`history.search` | 仅本人/当前群 | ✓ | 只读结构记忆和永久账本 |
+| `onebot.call_api` | — | ✓ | 全部公开 NapCat/OneBot action，不设 denylist |
+| `admin.execute_action` | — | ✓ | 复用关系、记忆、偏好、群和私聊准入业务接口 |
+| `config.get`、`config.set` | — | ✓ | 仅显式注册配置；任务不能修改 `automation.*` |
+
+每个任务只保存本脚本实际使用的 capability 及其 Schema 版本。运行时有效权限是“创建时授予的最小集合 ∩ 当前仍登记且版本一致的集合 ∩ 创建者当前权限”；超级管理员后来从 `SUPERUSERS` 移除时，其旧管理员任务会变为 `blocked`，后端新增能力不会自动授予旧任务。普通用户的任务始终保持本人/当前群的后端范围校验。
+
+Worker 默认每 2 秒轮询，用租约防止多实例重复执行，并以 `(automation_id, scheduled_for)` 唯一约束保证幂等。一次性任务在 30 分钟宽限内补执行一次，超出后记为 `missed`；周期任务直接计算下一个未来时刻，不逐条补发。Bot 未连接时在宽限期内保留原计划槽。生成、Agent、联网、记忆和历史读取仅对明确瞬时错误最多重试一次；消息发送、通用 OneBot、配置和管理员修改不重试，发送结果无法确认时记为 `uncertain`。连续失败 3 次后任务进入 `failed`，修改或恢复后才会继续。
 
 ## Agent 工具
 
@@ -376,6 +477,14 @@ docker compose up -d --no-deps --force-recreate bot
 | `/ai preference list` | 查看本人的交互偏好 |
 | `/ai preference set <键> <值>` | 设置交互偏好 |
 | `/ai preference delete <键>` | 删除交互偏好 |
+| `/ai automation list` | 只列出当前任务，按下次运行时间从 `#1` 重新编号并显示本地时间 |
+| `/ai automation completed` | 单独列出已完成、取消、失败或阻塞的历史任务 |
+| `/ai automation show <当前编号>` | 查看当前任务、调度与下次执行时间 |
+| `/ai automation pause <当前编号>` | 暂停当前任务 |
+| `/ai automation resume <当前编号>` | 重新计算时间并恢复当前任务 |
+| `/ai automation cancel <当前编号>` | 永久取消当前任务并移入历史 |
+| `/ai automation run <当前编号>` | 将当前任务调度为尽快执行 |
+| `/ai automation history <当前编号>` | 查看当前任务最近执行状态与错误类别 |
 | `/ai affection show` | 查看本人的好感度、信任度、有效信任度和阶段 |
 | `/ai affection history` | 查看本人最近 10 次关系变化 |
 | `/ai affection show user <QQ号>` | 超级管理员查看指定人物 |
@@ -413,10 +522,10 @@ docker compose up -d --no-deps --force-recreate bot
 
 | 等级 | 当前状态 | 能力范围 |
 |---|---|---|
-| `user` | 已启用，所有普通 QQ | 16 项本人确定性自助接口，其中 7 项会修改本人上下文、记忆、偏好或可归属数据；不能修改运行时配置 |
+| `user` | 已启用，所有普通 QQ | 29 项本人自助接口，其中 14 项可修改本人上下文、记忆、偏好、时区或自动化任务；不能修改运行时配置 |
 | `trusted` | 仅预留，当前不可分配 | 供未来介于普通用户与管理员之间的权限扩展 |
 | `moderator` | 仅预留，当前不可分配 | 供未来群管理能力扩展 |
-| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 57 项可修改配置、12 项受保护配置、18 项管理员业务接口（14 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
+| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 71 项可修改配置、12 项受保护配置、18 项管理员业务接口（14 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
 
 能力目录直接遍历现有 `ConfigRegistry` 和 `ActionRegistry`，不会另复制配置键或业务 action。`summary` 只提供计数与类别，`focused` 提供命中项的 ID、别名、说明、类型、范围、作用域和生效方式，`full` 才提供全部 ID。`call_onebot_api(action, params)` 作为独立的 `onebot` 权限类别列出：真实超级管理员在直接触发、非自主群聊的普通 Agent 轮次中可调用全部公开 action，不设 action denylist，也不二次确认；使用网页工具后本轮会撤销网关，但不会缩减 action 范围。目录不读取配置值、API Key、凭证状态或他人权限。`trusted`、`moderator` 只有枚举和展示元数据，在执行层接入相同权限校验前不会被实际授予。
 
@@ -464,6 +573,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | FUTURE_ONLY | `relationship.initial_affection`、`relationship.initial_trust`、`web.source_retention_days`、`web.source_max_runs_per_conversation`、`vision.analysis_retention_days` |
 | RESTART_REQUIRED | `llm.model`、`llm.timeout_seconds`、`llm.max_retries`、`global.llm_concurrency`、`web.global_concurrency`、`rate_limit.per_user_per_minute`、`rate_limit.per_group_per_minute` |
 | RESTART_REQUIRED | `vision.enabled`、`vision.base_url`、`vision.model`、`vision.global_concurrency`、`vision.queue_max_pending`、`vision.queue_timeout_seconds`、`vision.media_download_timeout_seconds`、`vision.timeout_seconds`、`vision.max_output_tokens` |
+| RESTART_REQUIRED | `automation.enabled`、`automation.poll_seconds`、`automation.lease_seconds`、`automation.max_active_per_superuser`、`automation.max_active_per_user`、`automation.max_steps`、`automation.max_llm_calls_per_run`、`automation.max_tool_calls_per_run`、`automation.max_messages_per_run`、`automation.max_runtime_seconds`、`automation.min_interval_seconds`、`automation.default_misfire_grace_seconds`、`automation.max_consecutive_failures`、`automation.run_retention_days` |
 
 不可通过管理员工具修改：
 
@@ -498,6 +608,21 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `AGENT_MAX_TOOL_CALLS` | `5` |
 | `AGENT_MAX_MODEL_REQUESTS` | `6` |
 | `AGENT_TOOL_RESULT_MAX_CHARACTERS` | `32000` |
+| `AUTOMATION_ENABLED` | `false` |
+| `DEFAULT_TIMEZONE` | `Asia/Shanghai` |
+| `AUTOMATION_POLL_SECONDS` | `2` |
+| `AUTOMATION_LEASE_SECONDS` | `120` |
+| `AUTOMATION_MAX_ACTIVE_PER_SUPERUSER` | `50` |
+| `AUTOMATION_MAX_ACTIVE_PER_USER` | `10` |
+| `AUTOMATION_MAX_STEPS` | `8` |
+| `AUTOMATION_MAX_LLM_CALLS_PER_RUN` | `2` |
+| `AUTOMATION_MAX_TOOL_CALLS_PER_RUN` | `8` |
+| `AUTOMATION_MAX_MESSAGES_PER_RUN` | `3` |
+| `AUTOMATION_MAX_RUNTIME_SECONDS` | `120` |
+| `AUTOMATION_MIN_INTERVAL_SECONDS` | `60` |
+| `AUTOMATION_DEFAULT_MISFIRE_GRACE_SECONDS` | `1800` |
+| `AUTOMATION_MAX_CONSECUTIVE_FAILURES` | `3` |
+| `AUTOMATION_RUN_RETENTION_DAYS` | `30` |
 | `RELATIONSHIP_ENABLED` | `true` |
 | `RELATIONSHIP_INITIAL_AFFECTION` | `50` |
 | `RELATIONSHIP_INITIAL_TRUST` | `50` |
@@ -572,7 +697,7 @@ docker compose up -d
 docker compose ps
 ```
 
-健康检查不会请求 DeepSeek、Tavily 或 Qwen，也不会暴露密钥；`web_configured` 表示联网已启用且配置完整，`vision_configured` 表示视觉功能已启用且 `BASE_URL`、`API_KEY`、模型均已配置：
+健康检查不会请求 DeepSeek、Tavily、Qwen 或执行真实自动化，也不会暴露密钥；`web_configured` 表示联网已启用且配置完整，`vision_configured` 表示视觉功能已启用且 `BASE_URL`、`API_KEY`、模型均已配置，`automation_worker_running` 和 `active_automation_count` 只读取本地运行状态：
 
 ```bash
 docker compose exec bot python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz').read().decode())"
@@ -593,13 +718,13 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 
 `/ai status` 会同时显示视觉是否启用、视觉模型、是否繁忙以及当前“排队/运行”数量，不显示密钥或完整接口查询参数。
 
-## 1.4 升级步骤
+## 1.5 升级步骤
 
 1. 停止 Bot 写入但保持 NapCat 和 QQ 登录态运行：`docker compose stop bot`。
 2. 完整备份 `data/`、`napcat-data/` 和 `napcat-config/`。
-3. 将 `.env.example` 的 `VISION_*` 项同步到 `.env`。暂时不用图片理解时保留 `VISION_ENABLED=false`；启用时填写独立的百炼兼容接口地址和密钥，不要复用或替换 DeepSeek 的 `LLM_*` 配置。
-4. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 不会被替换，Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0011`。
+3. 将 `.env.example` 新增的 `AUTOMATION_*` 与 `DEFAULT_TIMEZONE` 同步到 `.env`。暂不使用时保留 `AUTOMATION_ENABLED=false`；启用后普通用户也可以创建自己的受限任务。
+4. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 不会被替换，Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0012`。
 5. 检查 `docker compose ps`、`/healthz` 和日志。
-6. 依次人工验证：私聊纯图片、图片加文字、QQ 内置表情、动态表情、回复旧图片、群聊 `@Yuki` 图片、未触发群图片不分析，以及图片 OCR 不能执行配置/关系/OneBot 修改；再回归原有文本、记忆、联网、关系和管理员工具。
+6. 依次人工验证：普通用户本人提醒、当前群提醒、超级管理员指定目标、暂停/恢复/取消、重启后继续、Bot 断线后宽限，以及旧有文本、视觉、记忆、联网、关系和管理员工具。
 
-`0011` 可以回退且只删除 `emoji_descriptions` 表情描述库；`0010` 回退只删除 `chat_events.visual_summary` 派生摘要；`0009` 回退只删除 `media_analyses` 视觉缓存。三者都不影响聊天正文、人物、记忆、联网来源、关系和运行时配置。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。
+`0012` 是非破坏性迁移，回退只移除自动化/时区表和 `chat_events` 的自动化来源字段；`0011` 回退只删除表情描述库，`0010` 回退只删除图片派生摘要。它们都不删除聊天正文、人物、记忆、联网来源、关系和运行时配置。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。

@@ -24,6 +24,9 @@ from qq_ai_bot.admin.models import (
     EffectiveConfigValue,
 )
 from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
+from qq_ai_bot.automation.repository import AutomationRepository
+from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
@@ -74,6 +77,7 @@ from qq_ai_bot.services.vision_service import (
     VisionService,
     compact_visual_summary,
 )
+from qq_ai_bot.time.formatting import local_text
 from qq_ai_bot.vision.models import VisualObservation
 
 logger = logging.getLogger(__name__)
@@ -189,6 +193,9 @@ class MessageProcessor:
         config_admin: ConfigAdminService | None = None,
         permission_catalog: PermissionCatalogService | None = None,
         vision_service: VisionService | None = None,
+        automation_service: AutomationService | None = None,
+        automation_repository: AutomationRepository | None = None,
+        automation_worker: AutomationWorker | None = None,
     ) -> None:
         database = conversations._database
         self._settings = settings
@@ -274,6 +281,9 @@ class MessageProcessor:
             action_registry=ActionRegistry(),
         )
         self._vision = vision_service
+        self._automation = automation_service
+        self._automation_repository = automation_repository
+        self._automation_worker = automation_worker
 
     async def handle(
         self,
@@ -472,8 +482,7 @@ class MessageProcessor:
         if not content:
             if has_visual_input and visual_observation is not None:
                 content = (
-                    "[当前消息仅包含图片；后端视觉识别已成功，"
-                    "请根据本轮视觉观察直接回应图片内容]"
+                    "[当前消息仅包含图片；后端视觉识别已成功，请根据本轮视觉观察直接回应图片内容]"
                 )
             elif has_visual_input:
                 text = _vision_failure_message(
@@ -619,6 +628,8 @@ class MessageProcessor:
             return operation not in {"", "show", "history"}
         if command is CommandName.CONFIG:
             return operation not in {"", "list", "get", "history"}
+        if command is CommandName.AUTOMATION:
+            return operation not in {"", "list", "show", "history"}
         return False
 
     async def _handle_command(
@@ -657,6 +668,28 @@ class MessageProcessor:
             vision_busy = self._vision is not None and self._vision.busy
             vision_queue_depth = self._vision.queue_depth if self._vision is not None else 0
             vision_running = self._vision.running_count if self._vision is not None else 0
+            automation_count = (
+                await self._automation_repository.active_count()
+                if self._automation_repository is not None
+                else 0
+            )
+            automation_last_run = (
+                await self._automation_repository.latest_run_at()
+                if self._automation_repository is not None
+                else None
+            )
+            automation_next_run = (
+                await self._automation_repository.next_due_at()
+                if self._automation_repository is not None
+                else None
+            )
+            automation_worker_status = (
+                "运行中"
+                if self._automation_worker is not None and self._automation_worker.running
+                else "未运行"
+            )
+            automation_last_text = automation_last_run.isoformat() if automation_last_run else "无"
+            automation_next_text = automation_next_run.isoformat() if automation_next_run else "无"
             text = (
                 f"OneBot 连接：{'已连接' if self._onebot_connected() else '未连接'}\n"
                 f"模型：{self._settings.llm_model or '未配置'}\n"
@@ -667,6 +700,11 @@ class MessageProcessor:
                 f"当前切点后的事件数：{count}\n"
                 f"请求处理中：{'是' if self._concurrency.is_processing(identity.key) else '否'}\n"
                 f"待重启配置数：{pending_restart}\n"
+                f"自动化：{'已启用' if self._settings.automation_enabled else '未启用'}\n"
+                f"自动化 Worker：{automation_worker_status}\n"
+                f"活跃自动化任务：{automation_count}\n"
+                f"最近自动化执行：{automation_last_text}\n"
+                f"最近待执行时间：{automation_next_text}\n"
                 f"服务版本：{__version__}"
             )
         elif command is CommandName.STOP:
@@ -741,6 +779,12 @@ class MessageProcessor:
             text = self._capabilities_command(message, argument)
         elif command is CommandName.CONFIG:
             text = await self._config_command(actor, argument)
+        elif command is CommandName.AUTOMATION:
+            text = await self._automation_command(
+                message=message,
+                identity=identity,
+                argument=argument,
+            )
         else:
             text = "未知命令，请使用 /ai help 查看帮助。"
 
@@ -932,6 +976,108 @@ class MessageProcessor:
         category = argument.strip() or None
         report = self._permission_catalog.report_for_message(message, category=category)
         return report.render_text()
+
+    async def _automation_command(
+        self,
+        *,
+        message: InboundMessage,
+        identity: ConversationIdentity,
+        argument: str,
+    ) -> str:
+        """Manage owner-scoped tasks through the same service used by Agent tools."""
+
+        if self._automation is None or not self._settings.automation_enabled:
+            return "自动化功能当前未启用。"
+        parts = argument.split()
+        operation = parts.pop(0).casefold() if parts else "list"
+        if operation == "list":
+            if parts:
+                return "格式：/ai automation list"
+            rows = await self._automation.list_current(message.sender.user_id)
+            if not rows:
+                return "当前没有运行中或已暂停的自动化任务。\n已结束任务：/ai automation completed"
+            timezone = await self._automation.timezone(message.sender.user_id)
+            lines = [f"当前任务（{timezone}）："]
+            lines.extend(
+                f"#{index} [{row.status.value}] {row.name}；下次："
+                f"{local_text(row.next_run_at, timezone)}"
+                for index, row in enumerate(rows, start=1)
+            )
+            lines.append("已结束任务：/ai automation completed")
+            return "\n".join(lines)
+        if operation in {"completed", "archive"}:
+            if parts:
+                return "格式：/ai automation completed"
+            rows = await self._automation.list_completed(message.sender.user_id)
+            if not rows:
+                return "完成历史为空。"
+            timezone = await self._automation.timezone(message.sender.user_id)
+            lines = [f"完成历史（{timezone}，不占用当前任务编号）："]
+            lines.extend(
+                f"H{index} [{row.status.value}] {row.name}；最后运行："
+                f"{local_text(row.last_run_at, timezone)}"
+                for index, row in enumerate(rows, start=1)
+            )
+            return "\n".join(lines)
+        if len(parts) != 1 or not parts[0].isdigit():
+            return "格式：/ai automation show|pause|resume|cancel|run|history <当前编号>"
+        task_number = int(parts[0])
+        try:
+            current = await self._automation.current_by_number(message.sender.user_id, task_number)
+            automation_id = current.id
+            if operation == "show":
+                timezone = await self._automation.timezone(message.sender.user_id)
+                return (
+                    f"当前任务 #{task_number}\n名称：{current.name}\n"
+                    f"状态：{current.status.value}\n时区：{timezone}\n下次："
+                    f"{local_text(current.next_run_at, timezone)}\n"
+                    f"能力：{', '.join(current.required_capabilities)}"
+                )
+            if operation == "history":
+                history_rows = await self._automation.history(
+                    automation_id,
+                    creator_user_id=message.sender.user_id,
+                )
+                if not history_rows:
+                    return "该任务暂无执行记录。"
+                timezone = await self._automation.timezone(message.sender.user_id)
+                return "\n".join(
+                    f"运行 #{row.id} [{row.status.value}] "
+                    f"{local_text(row.scheduled_for, timezone)}"
+                    + (f"；{row.error_category}" if row.error_category else "")
+                    for row in history_rows
+                )
+            if operation == "pause":
+                changed = await self._automation.pause(
+                    automation_id,
+                    inbound=message,
+                    conversation_key=identity.key,
+                )
+                return "任务已暂停。" if changed else "任务状态没有改变。"
+            if operation == "resume":
+                changed = await self._automation.resume(
+                    automation_id,
+                    inbound=message,
+                    conversation_key=identity.key,
+                )
+                return "任务已恢复。" if changed else "该任务不能恢复。"
+            if operation == "cancel":
+                changed = await self._automation.cancel(
+                    automation_id,
+                    inbound=message,
+                    conversation_key=identity.key,
+                )
+                return "任务已取消。" if changed else "任务状态没有改变。"
+            if operation == "run":
+                changed = await self._automation.run_now(
+                    automation_id,
+                    inbound=message,
+                    conversation_key=identity.key,
+                )
+                return "任务已进入待执行队列。" if changed else "该任务不能立即执行。"
+        except ValueError as exc:
+            return str(exc)
+        return "可用操作：list、completed、show、pause、resume、cancel、run、history。"
 
     async def _config_command(self, actor: AdminActor, argument: str) -> str:
         parts = argument.split()
@@ -1125,6 +1271,7 @@ class MessageProcessor:
             "/ai affection set|adjust|trust user <QQ号> <数值>（超级管理员）\n"
             "/ai capabilities [类别]（查看当前 QQ 的完整权限与可改范围）\n"
             "/ai config list|get|set|unset|history|rollback（超级管理员）\n"
+            "/ai automation list|show|pause|resume|cancel|run|history <任务ID>\n"
             "/ai on|off（超级管理员，当前群）\n"
             "/ai group <群号> on|off（超级管理员）\n"
             "/ai private <QQ号> on|off（超级管理员；阻止/恢复私聊）\n"

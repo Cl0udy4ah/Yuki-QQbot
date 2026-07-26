@@ -400,9 +400,7 @@ class VisionService:
             raise error
 
         aggregate_hash = _aggregate_hash(tuple(item.media_hash for item in prepared))
-        durable_keys = (
-            (*emoji_keys, f"content:{aggregate_hash}") if len(references) == 1 else ()
-        )
+        durable_keys = (*emoji_keys, f"content:{aggregate_hash}") if len(references) == 1 else ()
         persistent = await self._find_emoji_description(
             (f"content:{aggregate_hash}",) if len(references) == 1 else (),
             analysis_mode=cache_mode,

@@ -1,5 +1,33 @@
 # 更新日志
 
+## 1.5.0 - 2026-07-27
+
+### 可信时间与持久化自动化
+
+- 新增 `TimeContextService`：每轮聊天注入后端可信的 UTC、本地时间、IANA 时区、日期和星期，历史事件使用当前用户时区显示简短时间戳；`person_time_settings` 持久保存每个 QQ 的时区。
+- 新增严格的 Automation DSL v1，支持 `after`、`once`、`daily`、`weekly`、`interval` 五类触发器，以及顺序步骤、受限模板变量、结构化步骤输出和每次运行硬限制；不执行 Python、Shell、JavaScript、SQL、文件或任意 HTTP。
+- 新增显式 `AutomationCapabilityRegistry`，首批登记 Yuki 生成/Agent、OneBot 主动发送及通用 action、管理员业务 action、运行时配置、联网、人物/群记忆和历史搜索能力。
+- 按新增需求向普通用户开放自动化工具：普通用户只能创建和管理自己的任务，并只能委托本人私聊、当前真实群、生成及安全只读能力；超级管理员可额外委托管理员、配置和全部公开 OneBot action。
+- 创建时保存最小 `DelegatedAuthority` 快照；执行能力取“创建时授予 ∩ 当前仍登记且版本一致 ∩ 当前权限仍允许”。超级管理员资格撤销、能力删除或 Schema 版本变化都会阻止旧任务执行，后端新增能力不会自动进入旧任务。
+
+### 调度、执行与审计
+
+- 新增非破坏性 Alembic `0012`：创建 `automations`、`automation_versions`、`automation_runs`、`automation_step_runs` 和 `person_time_settings`，并为 `chat_events` 增加自动化来源字段；保留现有人物、聊天、记忆、关系、联网、视觉和表情数据。
+- 新增数据库租约驱动的 `AutomationWorker`，支持重启恢复、双 Worker 竞争防重、`automation_id + scheduled_for` 幂等、关闭等待、Bot 断线宽限、misfire 跳过和周期任务无补发风暴。
+- 新增 `AutomationExecutor` 与 `OneBotProactiveGateway`：按真实 `bot_user_id` 选择连接，成功发送写回永久事件账本并标记 `scheduled_automation`；无法确认是否发送成功时标记 `uncertain` 且不自动重发。
+- 可重试的生成、Agent、联网、记忆与历史读取只对明确瞬时错误最多重试一次；发送、通用 OneBot、配置修改和管理员操作默认不重试。连续失败达到阈值后任务进入 `failed`，可修改后恢复。
+- 创建、修改、暂停、恢复、取消和手动运行共用 `AutomationService` 并写脱敏审计；运行与步骤记录只保存计数和摘要，不保存密钥、隐藏推理、网页正文、图片 Base64 或完整 OneBot 返回。
+
+### Agent、命令、配置与质量
+
+- 普通文本聊天 Agent 新增 `automation_create/list/get/update/pause/resume/cancel/run_now/history` 与 `time_get_current/get_timezone/set_timezone` 工具；图片、OCR、网页、引用、历史和模型生成文本都不能授予或扩大权限。
+- 新增 `/ai automation list|show|pause|resume|cancel|run|history`，所有用户只能操作自己创建的任务；`/ai status` 和 `/healthz` 增加自动化开关、Worker、活跃数和最近/下一次运行状态。
+- 新增 15 项 `AUTOMATION_*`/`DEFAULT_TIMEZONE` 启动配置及 14 项显式运行时配置；任务自身禁止修改 `automation.*` 硬限制。
+- 抽取可复用的有界 `AgentRunner` 供计划任务中的 Yuki Agent 使用，并保留普通聊天现有工具次数、管理员结果校验和联网后撤销修改能力的规则。
+- 自动化列表不再直接展示数据库 UTC：按用户时区（默认 `Asia/Shanghai`）输出本地时间；当前任务与已结束历史分队列展示，当前编号始终从 1 重新排列，底层稳定 ID 仅供后端操作。
+- 增加模型历史时间标记的输出清理，并明确普通提醒应使用 `onebot.send_private_message`/`onebot.send_group_message`，避免把自动化主动发送与聊天轮 `call_onebot_api` 混淆。
+- 版本提升至 `1.5.0`，同步 `.env.example`、README、系统提示词示例、能力目录、迁移与自动化回归测试。
+
 ## 1.4.2 - 2026-07-27
 
 ### 持久化 QQ 表情描述库

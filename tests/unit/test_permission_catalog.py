@@ -61,7 +61,7 @@ def test_query_contract_accepts_no_caller_supplied_user_id_or_role() -> None:
     assert "role" not in parameters
 
 
-def test_user_report_contains_only_sixteen_deterministic_self_service_operations() -> None:
+def test_user_report_includes_automation_and_time_self_service_operations() -> None:
     report = PermissionCatalogService(settings=settings()).report_for_message(inbound("1000"))
 
     assert report.permission_level is PermissionLevel.USER
@@ -69,8 +69,8 @@ def test_user_report_contains_only_sixteen_deterministic_self_service_operations
     assert report.protected_config_count == 0
     assert report.business_action_count == 0
     assert report.mutating_action_count == 0
-    assert report.self_service_operation_count == 16
-    assert report.self_service_mutation_count == 7
+    assert report.self_service_operation_count == 29
+    assert report.self_service_mutation_count == 14
     assert {descriptor.kind for descriptor in report.capabilities} == {CapabilityKind.COMMAND}
     assert {descriptor.id for descriptor in report.capabilities} == {
         "command:chat.help:self",
@@ -80,6 +80,19 @@ def test_user_report_contains_only_sixteen_deterministic_self_service_operations
         "command:chat.ping:self",
         "command:identity.whoami:self",
         "command:identity.forgetme:self",
+        "command:automation.create:self",
+        "command:automation.list:self",
+        "command:automation.list_history:self",
+        "command:automation.get:self",
+        "command:automation.update:self",
+        "command:automation.pause:self",
+        "command:automation.resume:self",
+        "command:automation.cancel:self",
+        "command:automation.run_now:self",
+        "command:automation.history:self",
+        "command:time.get_current:self",
+        "command:time.get_timezone:self",
+        "command:time.set_timezone:self",
         "command:relationship.get:self",
         "command:relationship.history:self",
         "command:memory.list:self",
@@ -107,13 +120,13 @@ def test_superuser_report_has_exact_registry_counts_and_complete_lists() -> None
     ).report_for_message(inbound("9000"))
 
     assert report.permission_level is PermissionLevel.SUPERUSER
-    assert report.mutable_config_count == 57
+    assert report.mutable_config_count == 71
     assert report.protected_config_count == 12
     assert report.business_action_count == 18
     assert report.mutating_action_count == 14
-    assert report.self_service_operation_count == 16
+    assert report.self_service_operation_count == 29
     assert report.onebot_gateway_count == 1
-    assert len(report.capabilities) == 104
+    assert len(report.capabilities) == 131
 
     config_ids = {
         descriptor.id
@@ -141,13 +154,13 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
 
     assert first == second
     assert first["counts"] == {
-        "total": 104,
-        "mutable_configurations": 57,
+        "total": 131,
+        "mutable_configurations": 71,
         "protected_configurations": 12,
         "business_actions": 18,
         "mutating_business_actions": 14,
-        "self_service_operations": 16,
-        "self_service_mutations": 7,
+        "self_service_operations": 29,
+        "self_service_mutations": 14,
         "onebot_api_gateways": 1,
     }
     assert set(first["available_apply_modes"]) == {
@@ -236,7 +249,7 @@ def test_deterministic_text_contains_every_capability_and_onebot_scope() -> None
             capability_id = capability_id.removeprefix("onebot:")
         assert capability_id in rendered
 
-    assert "可修改运行时配置参数：57 项" in rendered
+    assert "可修改运行时配置参数：71 项" in rendered
     assert "管理员业务接口：18 项，其中修改型 14 项" in rendered
     assert "NapCat/OneBot 通用全接口网关：1 项" in rendered
     assert "全部公开 action" in rendered
@@ -304,7 +317,7 @@ def test_injected_registry_entries_appear_without_copying_registry_tables() -> N
     assert "action:diagnostics.snapshot:any_group" in {
         descriptor.id for descriptor in report.capabilities
     }
-    assert report.mutable_config_count == 58
+    assert report.mutable_config_count == 72
     assert report.business_action_count == 19
 
 

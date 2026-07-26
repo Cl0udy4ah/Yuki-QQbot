@@ -63,6 +63,17 @@ class PersonModel(Base):
         passive_deletes=True,
         uselist=False,
     )
+    time_setting: Mapped[PersonTimeSettingModel | None] = relationship(
+        back_populates="person",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
+    automations: Mapped[list[AutomationModel]] = relationship(
+        back_populates="creator",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class PersonAliasModel(Base):
@@ -146,6 +157,7 @@ class ChatEventModel(Base):
         Index("ix_chat_events_group_time", "group_id", "occurred_at"),
         Index("ix_chat_events_sender_time", "sender_user_id", "occurred_at"),
         Index("ix_chat_events_private_peer_time", "private_peer_user_id", "occurred_at"),
+        Index("ix_chat_events_automation", "automation_id", "automation_run_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -166,6 +178,13 @@ class ChatEventModel(Base):
     visual_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     segments_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     reply_to_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    origin: Mapped[str] = mapped_column(String(32), nullable=False, default="user_message")
+    automation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("automations.id", ondelete="SET NULL"), nullable=True
+    )
+    automation_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("automation_runs.id", ondelete="SET NULL"), nullable=True
+    )
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -678,6 +697,158 @@ class WebSearchSourceModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     run: Mapped[WebSearchRunModel] = relationship(back_populates="sources")
+
+
+class PersonTimeSettingModel(Base):
+    """The preferred IANA timezone for one globally identified person."""
+
+    __tablename__ = "person_time_settings"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    person: Mapped[PersonModel] = relationship(back_populates="time_setting")
+
+
+class AutomationModel(Base):
+    """A validated, persistent declaration of one scheduled automation."""
+
+    __tablename__ = "automations"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'paused', 'completed', 'cancelled', 'failed', 'blocked')",
+            name="ck_automations_status",
+        ),
+        CheckConstraint("run_count >= 0", name="ck_automations_run_count"),
+        CheckConstraint("consecutive_failures >= 0", name="ck_automations_consecutive_failures"),
+        Index("ix_automations_status_next", "status", "next_run_at"),
+        Index("ix_automations_creator_updated", "creator_user_id", "updated_at"),
+        Index("ix_automations_claim", "claimed_until", "claimed_by"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    creator_user_id: Mapped[str] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
+    )
+    bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    schedule_json: Mapped[str] = mapped_column(Text, nullable=False)
+    script_json: Mapped[str] = mapped_column(Text, nullable=False)
+    script_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    required_capabilities_json: Mapped[str] = mapped_column(Text, nullable=False)
+    authority_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_from_message_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    run_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_runs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    misfire_grace_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=1800)
+    claimed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claimed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    creator: Mapped[PersonModel] = relationship(back_populates="automations")
+    versions: Mapped[list[AutomationVersionModel]] = relationship(
+        back_populates="automation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    runs: Mapped[list[AutomationRunModel]] = relationship(
+        back_populates="automation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class AutomationVersionModel(Base):
+    """An immutable script revision for an automation."""
+
+    __tablename__ = "automation_versions"
+    __table_args__ = (
+        UniqueConstraint("automation_id", "version", name="uq_automation_versions_number"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    automation_id: Mapped[int] = mapped_column(
+        ForeignKey("automations.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    script_json: Mapped[str] = mapped_column(Text, nullable=False)
+    script_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    automation: Mapped[AutomationModel] = relationship(back_populates="versions")
+
+
+class AutomationRunModel(Base):
+    """One idempotent scheduled or manual execution attempt."""
+
+    __tablename__ = "automation_runs"
+    __table_args__ = (
+        UniqueConstraint("automation_id", "scheduled_for", name="uq_automation_runs_scheduled_for"),
+        UniqueConstraint("idempotency_key", name="uq_automation_runs_idempotency_key"),
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed', 'skipped', 'missed', "
+            "'uncertain', 'blocked')",
+            name="ck_automation_runs_status",
+        ),
+        Index("ix_automation_runs_automation_created", "automation_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    automation_id: Mapped[int] = mapped_column(
+        ForeignKey("automations.id", ondelete="CASCADE"), nullable=False
+    )
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    actual_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    steps_completed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    llm_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    messages_sent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_summary_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    automation: Mapped[AutomationModel] = relationship(back_populates="runs")
+    step_runs: Mapped[list[AutomationStepRunModel]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class AutomationStepRunModel(Base):
+    """A redacted audit record for one executed DSL step."""
+
+    __tablename__ = "automation_step_runs"
+    __table_args__ = (Index("ix_automation_step_runs_run_step", "run_id", "step_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("automation_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    step_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    capability: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    input_summary_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    output_summary_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    run: Mapped[AutomationRunModel] = relationship(back_populates="step_runs")
 
 
 # Source-compatibility aliases for integrations that only inspect the old profile types.

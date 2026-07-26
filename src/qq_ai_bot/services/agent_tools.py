@@ -14,6 +14,7 @@ from typing import Any, Literal, Protocol, cast
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import CapabilityReport, PermissionCatalogService
+from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage
@@ -56,6 +57,7 @@ class ToolRuntime:
     gateway: OneBotToolGateway | None
     allow_generic_onebot: bool
     allow_admin_actions: bool = False
+    allow_automation: bool = False
     conversation_key: str = ""
     trigger_message_id: str = ""
     source_display_requested: bool = False
@@ -64,6 +66,7 @@ class ToolRuntime:
     current_group_id: str | None = None
     mentioned_user_ids: tuple[str, ...] = ()
     runtime_config: RuntimeConfigSnapshot | None = None
+    origin: TurnOrigin = TurnOrigin.USER_MESSAGE
 
 
 def _object_schema(

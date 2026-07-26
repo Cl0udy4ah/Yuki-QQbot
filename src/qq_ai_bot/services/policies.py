@@ -29,6 +29,7 @@ class CommandName(StrEnum):
     AFFECTION = "affection"
     CAPABILITIES = "capabilities"
     CONFIG = "config"
+    AUTOMATION = "automation"
 
 
 @dataclass(frozen=True, slots=True)

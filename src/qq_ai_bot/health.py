@@ -19,6 +19,9 @@ class HealthPayload(TypedDict):
     web_configured: bool
     vision_configured: bool
     onebot_connected: bool
+    automation_enabled: bool
+    automation_worker_running: bool
+    active_automation_count: int
     uptime_seconds: int
 
 
@@ -34,5 +37,8 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         web_configured=container.settings.web_configured,
         vision_configured=container.settings.vision_configured,
         onebot_connected=container.onebot_connected(),
+        automation_enabled=container.settings.automation_enabled,
+        automation_worker_running=container.automation_worker.running,
+        active_automation_count=await container.automation_repository.active_count(),
         uptime_seconds=max(0, int(time.monotonic() - container.started_at)),
     )

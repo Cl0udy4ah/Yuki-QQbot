@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime, timedelta
 
 from nonebot import get_bots
 from sqlalchemy.exc import SQLAlchemyError
@@ -14,6 +15,14 @@ from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.capabilities import AdminCapabilityService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
+from qq_ai_bot.automation.executor import AutomationExecutor
+from qq_ai_bot.automation.gateway import OneBotProactiveGateway
+from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers
+from qq_ai_bot.automation.registry import build_capability_registry
+from qq_ai_bot.automation.repository import AutomationRepository
+from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.automation.tools import AutomationToolService
+from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
@@ -65,6 +74,7 @@ from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.user_profiles import UserProfileService
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
 from qq_ai_bot.services.vision_service import VISION_PROMPT_VERSION, VisionService
+from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.base import VisionProvider
 from qq_ai_bot.vision.fake import FakeVisionProvider
 from qq_ai_bot.vision.qwen import QwenVisionProvider
@@ -125,6 +135,10 @@ class ApplicationContainer:
         self.web_sources = WebSearchSourceRepository(self.database)
         self.media_analyses = MediaAnalysisRepository(self.database)
         self.emoji_descriptions = EmojiDescriptionRepository(self.database)
+        self.time_context = TimeContextService(
+            self.database,
+            default_timezone=settings.default_timezone,
+        )
         self.relationships = RelationshipRepository(
             self.database,
             initial_affection=settings.relationship_initial_affection,
@@ -217,6 +231,7 @@ class ApplicationContainer:
             source_policy=SourceDisplayPolicy(),
             source_renderer=SourceRenderer(),
             runtime_config=self.runtime_config,
+            time_service=self.time_context,
         )
         self.memory_worker = MemoryWorker(
             settings=settings,
@@ -287,6 +302,51 @@ class ApplicationContainer:
             permission_catalog=self.permission_catalog,
         )
         self.chat.set_admin_tools(self.admin_capabilities)
+        self.automation_repository = AutomationRepository(self.database)
+        self._automation_handlers = AutomationCapabilityHandlers(
+            settings=settings,
+            provider=self.provider,
+            concurrency=self.concurrency,
+            runtime_config=self.runtime_config,
+            time_service=self.time_context,
+            ledger=self.ledger,
+            memories=self.memories,
+            relationships=self.relationships,
+            admin_actions=self.admin_actions,
+            web_provider=self.web_provider,
+            gateway_factory=lambda context: OneBotProactiveGateway(
+                bot_user_id=context.bot_user_id,
+                creator_user_id=context.creator_user_id,
+                automation_id=context.automation_id,
+                automation_run_id=context.automation_run_id,
+                ledger=self.ledger,
+                actions=self.agent_actions,
+            ),
+        )
+        self.automation_registry = build_capability_registry(self._automation_handlers.mapping())
+        self._automation_handlers.bind_registry(self.automation_registry)
+        self.automation = AutomationService(
+            settings=settings,
+            repository=self.automation_repository,
+            registry=self.automation_registry,
+            time_service=self.time_context,
+            audit=self.admin_audit,
+        )
+        self.automation_tools = AutomationToolService(self.automation)
+        self.chat.set_automation_tools(self.automation_tools)
+        self.automation_executor = AutomationExecutor(
+            settings=settings,
+            registry=self.automation_registry,
+            repository=self.automation_repository,
+            time_service=self.time_context,
+        )
+        self.automation_worker = AutomationWorker(
+            settings=settings,
+            repository=self.automation_repository,
+            executor=self.automation_executor,
+            time_service=self.time_context,
+            bot_connected=self.bot_account_connected,
+        )
         self.processor = MessageProcessor(
             settings=settings,
             conversations=self.conversations,
@@ -315,6 +375,9 @@ class ApplicationContainer:
             config_admin=self.config_admin,
             permission_catalog=self.permission_catalog,
             vision_service=self.vision,
+            automation_service=self.automation,
+            automation_repository=self.automation_repository,
+            automation_worker=self.automation_worker,
         )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -389,6 +452,11 @@ class ApplicationContainer:
 
         return bool(get_bots())
 
+    def bot_account_connected(self, bot_user_id: str) -> bool:
+        """Return whether the exact bot account delegated by a task is connected."""
+
+        return any(str(getattr(bot, "self_id", "")) == bot_user_id for bot in get_bots().values())
+
     async def start(self) -> None:
         """Start maintenance tasks after migrations have run."""
 
@@ -397,6 +465,7 @@ class ApplicationContainer:
         )
         await self.memory_worker.start()
         await self.relationship_worker.start()
+        await self.automation_worker.start()
 
     async def _cleanup_loop(self) -> None:
         while not self._cleanup_stop.is_set():
@@ -413,6 +482,12 @@ class ApplicationContainer:
                 vision_deleted = await self.media_analyses.cleanup_expired()
                 if vision_deleted:
                     logger.info("media_analyses_cleaned count=%d", vision_deleted)
+                automation_runs_deleted = await self.automation_repository.cleanup_runs(
+                    before=datetime.now(UTC)
+                    - timedelta(days=self.settings.automation_run_retention_days)
+                )
+                if automation_runs_deleted:
+                    logger.info("automation_runs_cleaned count=%d", automation_runs_deleted)
             except (SQLAlchemyError, OSError, RuntimeError) as exc:
                 logger.error("processed_event_cleanup_failed", exc_info=exc)
             try:
@@ -430,6 +505,7 @@ class ApplicationContainer:
         if self._cleanup_task is not None:
             await self._cleanup_task
         await self.autonomous_groups.close()
+        await self.automation_worker.close()
         await self.relationship_worker.close()
         await self.memory_worker.close()
         if self.web_provider is not None:

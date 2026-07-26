@@ -107,6 +107,17 @@ def test_markdown_cleanup_and_control_character_sanitization() -> None:
     assert sanitize_input("a\x00b\r\nc") == "ab\nc"
 
 
+def test_model_output_never_exposes_internal_history_timestamps() -> None:
+    text = (
+        "先确认一下。[07-27 03:14] 五分钟后提醒你。\n"
+        "[07-27 03:13 QQ 2186567848] 这也是内部历史标记。"
+    )
+
+    assert clean_model_output(text, max_characters=200) == (
+        "先确认一下。五分钟后提醒你。\n这也是内部历史标记。"
+    )
+
+
 @pytest.mark.asyncio
 async def test_conversation_isolation_and_clear(database: Database) -> None:
     repository = ConversationRepository(database)

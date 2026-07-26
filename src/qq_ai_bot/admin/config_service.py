@@ -323,6 +323,22 @@ class RuntimeConfigService:
             "vision.media_download_timeout_seconds": ("vision_media_download_timeout_seconds"),
             "vision.timeout_seconds": "vision_timeout_seconds",
             "vision.max_output_tokens": "vision_max_output_tokens",
+            "automation.enabled": "automation_enabled",
+            "automation.poll_seconds": "automation_poll_seconds",
+            "automation.lease_seconds": "automation_lease_seconds",
+            "automation.max_active_per_superuser": "automation_max_active_per_superuser",
+            "automation.max_active_per_user": "automation_max_active_per_user",
+            "automation.max_steps": "automation_max_steps",
+            "automation.max_llm_calls_per_run": "automation_max_llm_calls_per_run",
+            "automation.max_tool_calls_per_run": "automation_max_tool_calls_per_run",
+            "automation.max_messages_per_run": "automation_max_messages_per_run",
+            "automation.max_runtime_seconds": "automation_max_runtime_seconds",
+            "automation.min_interval_seconds": "automation_min_interval_seconds",
+            "automation.default_misfire_grace_seconds": (
+                "automation_default_misfire_grace_seconds"
+            ),
+            "automation.max_consecutive_failures": "automation_max_consecutive_failures",
+            "automation.run_retention_days": "automation_run_retention_days",
         }
         updates: dict[str, object] = {}
         for key, field_name in mapping.items():

@@ -83,7 +83,7 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
         )
         assert payload["data"]["transient_internal_reference"] is True
         assert payload["data"]["do_not_copy_verbatim_to_user"] is True
-        assert payload["data"]["counts"]["self_service_operations"] == 16
+        assert payload["data"]["counts"]["self_service_operations"] == 29
         return ChatResponse(
             content="你目前有 16 项本人自助能力，其中 7 项会修改本人数据；不能修改系统配置。",
             latency_seconds=0,

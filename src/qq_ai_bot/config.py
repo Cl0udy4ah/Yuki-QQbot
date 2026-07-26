@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import cached_property
 from pathlib import Path
 from typing import Self
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -147,6 +148,22 @@ class Settings(BaseSettings):
     vision_per_group_requests_per_minute: int = 60
     vision_analysis_retention_days: int = 7
 
+    automation_enabled: bool = False
+    default_timezone: str = "Asia/Shanghai"
+    automation_poll_seconds: float = 2.0
+    automation_lease_seconds: int = 120
+    automation_max_active_per_superuser: int = 50
+    automation_max_active_per_user: int = 10
+    automation_max_steps: int = 8
+    automation_max_llm_calls_per_run: int = 2
+    automation_max_tool_calls_per_run: int = 8
+    automation_max_messages_per_run: int = 3
+    automation_max_runtime_seconds: int = 120
+    automation_min_interval_seconds: int = 60
+    automation_default_misfire_grace_seconds: int = 1800
+    automation_max_consecutive_failures: int = 3
+    automation_run_retention_days: int = 30
+
     @field_validator(
         "app_port",
         "llm_max_output_tokens",
@@ -203,6 +220,18 @@ class Settings(BaseSettings):
         "vision_per_user_requests_per_minute",
         "vision_per_group_requests_per_minute",
         "vision_analysis_retention_days",
+        "automation_lease_seconds",
+        "automation_max_active_per_superuser",
+        "automation_max_active_per_user",
+        "automation_max_steps",
+        "automation_max_llm_calls_per_run",
+        "automation_max_tool_calls_per_run",
+        "automation_max_messages_per_run",
+        "automation_max_runtime_seconds",
+        "automation_min_interval_seconds",
+        "automation_default_misfire_grace_seconds",
+        "automation_max_consecutive_failures",
+        "automation_run_retention_days",
     )
     @classmethod
     def _positive_integer(cls, value: int) -> int:
@@ -216,6 +245,7 @@ class Settings(BaseSettings):
         "vision_timeout_seconds",
         "vision_queue_timeout_seconds",
         "vision_media_download_timeout_seconds",
+        "automation_poll_seconds",
     )
     @classmethod
     def _positive_timeout(cls, value: float) -> float:
@@ -281,6 +311,16 @@ class Settings(BaseSettings):
             raise ValueError("WEB_SEARCH_DEPTH must be basic or advanced")
         return normalized
 
+    @field_validator("default_timezone")
+    @classmethod
+    def _valid_default_timezone(cls, value: str) -> str:
+        normalized = value.strip()
+        try:
+            ZoneInfo(normalized)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("DEFAULT_TIMEZONE must be a valid IANA timezone") from exc
+        return normalized
+
     @field_validator(
         "relationship_initial_affection",
         "relationship_initial_trust",
@@ -339,6 +379,16 @@ class Settings(BaseSettings):
             raise ValueError("VISION_MAX_RETRIES must not exceed 1")
         if self.vision_thinking_budget > 32768:
             raise ValueError("VISION_THINKING_BUDGET must not exceed 32768")
+        if self.automation_max_steps > 16:
+            raise ValueError("AUTOMATION_MAX_STEPS must not exceed 16")
+        if self.automation_max_llm_calls_per_run > 5:
+            raise ValueError("AUTOMATION_MAX_LLM_CALLS_PER_RUN must not exceed 5")
+        if self.automation_max_tool_calls_per_run > 16:
+            raise ValueError("AUTOMATION_MAX_TOOL_CALLS_PER_RUN must not exceed 16")
+        if self.automation_max_messages_per_run > 10:
+            raise ValueError("AUTOMATION_MAX_MESSAGES_PER_RUN must not exceed 10")
+        if self.automation_min_interval_seconds < 60:
+            raise ValueError("AUTOMATION_MIN_INTERVAL_SECONDS must be at least 60")
         return self
 
     @model_validator(mode="after")

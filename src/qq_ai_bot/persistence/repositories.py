@@ -93,6 +93,9 @@ class EventRecord:
     group_id: str | None = None
     private_peer_user_id: str | None = None
     reply_to_message_id: str | None = None
+    origin: str = "user_message"
+    automation_id: int | None = None
+    automation_run_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +309,9 @@ def _event_record(row: ChatEventModel) -> EventRecord:
         group_id=row.group_id,
         private_peer_user_id=row.private_peer_user_id,
         reply_to_message_id=row.reply_to_message_id,
+        origin=row.origin,
+        automation_id=row.automation_id,
+        automation_run_id=row.automation_run_id,
     )
 
 
@@ -886,6 +892,9 @@ class EventLedgerRepository:
         occurred_at: datetime | None = None,
         sender_nickname: str = "",
         sender_is_bot: bool = False,
+        origin: str = "user_message",
+        automation_id: int | None = None,
+        automation_run_id: int | None = None,
     ) -> tuple[EventRecord, bool]:
         """Insert idempotently and return the existing row on duplicate."""
 
@@ -917,6 +926,9 @@ class EventLedgerRepository:
                     visual_summary="",
                     segments_json=json.dumps(segments, ensure_ascii=False, separators=(",", ":")),
                     reply_to_message_id=reply_to_message_id,
+                    origin=origin[:32],
+                    automation_id=automation_id,
+                    automation_run_id=automation_run_id,
                     occurred_at=timestamp,
                     observed_at=observed_at,
                 )
@@ -1079,6 +1091,9 @@ class EventLedgerRepository:
                     group_id=row["group_id"],
                     private_peer_user_id=row["private_peer_user_id"],
                     reply_to_message_id=row["reply_to_message_id"],
+                    origin=str(row["origin"] or "user_message"),
+                    automation_id=row["automation_id"],
+                    automation_run_id=row["automation_run_id"],
                 )
             )
         return tuple(reversed(records))
