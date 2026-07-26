@@ -360,6 +360,50 @@ async def test_llm_relationship_evaluator_disables_thinking_and_tools(
 
 
 @pytest.mark.asyncio
+async def test_relationship_evaluator_only_receives_real_inbound_user_text(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    await append_user_event(database, message_id="relationship-prior", content="真实旧消息")
+    await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="relationship-visual-reply",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="8000",
+        direction="outbound",
+        content="由视觉观察生成的机器人回复",
+        private_peer_user_id="1001",
+        sender_is_bot=True,
+    )
+    trigger_id = await append_user_event(
+        database,
+        message_id="relationship-current",
+        content="当前真实用户文字",
+    )
+    jobs = RelationshipJobRepository(database)
+    await jobs.enqueue(
+        trigger_event_id=trigger_id,
+        user_id="1001",
+        conversation_key="private:1001",
+    )
+    claimed = await jobs.claim()
+    provider = CapturingRelationshipProvider(claimed[0].job_id)
+    evaluator = LLMRelationshipEvaluator(
+        settings=make_settings(database.url),
+        provider=provider,
+        concurrency=ConcurrencyManager(1),
+    )
+
+    await evaluator.evaluate(claimed)
+
+    assert provider.request is not None
+    payload = json.loads(provider.request.messages[-1].content or "[]")
+    contents = [event["content"] for event in payload[0]["events"]]
+    assert contents == ["真实旧消息", "当前真实用户文字"]
+    assert "由视觉观察生成" not in json.dumps(payload, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
 async def test_low_confidence_relationship_evaluation_is_neutralized(
     database: Database,
 ) -> None:

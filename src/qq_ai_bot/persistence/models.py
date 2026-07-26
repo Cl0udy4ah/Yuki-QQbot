@@ -169,6 +169,51 @@ class ChatEventModel(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MediaAnalysisModel(Base):
+    """A short-lived structured visual observation without source image data."""
+
+    __tablename__ = "media_analyses"
+    __table_args__ = (
+        CheckConstraint(
+            "analysis_mode IN ('general', 'meme', 'ocr', 'question')",
+            name="ck_media_analyses_analysis_mode",
+        ),
+        CheckConstraint(
+            "segment_index >= 0",
+            name="ck_media_analyses_segment_index",
+        ),
+        UniqueConstraint(
+            "content_hash",
+            "analysis_mode",
+            "question_hash",
+            "model",
+            "prompt_version",
+            name="uq_media_analyses_cache_key",
+        ),
+        Index("ix_media_analyses_content_hash", "content_hash"),
+        Index(
+            "ix_media_analyses_source_event_segment",
+            "source_event_id",
+            "segment_index",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=True
+    )
+    segment_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    analysis_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    question_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    observation_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class PersonMemoryModel(Base):
     """A durable cross-scope memory about one QQ identity."""
 

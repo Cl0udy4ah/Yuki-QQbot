@@ -55,6 +55,7 @@ def upgrade() -> None:
             "relationship_jobs",
             "runtime_config_overrides",
             "admin_operation_events",
+            "media_analyses",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

@@ -115,7 +115,11 @@ class LLMRelationshipEvaluator:
                         "content": event.content,
                         "occurred_at": event.occurred_at.isoformat(),
                     }
-                    for event in job.recent_events[-5:]
+                    for event in tuple(
+                        event
+                        for event in job.recent_events
+                        if event.direction == "inbound" and event.sender_user_id == job.user_id
+                    )[-5:]
                 ],
             }
             for job in jobs

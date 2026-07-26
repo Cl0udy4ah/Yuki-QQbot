@@ -122,7 +122,7 @@ def test_reply_text_and_face_placeholder_are_supported() -> None:
     )
     normalized = normalize_event(event)
     assert normalized.reply_text == "quoted"
-    assert "[QQ表情:14]" in normalized.text
+    assert "[QQ表情：微笑]" in normalized.text
 
 
 def test_unsupported_attachment_is_metadata_only() -> None:

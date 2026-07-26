@@ -25,6 +25,7 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     GroupMemoryRepository,
     GroupSettingsRepository,
+    MediaAnalysisRepository,
     MemoryJobRepository,
     MemoryRepository,
     PrivateUserSettingsRepository,
@@ -47,6 +48,8 @@ from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
 from qq_ai_bot.services.group_members import GroupMemberService
 from qq_ai_bot.services.group_memories import GroupMemoryService
+from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
+from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.services.memory_worker import MemoryWorker
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
@@ -59,6 +62,11 @@ from qq_ai_bot.services.relationship_worker import RelationshipWorker
 from qq_ai_bot.services.source_policy import SourceDisplayPolicy
 from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.user_profiles import UserProfileService
+from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
+from qq_ai_bot.services.vision_service import VISION_PROMPT_VERSION, VisionService
+from qq_ai_bot.vision.base import VisionProvider
+from qq_ai_bot.vision.fake import FakeVisionProvider
+from qq_ai_bot.vision.qwen import QwenVisionProvider
 from qq_ai_bot.web.base import WebSearchProvider
 from qq_ai_bot.web.tavily import TavilyWebSearchProvider
 
@@ -74,6 +82,7 @@ class ApplicationContainer:
         *,
         database: Database | None = None,
         runtime_config: RuntimeConfigService | None = None,
+        vision_provider: VisionProvider | None = None,
     ) -> None:
         self.settings = settings
         self.started_at = time.monotonic()
@@ -113,6 +122,7 @@ class ApplicationContainer:
         self.memory_jobs = MemoryJobRepository(self.database)
         self.agent_actions = AgentActionRepository(self.database)
         self.web_sources = WebSearchSourceRepository(self.database)
+        self.media_analyses = MediaAnalysisRepository(self.database)
         self.relationships = RelationshipRepository(
             self.database,
             initial_affection=settings.relationship_initial_affection,
@@ -127,6 +137,33 @@ class ApplicationContainer:
         )
         self.provider = self._build_provider(settings)
         self.web_provider = self._build_web_provider(settings)
+        self.vision_provider = vision_provider or self._build_vision_provider(settings)
+        self.vision: VisionService | None = None
+        if self.vision_provider is not None:
+            self.vision = VisionService(
+                provider=self.vision_provider,
+                resolver=MediaResolver(
+                    max_download_bytes=settings.vision_max_download_bytes,
+                    timeout_seconds=10,
+                ),
+                preprocessor=ImagePreprocessor(
+                    max_dimension=settings.vision_max_dimension,
+                    max_pixels=settings.vision_max_pixels,
+                    max_prepared_bytes=settings.vision_max_prepared_bytes,
+                    # The per-turn value is HOT-configurable up to eight frames.
+                    # Construct the preprocessor at that reviewed hard ceiling so
+                    # raising the runtime value does not remain capped by startup.
+                    gif_max_frames=8,
+                ),
+                analyses=self.media_analyses,
+                rate_limiter=VisionRateLimiter(),
+                max_prepared_bytes=settings.vision_max_prepared_bytes,
+                global_concurrency=settings.vision_global_concurrency,
+                prompt_version=(
+                    f"{VISION_PROMPT_VERSION}-{settings.vision_max_dimension:x}-"
+                    f"{settings.vision_max_pixels:x}-{settings.vision_max_prepared_bytes:x}"
+                ),
+            )
         self.concurrency = ConcurrencyManager(settings.global_llm_concurrency)
         self.relationship_evaluator: RelationshipEvaluator
         if isinstance(self.provider, FakeLLMProvider):
@@ -272,6 +309,7 @@ class ApplicationContainer:
             private_access_admin=self.private_access_admin,
             config_admin=self.config_admin,
             permission_catalog=self.permission_catalog,
+            vision_service=self.vision,
         )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -323,6 +361,24 @@ class ApplicationContainer:
             global_concurrency=settings.web_global_concurrency,
         )
 
+    @staticmethod
+    def _build_vision_provider(settings: Settings) -> VisionProvider | None:
+        if not settings.vision_enabled:
+            return None
+        if settings.vision_provider.casefold() == "fake":
+            return FakeVisionProvider(model=settings.vision_model)
+        if settings.vision_provider.casefold() != "qwen":
+            raise ValueError("VISION_PROVIDER must be qwen or fake")
+        return QwenVisionProvider(
+            base_url=settings.vision_base_url,
+            api_key=settings.vision_api_key,
+            model=settings.vision_model,
+            timeout_seconds=settings.vision_timeout_seconds,
+            max_retries=settings.vision_max_retries,
+            global_concurrency=settings.vision_global_concurrency,
+            max_output_tokens=settings.vision_max_output_tokens,
+        )
+
     def onebot_connected(self) -> bool:
         """Return whether NoneBot currently has at least one connected adapter bot."""
 
@@ -349,6 +405,9 @@ class ApplicationContainer:
                 )
                 if web_deleted:
                     logger.info("web_source_runs_cleaned count=%d", web_deleted)
+                vision_deleted = await self.media_analyses.cleanup_expired()
+                if vision_deleted:
+                    logger.info("media_analyses_cleaned count=%d", vision_deleted)
             except (SQLAlchemyError, OSError, RuntimeError) as exc:
                 logger.error("processed_event_cleanup_failed", exc_info=exc)
             try:
@@ -370,6 +429,8 @@ class ApplicationContainer:
         await self.memory_worker.close()
         if self.web_provider is not None:
             await self.web_provider.close()
+        if self.vision is not None:
+            await self.vision.close()
         await self.provider.close()
         await self.database.close()
 

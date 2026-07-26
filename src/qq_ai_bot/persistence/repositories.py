@@ -33,6 +33,7 @@ from qq_ai_bot.persistence.models import (
     ContextResetModel,
     GroupMemoryModel,
     GroupModel,
+    MediaAnalysisModel,
     MembershipModel,
     MemoryJobModel,
     PersonAliasModel,
@@ -90,6 +91,24 @@ class EventRecord:
     group_id: str | None = None
     private_peer_user_id: str | None = None
     reply_to_message_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MediaAnalysisRecord:
+    """A cached structured observation; it never contains source image bytes."""
+
+    id: int
+    source_event_id: int | None
+    segment_index: int
+    content_hash: str
+    analysis_mode: str
+    question_hash: str
+    provider: str
+    model: str
+    prompt_version: str
+    observation_json: str
+    created_at: datetime
+    expires_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -911,6 +930,23 @@ class EventLedgerRepository:
             sender_nickname=message.sender.nickname,
             sender_is_bot=message.sender.is_bot,
         )
+
+    async def find_by_platform_message(
+        self,
+        *,
+        bot_user_id: str,
+        platform_message_id: str,
+    ) -> EventRecord | None:
+        """Return one exact locally observed event without widening its conversation scope."""
+
+        async with self._database.sessions() as session:
+            row = await session.scalar(
+                select(ChatEventModel).where(
+                    ChatEventModel.bot_user_id == bot_user_id,
+                    ChatEventModel.platform_message_id == platform_message_id,
+                )
+            )
+        return _event_record(row) if row is not None else None
 
     async def list_recent(
         self,
@@ -2241,6 +2277,279 @@ class AgentActionRepository:
                     created_at=datetime.now(UTC),
                 )
             )
+
+
+class MediaAnalysisRepository:
+    """Persist and reuse expiring structured visual observations."""
+
+    _MODES = frozenset({"general", "meme", "ocr", "question"})
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def find_cached(
+        self,
+        *,
+        content_hash: str,
+        analysis_mode: str,
+        question_hash: str | None,
+        provider: str,
+        model: str,
+        prompt_version: str,
+        now: datetime | None = None,
+    ) -> MediaAnalysisRecord | None:
+        """Find one unexpired exact cache entry for a prepared media payload."""
+
+        timestamp = now or datetime.now(UTC)
+        async with self._database.sessions() as session:
+            row = await session.scalar(
+                select(MediaAnalysisModel).where(
+                    MediaAnalysisModel.content_hash == content_hash,
+                    MediaAnalysisModel.analysis_mode == analysis_mode,
+                    MediaAnalysisModel.question_hash == (question_hash or ""),
+                    MediaAnalysisModel.provider == provider,
+                    MediaAnalysisModel.model == model,
+                    MediaAnalysisModel.prompt_version == prompt_version,
+                    MediaAnalysisModel.expires_at > timestamp,
+                )
+            )
+        return self._record(row) if row is not None else None
+
+    async def get_cached(
+        self,
+        *,
+        content_hash: str,
+        analysis_mode: str,
+        question_hash: str | None,
+        provider: str,
+        model: str,
+        prompt_version: str,
+        now: datetime | None = None,
+    ) -> MediaAnalysisRecord | None:
+        """Compatibility spelling for callers that use get-style repository APIs."""
+
+        return await self.find_cached(
+            content_hash=content_hash,
+            analysis_mode=analysis_mode,
+            question_hash=question_hash,
+            provider=provider,
+            model=model,
+            prompt_version=prompt_version,
+            now=now,
+        )
+
+    async def find_for_event(
+        self,
+        source_event_id: int,
+        segment_index: int,
+        *,
+        analysis_mode: str,
+        question_hash: str,
+        provider: str,
+        model: str,
+        prompt_version: str,
+        now: datetime | None = None,
+    ) -> MediaAnalysisRecord | None:
+        """Find an unexpired observation attached to one exact ledger segment."""
+
+        timestamp = now or datetime.now(UTC)
+        async with self._database.sessions() as session:
+            row = await session.scalar(
+                select(MediaAnalysisModel).where(
+                    MediaAnalysisModel.source_event_id == source_event_id,
+                    MediaAnalysisModel.segment_index == segment_index,
+                    MediaAnalysisModel.analysis_mode == analysis_mode,
+                    MediaAnalysisModel.question_hash == question_hash,
+                    MediaAnalysisModel.provider == provider,
+                    MediaAnalysisModel.model == model,
+                    MediaAnalysisModel.prompt_version == prompt_version,
+                    MediaAnalysisModel.expires_at > timestamp,
+                )
+            )
+        return self._record(row) if row is not None else None
+
+    async def save(
+        self,
+        *,
+        source_event_id: int | None,
+        segment_index: int,
+        content_hash: str,
+        analysis_mode: str,
+        question_hash: str | None,
+        provider: str,
+        model: str,
+        prompt_version: str,
+        observation_json: str | dict[str, Any],
+        expires_at: datetime,
+        created_at: datetime | None = None,
+    ) -> MediaAnalysisRecord:
+        """Upsert a cache value while preserving its original event association."""
+
+        self._validate_key(
+            content_hash=content_hash,
+            analysis_mode=analysis_mode,
+            question_hash=question_hash,
+            provider=provider,
+            model=model,
+            prompt_version=prompt_version,
+            segment_index=segment_index,
+        )
+        normalized_question_hash = question_hash or ""
+        serialized = self._serialize_observation(observation_json)
+        timestamp = created_at or datetime.now(UTC)
+        values = {
+            "source_event_id": source_event_id,
+            "segment_index": segment_index,
+            "content_hash": content_hash,
+            "analysis_mode": analysis_mode,
+            "question_hash": normalized_question_hash,
+            "provider": provider,
+            "model": model,
+            "prompt_version": prompt_version,
+            "observation_json": serialized,
+            "created_at": timestamp,
+            "expires_at": expires_at,
+        }
+        statement = insert(MediaAnalysisModel).values(**values)
+        statement = statement.on_conflict_do_update(
+            index_elements=[
+                MediaAnalysisModel.content_hash,
+                MediaAnalysisModel.analysis_mode,
+                MediaAnalysisModel.question_hash,
+                MediaAnalysisModel.model,
+                MediaAnalysisModel.prompt_version,
+            ],
+            set_={
+                # A refresh may update the provider and observation, but a cache hit
+                # never changes the source event that owns cascade deletion.
+                "provider": provider,
+                "observation_json": serialized,
+                "created_at": timestamp,
+                "expires_at": expires_at,
+            },
+        )
+        async with self._database.sessions() as session, session.begin():
+            await session.execute(statement)
+            row = await session.scalar(
+                select(MediaAnalysisModel).where(
+                    MediaAnalysisModel.content_hash == content_hash,
+                    MediaAnalysisModel.analysis_mode == analysis_mode,
+                    MediaAnalysisModel.question_hash == normalized_question_hash,
+                    MediaAnalysisModel.model == model,
+                    MediaAnalysisModel.prompt_version == prompt_version,
+                )
+            )
+            if row is None:  # pragma: no cover - guarded by the insert above
+                raise RuntimeError("media analysis upsert did not return a row")
+            return self._record(row)
+
+    async def save_analysis(self, **values: Any) -> MediaAnalysisRecord:
+        """Compatibility spelling for service-layer integrations."""
+
+        return await self.save(**values)
+
+    async def associate_event(
+        self,
+        analysis_id: int,
+        *,
+        source_event_id: int,
+        segment_index: int,
+    ) -> bool:
+        """Attach an unowned cache row once; never move it between ledger events."""
+
+        if segment_index < 0:
+            raise ValueError("segment_index must be non-negative")
+        async with self._database.sessions() as session, session.begin():
+            result = await session.execute(
+                update(MediaAnalysisModel)
+                .where(
+                    MediaAnalysisModel.id == analysis_id,
+                    MediaAnalysisModel.source_event_id.is_(None),
+                )
+                .values(
+                    source_event_id=source_event_id,
+                    segment_index=segment_index,
+                )
+            )
+            return bool(cast(CursorResult[Any], result).rowcount)
+
+    async def cleanup_expired(self, *, now: datetime | None = None) -> int:
+        """Delete cache rows whose expiry has been reached."""
+
+        cutoff = now or datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            result = await session.execute(
+                delete(MediaAnalysisModel).where(MediaAnalysisModel.expires_at <= cutoff)
+            )
+            return int(cast(CursorResult[Any], result).rowcount or 0)
+
+    @classmethod
+    def _validate_key(
+        cls,
+        *,
+        content_hash: str,
+        analysis_mode: str,
+        question_hash: str | None,
+        provider: str,
+        model: str,
+        prompt_version: str,
+        segment_index: int,
+    ) -> None:
+        if len(content_hash) != 64:
+            raise ValueError("content_hash must be a SHA-256 hexadecimal digest")
+        try:
+            int(content_hash, 16)
+        except ValueError as exc:
+            raise ValueError("content_hash must be a SHA-256 hexadecimal digest") from exc
+        if analysis_mode not in cls._MODES:
+            raise ValueError(f"unsupported analysis_mode: {analysis_mode}")
+        if analysis_mode == "question" and not question_hash:
+            raise ValueError("question analysis requires question_hash")
+        if question_hash and len(question_hash) > 64:
+            raise ValueError("question_hash must not exceed 64 characters")
+        if segment_index < 0:
+            raise ValueError("segment_index must be non-negative")
+        if not provider or len(provider) > 32:
+            raise ValueError("provider must contain at most 32 characters")
+        if not model or len(model) > 128:
+            raise ValueError("model must contain at most 128 characters")
+        if not prompt_version or len(prompt_version) > 64:
+            raise ValueError("prompt_version must contain at most 64 characters")
+
+    @staticmethod
+    def _serialize_observation(value: str | dict[str, Any]) -> str:
+        parsed = json.loads(value) if isinstance(value, str) else value
+
+        def contains_embedded_media(item: Any) -> bool:
+            if isinstance(item, str):
+                lowered = item.lstrip().lower()
+                return lowered.startswith(("data:image/", "base64://"))
+            if isinstance(item, dict):
+                return any(contains_embedded_media(child) for child in item.values())
+            if isinstance(item, list | tuple):
+                return any(contains_embedded_media(child) for child in item)
+            return False
+
+        if contains_embedded_media(parsed):
+            raise ValueError("observation_json must not contain image or Base64 payloads")
+        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _record(row: MediaAnalysisModel) -> MediaAnalysisRecord:
+        return MediaAnalysisRecord(
+            id=row.id,
+            source_event_id=row.source_event_id,
+            segment_index=row.segment_index,
+            content_hash=row.content_hash,
+            analysis_mode=row.analysis_mode,
+            question_hash=row.question_hash,
+            provider=row.provider,
+            model=row.model,
+            prompt_version=row.prompt_version,
+            observation_json=row.observation_json,
+            created_at=row.created_at,
+            expires_at=row.expires_at,
+        )
 
 
 class WebSearchSourceRepository:

@@ -192,6 +192,16 @@ class RelationshipRuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class VisionRuntimeConfig:
+    max_images_per_turn: int
+    max_frames_per_turn: int
+    gif_max_frames: int
+    per_user_requests_per_minute: int
+    per_group_requests_per_minute: int
+    analysis_retention_days: int
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfigSnapshot:
     """One internally consistent runtime view for an incoming message."""
 
@@ -202,3 +212,4 @@ class RuntimeConfigSnapshot:
     agent: AgentRuntimeConfig
     web: WebRuntimeConfig
     relationship: RelationshipRuntimeConfig
+    vision: VisionRuntimeConfig

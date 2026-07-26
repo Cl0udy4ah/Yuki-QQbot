@@ -102,3 +102,61 @@ def test_relationship_configuration_is_validated() -> None:
         Settings.model_validate({"relationship_batch_max_turns": 11})
     with pytest.raises(ValidationError, match="between zero and one"):
         Settings.model_validate({"relationship_confidence_threshold": 1.1})
+
+
+def test_vision_defaults_are_safe_and_api_key_is_hidden() -> None:
+    settings = Settings.model_validate(
+        {
+            "vision_enabled": False,
+            "vision_api_key": "vision-sensitive-test-value",
+        }
+    )
+
+    assert not settings.vision_enabled
+    assert not settings.vision_configured
+    assert settings.vision_provider == "qwen"
+    assert settings.vision_model == "qwen3.7-plus"
+    assert settings.vision_max_images_per_turn == 3
+    assert settings.vision_max_frames_per_turn == 8
+    assert settings.vision_gif_max_frames == 4
+    assert "vision-sensitive-test-value" not in repr(settings)
+
+
+def test_vision_enabled_requires_complete_provider_configuration() -> None:
+    with pytest.raises(ValidationError, match=r"VISION_BASE_URL.*VISION_API_KEY"):
+        Settings.model_validate(
+            {
+                "vision_enabled": True,
+                "vision_base_url": "",
+                "vision_api_key": "",
+                "vision_model": "qwen3.7-plus",
+            }
+        )
+
+    settings = Settings.model_validate(
+        {
+            "vision_enabled": True,
+            "vision_base_url": "https://dashscope.example/v1",
+            "vision_api_key": "secret",
+            "vision_model": "qwen3.7-plus",
+        }
+    )
+    assert settings.vision_configured
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("vision_max_images_per_turn", 6, "VISION_MAX_IMAGES_PER_TURN"),
+        ("vision_gif_max_frames", 9, "VISION_GIF_MAX_FRAMES"),
+        ("vision_max_frames_per_turn", 17, "VISION_MAX_FRAMES_PER_TURN"),
+        ("vision_max_download_bytes", 20 * 1024 * 1024 + 1, "VISION_MAX_DOWNLOAD_BYTES"),
+        ("vision_max_prepared_bytes", 0, "greater than zero"),
+        ("vision_timeout_seconds", 0, "greater than zero"),
+        ("vision_max_retries", 0, "greater than zero"),
+        ("vision_max_retries", 2, "VISION_MAX_RETRIES"),
+    ],
+)
+def test_vision_numeric_limits_are_validated(field: str, value: int, message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        Settings.model_validate({field: value})

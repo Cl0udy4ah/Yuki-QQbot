@@ -11,7 +11,6 @@ from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.services.processor import UNSUPPORTED_MESSAGE
 
 
 def inbound(
@@ -90,11 +89,11 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：39 项" in admin_text
+    assert "可修改运行时配置参数：50 项" in admin_text
     assert "管理员业务接口：18 项，其中修改型 14 项" in admin_text
     assert "autonomous.max_per_hour" in admin_text
     assert "relationship.set_affection" in admin_text
-    assert "受保护配置（11 项，不可修改）" in admin_text
+    assert "受保护配置（12 项，不可修改）" in admin_text
     assert "NapCat/OneBot 通用全接口网关：1 项" in admin_text
     assert "call_onebot_api:any_public_action" in admin_text
 
@@ -305,8 +304,8 @@ async def test_unsupported_message_degrades_without_calling_llm(database: Databa
     result = await harness.processor.handle(
         inbound("", message_id="image", unsupported=True), sender
     )
-    assert result.reason == "unsupported"
-    assert sender.messages[0].text == UNSUPPORTED_MESSAGE
+    assert result.reason == "vision_not_configured"
+    assert "暂时没有识别成功" in sender.messages[0].text
     assert not provider.requests
 
 

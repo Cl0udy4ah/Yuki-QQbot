@@ -51,6 +51,7 @@ from qq_ai_bot.services.chat import ChatService, OutboundSender
 from qq_ai_bot.services.concurrency import ConcurrencyManager, RequestCancelledError
 from qq_ai_bot.services.deduplication import DeduplicationService, build_event_key
 from qq_ai_bot.services.group_members import GroupMemberResolver, GroupMemberService
+from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.memory_worker import MemoryWorker
 from qq_ai_bot.services.policies import (
     CommandName,
@@ -68,11 +69,17 @@ from qq_ai_bot.services.user_profiles import (
     UserProfileService,
     sanitize_profile_name,
 )
+from qq_ai_bot.services.vision_service import VisionProcessingError, VisionService
+from qq_ai_bot.vision.models import VisualObservation
 
 logger = logging.getLogger(__name__)
 
 UNSUPPORTED_MESSAGE = "当前版本会保存媒体消息元数据，但尚未实现图片、语音或视频理解。"
 RATE_LIMIT_MESSAGE = "请求过于频繁，请稍后再试。"
+IMAGE_WRITE_ISOLATION_MESSAGE = "图片或回复图片所在的轮次不会执行写入操作，请改用纯文本消息。"
+IMAGE_FAILURE_MESSAGE = "这张图片暂时没有识别成功，可以重新发送一张更清晰的版本。"
+IMAGE_RATE_LIMIT_MESSAGE = "图片理解请求过于频繁，请稍后再试。"
+REPLY_IMAGE_UNAVAILABLE_MESSAGE = "回复中的图片资源已过期或无法读取，请重新发送原图。"
 _NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
 
 
@@ -117,6 +124,7 @@ class MessageProcessor:
         private_access_admin: PrivateAccessAdminService | None = None,
         config_admin: ConfigAdminService | None = None,
         permission_catalog: PermissionCatalogService | None = None,
+        vision_service: VisionService | None = None,
     ) -> None:
         database = conversations._database
         self._settings = settings
@@ -201,6 +209,7 @@ class MessageProcessor:
             config_registry=self._runtime_config.registry,
             action_registry=ActionRegistry(),
         )
+        self._vision = vision_service
 
     async def handle(
         self,
@@ -260,9 +269,15 @@ class MessageProcessor:
             user_id=message.sender.user_id,
             group_id=message.group_id,
         )
+        has_visual_input = VisionService.has_visual_input(message)
+        image_blocks_command = bool(
+            has_visual_input
+            and decision.command is not None
+            and self._command_may_write(decision.command, decision.content)
+        )
 
         # forgetme is deliberately neither re-observed nor re-written to the ledger.
-        if decision.command is CommandName.FORGETME:
+        if decision.command is CommandName.FORGETME and not image_blocks_command:
             profile = self._event_profile(message)
             return await self._handle_command(
                 decision.command,
@@ -308,6 +323,13 @@ class MessageProcessor:
             return ProcessResult(True, int(sent), f"{rate.scope}_rate_limited")
 
         if decision.command is not None:
+            if image_blocks_command:
+                sent = await self._send_text(
+                    message,
+                    sender,
+                    IMAGE_WRITE_ISOLATION_MESSAGE,
+                )
+                return ProcessResult(True, int(sent), "image_write_isolated")
             return await self._handle_command(
                 decision.command,
                 message,
@@ -319,15 +341,95 @@ class MessageProcessor:
                 started,
             )
 
+        visual_question = sanitize_input(decision.content or message.text)
         content = sanitize_input(decision.content or (message.text if admin_candidate else ""))
         if message.reply_text:
             quoted = sanitize_input(message.reply_text)
             if quoted:
                 content = f"[回复的消息]\n{quoted}\n\n{content}".strip()
+        visual_observation: VisualObservation | None = None
+        visual_failure = False
+        visual_error_code: str | None = None
+        if has_visual_input:
+            if self._vision is None or not self._settings.vision_enabled:
+                visual_failure = True
+                visual_error_code = "not_configured"
+            else:
+                source_event_id = record.id
+                if (
+                    not any(attachment.kind.value == "image" for attachment in message.attachments)
+                    and message.reply_to_message_id
+                ):
+                    replied_event = await self._ledger.find_by_platform_message(
+                        bot_user_id=message.bot_user_id or "unknown-bot",
+                        platform_message_id=message.reply_to_message_id,
+                    )
+                    if replied_event is not None:
+                        source_event_id = replied_event.id
+                gateway = (
+                    cast(OneBotMediaGateway, sender)
+                    if callable(getattr(sender, "call_api", None))
+                    else None
+                )
+                try:
+                    visual_observation = await self._vision.analyze(
+                        message,
+                        question=visual_question,
+                        runtime=runtime_snapshot.vision,
+                        gateway=gateway,
+                        source_event_id=source_event_id,
+                        conversation_key=identity.key,
+                    )
+                except VisionProcessingError as exc:
+                    visual_failure = True
+                    visual_error_code = exc.code
+                    logger.warning(
+                        "vision_turn_failed event_key=%s error_category=%s",
+                        event_key,
+                        exc.code,
+                    )
+                except Exception as exc:
+                    # Vision is an optional front-end. Repository, decoder, or
+                    # provider defects must degrade this turn instead of escaping
+                    # the NoneBot event handler. Never log exception text because
+                    # third-party clients may embed signed media URLs in it.
+                    visual_failure = True
+                    visual_error_code = "internal_error"
+                    logger.error(
+                        "vision_turn_failed event_key=%s error_category=unexpected_%s",
+                        event_key,
+                        type(exc).__name__,
+                    )
         if not content:
-            text = UNSUPPORTED_MESSAGE if message.attachments else "请输入要发送给 AI 的内容。"
-            sent = await self._send_text(message, sender, text)
-            return ProcessResult(True, int(sent), "unsupported" if message.attachments else "empty")
+            if has_visual_input and visual_observation is not None:
+                content = "[当前消息仅包含图片]"
+            elif has_visual_input:
+                if visual_error_code == "rate_limited":
+                    text = IMAGE_RATE_LIMIT_MESSAGE
+                elif (
+                    message.reply_attachments
+                    and not message.attachments
+                    and visual_error_code
+                    in {
+                        "resource_unavailable",
+                        "get_image_failed",
+                        "download_failed",
+                        "empty_media",
+                    }
+                ):
+                    text = REPLY_IMAGE_UNAVAILABLE_MESSAGE
+                else:
+                    text = IMAGE_FAILURE_MESSAGE
+                sent = await self._send_text(message, sender, text)
+                return ProcessResult(True, int(sent), f"vision_{visual_error_code or 'failed'}")
+            else:
+                text = UNSUPPORTED_MESSAGE if message.attachments else "请输入要发送给 AI 的内容。"
+                sent = await self._send_text(message, sender, text)
+                return ProcessResult(
+                    True,
+                    int(sent),
+                    "unsupported" if message.attachments else "empty",
+                )
         if len(content) > self._settings.max_input_characters:
             sent = await self._send_text(
                 message,
@@ -346,6 +448,9 @@ class MessageProcessor:
                 content,
                 sender,
                 runtime_snapshot=runtime_snapshot,
+                visual_observation=visual_observation,
+                visual_input_present=has_visual_input,
+                visual_failure=visual_failure,
             )
         except RequestCancelledError:
             return ProcessResult(True, reason="cancelled")
@@ -433,6 +538,29 @@ class MessageProcessor:
         setting = await self._private_users.get(message.sender.user_id)
         return EffectivePrivatePolicy(enabled=True if setting is None else setting.enabled)
 
+    @staticmethod
+    def _command_may_write(command: CommandName, argument: str) -> bool:
+        """Conservatively close deterministic writes on every image-bearing turn."""
+
+        if command in {
+            CommandName.ON,
+            CommandName.OFF,
+            CommandName.GROUP,
+            CommandName.PRIVATE,
+            CommandName.FORGETME,
+        }:
+            return True
+        operation = argument.split(maxsplit=1)[0].casefold() if argument.strip() else ""
+        if command is CommandName.MEMORY:
+            return operation not in {"", "list"}
+        if command is CommandName.PREFERENCE:
+            return operation not in {"", "list"}
+        if command is CommandName.AFFECTION:
+            return operation not in {"", "show", "history"}
+        if command is CommandName.CONFIG:
+            return operation not in {"", "list", "get", "history"}
+        return False
+
     async def _handle_command(
         self,
         command: CommandName,
@@ -466,9 +594,13 @@ class MessageProcessor:
         elif command is CommandName.STATUS:
             count = await self._conversations.count_messages(identity)
             pending_restart = await self._runtime_config.pending_restart_count()
+            vision_busy = self._vision is not None and self._vision.busy
             text = (
                 f"OneBot 连接：{'已连接' if self._onebot_connected() else '未连接'}\n"
                 f"模型：{self._settings.llm_model or '未配置'}\n"
+                f"视觉功能：{'已启用' if self._settings.vision_enabled else '未启用'}\n"
+                f"视觉模型：{self._settings.vision_model or '未配置'}\n"
+                f"视觉请求繁忙：{'是' if vision_busy else '否'}\n"
                 f"当前切点后的事件数：{count}\n"
                 f"请求处理中：{'是' if self._concurrency.is_processing(identity.key) else '否'}\n"
                 f"待重启配置数：{pending_restart}\n"

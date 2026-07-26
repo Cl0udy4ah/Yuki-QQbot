@@ -164,6 +164,65 @@ def test_registry_is_explicit_and_converts_supported_types() -> None:
         registry.convert(registry.get("autonomous.max_per_hour"), 10000)
 
 
+def test_registry_exposes_reviewed_vision_configuration_only() -> None:
+    registry = ConfigRegistry()
+    vision = registry.list("vision")
+    by_mode = {
+        mode: {spec.key for spec in vision if spec.apply_mode is mode} for mode in ConfigApplyMode
+    }
+
+    assert by_mode[ConfigApplyMode.HOT] == {
+        "vision.max_images_per_turn",
+        "vision.max_frames_per_turn",
+        "vision.gif_max_frames",
+        "vision.per_user_requests_per_minute",
+        "vision.per_group_requests_per_minute",
+    }
+    assert by_mode[ConfigApplyMode.FUTURE_ONLY] == {"vision.analysis_retention_days"}
+    assert by_mode[ConfigApplyMode.RESTART_REQUIRED] == {
+        "vision.enabled",
+        "vision.base_url",
+        "vision.model",
+        "vision.global_concurrency",
+        "vision.timeout_seconds",
+    }
+    secret = registry.get("vision.api_key")
+    assert secret.apply_mode is ConfigApplyMode.SECRET
+    assert secret.sensitive
+    assert "vision.max_download_bytes" not in registry.keys
+
+
+@pytest.mark.asyncio
+async def test_runtime_snapshot_resolves_dynamic_vision_settings(database: Database) -> None:
+    settings = make_settings(database.url)
+    service = RuntimeConfigService(settings=settings, database=database)
+    for key, value in (
+        ("vision.max_images_per_turn", 4),
+        ("vision.max_frames_per_turn", 12),
+        ("vision.gif_max_frames", 6),
+        ("vision.per_user_requests_per_minute", 8),
+        ("vision.per_group_requests_per_minute", 20),
+        ("vision.analysis_retention_days", 14),
+    ):
+        result = await service.set_override(
+            key,
+            value,
+            scope_type="global",
+            scope_id="",
+            actor_user_id="9000",
+            trigger_message_id=f"vision-{key}",
+        )
+        assert result.success
+
+    vision = (await service.snapshot(user_id="1001", group_id="2001")).vision
+    assert vision.max_images_per_turn == 4
+    assert vision.max_frames_per_turn == 12
+    assert vision.gif_max_frames == 6
+    assert vision.per_user_requests_per_minute == 8
+    assert vision.per_group_requests_per_minute == 20
+    assert vision.analysis_retention_days == 14
+
+
 @pytest.mark.asyncio
 async def test_runtime_precedence_delete_and_audit(database: Database) -> None:
     settings = make_settings(database.url, local_context_event_limit=30)
@@ -258,11 +317,28 @@ async def test_business_mutation_and_admin_audit_share_one_transaction(
 
 @pytest.mark.asyncio
 async def test_secret_immutable_unknown_and_cross_key_validation(database: Database) -> None:
-    settings = make_settings(database.url, llm_api_key="top-secret")
+    settings = make_settings(
+        database.url,
+        llm_api_key="top-secret",
+        vision_api_key="vision-top-secret",
+    )
     service = RuntimeConfigService(settings=settings, database=database)
     secret = await service.get_effective("llm.api_key")
     assert secret.value is None
     assert secret.configured is True
+    vision_secret = await service.get_effective("vision.api_key")
+    assert vision_secret.value is None
+    assert vision_secret.configured is True
+    rejected_secret_change = await service.set_override(
+        "vision.api_key",
+        "replacement-vision-secret",
+        scope_type="global",
+        scope_id="",
+        actor_user_id="9000",
+        trigger_message_id="vision-secret",
+    )
+    assert not rejected_secret_change.success
+    assert rejected_secret_change.error_category == "permission_denied"
     immutable = await service.set_override(
         "superusers",
         "12345",
@@ -296,6 +372,8 @@ async def test_secret_immutable_unknown_and_cross_key_validation(database: Datab
     all_audit = await AdminAuditService(database).history(limit=10)
     rendered = json.dumps([row.after for row in all_audit], ensure_ascii=False)
     assert "top-secret" not in rendered
+    assert "vision-top-secret" not in rendered
+    assert "replacement-vision-secret" not in rendered
     assert "secret-attempt" not in rendered
 
 
@@ -325,6 +403,47 @@ async def test_restart_required_pending_then_activates_on_new_service(
     assert (await restarted.get_effective("llm.model")).value == "new-model"
     assert await restarted.pending_restart_count() == 0
     assert (await restarted.startup_settings_updates())["llm_model"] == "new-model"
+
+
+@pytest.mark.asyncio
+async def test_vision_restart_overrides_map_to_startup_settings(database: Database) -> None:
+    settings = make_settings(database.url, vision_enabled=False)
+    current = RuntimeConfigService(settings=settings, database=database)
+    await current.initialize()
+    for key, value in (
+        ("vision.enabled", True),
+        ("vision.base_url", "https://dashscope.example/v1"),
+        ("vision.model", "new-vision-model"),
+        ("vision.global_concurrency", 3),
+        ("vision.timeout_seconds", 45),
+    ):
+        change = await current.set_override(
+            key,
+            value,
+            scope_type="global",
+            scope_id="",
+            actor_user_id="9000",
+            trigger_message_id=f"restart-{key}",
+        )
+        assert change.success
+        assert change.pending_restart
+
+    restarted = RuntimeConfigService(settings=settings, database=database)
+    await restarted.initialize()
+    assert await restarted.startup_settings_updates() == {
+        "llm_model": settings.llm_model,
+        "llm_timeout_seconds": settings.llm_timeout_seconds,
+        "llm_max_retries": settings.llm_max_retries,
+        "global_llm_concurrency": settings.global_llm_concurrency,
+        "web_global_concurrency": settings.web_global_concurrency,
+        "per_user_requests_per_minute": settings.per_user_requests_per_minute,
+        "per_group_requests_per_minute": settings.per_group_requests_per_minute,
+        "vision_enabled": True,
+        "vision_base_url": "https://dashscope.example/v1",
+        "vision_model": "new-vision-model",
+        "vision_global_concurrency": 3,
+        "vision_timeout_seconds": 45.0,
+    }
 
 
 @pytest.mark.asyncio
@@ -1262,11 +1381,11 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
             )
         )
         assert payload["data"]["transient_internal_reference"] is True
-        assert payload["data"]["counts"]["mutable_configurations"] == 39
+        assert payload["data"]["counts"]["mutable_configurations"] == 50
         assert payload["data"]["counts"]["business_actions"] == 18
         assert payload["data"]["counts"]["onebot_api_gateways"] == 1
         return ChatResponse(
-            content="你有 39 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。",
+            content="你有 50 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。",
             latency_seconds=0,
         )
 
@@ -1281,7 +1400,7 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
     assert result.tool_calls == 1
     assert calls == 2
     assert result.text == (
-        "你有 39 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。"
+        "你有 50 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。"
     )
     assert "transient_internal_reference" not in result.text
 

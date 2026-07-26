@@ -23,10 +23,20 @@ class AttachmentKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class MessageAttachment:
-    """Safe metadata for unsupported content; never contains downloaded data."""
+    """Transient event media reference; payload fields are never persisted verbatim."""
 
     kind: AttachmentKind
     label: str
+    segment_index: int = 0
+    source: str = "current"
+    file: str | None = field(default=None, repr=False)
+    url: str | None = field(default=None, repr=False)
+    summary: str | None = field(default=None, repr=False)
+    sub_type: str | None = None
+    file_size: int | None = None
+    emoji_id: str | None = None
+    emoji_package_id: str | None = None
+    key: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +73,8 @@ class InboundMessage:
     mentioned_user_ids: tuple[str, ...] = ()
     attachments: tuple[MessageAttachment, ...] = ()
     segments: tuple[dict[str, object], ...] = ()
+    reply_attachments: tuple[MessageAttachment, ...] = ()
+    reply_segments: tuple[dict[str, object], ...] = ()
     reply_to_message_id: str | None = None
     reply_sender_user_id: str | None = None
     received_at: datetime = field(default_factory=lambda: datetime.now(UTC))

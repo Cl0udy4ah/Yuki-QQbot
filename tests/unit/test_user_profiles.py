@@ -425,9 +425,10 @@ def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
             "web_search_sources",
             "runtime_config_overrides",
             "admin_operation_events",
+            "media_analyses",
         } <= tables
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision == ("0008",)
+    assert revision == ("0009",)
     assert "conversations" not in tables
     assert {
         "people",
@@ -478,4 +479,4 @@ def test_0007_non_destructively_backfills_existing_people(
             """
         ).fetchone() == (50, 50)
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision == ("0008",)
+    assert revision == ("0009",)

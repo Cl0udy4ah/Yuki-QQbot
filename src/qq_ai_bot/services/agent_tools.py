@@ -32,6 +32,9 @@ from qq_ai_bot.web.models import (
 )
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
+_CQ_CODE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]", re.IGNORECASE)
+_HISTORY_TEXT_MAX = 4000
+_HISTORY_SEGMENT_MAX = 100
 _RUNTIME_SNAPSHOT: ContextVar[RuntimeConfigSnapshot | None] = ContextVar(
     "agent_tool_runtime_snapshot",
     default=None,
@@ -369,11 +372,12 @@ class AgentToolService:
             action = "get_friend_msg_history"
             params = {"user_id": inbound.sender.user_id, "count": limit}
         payload = await runtime.gateway.call_api(action, params)
-        messages = self._history_messages(payload)[-limit:]
+        raw_messages = self._history_messages(payload)[-limit:]
         stored = 0
-        for item in messages:
+        for item in raw_messages:
             if await self._store_history_item(item, inbound):
                 stored += 1
+        messages = [self._history_item_for_model(item) for item in raw_messages]
         return self._result(
             data={
                 "source": "NapCat",
@@ -444,10 +448,66 @@ class AgentToolService:
     @staticmethod
     def _segments(raw: Any) -> tuple[dict[str, Any], ...]:
         if isinstance(raw, str):
-            return ({"type": "text", "data": {"text": raw}},)
+            # Some NapCat history variants return a raw CQ-code string instead
+            # of a segment array. Discard every CQ parameter so media URLs,
+            # paths and inline payloads cannot bypass the structured sanitizer.
+            text = _CQ_CODE.sub(lambda match: f"[{match.group(1).casefold()}]", raw)
+            return ({"type": "text", "data": {"text": text[:_HISTORY_TEXT_MAX]}},)
         if not isinstance(raw, list):
             return ()
-        return tuple(item for item in raw if isinstance(item, dict))
+        sanitized: list[dict[str, Any]] = []
+        text_budget = _HISTORY_TEXT_MAX
+        for item in raw[:_HISTORY_SEGMENT_MAX]:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("type") or "unknown").strip().casefold()[:32]
+            data = item.get("data")
+            data = data if isinstance(data, dict) else {}
+            safe_data: dict[str, Any] = {}
+            if kind == "text":
+                text = str(data.get("text", ""))[:text_budget]
+                safe_data["text"] = text
+                text_budget -= len(text)
+            elif kind == "at":
+                safe_data["qq"] = str(data.get("qq", ""))[:32]
+            elif kind == "face":
+                safe_data["id"] = str(data.get("id", ""))[:32]
+            elif kind == "reply":
+                safe_data["id"] = str(data.get("id", ""))[:64]
+            elif kind == "image":
+                # History is a text-only tool. Keep only non-locating media
+                # metadata; signed URLs, file identifiers, local paths, inline
+                # Base64 and untrusted image summaries must never reach the text
+                # model or be imported into the ledger by this path.
+                for key in ("sub_type", "emoji_id", "emoji_package_id"):
+                    value = data.get(key)
+                    if value is not None:
+                        safe_data[key] = str(value)[:64]
+                size = data.get("file_size") or data.get("size")
+                if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+                    safe_data["file_size"] = size
+            sanitized.append({"type": kind or "unknown", "data": safe_data})
+        return tuple(sanitized)
+
+    @classmethod
+    def _history_item_for_model(cls, item: dict[str, Any]) -> dict[str, Any]:
+        """Return a bounded text-only view of one untrusted NapCat history item."""
+
+        segments = cls._segments(item.get("message"))
+        sender = item.get("sender")
+        sender = sender if isinstance(sender, dict) else {}
+        sender_id = item.get("user_id") or sender.get("user_id") or ""
+        safe_sender: dict[str, str] = {"user_id": str(sender_id)[:32]}
+        for key in ("nickname", "card"):
+            value = sender.get(key)
+            if isinstance(value, str) and value.strip():
+                safe_sender[key] = " ".join(value.split())[:100]
+        return {
+            "message_id": str(item.get("message_id") or item.get("id") or "")[:64],
+            "time": item.get("time") if isinstance(item.get("time"), int | float) else None,
+            "sender": safe_sender,
+            "text": cls._segments_text(segments) or "[空消息]",
+        }
 
     @staticmethod
     def _segments_text(segments: tuple[dict[str, Any], ...]) -> str:
@@ -464,7 +524,7 @@ class AgentToolService:
                 parts.append(f"[QQ表情:{data.get('id', '')}]")
             else:
                 parts.append(f"[{kind}]")
-        return "".join(parts).strip()
+        return "".join(parts).strip()[:_HISTORY_TEXT_MAX]
 
     @staticmethod
     def _reply_id(segments: tuple[dict[str, Any], ...]) -> str | None:

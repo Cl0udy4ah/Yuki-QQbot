@@ -29,6 +29,7 @@ from qq_ai_bot.admin.models import (
     RelationshipRuntimeConfig,
     ReplyRuntimeConfig,
     RuntimeConfigSnapshot,
+    VisionRuntimeConfig,
     WebRuntimeConfig,
 )
 from qq_ai_bot.config import Settings
@@ -313,6 +314,11 @@ class RuntimeConfigService:
             "web.global_concurrency": "web_global_concurrency",
             "rate_limit.per_user_per_minute": "per_user_requests_per_minute",
             "rate_limit.per_group_per_minute": "per_group_requests_per_minute",
+            "vision.enabled": "vision_enabled",
+            "vision.base_url": "vision_base_url",
+            "vision.model": "vision_model",
+            "vision.global_concurrency": "vision_global_concurrency",
+            "vision.timeout_seconds": "vision_timeout_seconds",
         }
         updates: dict[str, object] = {}
         for key, field_name in mapping.items():
@@ -1037,6 +1043,18 @@ class RuntimeConfigService:
                 ),
                 initial_affection=int(cast(int, value("relationship.initial_affection"))),
                 initial_trust=int(cast(int, value("relationship.initial_trust"))),
+            ),
+            vision=VisionRuntimeConfig(
+                max_images_per_turn=int(cast(int, value("vision.max_images_per_turn"))),
+                max_frames_per_turn=int(cast(int, value("vision.max_frames_per_turn"))),
+                gif_max_frames=int(cast(int, value("vision.gif_max_frames"))),
+                per_user_requests_per_minute=int(
+                    cast(int, value("vision.per_user_requests_per_minute"))
+                ),
+                per_group_requests_per_minute=int(
+                    cast(int, value("vision.per_group_requests_per_minute"))
+                ),
+                analysis_retention_days=int(cast(int, value("vision.analysis_retention_days"))),
             ),
         )
 

@@ -18,6 +18,7 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     GroupMemoryRepository,
     GroupSettingsRepository,
+    MediaAnalysisRepository,
     MemoryRepository,
     PrivateUserSettingsRepository,
     ProcessedEventRepository,
@@ -32,6 +33,8 @@ from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
 from qq_ai_bot.services.group_members import GroupMemberService
 from qq_ai_bot.services.group_memories import GroupMemoryService
+from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
+from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
 from qq_ai_bot.services.relationship_evaluator import FakeRelationshipEvaluator
@@ -39,6 +42,9 @@ from qq_ai_bot.services.relationship_worker import RelationshipWorker
 from qq_ai_bot.services.source_policy import SourceDisplayPolicy
 from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.user_profiles import UserProfileService
+from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
+from qq_ai_bot.services.vision_service import VisionService
+from qq_ai_bot.vision.base import VisionProvider
 from qq_ai_bot.web.base import WebSearchProvider
 
 
@@ -72,6 +78,7 @@ class Harness:
     provider: LLMProvider
     concurrency: ConcurrencyManager
     processor: MessageProcessor
+    vision: VisionService | None
 
 
 def make_settings(database_url: str, **overrides: object) -> Settings:
@@ -99,6 +106,7 @@ def build_harness(
     provider: LLMProvider | None = None,
     *,
     web_provider: WebSearchProvider | None = None,
+    vision_provider: VisionProvider | None = None,
 ) -> Harness:
     conversations = ConversationRepository(database)
     groups = GroupSettingsRepository(database)
@@ -131,6 +139,26 @@ def build_harness(
         max_attempts=settings.relationship_max_attempts,
     )
     web_sources = WebSearchSourceRepository(database)
+    vision = (
+        VisionService(
+            provider=vision_provider,
+            resolver=MediaResolver(
+                max_download_bytes=settings.vision_max_download_bytes,
+            ),
+            preprocessor=ImagePreprocessor(
+                max_dimension=settings.vision_max_dimension,
+                max_pixels=settings.vision_max_pixels,
+                max_prepared_bytes=settings.vision_max_prepared_bytes,
+                gif_max_frames=8,
+            ),
+            analyses=MediaAnalysisRepository(database),
+            rate_limiter=VisionRateLimiter(),
+            max_prepared_bytes=settings.vision_max_prepared_bytes,
+            global_concurrency=settings.vision_global_concurrency,
+        )
+        if vision_provider is not None
+        else None
+    )
     llm = provider or FakeLLMProvider()
     concurrency = ConcurrencyManager(settings.global_llm_concurrency)
     relationship_worker = RelationshipWorker(
@@ -190,6 +218,7 @@ def build_harness(
         memories=memories,
         relationships=relationships,
         relationship_worker=relationship_worker,
+        vision_service=vision,
     )
     return Harness(
         settings,
@@ -205,6 +234,7 @@ def build_harness(
         llm,
         concurrency,
         processor,
+        vision,
     )
 
 

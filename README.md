@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**从 1.2.0 升级到 1.3.0 的 Alembic `0008` 只新增运行时配置覆盖和管理员审计表，不会删除或改写人物、聊天、记忆、联网来源或关系数据。若从 1.0 之前的版本直接升级，仍会经过不可逆的 `0005` 数据重建；始终先备份 `data/`。
+> **升级提示：**从 1.3.0 升级到 1.4.0 的 Alembic `0009` 只新增视觉分析缓存表 `media_analyses`，不会删除或改写人物、聊天、记忆、联网来源、关系或运行时配置。视觉功能默认关闭，升级后不会自动向外部视觉 API 发送图片。若从 1.0 之前的版本直接升级，仍会经过不可逆的 `0005` 数据重建；始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -28,7 +28,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.3.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.4.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -37,13 +37,14 @@ Yuki-QQbot 1.3.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 私聊默认向所有 QQ 开放；`/ai private <QQ> off` 用于阻止指定用户。
 - 个人记忆可以在私聊与群聊间自然复用，群记忆和群成员记忆仍按群隔离。
 - 机器人支持 DeepSeek 普通/思考模式的多轮工具调用。
+- 可选使用 Qwen3.7-Plus 作为独立视觉前端，理解图片、图片表情、动态表情和回复图片；DeepSeek 仍是唯一主聊天模型并负责最终回复。
 - 可选接入 Tavily 受控联网搜索，由后端严格控制来源保存、隔离和显示。
 - 每个 QQ 拥有独立、持久化的好感度和信任度，关系阶段会自然影响 Yuki 的语气。
 - 关系分数不会改变程序权限；只有当前真实发送者属于 `SUPERUSERS` 才能获得管理员工具。
 - 超级管理员可以用自然语言管理注册配置、关系、记忆、偏好、群和私聊准入。
 - 运行时配置保存在 SQLite，不修改 `.env`；所有修改都有脱敏审计，配置覆盖可安全回滚。
 
-本版本不下载或识别图片、语音、视频和文件，但会保存其 OneBot 消息段元数据，为后续多模态版本保留基础。
+本版本只处理当前真实消息或其回复中的图片，不处理视频、语音、PDF 和普通文件，也不会主动回溯群历史中的任意旧图片。已启用群里未触发 Yuki 的普通图片只写入原有事件账本，不下载、不分析，也不会因此触发自主发言。
 
 ## 首次配置
 
@@ -93,6 +94,29 @@ SYSTEM_PROMPT_FILE=config/system_prompt.md
 docker compose up -d --no-deps --force-recreate bot
 ```
 
+### 可选：启用图片理解
+
+图片理解默认关闭。使用阿里云百炼 OpenAI-compatible Chat Completions 接口时，在 `.env` 中填写：
+
+```dotenv
+VISION_ENABLED=true
+VISION_PROVIDER=qwen
+VISION_BASE_URL=你的百炼兼容接口基础地址
+VISION_API_KEY=你的百炼API密钥
+VISION_MODEL=qwen3.7-plus
+```
+
+然后重建 Bot 容器：
+
+```bash
+docker compose up -d --build --no-deps bot
+docker compose logs -f bot
+```
+
+`--no-deps` 只替换 Bot，不重建 NapCat，因此会保留当前 QQ 登录容器和登录态。后续代码、提示词或 `.env` 更新也优先使用这种方式；只有 NapCat 本身需要升级或修复时才单独重建 NapCat。
+
+`VISION_ENABLED=true` 时，`VISION_BASE_URL`、`VISION_API_KEY` 和 `VISION_MODEL` 缺一不可。Qwen 只接收本轮选中的图片 data URI 和当前用户的图片问题，不接收完整聊天历史、人物记忆、关系分数、系统提示词、管理员权限或 Agent 工具；DeepSeek 只接收 Qwen 返回的结构化文字观察，不接收图片 URL、Base64 或临时路径。
+
 ## 1.x 数据模型
 
 `0005` 会创建以下主要数据：
@@ -119,6 +143,7 @@ docker compose up -d --no-deps --force-recreate bot
 | `web_search_sources` | 真实来源的标题、URL、域名、摘要和发布时间 |
 | `runtime_config_overrides` | 按 global/group/user 保存显式注册的运行时配置覆盖与版本 |
 | `admin_operation_events` | 管理员操作、修改前后值、成功状态与错误类别的脱敏审计 |
+| `media_analyses` | `0009` 新增的图片结构化观察缓存，不保存原图、Base64 或隐藏推理 |
 
 消息到达后的顺序是：
 
@@ -128,6 +153,7 @@ docker compose up -d --no-deps --force-recreate bot
   → 更新人物/群/成员
   → 写入永久事件账本
   → 记忆任务入队
+  → 已触发且含图片时，按需解析、预处理并调用独立视觉前端
   → 确定性命令，或进入同一个正常聊天 Agent
   → 当前真实发送者是超级管理员时，为该 Agent 动态增加管理员工具
   → 显式回复或自主参与判断
@@ -145,6 +171,7 @@ docker compose up -d --no-deps --force-recreate bot
 - 以该 QQ 为主体的群记忆、检索索引和后台任务；
 - 该 QQ 私聊及各群成员会话中的联网来源记录；
 - 该 QQ 的用户级运行时配置覆盖；保留的管理员审计和其他作用域配置会把精确 QQ 替换为删除标记；
+- 与被删除事件关联的视觉分析缓存；
 - 其余事件正文中出现的精确 QQ 文本会替换为删除标记。
 
 ## 聊天上下文与记忆
@@ -188,6 +215,45 @@ relationship_weight = round(0.6 × affection_score + 0.4 × effective_trust)
 关系权重只用于没有证据、双方说法均无明显逻辑漏洞的冲突。模型必须先检查逻辑、聊天原文、人物记忆、联网结果及其他证据；有证据时始终以证据为准。只有权重差至少 `15` 时才倾向较高者，否则保持不确定。数学、代码、医疗、法律、财务、安全事实及可用工具核实的信息不使用关系权重，群聊中也不得公开其他人的具体分数。
 
 好感度和信任度只改变模型获得的可信关系风格，不参与 `SUPERUSERS` 判断、联网权限、历史与记忆工具注册或 OneBot 管理工具授权。即使好感度达到 `100`，非超级管理员也不会获得 `call_onebot_api`。
+
+## 图片、表情与回复图片理解
+
+1.4 采用前后分离的双模型流程：
+
+```text
+真实 OneBot image 段
+  → MediaResolver（可信来源校验、下载或 get_image）
+  → ImagePreprocessor（Pillow 解码、方向修正、缩放、动态抽帧）
+  → Qwen3.7-Plus（只生成结构化视觉观察）
+  → 不可信视觉 system message
+  → DeepSeek（结合真实用户文本、人格与上下文生成最终 QQ 回复）
+```
+
+图片选择与触发规则：
+
+- 当前消息图片优先；当前消息没有图片时才使用被回复消息中的图片，保持原始消息段顺序，默认每轮最多 3 张。
+- 私聊中的纯图片、图片加文字和回复图片会进入视觉流程；纯图片使用内部默认观察问题，该问题不会伪装成用户原话写入账本。
+- 群聊只有已经满足原有回复条件（例如 `@Yuki`、回复 Yuki 或使用 AI 前缀）时才分析图片；普通未触发群图片和自主群聊批次不下载、不分析。
+- OneBot `face` 使用本地 `config/qq_face_map.json` 转为可读文本，未知 ID 保留为 `[QQ表情：ID ...]`；Unicode Emoji 保持普通文本，不调用视觉 API。
+- QQ 商城表情或图片表情仍以真实图片观察为准，消息段的 `summary` 只作为不可信提示。
+
+媒体与预处理边界：
+
+- 资源只能来自当前真实 OneBot 事件、被回复消息的真实 `image` 段，或 NapCat 对该 `file` 标识返回的 `get_image` 结果；模型、OCR、记忆和网页中的 URL 都不能成为图片下载源。
+- HTTP(S) 下载拒绝凭据 URL、localhost、回环、私有、链路本地和保留地址；DNS 解析及每次重定向都会复查目标，最多 3 次重定向并流式执行字节上限。
+- 支持 JPEG、PNG、WEBP、GIF 和 Pillow 可安全解析的动态 WEBP。程序按真实文件内容解码，应用 EXIF 方向，限制尺寸、像素、下载大小和预处理后大小，并防护损坏图片、解压炸弹、极端尺寸及无限动画。
+- 动态图片默认最多抽取首帧、末帧和均匀分布的 4 帧；单轮所有图片合计最多 8 帧。多张图片与所有关键帧合并到一次 Qwen 请求，不逐张请求。
+
+视觉观察包含描述、清晰 OCR、表情、常见使用语境、显著对象、不确定性和置信度。它作为外部不可信 JSON 注入 DeepSeek：图片文字不能成为系统指令、管理员命令、工具参数或可信用户消息。只要本轮含当前图片或回复图片，后端会关闭运行时配置、关系、记忆、偏好、群/私聊准入和 `call_onebot_api` 等所有写入型管理员能力；联网、聊天历史及人物/群记忆等只读能力仍可使用。超级管理员若要修改系统，应另发一条纯文本消息。
+
+视觉观察、OCR 和表情含义不会自动写入长期记忆，也不会进入关系评价或改变好感度/信任度。视觉 API 失败时，图片加文字仍按真实文字继续聊天；纯图片只返回一次简短的重新发送提示。
+
+### 缓存、限流与隐私
+
+- `media_analyses` 按 `content_hash + analysis_mode + question_hash + model + prompt_version` 唯一缓存；通用描述可按内容复用，具体问题必须命中相同问题哈希，默认保留 7 天。
+- 缓存只保存经过字段长度约束的结构化观察及必要元数据，不保存原图、Base64、临时文件、隐藏推理或 API Key；事件删除时关联缓存级联删除，过期记录由现有清理任务移除。
+- Qwen 使用独立的并发信号量及用户/群限流，不占用 DeepSeek 的全局并发槽。缓存命中不消耗视觉 API 限额，但消息仍受现有总频率控制。
+- 日志只记录脱敏会话哈希、图片/帧/字节计数、内容哈希前 12 位、模型、耗时、命中状态和错误类别，不记录完整图片 URL、签名参数、原始图片、Base64、完整 OCR 或私聊图片内容。
 
 ## Agent 工具
 
@@ -339,7 +405,7 @@ docker compose up -d --no-deps --force-recreate bot
 | `user` | 已启用，所有普通 QQ | 16 项本人确定性自助接口，其中 7 项会修改本人上下文、记忆、偏好或可归属数据；不能修改运行时配置 |
 | `trusted` | 仅预留，当前不可分配 | 供未来介于普通用户与管理员之间的权限扩展 |
 | `moderator` | 仅预留，当前不可分配 | 供未来群管理能力扩展 |
-| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 39 项可修改配置、11 项受保护配置、18 项管理员业务接口（14 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
+| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 50 项可修改配置、12 项受保护配置、18 项管理员业务接口（14 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
 
 能力目录直接遍历现有 `ConfigRegistry` 和 `ActionRegistry`，不会另复制配置键或业务 action。`summary` 只提供计数与类别，`focused` 提供命中项的 ID、别名、说明、类型、范围、作用域和生效方式，`full` 才提供全部 ID。`call_onebot_api(action, params)` 作为独立的 `onebot` 权限类别列出：真实超级管理员在直接触发、非自主群聊的普通 Agent 轮次中可调用全部公开 action，不设 action denylist，也不二次确认；使用网页工具后本轮会撤销网关，但不会缩减 action 范围。目录不读取配置值、API Key、凭证状态或他人权限。`trusted`、`moderator` 只有枚举和展示元数据，在执行层接入相同权限校验前不会被实际授予。
 
@@ -368,6 +434,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `HOT` | 下一条相关消息或下一次自主判断重新生成 `RuntimeConfigSnapshot`，无需重启 |
 | `FUTURE_ONLY` | 只在之后创建人物关系、来源记录或清理任务时读取，不追改旧记录 |
 | `RESTART_REQUIRED` | 覆盖立即保存为 pending，当前进程继续使用启动值；下次启动先加载覆盖再创建模型客户端、并发器和限流器 |
+| `SECRET` | 只返回是否已配置；真实密钥不能通过命令或自然语言工具读取、修改或写入审计正文 |
 
 `/ai status` 会显示待重启配置数。运行时覆盖在容器重建和应用重启后仍保留；`unset` 会恢复同一键的较低优先级值。
 
@@ -382,13 +449,15 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | HOT | `agent.max_tool_calls`、`agent.max_model_requests`、`agent.tool_result_max_characters` |
 | HOT | `web.search_max_results`、`web.extract_max_results`、`web.max_calls_per_turn`、`web.tool_result_max_characters` |
 | HOT | `relationship.confidence_threshold`、`relationship.max_auto_delta`、`relationship.daily_positive_cap`、`relationship.daily_negative_cap`、`relationship.conflict_preference_min_gap` |
-| FUTURE_ONLY | `relationship.initial_affection`、`relationship.initial_trust`、`web.source_retention_days`、`web.source_max_runs_per_conversation` |
+| HOT | `vision.max_images_per_turn`、`vision.max_frames_per_turn`、`vision.gif_max_frames`、`vision.per_user_requests_per_minute`、`vision.per_group_requests_per_minute` |
+| FUTURE_ONLY | `relationship.initial_affection`、`relationship.initial_trust`、`web.source_retention_days`、`web.source_max_runs_per_conversation`、`vision.analysis_retention_days` |
 | RESTART_REQUIRED | `llm.model`、`llm.timeout_seconds`、`llm.max_retries`、`global.llm_concurrency`、`web.global_concurrency`、`rate_limit.per_user_per_minute`、`rate_limit.per_group_per_minute` |
+| RESTART_REQUIRED | `vision.enabled`、`vision.base_url`、`vision.model`、`vision.global_concurrency`、`vision.timeout_seconds` |
 
 不可通过管理员工具修改：
 
 - `app.host`、`app.port`、`database.url`、`superusers`、启动默认 `ENABLED_GROUPS`；
-- `LLM_API_KEY`、`TAVILY_API_KEY`、`ONEBOT_ACCESS_TOKEN`、`NAPCAT_WEBUI_TOKEN`、数据库密码和 QQ 登录凭据；
+- `LLM_API_KEY`、`TAVILY_API_KEY`、`VISION_API_KEY`、`ONEBOT_ACCESS_TOKEN`、`NAPCAT_WEBUI_TOKEN`、数据库密码和 QQ 登录凭据；
 - 系统提示词和任何未在 `ConfigRegistry` 显式登记的 `Settings` 字段。
 
 凭证查询最多返回“已配置/未配置”，不会返回真实内容。审计表保存真实管理员 QQ、触发消息 ID、会话键、能力、目标、脱敏前后状态、成功标记、错误类别和耗时；不保存 API Key、完整网页正文、系统提示词或隐藏推理。回滚只支持配置覆盖，且必须由原操作者执行、当前覆盖仍与原变更的 after 版本一致；记忆删除、关系变化、已发消息和 OneBot 操作不提供通用回滚。
@@ -443,6 +512,25 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `WEB_TOOL_RESULT_MAX_CHARACTERS` | `16000` |
 | `WEB_SOURCE_RETENTION_DAYS` | `7` |
 | `WEB_SOURCE_MAX_RUNS_PER_CONVERSATION` | `10` |
+| `VISION_ENABLED` | `false` |
+| `VISION_PROVIDER` | `qwen` |
+| `VISION_BASE_URL` | 空（启用时必填） |
+| `VISION_API_KEY` | 空（启用时必填、敏感） |
+| `VISION_MODEL` | `qwen3.7-plus` |
+| `VISION_TIMEOUT_SECONDS` | `30` |
+| `VISION_MAX_RETRIES` | `1` |
+| `VISION_GLOBAL_CONCURRENCY` | `2` |
+| `VISION_MAX_OUTPUT_TOKENS` | `1024` |
+| `VISION_MAX_IMAGES_PER_TURN` | `3` |
+| `VISION_MAX_FRAMES_PER_TURN` | `8` |
+| `VISION_GIF_MAX_FRAMES` | `4` |
+| `VISION_MAX_DOWNLOAD_BYTES` | `10485760` |
+| `VISION_MAX_PREPARED_BYTES` | `6291456` |
+| `VISION_MAX_DIMENSION` | `2048` |
+| `VISION_MAX_PIXELS` | `4194304` |
+| `VISION_PER_USER_REQUESTS_PER_MINUTE` | `4` |
+| `VISION_PER_GROUP_REQUESTS_PER_MINUTE` | `12` |
+| `VISION_ANALYSIS_RETENTION_DAYS` | `7` |
 
 `ALLOWED_PRIVATE_USERS` 仅为旧配置兼容保留，1.0 不再把它当白名单；所有新 QQ 私聊默认准入。
 
@@ -467,7 +555,7 @@ docker compose up -d
 docker compose ps
 ```
 
-健康检查不会请求模型或 Tavily，也不会暴露密钥；返回值中的 `web_configured` 表示联网是否已启用并配置密钥：
+健康检查不会请求 DeepSeek、Tavily 或 Qwen，也不会暴露密钥；`web_configured` 表示联网已启用且配置完整，`vision_configured` 表示视觉功能已启用且 `BASE_URL`、`API_KEY`、模型均已配置：
 
 ```bash
 docker compose exec bot python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz').read().decode())"
@@ -486,13 +574,15 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 - 定期离线备份 `data/`、`napcat-data/` 和 `napcat-config/`。
 - NapCat 是个人 QQ 协议端，不等同于腾讯官方 QQ Bot，存在协议变化、风控和封号风险；请控制频率并使用你有权控制的账号。
 
-## 1.3 升级步骤
+`/ai status` 会同时显示视觉是否启用、视觉模型和当前视觉请求是否繁忙，不显示密钥或完整接口查询参数。
 
-1. 停止写入：`docker compose stop bot napcat`。
+## 1.4 升级步骤
+
+1. 停止 Bot 写入但保持 NapCat 和 QQ 登录态运行：`docker compose stop bot`。
 2. 完整备份 `data/`、`napcat-data/` 和 `napcat-config/`。
-3. 可将 `.env.example` 新增的 `RELATIONSHIP_DAILY_POSITIVE_CAP` 和 `RELATIONSHIP_DAILY_NEGATIVE_CAP` 同步到 `.env`；缺省时同样按 `0`（不限额）运行。
-4. 执行 `docker compose up -d --build`；Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0008`。
+3. 将 `.env.example` 的 `VISION_*` 项同步到 `.env`。暂时不用图片理解时保留 `VISION_ENABLED=false`；启用时填写独立的百炼兼容接口地址和密钥，不要复用或替换 DeepSeek 的 `LLM_*` 配置。
+4. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 不会被替换，Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0009`。
 5. 检查 `docker compose ps`、`/healthz` 和日志。
-6. 依次人工验证：`/ai capabilities`、配置读取/修改/撤销、自然语言好感度调整及跨消息补充 QQ、群级 HOT 配置隔离、重启型配置 pending 状态，以及原有记忆、联网、关系和 OneBot 工具。
+6. 依次人工验证：私聊纯图片、图片加文字、QQ 内置表情、动态表情、回复旧图片、群聊 `@Yuki` 图片、未触发群图片不分析，以及图片 OCR 不能执行配置/关系/OneBot 修改；再回归原有文本、记忆、联网、关系和管理员工具。
 
-`0008` 可以回退且只删除 `runtime_config_overrides` 与 `admin_operation_events`，不会删除 `0007` 的关系表，也不影响人物、聊天、记忆和联网来源；但回退后所有数据库运行时覆盖与管理员审计都会丢失。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。
+`0009` 可以回退且只删除 `media_analyses` 视觉缓存，不影响 `0008` 的运行时配置与管理员审计，也不影响人物、聊天、记忆、联网来源和关系数据。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。

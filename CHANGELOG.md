@@ -1,5 +1,45 @@
 # 更新日志
 
+## 1.4.0 - 2026-07-26
+
+### 双模型图片理解
+
+- 新增独立视觉前端：Qwen3.7-Plus 通过阿里云百炼 OpenAI-compatible Chat Completions 接口分析图片，DeepSeek 继续负责 Yuki 人格、上下文、记忆、关系、Agent 工具和最终 QQ 回复；DeepSeek 不接收图片 URL、Base64 或临时路径。
+- 新增图片、图片表情、动态 GIF/WEBP 和回复图片理解。当前消息图片优先于回复图片，多图保持消息段顺序，默认每轮最多 3 张并合并为一次视觉请求。
+- 扩展 OneBot 标准化，保留图片的 `file`、`url`、`summary`、`sub_type`、`file_size`、`key`、`emoji_id`、`emoji_package_id` 和消息段位置；回复消息同步解析附件与原始消息段。
+- 新增 `QQFaceResolver` 和 `config/qq_face_map.json`：QQ 内置 `face` 转为可读文本，未知 ID 保留原 ID；Unicode Emoji 继续作为普通文本，不调用视觉 API。
+- 私聊纯图片可进入正常聊天；图片加文字会把真实用户文字作为视觉问题。群聊仅在原有触发条件成立时分析图片，未触发图片和自主群聊批次不会下载或分析。
+
+### 媒体安全与视觉预处理
+
+- 新增 `MediaResolver`，只接受当前真实 OneBot 事件、真实回复图片或对应 NapCat `get_image` 返回的资源；拒绝模型、OCR、记忆和网页提供的任意下载 URL。
+- HTTP(S) 下载新增凭据 URL、localhost、回环、私有、链路本地和保留地址防护；DNS 解析及每次重定向后重新校验，限制 3 次重定向、总超时和流式读取字节数，并安全处理非法 Base64。
+- 新增基于 Pillow 的 `ImagePreprocessor`，按实际文件内容识别 JPEG、PNG、WEBP、GIF 和动态 WEBP，执行 EXIF 方向修正、尺寸/像素限制、透明通道处理、等比缩放与 JPEG/PNG data URI 转换。
+- 动态图片默认最多按时间顺序抽取 4 个关键帧，单轮全部图片合计最多 8 帧；新增解压炸弹、伪装格式、极端尺寸、损坏图片、超大文件和动画帧失控防护。
+- 新增复用 `httpx.AsyncClient` 的 `QwenVisionProvider` 与测试用 `FakeVisionProvider`。视觉请求固定关闭思考模式、使用低温度并要求严格结构化 JSON；非法 JSON 可安全降级，连接/超时/5xx/429 只做有限重试，拒绝响应不绕过。
+
+### 缓存、限流与生命周期
+
+- 新增非破坏性 Alembic `0009` 和 `media_analyses`，按内容哈希、分析模式、问题哈希、模型及提示词版本缓存结构化观察；问题相关结果不会跨问题误复用，默认保留 7 天。
+- 缓存不保存原图、Base64、临时文件或视觉隐藏推理；关联聊天事件删除时级联删除，ApplicationContainer 的清理任务会移除过期分析。
+- 新增独立视觉并发信号量及用户/群限流，不占用 DeepSeek 的全局并发槽；缓存命中不消耗视觉 API 限额。
+- ApplicationContainer 接入视觉 Provider、媒体解析器、预处理器、缓存仓储、限流器和 VisionService；启动只校验配置，不探测外部 API，关闭时释放视觉客户端。
+- `/healthz` 新增 `vision_configured`，`/ai status` 新增视觉开关、模型和繁忙状态；二者及日志均不暴露 API Key 或完整图片 URL。
+
+### 提示注入隔离与失败降级
+
+- 视觉观察以独立的外部不可信 system message 传给 DeepSeek；OCR、表情含义和图片文字不能成为系统指令、用户消息、管理员命令、工具参数或可访问网页 URL。
+- 只要本轮包含当前图片或回复图片，后端关闭配置、关系、记忆、偏好、群管理、私聊准入和 `call_onebot_api` 等写入型管理员能力；聊天历史、人物/群记忆和联网等只读能力仍可使用。
+- 视觉观察不会自动写入长期记忆，也不会传给关系评价器或改变好感度/信任度；好感度达到 100 和超级管理员身份都不能绕过图片轮次隔离。
+- 图片分析失败时，图片加文字仍按真实文本继续聊天；纯图片只发送一次自然错误提示，不影响进程、会话锁或后续消息。
+
+### 配置、文档与版本
+
+- 新增 19 项 `VISION_*` 启动配置，默认 `VISION_ENABLED=false`、`VISION_MODEL=qwen3.7-plus`；启用时必须提供 `VISION_BASE_URL`、`VISION_API_KEY` 和模型。
+- 运行时注册 5 项视觉 HOT 配置、1 项 FUTURE_ONLY 配置和 5 项 RESTART_REQUIRED 配置；`vision.api_key` 只能查询是否已配置，不能读取或修改真实密钥。
+- 超级管理员能力目录随注册表更新为 50 项可修改配置和 12 项受保护配置；更新 README、`.env.example` 与系统提示词示例。
+- 新增媒体标准化、下载防护、图片预处理、QQ 表情、Qwen Provider、VisionService、缓存，以及图片聊天、回复图片和管理员隔离测试；版本提升至 `1.4.0`。
+
 ## 1.3.0 - 2026-07-26
 
 ### 自然语言管理员控制

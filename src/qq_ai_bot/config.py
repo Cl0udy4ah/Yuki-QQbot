@@ -121,6 +121,26 @@ class Settings(BaseSettings):
     web_source_retention_days: int = 7
     web_source_max_runs_per_conversation: int = 10
 
+    vision_enabled: bool = False
+    vision_provider: str = "qwen"
+    vision_base_url: str = ""
+    vision_api_key: str = Field(default="", repr=False)
+    vision_model: str = "qwen3.7-plus"
+    vision_timeout_seconds: float = 30.0
+    vision_max_retries: int = 1
+    vision_global_concurrency: int = 2
+    vision_max_output_tokens: int = 1024
+    vision_max_images_per_turn: int = 3
+    vision_max_frames_per_turn: int = 8
+    vision_gif_max_frames: int = 4
+    vision_max_download_bytes: int = 10_485_760
+    vision_max_prepared_bytes: int = 6_291_456
+    vision_max_dimension: int = 2048
+    vision_max_pixels: int = 4_194_304
+    vision_per_user_requests_per_minute: int = 4
+    vision_per_group_requests_per_minute: int = 12
+    vision_analysis_retention_days: int = 7
+
     @field_validator(
         "app_port",
         "llm_max_output_tokens",
@@ -162,6 +182,19 @@ class Settings(BaseSettings):
         "web_tool_result_max_characters",
         "web_source_retention_days",
         "web_source_max_runs_per_conversation",
+        "vision_max_retries",
+        "vision_global_concurrency",
+        "vision_max_output_tokens",
+        "vision_max_images_per_turn",
+        "vision_max_frames_per_turn",
+        "vision_gif_max_frames",
+        "vision_max_download_bytes",
+        "vision_max_prepared_bytes",
+        "vision_max_dimension",
+        "vision_max_pixels",
+        "vision_per_user_requests_per_minute",
+        "vision_per_group_requests_per_minute",
+        "vision_analysis_retention_days",
     )
     @classmethod
     def _positive_integer(cls, value: int) -> int:
@@ -169,7 +202,7 @@ class Settings(BaseSettings):
             raise ValueError("must be greater than zero")
         return value
 
-    @field_validator("llm_timeout_seconds", "web_timeout_seconds")
+    @field_validator("llm_timeout_seconds", "web_timeout_seconds", "vision_timeout_seconds")
     @classmethod
     def _positive_timeout(cls, value: float) -> float:
         if value <= 0:
@@ -279,12 +312,38 @@ class Settings(BaseSettings):
             raise ValueError("WEB_TOOL_RESULT_MAX_CHARACTERS must not exceed 16000")
         if self.web_source_max_runs_per_conversation > 10:
             raise ValueError("WEB_SOURCE_MAX_RUNS_PER_CONVERSATION must not exceed 10")
+        if self.vision_max_images_per_turn > 5:
+            raise ValueError("VISION_MAX_IMAGES_PER_TURN must not exceed 5")
+        if self.vision_gif_max_frames > 8:
+            raise ValueError("VISION_GIF_MAX_FRAMES must not exceed 8")
+        if self.vision_max_frames_per_turn > 16:
+            raise ValueError("VISION_MAX_FRAMES_PER_TURN must not exceed 16")
+        if self.vision_max_download_bytes > 20 * 1024 * 1024:
+            raise ValueError("VISION_MAX_DOWNLOAD_BYTES must not exceed 20 MB")
+        if self.vision_max_retries > 1:
+            raise ValueError("VISION_MAX_RETRIES must not exceed 1")
         return self
 
     @model_validator(mode="after")
     def _validate_web_configuration(self) -> Self:
         if self.web_enabled and not self.tavily_api_key:
             raise ValueError("TAVILY_API_KEY is required when WEB_ENABLED=true")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_vision_configuration(self) -> Self:
+        if self.vision_enabled:
+            missing = [
+                name
+                for name, value in (
+                    ("VISION_BASE_URL", self.vision_base_url),
+                    ("VISION_API_KEY", self.vision_api_key),
+                    ("VISION_MODEL", self.vision_model),
+                )
+                if not value.strip()
+            ]
+            if missing:
+                raise ValueError(f"{', '.join(missing)} required when VISION_ENABLED=true")
         return self
 
     @model_validator(mode="after")
@@ -340,3 +399,14 @@ class Settings(BaseSettings):
         """Whether controlled web search is enabled with provider credentials."""
 
         return bool(self.web_enabled and self.tavily_api_key)
+
+    @property
+    def vision_configured(self) -> bool:
+        """Whether vision is enabled with all required provider configuration."""
+
+        return bool(
+            self.vision_enabled
+            and self.vision_base_url.strip()
+            and self.vision_api_key.strip()
+            and self.vision_model.strip()
+        )
