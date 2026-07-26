@@ -159,6 +159,8 @@ class ApplicationContainer:
                 rate_limiter=VisionRateLimiter(),
                 max_prepared_bytes=settings.vision_max_prepared_bytes,
                 global_concurrency=settings.vision_global_concurrency,
+                queue_max_pending=settings.vision_queue_max_pending,
+                queue_timeout_seconds=settings.vision_queue_timeout_seconds,
                 prompt_version=(
                     f"{VISION_PROMPT_VERSION}-{settings.vision_max_dimension:x}-"
                     f"{settings.vision_max_pixels:x}-{settings.vision_max_prepared_bytes:x}"

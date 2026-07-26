@@ -23,7 +23,11 @@ from qq_ai_bot.persistence.repositories import MemoryJobRepository, MemoryReposi
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.vision.base import VisionError
 from qq_ai_bot.vision.fake import FakeVisionProvider
-from qq_ai_bot.vision.models import VisualItemObservation, VisualObservation
+from qq_ai_bot.vision.models import (
+    VisualCharacterCandidate,
+    VisualItemObservation,
+    VisualObservation,
+)
 
 
 def _inline_png(color: tuple[int, int, int] = (20, 30, 40)) -> str:
@@ -169,6 +173,16 @@ async def test_animated_meme_is_sampled_and_explained_end_to_end(database) -> No
                     description="角色连续点头",
                     expression="开心赞同",
                     meme_intent="常用于表示同意，具体语境可能不同",
+                    recognized_character="奶龙",
+                    franchise="奶龙",
+                    character_candidates=(
+                        VisualCharacterCandidate(
+                            name="奶龙",
+                            work="奶龙",
+                            evidence="黄色小恐龙",
+                            confidence=0.93,
+                        ),
+                    ),
                     confidence=0.82,
                 ),
             ),
@@ -181,6 +195,8 @@ async def test_animated_meme_is_sampled_and_explained_end_to_end(database) -> No
         payload = "\n".join(message.content or "" for message in request.messages)
         assert "开心赞同" in payload
         assert "常用于表示同意" in payload
+        assert '"recognized_character":"奶龙"' in payload
+        assert '"franchise":"奶龙"' in payload
         return "看起来是在开心地点头，通常可以表示赞同。"
 
     llm = FakeLLMProvider(answer)
@@ -204,7 +220,9 @@ async def test_animated_meme_is_sampled_and_explained_end_to_end(database) -> No
 
     assert result.reason == "chat"
     assert vision.requests[0][0][0].animated
-    assert len(vision.requests[0][0][0].frames) == 4
+    assert len(vision.requests[0][0][0].frames) == 6
+    assert vision.request_options[0].analysis_mode == "meme"
+    assert not vision.request_options[0].thinking_enabled
     assert sender.messages[-1].text == "看起来是在开心地点头，通常可以表示赞同。"
 
 
@@ -357,3 +375,38 @@ async def test_visual_observation_never_enters_memory_or_relationship_jobs(datab
     )
     assert "测试视觉观察" not in worker_payload
     assert "description" not in worker_payload
+
+
+@pytest.mark.asyncio
+async def test_prior_image_summary_is_restored_in_the_next_chat_turn(database) -> None:
+    requests: list[ChatRequest] = []
+
+    def reply(request: ChatRequest) -> str:
+        requests.append(request)
+        if len(requests) == 1:
+            return "我已经看过这张图片。"
+        payload = "\n".join(message.content or "" for message in request.messages)
+        assert "历史图片识别摘要" in payload
+        assert "测试视觉观察" in payload
+        assert "data:image" not in payload
+        assert "base64://" not in payload
+        return "还记得，刚才的识图摘要仍在当前上下文里。"
+
+    llm = FakeLLMProvider(reply)
+    vision = FakeVisionProvider()
+    settings = _vision_settings("sqlite+aiosqlite:///:memory:")
+    harness = build_harness(database, settings, llm, vision_provider=vision)
+
+    await harness.processor.handle(
+        _private("remember-image", attachments=(_attachment(_inline_png()),)),
+        MemorySender(),
+    )
+    sender = MemorySender()
+    result = await harness.processor.handle(
+        _private("ask-image", text="刚才图片里是什么？", attachments=()),
+        sender,
+    )
+
+    assert result.reason == "chat"
+    assert sender.messages[-1].text == "还记得，刚才的识图摘要仍在当前上下文里。"
+    assert len(vision.requests) == 1

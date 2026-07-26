@@ -69,7 +69,11 @@ from qq_ai_bot.services.user_profiles import (
     UserProfileService,
     sanitize_profile_name,
 )
-from qq_ai_bot.services.vision_service import VisionProcessingError, VisionService
+from qq_ai_bot.services.vision_service import (
+    VisionProcessingError,
+    VisionService,
+    compact_visual_summary,
+)
 from qq_ai_bot.vision.models import VisualObservation
 
 logger = logging.getLogger(__name__)
@@ -380,6 +384,11 @@ class MessageProcessor:
                         source_event_id=source_event_id,
                         conversation_key=identity.key,
                     )
+                    if source_event_id is not None:
+                        await self._ledger.set_visual_summary(
+                            source_event_id,
+                            compact_visual_summary(visual_observation),
+                        )
                 except VisionProcessingError as exc:
                     visual_failure = True
                     visual_error_code = exc.code
@@ -404,7 +413,7 @@ class MessageProcessor:
             if has_visual_input and visual_observation is not None:
                 content = "[当前消息仅包含图片]"
             elif has_visual_input:
-                if visual_error_code == "rate_limited":
+                if visual_error_code in {"rate_limited", "queue_full", "queue_timeout"}:
                     text = IMAGE_RATE_LIMIT_MESSAGE
                 elif (
                     message.reply_attachments
@@ -595,12 +604,15 @@ class MessageProcessor:
             count = await self._conversations.count_messages(identity)
             pending_restart = await self._runtime_config.pending_restart_count()
             vision_busy = self._vision is not None and self._vision.busy
+            vision_queue_depth = self._vision.queue_depth if self._vision is not None else 0
+            vision_running = self._vision.running_count if self._vision is not None else 0
             text = (
                 f"OneBot 连接：{'已连接' if self._onebot_connected() else '未连接'}\n"
                 f"模型：{self._settings.llm_model or '未配置'}\n"
                 f"视觉功能：{'已启用' if self._settings.vision_enabled else '未启用'}\n"
                 f"视觉模型：{self._settings.vision_model or '未配置'}\n"
                 f"视觉请求繁忙：{'是' if vision_busy else '否'}\n"
+                f"视觉排队/运行：{vision_queue_depth}/{vision_running}\n"
                 f"当前切点后的事件数：{count}\n"
                 f"请求处理中：{'是' if self._concurrency.is_processing(identity.key) else '否'}\n"
                 f"待重启配置数：{pending_restart}\n"

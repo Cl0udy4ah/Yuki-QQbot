@@ -318,7 +318,10 @@ class RuntimeConfigService:
             "vision.base_url": "vision_base_url",
             "vision.model": "vision_model",
             "vision.global_concurrency": "vision_global_concurrency",
+            "vision.queue_max_pending": "vision_queue_max_pending",
+            "vision.queue_timeout_seconds": "vision_queue_timeout_seconds",
             "vision.timeout_seconds": "vision_timeout_seconds",
+            "vision.max_output_tokens": "vision_max_output_tokens",
         }
         updates: dict[str, object] = {}
         for key, field_name in mapping.items():
@@ -1048,6 +1051,11 @@ class RuntimeConfigService:
                 max_images_per_turn=int(cast(int, value("vision.max_images_per_turn"))),
                 max_frames_per_turn=int(cast(int, value("vision.max_frames_per_turn"))),
                 gif_max_frames=int(cast(int, value("vision.gif_max_frames"))),
+                thinking_enabled=bool(value("vision.thinking_enabled")),
+                thinking_budget=int(cast(int, value("vision.thinking_budget"))),
+                low_confidence_retry_threshold=float(
+                    cast(float | int, value("vision.low_confidence_retry_threshold"))
+                ),
                 per_user_requests_per_minute=int(
                     cast(int, value("vision.per_user_requests_per_minute"))
                 ),

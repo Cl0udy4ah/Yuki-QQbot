@@ -163,6 +163,7 @@ class ChatEventModel(Base):
     )
     direction: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    visual_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     segments_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     reply_to_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

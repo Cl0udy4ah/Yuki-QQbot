@@ -86,6 +86,7 @@ class EventRecord:
     sender_user_id: str
     direction: str
     content: str
+    visual_summary: str
     segments: tuple[dict[str, Any], ...]
     occurred_at: datetime
     group_id: str | None = None
@@ -279,6 +280,7 @@ def _event_record(row: ChatEventModel) -> EventRecord:
         sender_user_id=row.sender_user_id,
         direction=row.direction,
         content=row.content,
+        visual_summary=row.visual_summary,
         segments=segments,
         occurred_at=row.occurred_at,
         group_id=row.group_id,
@@ -552,6 +554,7 @@ class PeopleRepository:
                         ),
                         or_(
                             ChatEventModel.content.contains(user_id),
+                            ChatEventModel.visual_summary.contains(user_id),
                             ChatEventModel.segments_json.contains(user_id),
                         ),
                     )
@@ -559,6 +562,7 @@ class PeopleRepository:
             ).all()
             for event in remaining:
                 event.content = event.content.replace(user_id, marker)
+                event.visual_summary = event.visual_summary.replace(user_id, marker)
                 event.segments_json = event.segments_json.replace(user_id, marker)
                 now = datetime.now(UTC)
                 job_statement = insert(MemoryJobModel).values(
@@ -890,6 +894,7 @@ class EventLedgerRepository:
                     sender_user_id=sender_user_id,
                     direction=direction,
                     content=content,
+                    visual_summary="",
                     segments_json=json.dumps(segments, ensure_ascii=False, separators=(",", ":")),
                     reply_to_message_id=reply_to_message_id,
                     occurred_at=timestamp,
@@ -1048,6 +1053,7 @@ class EventLedgerRepository:
                     sender_user_id=str(row["sender_user_id"]),
                     direction=str(row["direction"]),
                     content=str(row["content"]),
+                    visual_summary=str(row["visual_summary"] or ""),
                     segments=tuple(raw_segments) if isinstance(raw_segments, list) else (),
                     occurred_at=occurred,
                     group_id=row["group_id"],
@@ -1056,6 +1062,21 @@ class EventLedgerRepository:
                 )
             )
         return tuple(reversed(records))
+
+    async def set_visual_summary(self, event_id: int, summary: str) -> bool:
+        """Attach one compact derived observation to its immutable source event."""
+
+        normalized = summary.strip()[:6000]
+        lowered = normalized.casefold()
+        if "data:image/" in lowered or "base64://" in lowered:
+            raise ValueError("visual_summary must not contain image or Base64 payloads")
+        async with self._database.sessions() as session, session.begin():
+            result = await session.execute(
+                update(ChatEventModel)
+                .where(ChatEventModel.id == event_id)
+                .values(visual_summary=normalized)
+            )
+            return bool(cast(CursorResult[Any], result).rowcount)
 
     async def count_context(self, identity: ConversationIdentity) -> int:
         reset = await self.context_reset(identity)

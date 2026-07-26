@@ -261,3 +261,25 @@ async def test_repository_rejects_embedded_image_payloads(database: Database) ->
             observation_json={"image_url": "data:image/png;base64,AAAA"},
             expires_at=now + timedelta(days=7),
         )
+
+
+@pytest.mark.asyncio
+async def test_chat_event_visual_summary_is_persisted_without_changing_raw_text(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    event_id = await _event(database, "visual-summary")
+
+    assert await ledger.set_visual_summary(event_id, '{"overall_description":"一只猫"}')
+    recent = await ledger.list_recent(
+        scope_type=ScopeType.PRIVATE,
+        user_id="1001",
+        group_id=None,
+        limit=10,
+    )
+    event = next(row for row in recent if row.id == event_id)
+    assert event.content == "[图片]"
+    assert event.visual_summary == '{"overall_description":"一只猫"}'
+
+    with pytest.raises(ValueError, match="must not contain image or Base64"):
+        await ledger.set_visual_summary(event_id, "data:image/png;base64,AAAA")

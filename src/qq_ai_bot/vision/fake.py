@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from qq_ai_bot.vision.models import (
     PreparedVisualInput,
+    VisionAnalysisOptions,
     VisualItemObservation,
     VisualObservation,
 )
@@ -31,6 +32,7 @@ class FakeVisionProvider:
         self._delay_seconds = max(0.0, delay_seconds)
         self._model = model
         self.requests: list[tuple[tuple[PreparedVisualInput, ...], str]] = []
+        self.request_options: list[VisionAnalysisOptions] = []
         self.closed = False
 
     @property
@@ -45,8 +47,11 @@ class FakeVisionProvider:
         self,
         inputs: tuple[PreparedVisualInput, ...],
         question: str,
+        *,
+        options: VisionAnalysisOptions | None = None,
     ) -> VisualObservation:
         self.requests.append((inputs, question))
+        self.request_options.append(options or VisionAnalysisOptions())
         if self._delay_seconds:
             await asyncio.sleep(self._delay_seconds)
         if self._responder is not None:

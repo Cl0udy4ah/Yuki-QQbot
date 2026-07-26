@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 MediaSource = Literal["current", "reply"]
+VisionAnalysisMode = Literal["general", "meme", "ocr", "question", "character"]
 
 
 class _FrozenModel(BaseModel):
@@ -59,6 +60,24 @@ class PreparedVisualInput(_FrozenModel):
     summary_hint: str | None = None
 
 
+class VisionAnalysisOptions(_FrozenModel):
+    """Per-request controls for dynamic visual reasoning."""
+
+    analysis_mode: VisionAnalysisMode = "general"
+    thinking_enabled: bool = False
+    thinking_budget: int = Field(default=6144, gt=0, le=32768)
+    low_confidence_retry_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
+
+
+class VisualCharacterCandidate(_FrozenModel):
+    """One bounded fictional-character identity candidate."""
+
+    name: str = Field(max_length=200)
+    work: str = Field(default="", max_length=200)
+    evidence: str = Field(default="", max_length=600)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class VisualItemObservation(_FrozenModel):
     """Structured observation for one input image, not a final chat answer."""
 
@@ -67,6 +86,9 @@ class VisualItemObservation(_FrozenModel):
     ocr_text: str = Field(default="", max_length=2000)
     expression: str = Field(default="", max_length=1200)
     meme_intent: str = Field(default="", max_length=1200)
+    recognized_character: str = Field(default="", max_length=200)
+    franchise: str = Field(default="", max_length=200)
+    character_candidates: tuple[VisualCharacterCandidate, ...] = Field(default=(), max_length=3)
     notable_objects: tuple[str, ...] = Field(default=(), max_length=20)
     uncertainty: str = Field(default="", max_length=1200)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)

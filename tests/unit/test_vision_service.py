@@ -28,7 +28,11 @@ from qq_ai_bot.services.vision_service import (
     VisionService,
 )
 from qq_ai_bot.vision.fake import FakeVisionProvider
-from qq_ai_bot.vision.models import PreparedVisualInput, VisualObservation
+from qq_ai_bot.vision.models import (
+    PreparedVisualInput,
+    VisionAnalysisOptions,
+    VisualObservation,
+)
 
 
 class BlockingVisionProvider(FakeVisionProvider):
@@ -36,15 +40,19 @@ class BlockingVisionProvider(FakeVisionProvider):
         super().__init__()
         self.started = asyncio.Event()
         self.release = asyncio.Event()
+        self.call_count = 0
 
     async def analyze(
         self,
         inputs: tuple[PreparedVisualInput, ...],
         question: str,
+        *,
+        options: VisionAnalysisOptions | None = None,
     ) -> VisualObservation:
+        self.call_count += 1
         self.started.set()
         await self.release.wait()
-        return await super().analyze(inputs, question)
+        return await super().analyze(inputs, question, options=options)
 
 
 def _inline_png(color: tuple[int, int, int] = (255, 0, 0)) -> str:
@@ -115,6 +123,9 @@ def _runtime(
         max_images_per_turn=maximum,
         max_frames_per_turn=max_frames,
         gif_max_frames=gif_frames,
+        thinking_enabled=True,
+        thinking_budget=3072,
+        low_confidence_retry_threshold=0.65,
         per_user_requests_per_minute=user_rate,
         per_group_requests_per_minute=12,
         analysis_retention_days=7,
@@ -175,9 +186,31 @@ async def test_one_request_handles_multiple_images_and_uses_default_question(
     assert len(provider.requests) == 1
     assert len(provider.requests[0][0]) == 2
     assert provider.requests[0][1] == DEFAULT_VISUAL_QUESTION
+    assert provider.request_options[0].analysis_mode == "general"
     assert len(observation.items) == 2
     await service.close()
     assert provider.closed
+
+
+@pytest.mark.asyncio
+async def test_character_question_selects_reasoning_mode(database: Database) -> None:
+    provider = FakeVisionProvider()
+    service = _service(database, provider)
+    message = _message(text="这是谁？", current=(_image(_inline_png(), 0),))
+
+    await service.analyze(
+        message,
+        question=message.text,
+        runtime=_runtime(),
+        gateway=None,
+        source_event_id=None,
+        conversation_key="private:1001",
+    )
+
+    assert provider.request_options[0].analysis_mode == "character"
+    assert provider.request_options[0].thinking_enabled
+    assert provider.request_options[0].thinking_budget == 3072
+    await service.close()
 
 
 @pytest.mark.asyncio
@@ -349,3 +382,116 @@ async def test_close_waits_for_active_analysis_before_closing_clients(
     await analysis
     await closing
     assert provider.closed
+
+
+@pytest.mark.asyncio
+async def test_identical_concurrent_requests_share_one_provider_call(
+    database: Database,
+) -> None:
+    provider = BlockingVisionProvider()
+    service = VisionService(
+        provider=provider,
+        resolver=MediaResolver(),
+        preprocessor=ImagePreprocessor(),
+        analyses=MediaAnalysisRepository(database),
+        rate_limiter=VisionRateLimiter(),
+        global_concurrency=2,
+    )
+    image = _inline_png()
+
+    first = asyncio.create_task(
+        service.analyze(
+            _message(message_id="shared-1", current=(_image(image, 0),)),
+            question="这是什么？",
+            runtime=_runtime(),
+            gateway=None,
+            source_event_id=None,
+            conversation_key="private:1001",
+        )
+    )
+    second = asyncio.create_task(
+        service.analyze(
+            _message(message_id="shared-2", current=(_image(image, 0),)),
+            question="这是什么？",
+            runtime=_runtime(),
+            gateway=None,
+            source_event_id=None,
+            conversation_key="private:1001",
+        )
+    )
+    await provider.started.wait()
+    await asyncio.sleep(0.02)
+
+    assert provider.call_count == 1
+    provider.release.set()
+    first_result, second_result = await asyncio.gather(first, second)
+    assert first_result.overall_description == second_result.overall_description
+    assert len(provider.requests) == 1
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_visual_queue_timeout_and_full_are_distinct(database: Database) -> None:
+    provider = BlockingVisionProvider()
+    service = VisionService(
+        provider=provider,
+        resolver=MediaResolver(),
+        preprocessor=ImagePreprocessor(),
+        analyses=MediaAnalysisRepository(database),
+        rate_limiter=VisionRateLimiter(),
+        global_concurrency=1,
+        queue_max_pending=1,
+        queue_timeout_seconds=0.05,
+    )
+    first = asyncio.create_task(
+        service.analyze(
+            _message(message_id="queue-running", current=(_image(_inline_png(), 0),)),
+            question="",
+            runtime=_runtime(),
+            gateway=None,
+            source_event_id=None,
+            conversation_key="private:1001",
+        )
+    )
+    await provider.started.wait()
+    queued = asyncio.create_task(
+        service.analyze(
+            _message(
+                message_id="queue-waiting",
+                current=(_image(_inline_png((0, 255, 0)), 0),),
+            ),
+            question="",
+            runtime=_runtime(),
+            gateway=None,
+            source_event_id=None,
+            conversation_key="private:1002",
+        )
+    )
+    for _ in range(20):
+        if service.queue_depth == 1:
+            break
+        await asyncio.sleep(0)
+    assert service.queue_depth == 1
+    assert service.running_count == 1
+
+    with pytest.raises(VisionProcessingError) as full_info:
+        await service.analyze(
+            _message(
+                message_id="queue-full",
+                current=(_image(_inline_png((0, 0, 255)), 0),),
+            ),
+            question="",
+            runtime=_runtime(),
+            gateway=None,
+            source_event_id=None,
+            conversation_key="private:1003",
+        )
+    assert full_info.value.code == "queue_full"
+    with pytest.raises(VisionProcessingError) as timeout_info:
+        await queued
+    assert timeout_info.value.code == "queue_timeout"
+    assert service.queue_depth == 0
+
+    provider.release.set()
+    await first
+    await service.close()

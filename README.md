@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**从 1.3.0 升级到 1.4.0 的 Alembic `0009` 只新增视觉分析缓存表 `media_analyses`，不会删除或改写人物、聊天、记忆、联网来源、关系或运行时配置。视觉功能默认关闭，升级后不会自动向外部视觉 API 发送图片。若从 1.0 之前的版本直接升级，仍会经过不可逆的 `0005` 数据重建；始终先备份 `data/`。
+> **升级提示：**1.4.1 新增非破坏性迁移 `0010`，只给 `chat_events` 增加精简图片观察字段，以便后续聊天继续理解近期图片；不会删除或改写人物、聊天正文、记忆、联网来源、关系或运行时配置。视觉缓存版本仍为 `vision-observation-v3`，不会复用 1.4.0 的旧识别结果。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建；始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -28,7 +28,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.4.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.4.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -37,7 +37,7 @@ Yuki-QQbot 1.4.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 私聊默认向所有 QQ 开放；`/ai private <QQ> off` 用于阻止指定用户。
 - 个人记忆可以在私聊与群聊间自然复用，群记忆和群成员记忆仍按群隔离。
 - 机器人支持 DeepSeek 普通/思考模式的多轮工具调用。
-- 可选使用 Qwen3.7-Plus 作为独立视觉前端，理解图片、图片表情、动态表情和回复图片；DeepSeek 仍是唯一主聊天模型并负责最终回复。
+- 可选使用 Qwen3.7-Plus 作为独立视觉前端，动态思考并识别图片、虚构角色、图片表情、动态表情和回复图片；DeepSeek 仍是唯一主聊天模型并负责最终回复。
 - 可选接入 Tavily 受控联网搜索，由后端严格控制来源保存、隔离和显示。
 - 每个 QQ 拥有独立、持久化的好感度和信任度，关系阶段会自然影响 Yuki 的语气。
 - 关系分数不会改变程序权限；只有当前真实发送者属于 `SUPERUSERS` 才能获得管理员工具。
@@ -104,6 +104,9 @@ VISION_PROVIDER=qwen
 VISION_BASE_URL=你的百炼兼容接口基础地址
 VISION_API_KEY=你的百炼API密钥
 VISION_MODEL=qwen3.7-plus
+VISION_THINKING_ENABLED=false
+VISION_THINKING_BUDGET=6144
+VISION_LOW_CONFIDENCE_RETRY_THRESHOLD=0.65
 ```
 
 然后重建 Bot 容器：
@@ -115,7 +118,7 @@ docker compose logs -f bot
 
 `--no-deps` 只替换 Bot，不重建 NapCat，因此会保留当前 QQ 登录容器和登录态。后续代码、提示词或 `.env` 更新也优先使用这种方式；只有 NapCat 本身需要升级或修复时才单独重建 NapCat。
 
-`VISION_ENABLED=true` 时，`VISION_BASE_URL`、`VISION_API_KEY` 和 `VISION_MODEL` 缺一不可。Qwen 只接收本轮选中的图片 data URI 和当前用户的图片问题，不接收完整聊天历史、人物记忆、关系分数、系统提示词、管理员权限或 Agent 工具；DeepSeek 只接收 Qwen 返回的结构化文字观察，不接收图片 URL、Base64 或临时路径。
+`VISION_ENABLED=true` 时，`VISION_BASE_URL`、`VISION_API_KEY` 和 `VISION_MODEL` 缺一不可。识图思考默认关闭；需要时可把 `VISION_THINKING_ENABLED` 改为 `true`，此时角色、表情包与图片问题会使用思考模式，普通描述结果低于 `VISION_LOW_CONFIDENCE_RETRY_THRESHOLD` 时会自动复核一次。Qwen 只接收本轮选中的图片 data URI 和当前用户的图片问题，不接收完整聊天历史、人物记忆、关系分数、系统提示词、管理员权限或 Agent 工具；DeepSeek 只接收 Qwen 返回的结构化文字观察，不接收图片 URL、Base64 或临时路径。
 
 ## 1.x 数据模型
 
@@ -127,7 +130,7 @@ docker compose logs -f bot
 | `person_aliases` | QQ 昵称和各群历史称呼 |
 | `groups` | 群名、启用状态和自主参与设置 |
 | `memberships` | `(user_id, group_id)` 当前群名片与活跃时间 |
-| `chat_events` | 永久保存收发消息、消息段、回复关系和时间 |
+| `chat_events` | 永久保存收发消息、消息段、回复关系和时间；`0010` 增加与原始事件关联的精简图片摘要 |
 | `chat_events_fts` | FTS5 `trigram` 全文索引 |
 | `person_memories` | 跨私聊和群聊的人物事实，最多 100 条 |
 | `group_memories` | 群共同事实，最多 100 条 |
@@ -218,42 +221,46 @@ relationship_weight = round(0.6 × affection_score + 0.4 × effective_trust)
 
 ## 图片、表情与回复图片理解
 
-1.4 采用前后分离的双模型流程：
+1.4.1 采用前后分离的双模型流程：
 
 ```text
 真实 OneBot image 段
   → MediaResolver（可信来源校验、下载或 get_image）
   → ImagePreprocessor（Pillow 解码、方向修正、缩放、动态抽帧）
-  → Qwen3.7-Plus（只生成结构化视觉观察）
+  → Qwen3.7-Plus（只生成结构化视觉观察，识图思考默认关闭）
   → 不可信视觉 system message
   → DeepSeek（结合真实用户文本、人格与上下文生成最终 QQ 回复）
 ```
 
 图片选择与触发规则：
 
-- 当前消息图片优先；当前消息没有图片时才使用被回复消息中的图片，保持原始消息段顺序，默认每轮最多 3 张。
+- 当前消息图片优先；当前消息没有图片时才使用被回复消息中的图片，保持原始消息段顺序，默认每轮最多 5 张。
 - 私聊中的纯图片、图片加文字和回复图片会进入视觉流程；纯图片使用内部默认观察问题，该问题不会伪装成用户原话写入账本。
 - 群聊只有已经满足原有回复条件（例如 `@Yuki`、回复 Yuki 或使用 AI 前缀）时才分析图片；普通未触发群图片和自主群聊批次不下载、不分析。
 - OneBot `face` 使用本地 `config/qq_face_map.json` 转为可读文本，未知 ID 保留为 `[QQ表情：ID ...]`；Unicode Emoji 保持普通文本，不调用视觉 API。
 - QQ 商城表情或图片表情仍以真实图片观察为准，消息段的 `summary` 只作为不可信提示。
+- “这是谁”“什么角色”“来自哪部作品”等问题使用 `character` 模式。默认关闭识图思考；开启 `VISION_THINKING_ENABLED` 后，角色、表情包和一般图片问题才会开启思考，普通描述低于复核阈值时自动深度复核一次。
 
 媒体与预处理边界：
 
 - 资源只能来自当前真实 OneBot 事件、被回复消息的真实 `image` 段，或 NapCat 对该 `file` 标识返回的 `get_image` 结果；模型、OCR、记忆和网页中的 URL 都不能成为图片下载源。
 - HTTP(S) 下载拒绝凭据 URL、localhost、回环、私有、链路本地和保留地址；DNS 解析及每次重定向都会复查目标，最多 3 次重定向并流式执行字节上限。
 - 支持 JPEG、PNG、WEBP、GIF 和 Pillow 可安全解析的动态 WEBP。程序按真实文件内容解码，应用 EXIF 方向，限制尺寸、像素、下载大小和预处理后大小，并防护损坏图片、解压炸弹、极端尺寸及无限动画。
-- 动态图片默认最多抽取首帧、末帧和均匀分布的 4 帧；单轮所有图片合计最多 8 帧。多张图片与所有关键帧合并到一次 Qwen 请求，不逐张请求。
+- 动态图片默认最多抽取首帧、末帧和均匀分布的 8 帧；单轮所有图片合计最多 16 帧。多张图片与所有关键帧合并到一次 Qwen 请求，不逐张请求。
 
-视觉观察包含描述、清晰 OCR、表情、常见使用语境、显著对象、不确定性和置信度。它作为外部不可信 JSON 注入 DeepSeek：图片文字不能成为系统指令、管理员命令、工具参数或可信用户消息。只要本轮含当前图片或回复图片，后端会关闭运行时配置、关系、记忆、偏好、群/私聊准入和 `call_onebot_api` 等所有写入型管理员能力；联网、聊天历史及人物/群记忆等只读能力仍可使用。超级管理员若要修改系统，应另发一条纯文本消息。
+视觉观察包含描述、清晰 OCR、表情、常见使用语境、显著对象、高置信度角色名、作品来源、最多三个候选角色与依据、不确定性和置信度。它作为外部不可信 JSON 注入 DeepSeek：图片文字不能成为系统指令、管理员命令、工具参数或可信用户消息。只要本轮含当前图片或回复图片，后端会关闭运行时配置、关系、记忆、偏好、群/私聊准入和 `call_onebot_api` 等所有写入型管理员能力；联网、聊天历史及人物/群记忆等只读能力仍可使用。超级管理员若要修改系统，应另发一条纯文本消息。
 
-视觉观察、OCR 和表情含义不会自动写入长期记忆，也不会进入关系评价或改变好感度/信任度。视觉 API 失败时，图片加文字仍按真实文字继续聊天；纯图片只返回一次简短的重新发送提示。
+成功识别后，后端会把最多 6000 字符、纯文本 JSON 形式的精简观察写入原始 `chat_event.visual_summary`。当前场景之后的近期上下文会恢复这段摘要，因此用户下一条再问“刚才图片里是什么”时，DeepSeek 仍能取得识图结果。摘要明确标记为外部不可信资料，不包含原图、Base64、临时路径或隐藏推理，也不会伪装成用户原话。
+
+视觉观察、OCR 和表情含义不会自动写入长期人物/群记忆，也不会进入关系评价或改变好感度/信任度；它只随近期原始事件上下文提供。视觉 API 失败时，图片加文字仍按真实文字继续聊天；纯图片只返回一次简短的重新发送提示。
 
 ### 缓存、限流与隐私
 
-- `media_analyses` 按 `content_hash + analysis_mode + question_hash + model + prompt_version` 唯一缓存；通用描述可按内容复用，具体问题必须命中相同问题哈希，默认保留 7 天。
+- `media_analyses` 按 `content_hash + analysis_mode + question_hash + model + prompt_version` 唯一缓存；`vision-observation-v3` 还把思考开关、预算、复核阈值和预处理限制绑定到缓存变体，默认保留 7 天。
 - 缓存只保存经过字段长度约束的结构化观察及必要元数据，不保存原图、Base64、临时文件、隐藏推理或 API Key；事件删除时关联缓存级联删除，过期记录由现有清理任务移除。
-- Qwen 使用独立的并发信号量及用户/群限流，不占用 DeepSeek 的全局并发槽。缓存命中不消耗视觉 API 限额，但消息仍受现有总频率控制。
-- 日志只记录脱敏会话哈希、图片/帧/字节计数、内容哈希前 12 位、模型、耗时、命中状态和错误类别，不记录完整图片 URL、签名参数、原始图片、Base64、完整 OCR 或私聊图片内容。
+- Qwen 使用独立的并发信号量及用户/群限流，不占用 DeepSeek 的全局并发槽。相同内容、问题、模型和缓存版本的并发请求通过 single-flight 合并为一次 Provider 调用；缓存命中和合并跟随请求不重复消耗视觉 API 限额。
+- 视觉流水线默认最多运行 4 个请求、等待 32 个请求，排队最长 120 秒；排队超时与 Qwen HTTP 请求超时分开统计，队列满时立即自然降级，避免请求无限堆积。
+- 日志只记录脱敏会话哈希、队列等待时间、排队/运行数量、图片/帧/字节计数、内容哈希前 12 位、模型、耗时、缓存或 single-flight 命中状态和错误类别，不记录完整图片 URL、签名参数、原始图片、Base64、完整 OCR 或私聊图片内容。
 
 ## Agent 工具
 
@@ -405,7 +412,7 @@ docker compose up -d --no-deps --force-recreate bot
 | `user` | 已启用，所有普通 QQ | 16 项本人确定性自助接口，其中 7 项会修改本人上下文、记忆、偏好或可归属数据；不能修改运行时配置 |
 | `trusted` | 仅预留，当前不可分配 | 供未来介于普通用户与管理员之间的权限扩展 |
 | `moderator` | 仅预留，当前不可分配 | 供未来群管理能力扩展 |
-| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 50 项可修改配置、12 项受保护配置、18 项管理员业务接口（14 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
+| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 56 项可修改配置、12 项受保护配置、18 项管理员业务接口（14 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
 
 能力目录直接遍历现有 `ConfigRegistry` 和 `ActionRegistry`，不会另复制配置键或业务 action。`summary` 只提供计数与类别，`focused` 提供命中项的 ID、别名、说明、类型、范围、作用域和生效方式，`full` 才提供全部 ID。`call_onebot_api(action, params)` 作为独立的 `onebot` 权限类别列出：真实超级管理员在直接触发、非自主群聊的普通 Agent 轮次中可调用全部公开 action，不设 action denylist，也不二次确认；使用网页工具后本轮会撤销网关，但不会缩减 action 范围。目录不读取配置值、API Key、凭证状态或他人权限。`trusted`、`moderator` 只有枚举和展示元数据，在执行层接入相同权限校验前不会被实际授予。
 
@@ -449,10 +456,10 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | HOT | `agent.max_tool_calls`、`agent.max_model_requests`、`agent.tool_result_max_characters` |
 | HOT | `web.search_max_results`、`web.extract_max_results`、`web.max_calls_per_turn`、`web.tool_result_max_characters` |
 | HOT | `relationship.confidence_threshold`、`relationship.max_auto_delta`、`relationship.daily_positive_cap`、`relationship.daily_negative_cap`、`relationship.conflict_preference_min_gap` |
-| HOT | `vision.max_images_per_turn`、`vision.max_frames_per_turn`、`vision.gif_max_frames`、`vision.per_user_requests_per_minute`、`vision.per_group_requests_per_minute` |
+| HOT | `vision.max_images_per_turn`、`vision.max_frames_per_turn`、`vision.gif_max_frames`、`vision.thinking_enabled`、`vision.thinking_budget`、`vision.low_confidence_retry_threshold`、`vision.per_user_requests_per_minute`、`vision.per_group_requests_per_minute` |
 | FUTURE_ONLY | `relationship.initial_affection`、`relationship.initial_trust`、`web.source_retention_days`、`web.source_max_runs_per_conversation`、`vision.analysis_retention_days` |
 | RESTART_REQUIRED | `llm.model`、`llm.timeout_seconds`、`llm.max_retries`、`global.llm_concurrency`、`web.global_concurrency`、`rate_limit.per_user_per_minute`、`rate_limit.per_group_per_minute` |
-| RESTART_REQUIRED | `vision.enabled`、`vision.base_url`、`vision.model`、`vision.global_concurrency`、`vision.timeout_seconds` |
+| RESTART_REQUIRED | `vision.enabled`、`vision.base_url`、`vision.model`、`vision.global_concurrency`、`vision.queue_max_pending`、`vision.queue_timeout_seconds`、`vision.timeout_seconds`、`vision.max_output_tokens` |
 
 不可通过管理员工具修改：
 
@@ -517,19 +524,24 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `VISION_BASE_URL` | 空（启用时必填） |
 | `VISION_API_KEY` | 空（启用时必填、敏感） |
 | `VISION_MODEL` | `qwen3.7-plus` |
-| `VISION_TIMEOUT_SECONDS` | `30` |
+| `VISION_TIMEOUT_SECONDS` | `120` |
 | `VISION_MAX_RETRIES` | `1` |
-| `VISION_GLOBAL_CONCURRENCY` | `2` |
-| `VISION_MAX_OUTPUT_TOKENS` | `1024` |
-| `VISION_MAX_IMAGES_PER_TURN` | `3` |
-| `VISION_MAX_FRAMES_PER_TURN` | `8` |
-| `VISION_GIF_MAX_FRAMES` | `4` |
-| `VISION_MAX_DOWNLOAD_BYTES` | `10485760` |
-| `VISION_MAX_PREPARED_BYTES` | `6291456` |
-| `VISION_MAX_DIMENSION` | `2048` |
-| `VISION_MAX_PIXELS` | `4194304` |
-| `VISION_PER_USER_REQUESTS_PER_MINUTE` | `4` |
-| `VISION_PER_GROUP_REQUESTS_PER_MINUTE` | `12` |
+| `VISION_GLOBAL_CONCURRENCY` | `4` |
+| `VISION_QUEUE_MAX_PENDING` | `32` |
+| `VISION_QUEUE_TIMEOUT_SECONDS` | `120` |
+| `VISION_MAX_OUTPUT_TOKENS` | `8192` |
+| `VISION_THINKING_ENABLED` | `false` |
+| `VISION_THINKING_BUDGET` | `6144` |
+| `VISION_LOW_CONFIDENCE_RETRY_THRESHOLD` | `0.65` |
+| `VISION_MAX_IMAGES_PER_TURN` | `5` |
+| `VISION_MAX_FRAMES_PER_TURN` | `16` |
+| `VISION_GIF_MAX_FRAMES` | `8` |
+| `VISION_MAX_DOWNLOAD_BYTES` | `20971520` |
+| `VISION_MAX_PREPARED_BYTES` | `16777216` |
+| `VISION_MAX_DIMENSION` | `4096` |
+| `VISION_MAX_PIXELS` | `16777216` |
+| `VISION_PER_USER_REQUESTS_PER_MINUTE` | `20` |
+| `VISION_PER_GROUP_REQUESTS_PER_MINUTE` | `60` |
 | `VISION_ANALYSIS_RETENTION_DAYS` | `7` |
 
 `ALLOWED_PRIVATE_USERS` 仅为旧配置兼容保留，1.0 不再把它当白名单；所有新 QQ 私聊默认准入。
@@ -574,15 +586,15 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 - 定期离线备份 `data/`、`napcat-data/` 和 `napcat-config/`。
 - NapCat 是个人 QQ 协议端，不等同于腾讯官方 QQ Bot，存在协议变化、风控和封号风险；请控制频率并使用你有权控制的账号。
 
-`/ai status` 会同时显示视觉是否启用、视觉模型和当前视觉请求是否繁忙，不显示密钥或完整接口查询参数。
+`/ai status` 会同时显示视觉是否启用、视觉模型、是否繁忙以及当前“排队/运行”数量，不显示密钥或完整接口查询参数。
 
 ## 1.4 升级步骤
 
 1. 停止 Bot 写入但保持 NapCat 和 QQ 登录态运行：`docker compose stop bot`。
 2. 完整备份 `data/`、`napcat-data/` 和 `napcat-config/`。
 3. 将 `.env.example` 的 `VISION_*` 项同步到 `.env`。暂时不用图片理解时保留 `VISION_ENABLED=false`；启用时填写独立的百炼兼容接口地址和密钥，不要复用或替换 DeepSeek 的 `LLM_*` 配置。
-4. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 不会被替换，Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0009`。
+4. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 不会被替换，Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0010`。
 5. 检查 `docker compose ps`、`/healthz` 和日志。
 6. 依次人工验证：私聊纯图片、图片加文字、QQ 内置表情、动态表情、回复旧图片、群聊 `@Yuki` 图片、未触发群图片不分析，以及图片 OCR 不能执行配置/关系/OneBot 修改；再回归原有文本、记忆、联网、关系和管理员工具。
 
-`0009` 可以回退且只删除 `media_analyses` 视觉缓存，不影响 `0008` 的运行时配置与管理员审计，也不影响人物、聊天、记忆、联网来源和关系数据。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。
+`0010` 可以回退且只删除 `chat_events.visual_summary` 派生摘要；`0009` 回退只删除 `media_analyses` 视觉缓存。两者都不影响聊天正文、人物、记忆、联网来源、关系和运行时配置。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。

@@ -116,9 +116,23 @@ def test_vision_defaults_are_safe_and_api_key_is_hidden() -> None:
     assert not settings.vision_configured
     assert settings.vision_provider == "qwen"
     assert settings.vision_model == "qwen3.7-plus"
-    assert settings.vision_max_images_per_turn == 3
-    assert settings.vision_max_frames_per_turn == 8
-    assert settings.vision_gif_max_frames == 4
+    assert settings.vision_timeout_seconds == 120
+    assert settings.vision_global_concurrency == 4
+    assert settings.vision_queue_max_pending == 32
+    assert settings.vision_queue_timeout_seconds == 120
+    assert settings.vision_max_output_tokens == 8192
+    assert not settings.vision_thinking_enabled
+    assert settings.vision_thinking_budget == 6144
+    assert settings.vision_low_confidence_retry_threshold == 0.65
+    assert settings.vision_max_images_per_turn == 5
+    assert settings.vision_max_frames_per_turn == 16
+    assert settings.vision_gif_max_frames == 8
+    assert settings.vision_max_download_bytes == 20_971_520
+    assert settings.vision_max_prepared_bytes == 16_777_216
+    assert settings.vision_max_dimension == 4096
+    assert settings.vision_max_pixels == 16_777_216
+    assert settings.vision_per_user_requests_per_minute == 20
+    assert settings.vision_per_group_requests_per_minute == 60
     assert "vision-sensitive-test-value" not in repr(settings)
 
 
@@ -153,10 +167,14 @@ def test_vision_enabled_requires_complete_provider_configuration() -> None:
         ("vision_max_download_bytes", 20 * 1024 * 1024 + 1, "VISION_MAX_DOWNLOAD_BYTES"),
         ("vision_max_prepared_bytes", 0, "greater than zero"),
         ("vision_timeout_seconds", 0, "greater than zero"),
+        ("vision_queue_max_pending", 0, "greater than zero"),
+        ("vision_queue_timeout_seconds", 0, "greater than zero"),
         ("vision_max_retries", 0, "greater than zero"),
         ("vision_max_retries", 2, "VISION_MAX_RETRIES"),
+        ("vision_thinking_budget", 32769, "VISION_THINKING_BUDGET"),
+        ("vision_low_confidence_retry_threshold", 1.1, "between zero and one"),
     ],
 )
-def test_vision_numeric_limits_are_validated(field: str, value: int, message: str) -> None:
+def test_vision_numeric_limits_are_validated(field: str, value: int | float, message: str) -> None:
     with pytest.raises(ValidationError, match=message):
         Settings.model_validate({field: value})

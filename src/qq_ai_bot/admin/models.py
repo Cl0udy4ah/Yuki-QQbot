@@ -196,6 +196,9 @@ class VisionRuntimeConfig:
     max_images_per_turn: int
     max_frames_per_turn: int
     gif_max_frames: int
+    thinking_enabled: bool
+    thinking_budget: int
+    low_confidence_retry_threshold: float
     per_user_requests_per_minute: int
     per_group_requests_per_minute: int
     analysis_retention_days: int

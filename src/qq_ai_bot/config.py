@@ -126,19 +126,24 @@ class Settings(BaseSettings):
     vision_base_url: str = ""
     vision_api_key: str = Field(default="", repr=False)
     vision_model: str = "qwen3.7-plus"
-    vision_timeout_seconds: float = 30.0
+    vision_timeout_seconds: float = 120.0
     vision_max_retries: int = 1
-    vision_global_concurrency: int = 2
-    vision_max_output_tokens: int = 1024
-    vision_max_images_per_turn: int = 3
-    vision_max_frames_per_turn: int = 8
-    vision_gif_max_frames: int = 4
-    vision_max_download_bytes: int = 10_485_760
-    vision_max_prepared_bytes: int = 6_291_456
-    vision_max_dimension: int = 2048
-    vision_max_pixels: int = 4_194_304
-    vision_per_user_requests_per_minute: int = 4
-    vision_per_group_requests_per_minute: int = 12
+    vision_global_concurrency: int = 4
+    vision_queue_max_pending: int = 32
+    vision_queue_timeout_seconds: float = 120.0
+    vision_max_output_tokens: int = 8192
+    vision_thinking_enabled: bool = False
+    vision_thinking_budget: int = 6144
+    vision_low_confidence_retry_threshold: float = 0.65
+    vision_max_images_per_turn: int = 5
+    vision_max_frames_per_turn: int = 16
+    vision_gif_max_frames: int = 8
+    vision_max_download_bytes: int = 20_971_520
+    vision_max_prepared_bytes: int = 16_777_216
+    vision_max_dimension: int = 4096
+    vision_max_pixels: int = 16_777_216
+    vision_per_user_requests_per_minute: int = 20
+    vision_per_group_requests_per_minute: int = 60
     vision_analysis_retention_days: int = 7
 
     @field_validator(
@@ -184,7 +189,9 @@ class Settings(BaseSettings):
         "web_source_max_runs_per_conversation",
         "vision_max_retries",
         "vision_global_concurrency",
+        "vision_queue_max_pending",
         "vision_max_output_tokens",
+        "vision_thinking_budget",
         "vision_max_images_per_turn",
         "vision_max_frames_per_turn",
         "vision_gif_max_frames",
@@ -202,7 +209,12 @@ class Settings(BaseSettings):
             raise ValueError("must be greater than zero")
         return value
 
-    @field_validator("llm_timeout_seconds", "web_timeout_seconds", "vision_timeout_seconds")
+    @field_validator(
+        "llm_timeout_seconds",
+        "web_timeout_seconds",
+        "vision_timeout_seconds",
+        "vision_queue_timeout_seconds",
+    )
     @classmethod
     def _positive_timeout(cls, value: float) -> float:
         if value <= 0:
@@ -251,6 +263,7 @@ class Settings(BaseSettings):
     @field_validator(
         "autonomous_confidence_threshold",
         "relationship_confidence_threshold",
+        "vision_low_confidence_retry_threshold",
     )
     @classmethod
     def _probability(cls, value: float) -> float:
@@ -322,6 +335,8 @@ class Settings(BaseSettings):
             raise ValueError("VISION_MAX_DOWNLOAD_BYTES must not exceed 20 MB")
         if self.vision_max_retries > 1:
             raise ValueError("VISION_MAX_RETRIES must not exceed 1")
+        if self.vision_thinking_budget > 32768:
+            raise ValueError("VISION_THINKING_BUDGET must not exceed 32768")
         return self
 
     @model_validator(mode="after")

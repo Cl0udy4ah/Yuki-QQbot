@@ -9,7 +9,11 @@ import httpx
 import pytest
 
 from qq_ai_bot.vision.base import VisionError
-from qq_ai_bot.vision.models import PreparedFrame, PreparedVisualInput
+from qq_ai_bot.vision.models import (
+    PreparedFrame,
+    PreparedVisualInput,
+    VisionAnalysisOptions,
+)
 from qq_ai_bot.vision.qwen import QwenVisionProvider
 
 
@@ -40,7 +44,7 @@ def _success(content: str) -> httpx.Response:
 
 
 @pytest.mark.asyncio
-async def test_request_uses_data_url_and_disables_thinking() -> None:
+async def test_general_request_uses_data_url_and_stays_fast_when_confident() -> None:
     captured: dict[str, Any] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -63,7 +67,9 @@ async def test_request_uses_data_url_and_disables_thinking() -> None:
     assert captured["enable_thinking"] is False
     assert captured["temperature"] == 0.1
     user_content = captured["messages"][1]["content"]
-    assert user_content[-1] == {"type": "text", "text": "这是什么？"}
+    assert user_content[-1]["type"] == "text"
+    assert "用户问题：这是什么？" in user_content[-1]["text"]
+    assert "recognized_character" in user_content[-1]["text"]
     assert any(
         item.get("image_url", {}).get("url", "").startswith("data:image/jpeg;base64,")
         for item in user_content
@@ -74,6 +80,88 @@ async def test_request_uses_data_url_and_disables_thinking() -> None:
     assert provider.provider_name == "qwen"
     assert provider.model_name == "qwen-test"
     assert "secret-key" not in repr(provider)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_character_mode_enables_thinking_budget_and_parses_identity() -> None:
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return _success(
+            '{"items":[{"index":1,"description":"黄色小恐龙",'
+            '"recognized_character":"奶龙","franchise":"奶龙",'
+            '"character_candidates":[{"name":"奶龙","work":"奶龙",'
+            '"evidence":"黄色恐龙与白色腹部","confidence":0.94}],'
+            '"confidence":0.92}],"overall_description":"奶龙表情包"}'
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = QwenVisionProvider(
+        base_url="https://vision.example/v1",
+        api_key="secret",
+        client=client,
+    )
+
+    observation = await provider.analyze(
+        (_input(),),
+        "这是谁？",
+        options=VisionAnalysisOptions(
+            analysis_mode="character",
+            thinking_enabled=True,
+            thinking_budget=3072,
+        ),
+    )
+
+    assert captured["enable_thinking"] is True
+    assert captured["thinking_budget"] == 3072
+    assert captured["max_tokens"] == 8192
+    item = observation.items[0]
+    assert item.recognized_character == "奶龙"
+    assert item.franchise == "奶龙"
+    assert item.character_candidates[0].name == "奶龙"
+    assert item.character_candidates[0].confidence == 0.94
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_general_result_is_reviewed_with_thinking() -> None:
+    thinking_flags: list[bool] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        thinking_flags.append(payload["enable_thinking"])
+        if not payload["enable_thinking"]:
+            return _success(
+                '{"items":[{"index":1,"description":"模糊角色",'
+                '"confidence":0.2}],"overall_description":"不确定"}'
+            )
+        return _success(
+            '{"items":[{"index":1,"description":"黄色小恐龙",'
+            '"recognized_character":"奶龙","confidence":0.91}],'
+            '"overall_description":"奶龙"}'
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = QwenVisionProvider(
+        base_url="https://vision.example/v1",
+        api_key="secret",
+        client=client,
+    )
+
+    observation = await provider.analyze(
+        (_input(),),
+        "描述图片",
+        options=VisionAnalysisOptions(
+            analysis_mode="general",
+            thinking_enabled=True,
+            low_confidence_retry_threshold=0.65,
+        ),
+    )
+
+    assert thinking_flags == [False, True]
+    assert observation.items[0].recognized_character == "奶龙"
     await client.aclose()
 
 

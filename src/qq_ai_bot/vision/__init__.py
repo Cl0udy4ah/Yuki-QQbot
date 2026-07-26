@@ -8,6 +8,9 @@ from qq_ai_bot.vision.models import (
     MediaSource,
     PreparedFrame,
     PreparedVisualInput,
+    VisionAnalysisMode,
+    VisionAnalysisOptions,
+    VisualCharacterCandidate,
     VisualItemObservation,
     VisualObservation,
 )
@@ -21,9 +24,12 @@ __all__ = [
     "PreparedFrame",
     "PreparedVisualInput",
     "QwenVisionProvider",
+    "VisionAnalysisMode",
+    "VisionAnalysisOptions",
     "VisionConfigurationError",
     "VisionError",
     "VisionProvider",
+    "VisualCharacterCandidate",
     "VisualItemObservation",
     "VisualObservation",
 ]

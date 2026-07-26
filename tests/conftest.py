@@ -155,6 +155,8 @@ def build_harness(
             rate_limiter=VisionRateLimiter(),
             max_prepared_bytes=settings.vision_max_prepared_bytes,
             global_concurrency=settings.vision_global_concurrency,
+            queue_max_pending=settings.vision_queue_max_pending,
+            queue_timeout_seconds=settings.vision_queue_timeout_seconds,
         )
         if vision_provider is not None
         else None

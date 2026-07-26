@@ -175,6 +175,9 @@ def test_registry_exposes_reviewed_vision_configuration_only() -> None:
         "vision.max_images_per_turn",
         "vision.max_frames_per_turn",
         "vision.gif_max_frames",
+        "vision.thinking_enabled",
+        "vision.thinking_budget",
+        "vision.low_confidence_retry_threshold",
         "vision.per_user_requests_per_minute",
         "vision.per_group_requests_per_minute",
     }
@@ -184,7 +187,10 @@ def test_registry_exposes_reviewed_vision_configuration_only() -> None:
         "vision.base_url",
         "vision.model",
         "vision.global_concurrency",
+        "vision.queue_max_pending",
+        "vision.queue_timeout_seconds",
         "vision.timeout_seconds",
+        "vision.max_output_tokens",
     }
     secret = registry.get("vision.api_key")
     assert secret.apply_mode is ConfigApplyMode.SECRET
@@ -200,6 +206,9 @@ async def test_runtime_snapshot_resolves_dynamic_vision_settings(database: Datab
         ("vision.max_images_per_turn", 4),
         ("vision.max_frames_per_turn", 12),
         ("vision.gif_max_frames", 6),
+        ("vision.thinking_enabled", False),
+        ("vision.thinking_budget", 4096),
+        ("vision.low_confidence_retry_threshold", 0.72),
         ("vision.per_user_requests_per_minute", 8),
         ("vision.per_group_requests_per_minute", 20),
         ("vision.analysis_retention_days", 14),
@@ -218,6 +227,9 @@ async def test_runtime_snapshot_resolves_dynamic_vision_settings(database: Datab
     assert vision.max_images_per_turn == 4
     assert vision.max_frames_per_turn == 12
     assert vision.gif_max_frames == 6
+    assert not vision.thinking_enabled
+    assert vision.thinking_budget == 4096
+    assert vision.low_confidence_retry_threshold == 0.72
     assert vision.per_user_requests_per_minute == 8
     assert vision.per_group_requests_per_minute == 20
     assert vision.analysis_retention_days == 14
@@ -415,7 +427,10 @@ async def test_vision_restart_overrides_map_to_startup_settings(database: Databa
         ("vision.base_url", "https://dashscope.example/v1"),
         ("vision.model", "new-vision-model"),
         ("vision.global_concurrency", 3),
+        ("vision.queue_max_pending", 48),
+        ("vision.queue_timeout_seconds", 90),
         ("vision.timeout_seconds", 45),
+        ("vision.max_output_tokens", 16384),
     ):
         change = await current.set_override(
             key,
@@ -442,7 +457,10 @@ async def test_vision_restart_overrides_map_to_startup_settings(database: Databa
         "vision_base_url": "https://dashscope.example/v1",
         "vision_model": "new-vision-model",
         "vision_global_concurrency": 3,
+        "vision_queue_max_pending": 48,
+        "vision_queue_timeout_seconds": 90.0,
         "vision_timeout_seconds": 45.0,
+        "vision_max_output_tokens": 16384,
     }
 
 
@@ -1381,11 +1399,11 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
             )
         )
         assert payload["data"]["transient_internal_reference"] is True
-        assert payload["data"]["counts"]["mutable_configurations"] == 50
+        assert payload["data"]["counts"]["mutable_configurations"] == 56
         assert payload["data"]["counts"]["business_actions"] == 18
         assert payload["data"]["counts"]["onebot_api_gateways"] == 1
         return ChatResponse(
-            content="你有 50 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。",
+            content="你有 56 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。",
             latency_seconds=0,
         )
 
@@ -1400,7 +1418,7 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
     assert result.tool_calls == 1
     assert calls == 2
     assert result.text == (
-        "你有 50 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。"
+        "你有 56 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。"
     )
     assert "transient_internal_reference" not in result.text
 

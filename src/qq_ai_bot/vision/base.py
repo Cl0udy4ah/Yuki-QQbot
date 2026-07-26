@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from qq_ai_bot.vision.models import PreparedVisualInput, VisualObservation
+from qq_ai_bot.vision.models import (
+    PreparedVisualInput,
+    VisionAnalysisOptions,
+    VisualObservation,
+)
 
 
 class VisionError(RuntimeError):
@@ -35,6 +39,8 @@ class VisionProvider(Protocol):
         self,
         inputs: tuple[PreparedVisualInput, ...],
         question: str,
+        *,
+        options: VisionAnalysisOptions | None = None,
     ) -> VisualObservation:
         """Analyze all selected images in one provider request."""
 
