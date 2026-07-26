@@ -8,6 +8,7 @@ import io
 
 import pytest
 from PIL import Image
+from sqlalchemy import func, select
 
 from qq_ai_bot.admin.models import VisionRuntimeConfig
 from qq_ai_bot.domain.conversations import ScopeType
@@ -18,7 +19,11 @@ from qq_ai_bot.domain.messages import (
     SenderIdentity,
 )
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repositories import MediaAnalysisRepository
+from qq_ai_bot.persistence.models import EmojiDescriptionModel
+from qq_ai_bot.persistence.repositories import (
+    EmojiDescriptionRepository,
+    MediaAnalysisRepository,
+)
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
@@ -26,13 +31,30 @@ from qq_ai_bot.services.vision_service import (
     DEFAULT_VISUAL_QUESTION,
     VisionProcessingError,
     VisionService,
+    _emoji_keys,
+    _is_explicit_emoji,
 )
 from qq_ai_bot.vision.fake import FakeVisionProvider
 from qq_ai_bot.vision.models import (
+    MediaReference,
     PreparedVisualInput,
     VisionAnalysisOptions,
     VisualObservation,
 )
+
+
+def test_emoji_file_hash_is_stable_but_sub_type_alone_is_not_an_emoji_signal() -> None:
+    digest = "F708282432DBEF6A26F24B82054D4C91"
+    first = MediaReference(file=f"{digest}.jpg", summary="[动画表情]", sub_type="1")
+    second = MediaReference(file=f"/cache/{digest.lower()}.png", summary="贴纸")
+    photo = MediaReference(file=f"{digest}.jpg")
+
+    assert _emoji_keys(first) == (f"file:{digest.lower()}",)
+    assert _emoji_keys(second) == _emoji_keys(first)
+    assert _emoji_keys(photo) == _emoji_keys(first)
+    assert _is_explicit_emoji(first)
+    assert _is_explicit_emoji(second)
+    assert not _is_explicit_emoji(photo)
 
 
 class BlockingVisionProvider(FakeVisionProvider):
@@ -101,6 +123,9 @@ def _image(
     *,
     source: str = "current",
     summary: str | None = None,
+    sub_type: str | None = None,
+    emoji_id: str | None = None,
+    emoji_package_id: str | None = None,
 ) -> MessageAttachment:
     return MessageAttachment(
         kind=AttachmentKind.IMAGE,
@@ -109,6 +134,9 @@ def _image(
         source=source,
         file=file,
         summary=summary,
+        sub_type=sub_type,
+        emoji_id=emoji_id,
+        emoji_package_id=emoji_package_id,
     )
 
 
@@ -139,6 +167,7 @@ def _service(database: Database, provider: FakeVisionProvider) -> VisionService:
         preprocessor=ImagePreprocessor(),
         analyses=MediaAnalysisRepository(database),
         rate_limiter=VisionRateLimiter(),
+        emoji_descriptions=EmojiDescriptionRepository(database),
     )
 
 
@@ -273,6 +302,109 @@ async def test_cache_hit_skips_provider_and_does_not_consume_second_quota(
             conversation_key="private:1001",
         )
     assert exc_info.value.code == "rate_limited"
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_photo_is_not_written_to_persistent_emoji_library(
+    database: Database,
+) -> None:
+    service = _service(database, FakeVisionProvider())
+    await service.analyze(
+        _message(current=(_image(_inline_png(), 0, sub_type="1"),)),
+        question="",
+        runtime=_runtime(),
+        gateway=None,
+        source_event_id=None,
+        conversation_key="private:1001",
+    )
+
+    async with database.sessions() as session:
+        count = await session.scalar(select(func.count(EmojiDescriptionModel.id)))
+    assert count == 0
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_same_qq_emoji_uses_persistent_description_before_media_resolution(
+    database: Database,
+) -> None:
+    first_provider = FakeVisionProvider()
+    first_service = _service(database, first_provider)
+    first_image = _image(
+        _inline_png(),
+        0,
+        summary="[动画表情]",
+        sub_type="1",
+        emoji_id="emoji-1",
+        emoji_package_id="package-2",
+    )
+    await first_service.analyze(
+        _message(message_id="emoji-first", current=(first_image,)),
+        question="",
+        runtime=_runtime(),
+        gateway=None,
+        source_event_id=None,
+        conversation_key="private:1001",
+    )
+    await first_service.close()
+
+    second_provider = FakeVisionProvider()
+    second_service = _service(database, second_provider)
+    same_identity_with_expired_resource = _image(
+        "base64://%%%",
+        0,
+        summary="[动画表情]",
+        sub_type="1",
+        emoji_id="emoji-1",
+        emoji_package_id="package-2",
+    )
+    observation = await second_service.analyze(
+        _message(message_id="emoji-second", current=(same_identity_with_expired_resource,)),
+        question="",
+        runtime=_runtime(),
+        gateway=None,
+        source_event_id=None,
+        conversation_key="private:1001",
+    )
+
+    assert observation.overall_description
+    assert second_provider.requests == []
+    await second_service.close()
+
+
+@pytest.mark.asyncio
+async def test_persistent_emoji_description_never_crosses_questions(database: Database) -> None:
+    provider = FakeVisionProvider()
+    service = _service(database, provider)
+    identity = {
+        "summary": "[动画表情]",
+        "sub_type": "1",
+        "emoji_id": "emoji-question",
+        "emoji_package_id": "package-question",
+    }
+    await service.analyze(
+        _message(current=(_image(_inline_png(), 0, **identity),)),
+        question="这是谁",
+        runtime=_runtime(),
+        gateway=None,
+        source_event_id=None,
+        conversation_key="private:1001",
+    )
+
+    with pytest.raises(VisionProcessingError) as exc_info:
+        await service.analyze(
+            _message(
+                message_id="different-question",
+                current=(_image("base64://%%%", 0, **identity),),
+            ),
+            question="图片里写了什么",
+            runtime=_runtime(),
+            gateway=None,
+            source_event_id=None,
+            conversation_key="private:1001",
+        )
+    assert exc_info.value.code == "invalid_base64"
     await service.close()
 
 

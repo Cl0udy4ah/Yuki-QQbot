@@ -31,6 +31,7 @@ from qq_ai_bot.persistence.models import (
     AgentActionModel,
     ChatEventModel,
     ContextResetModel,
+    EmojiDescriptionModel,
     GroupMemoryModel,
     GroupModel,
     MediaAnalysisModel,
@@ -110,6 +111,25 @@ class MediaAnalysisRecord:
     observation_json: str
     created_at: datetime
     expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class EmojiDescriptionRecord:
+    """A persistent, reusable description of one stable QQ emoji identity."""
+
+    id: int
+    emoji_key: str
+    analysis_mode: str
+    question_hash: str
+    provider: str
+    model: str
+    prompt_version: str
+    description: str
+    observation_json: str
+    hit_count: int
+    created_at: datetime
+    updated_at: datetime
+    last_used_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -2539,21 +2559,7 @@ class MediaAnalysisRepository:
 
     @staticmethod
     def _serialize_observation(value: str | dict[str, Any]) -> str:
-        parsed = json.loads(value) if isinstance(value, str) else value
-
-        def contains_embedded_media(item: Any) -> bool:
-            if isinstance(item, str):
-                lowered = item.lstrip().lower()
-                return lowered.startswith(("data:image/", "base64://"))
-            if isinstance(item, dict):
-                return any(contains_embedded_media(child) for child in item.values())
-            if isinstance(item, list | tuple):
-                return any(contains_embedded_media(child) for child in item)
-            return False
-
-        if contains_embedded_media(parsed):
-            raise ValueError("observation_json must not contain image or Base64 payloads")
-        return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+        return _serialize_visual_observation(value)
 
     @staticmethod
     def _record(row: MediaAnalysisModel) -> MediaAnalysisRecord:
@@ -2571,6 +2577,208 @@ class MediaAnalysisRepository:
             created_at=row.created_at,
             expires_at=row.expires_at,
         )
+
+
+class EmojiDescriptionRepository:
+    """Persist visual observations behind durable, exact emoji lookup keys."""
+
+    _MODES = frozenset({"general", "meme", "ocr", "question"})
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def find_first(
+        self,
+        emoji_keys: tuple[str, ...],
+        *,
+        analysis_mode: str,
+        question_hash: str | None,
+        provider: str,
+        model: str,
+        prompt_version: str,
+        now: datetime | None = None,
+    ) -> EmojiDescriptionRecord | None:
+        """Return the first exact key match and atomically record its reuse."""
+
+        keys = self._validated_keys(emoji_keys)
+        self._validate_lookup(
+            analysis_mode=analysis_mode,
+            question_hash=question_hash,
+            provider=provider,
+            model=model,
+            prompt_version=prompt_version,
+        )
+        if not keys:
+            return None
+        timestamp = now or datetime.now(UTC)
+        normalized_question_hash = question_hash or ""
+        async with self._database.sessions() as session, session.begin():
+            for key in keys:
+                row = await session.scalar(
+                    select(EmojiDescriptionModel).where(
+                        EmojiDescriptionModel.emoji_key == key,
+                        EmojiDescriptionModel.analysis_mode == analysis_mode,
+                        EmojiDescriptionModel.question_hash == normalized_question_hash,
+                        EmojiDescriptionModel.provider == provider,
+                        EmojiDescriptionModel.model == model,
+                        EmojiDescriptionModel.prompt_version == prompt_version,
+                    )
+                )
+                if row is None:
+                    continue
+                row.hit_count += 1
+                row.last_used_at = timestamp
+                await session.flush()
+                return self._record(row)
+        return None
+
+    async def save_many(
+        self,
+        emoji_keys: tuple[str, ...],
+        *,
+        analysis_mode: str,
+        question_hash: str | None,
+        provider: str,
+        model: str,
+        prompt_version: str,
+        observation_json: str | dict[str, Any],
+        now: datetime | None = None,
+    ) -> tuple[EmojiDescriptionRecord, ...]:
+        """Upsert one safe observation for every equivalent emoji identity key."""
+
+        keys = self._validated_keys(emoji_keys)
+        self._validate_lookup(
+            analysis_mode=analysis_mode,
+            question_hash=question_hash,
+            provider=provider,
+            model=model,
+            prompt_version=prompt_version,
+        )
+        if not keys:
+            return ()
+        serialized = _serialize_visual_observation(observation_json)
+        parsed = json.loads(serialized)
+        description_value = parsed.get("overall_description", "")
+        description = description_value if isinstance(description_value, str) else ""
+        description = " ".join(description.split())[:2000]
+        timestamp = now or datetime.now(UTC)
+        normalized_question_hash = question_hash or ""
+        records: list[EmojiDescriptionRecord] = []
+        async with self._database.sessions() as session, session.begin():
+            for key in keys:
+                values = {
+                    "emoji_key": key,
+                    "analysis_mode": analysis_mode,
+                    "question_hash": normalized_question_hash,
+                    "provider": provider,
+                    "model": model,
+                    "prompt_version": prompt_version,
+                    "description": description,
+                    "observation_json": serialized,
+                    "hit_count": 0,
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                    "last_used_at": timestamp,
+                }
+                statement = insert(EmojiDescriptionModel).values(**values)
+                statement = statement.on_conflict_do_update(
+                    index_elements=[
+                        EmojiDescriptionModel.emoji_key,
+                        EmojiDescriptionModel.analysis_mode,
+                        EmojiDescriptionModel.question_hash,
+                        EmojiDescriptionModel.model,
+                        EmojiDescriptionModel.prompt_version,
+                    ],
+                    set_={
+                        "provider": provider,
+                        "description": description,
+                        "observation_json": serialized,
+                        "updated_at": timestamp,
+                        "last_used_at": timestamp,
+                    },
+                )
+                await session.execute(statement)
+                row = await session.scalar(
+                    select(EmojiDescriptionModel).where(
+                        EmojiDescriptionModel.emoji_key == key,
+                        EmojiDescriptionModel.analysis_mode == analysis_mode,
+                        EmojiDescriptionModel.question_hash == normalized_question_hash,
+                        EmojiDescriptionModel.model == model,
+                        EmojiDescriptionModel.prompt_version == prompt_version,
+                    )
+                )
+                if row is None:  # pragma: no cover - guarded by the upsert above
+                    raise RuntimeError("emoji description upsert did not return a row")
+                records.append(self._record(row))
+        return tuple(records)
+
+    @classmethod
+    def _validated_keys(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        keys = tuple(dict.fromkeys(value.strip() for value in values if value.strip()))
+        if any(len(value) > 255 for value in keys):
+            raise ValueError("emoji_key must not exceed 255 characters")
+        if any(not value.startswith(("package:", "emoji:", "file:", "content:")) for value in keys):
+            raise ValueError("unsupported emoji_key namespace")
+        return keys
+
+    @classmethod
+    def _validate_lookup(
+        cls,
+        *,
+        analysis_mode: str,
+        question_hash: str | None,
+        provider: str,
+        model: str,
+        prompt_version: str,
+    ) -> None:
+        if analysis_mode not in cls._MODES:
+            raise ValueError(f"unsupported analysis_mode: {analysis_mode}")
+        if analysis_mode == "question" and not question_hash:
+            raise ValueError("question analysis requires question_hash")
+        if question_hash and len(question_hash) > 64:
+            raise ValueError("question_hash must not exceed 64 characters")
+        if not provider or len(provider) > 32:
+            raise ValueError("provider must contain at most 32 characters")
+        if not model or len(model) > 128:
+            raise ValueError("model must contain at most 128 characters")
+        if not prompt_version or len(prompt_version) > 64:
+            raise ValueError("prompt_version must contain at most 64 characters")
+
+    @staticmethod
+    def _record(row: EmojiDescriptionModel) -> EmojiDescriptionRecord:
+        return EmojiDescriptionRecord(
+            id=row.id,
+            emoji_key=row.emoji_key,
+            analysis_mode=row.analysis_mode,
+            question_hash=row.question_hash,
+            provider=row.provider,
+            model=row.model,
+            prompt_version=row.prompt_version,
+            description=row.description,
+            observation_json=row.observation_json,
+            hit_count=row.hit_count,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            last_used_at=row.last_used_at,
+        )
+
+
+def _serialize_visual_observation(value: str | dict[str, Any]) -> str:
+    parsed = json.loads(value) if isinstance(value, str) else value
+
+    def contains_embedded_media(item: Any) -> bool:
+        if isinstance(item, str):
+            lowered = item.lstrip().lower()
+            return lowered.startswith(("data:image/", "base64://"))
+        if isinstance(item, dict):
+            return any(contains_embedded_media(child) for child in item.values())
+        if isinstance(item, list | tuple):
+            return any(contains_embedded_media(child) for child in item)
+        return False
+
+    if contains_embedded_media(parsed):
+        raise ValueError("observation_json must not contain image or Base64 payloads")
+    return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
 
 
 class WebSearchSourceRepository:

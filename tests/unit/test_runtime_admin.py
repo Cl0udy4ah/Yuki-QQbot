@@ -189,6 +189,7 @@ def test_registry_exposes_reviewed_vision_configuration_only() -> None:
         "vision.global_concurrency",
         "vision.queue_max_pending",
         "vision.queue_timeout_seconds",
+        "vision.media_download_timeout_seconds",
         "vision.timeout_seconds",
         "vision.max_output_tokens",
     }
@@ -429,6 +430,7 @@ async def test_vision_restart_overrides_map_to_startup_settings(database: Databa
         ("vision.global_concurrency", 3),
         ("vision.queue_max_pending", 48),
         ("vision.queue_timeout_seconds", 90),
+        ("vision.media_download_timeout_seconds", 75),
         ("vision.timeout_seconds", 45),
         ("vision.max_output_tokens", 16384),
     ):
@@ -459,6 +461,7 @@ async def test_vision_restart_overrides_map_to_startup_settings(database: Databa
         "vision_global_concurrency": 3,
         "vision_queue_max_pending": 48,
         "vision_queue_timeout_seconds": 90.0,
+        "vision_media_download_timeout_seconds": 75.0,
         "vision_timeout_seconds": 45.0,
         "vision_max_output_tokens": 16384,
     }
@@ -1399,11 +1402,11 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
             )
         )
         assert payload["data"]["transient_internal_reference"] is True
-        assert payload["data"]["counts"]["mutable_configurations"] == 56
+        assert payload["data"]["counts"]["mutable_configurations"] == 57
         assert payload["data"]["counts"]["business_actions"] == 18
         assert payload["data"]["counts"]["onebot_api_gateways"] == 1
         return ChatResponse(
-            content="你有 56 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。",
+            content="你有 57 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。",
             latency_seconds=0,
         )
 
@@ -1418,7 +1421,7 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
     assert result.tool_calls == 1
     assert calls == 2
     assert result.text == (
-        "你有 56 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。"
+        "你有 57 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。"
     )
     assert "transient_internal_reference" not in result.text
 

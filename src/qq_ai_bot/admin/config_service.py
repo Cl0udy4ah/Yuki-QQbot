@@ -320,6 +320,7 @@ class RuntimeConfigService:
             "vision.global_concurrency": "vision_global_concurrency",
             "vision.queue_max_pending": "vision_queue_max_pending",
             "vision.queue_timeout_seconds": "vision_queue_timeout_seconds",
+            "vision.media_download_timeout_seconds": ("vision_media_download_timeout_seconds"),
             "vision.timeout_seconds": "vision_timeout_seconds",
             "vision.max_output_tokens": "vision_max_output_tokens",
         }

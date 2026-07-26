@@ -11,6 +11,7 @@ from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.services.processor import _vision_failure_message
 
 
 def inbound(
@@ -34,6 +35,26 @@ def inbound(
         mentions_bot=mentions_bot,
         attachments=(MessageAttachment(AttachmentKind.IMAGE, "image"),) if unsupported else (),
     )
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected"),
+    [
+        ("media_download_timeout", "图片下载超时"),
+        ("get_image_failed", "NapCat 未能取得图片资源"),
+        ("download_failed", "图片资源下载失败"),
+        ("corrupt_image", "图片文件无法解析"),
+        ("too_large", "超过处理范围"),
+        ("queue_timeout", "图片识别任务较多"),
+        ("timeout", "视觉模型响应超时"),
+        ("provider_unavailable", "视觉模型暂时不可用"),
+    ],
+)
+def test_visual_failures_have_distinct_user_messages(
+    error_code: str,
+    expected: str,
+) -> None:
+    assert expected in _vision_failure_message(error_code, reply_only=False)
 
 
 @pytest.mark.asyncio
@@ -89,7 +110,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：56 项" in admin_text
+    assert "可修改运行时配置参数：57 项" in admin_text
     assert "管理员业务接口：18 项，其中修改型 14 项" in admin_text
     assert "autonomous.max_per_hour" in admin_text
     assert "relationship.set_affection" in admin_text

@@ -120,6 +120,7 @@ def test_vision_defaults_are_safe_and_api_key_is_hidden() -> None:
     assert settings.vision_global_concurrency == 4
     assert settings.vision_queue_max_pending == 32
     assert settings.vision_queue_timeout_seconds == 120
+    assert settings.vision_media_download_timeout_seconds == 120
     assert settings.vision_max_output_tokens == 8192
     assert not settings.vision_thinking_enabled
     assert settings.vision_thinking_budget == 6144
@@ -169,6 +170,7 @@ def test_vision_enabled_requires_complete_provider_configuration() -> None:
         ("vision_timeout_seconds", 0, "greater than zero"),
         ("vision_queue_max_pending", 0, "greater than zero"),
         ("vision_queue_timeout_seconds", 0, "greater than zero"),
+        ("vision_media_download_timeout_seconds", 0, "greater than zero"),
         ("vision_max_retries", 0, "greater than zero"),
         ("vision_max_retries", 2, "VISION_MAX_RETRIES"),
         ("vision_thinking_budget", 32769, "VISION_THINKING_BUDGET"),

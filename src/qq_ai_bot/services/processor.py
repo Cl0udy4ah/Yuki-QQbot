@@ -83,6 +83,14 @@ RATE_LIMIT_MESSAGE = "请求过于频繁，请稍后再试。"
 IMAGE_WRITE_ISOLATION_MESSAGE = "图片或回复图片所在的轮次不会执行写入操作，请改用纯文本消息。"
 IMAGE_FAILURE_MESSAGE = "这张图片暂时没有识别成功，可以重新发送一张更清晰的版本。"
 IMAGE_RATE_LIMIT_MESSAGE = "图片理解请求过于频繁，请稍后再试。"
+IMAGE_QUEUE_BUSY_MESSAGE = "当前图片识别任务较多，请稍后再试。"
+IMAGE_DOWNLOAD_TIMEOUT_MESSAGE = "图片下载超时，请稍后重试；如果仍然失败，请重新发送原图。"
+IMAGE_DOWNLOAD_FAILED_MESSAGE = "图片资源下载失败或已经失效，请重新发送原图。"
+IMAGE_RESOURCE_QUERY_FAILED_MESSAGE = "NapCat 未能取得图片资源，请重新发送原图。"
+IMAGE_FORMAT_FAILED_MESSAGE = "图片文件无法解析，请尝试重新保存或转换为 PNG、JPEG 后发送。"
+IMAGE_TOO_LARGE_MESSAGE = "图片尺寸、帧数或文件大小超过处理范围，请压缩后重新发送。"
+IMAGE_PROVIDER_TIMEOUT_MESSAGE = "图片已取得，但视觉模型响应超时，请稍后再试。"
+IMAGE_PROVIDER_FAILED_MESSAGE = "图片已取得，但视觉模型暂时不可用，请稍后再试。"
 REPLY_IMAGE_UNAVAILABLE_MESSAGE = "回复中的图片资源已过期或无法读取，请重新发送原图。"
 _NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
 
@@ -94,6 +102,58 @@ class ProcessResult:
     handled: bool
     sent_messages: int = 0
     reason: str = ""
+
+
+def _vision_failure_message(error_code: str | None, *, reply_only: bool) -> str:
+    """Return a useful pure-image failure without exposing provider internals."""
+
+    if error_code == "rate_limited":
+        return IMAGE_RATE_LIMIT_MESSAGE
+    if error_code in {"queue_full", "queue_timeout"}:
+        return IMAGE_QUEUE_BUSY_MESSAGE
+    if error_code == "media_download_timeout":
+        return IMAGE_DOWNLOAD_TIMEOUT_MESSAGE
+    if error_code == "get_image_failed":
+        return IMAGE_RESOURCE_QUERY_FAILED_MESSAGE
+    if error_code in {
+        "download_failed",
+        "dns_failed",
+        "redirect_rejected",
+        "empty_media",
+    }:
+        return REPLY_IMAGE_UNAVAILABLE_MESSAGE if reply_only else IMAGE_DOWNLOAD_FAILED_MESSAGE
+    if error_code == "resource_unavailable" and reply_only:
+        return REPLY_IMAGE_UNAVAILABLE_MESSAGE
+    if error_code in {
+        "too_large",
+        "prepared_too_large",
+        "decompression_bomb",
+        "extreme_aspect_ratio",
+        "too_many_frames",
+    }:
+        return IMAGE_TOO_LARGE_MESSAGE
+    if error_code in {
+        "invalid_base64",
+        "invalid_media_type",
+        "invalid_media",
+        "invalid_dimensions",
+        "unsupported_format",
+        "corrupt_image",
+        "frame_decode_failed",
+    }:
+        return IMAGE_FORMAT_FAILED_MESSAGE
+    if error_code == "timeout":
+        return IMAGE_PROVIDER_TIMEOUT_MESSAGE
+    if error_code in {
+        "connection_failed",
+        "provider_unavailable",
+        "authentication_failed",
+        "provider_rejected",
+        "invalid_response",
+        "empty_response",
+    }:
+        return IMAGE_PROVIDER_FAILED_MESSAGE
+    return IMAGE_FAILURE_MESSAGE
 
 
 class MessageProcessor:
@@ -411,24 +471,15 @@ class MessageProcessor:
                     )
         if not content:
             if has_visual_input and visual_observation is not None:
-                content = "[当前消息仅包含图片]"
+                content = (
+                    "[当前消息仅包含图片；后端视觉识别已成功，"
+                    "请根据本轮视觉观察直接回应图片内容]"
+                )
             elif has_visual_input:
-                if visual_error_code in {"rate_limited", "queue_full", "queue_timeout"}:
-                    text = IMAGE_RATE_LIMIT_MESSAGE
-                elif (
-                    message.reply_attachments
-                    and not message.attachments
-                    and visual_error_code
-                    in {
-                        "resource_unavailable",
-                        "get_image_failed",
-                        "download_failed",
-                        "empty_media",
-                    }
-                ):
-                    text = REPLY_IMAGE_UNAVAILABLE_MESSAGE
-                else:
-                    text = IMAGE_FAILURE_MESSAGE
+                text = _vision_failure_message(
+                    visual_error_code,
+                    reply_only=bool(message.reply_attachments and not message.attachments),
+                )
                 sent = await self._send_text(message, sender, text)
                 return ProcessResult(True, int(sent), f"vision_{visual_error_code or 'failed'}")
             else:

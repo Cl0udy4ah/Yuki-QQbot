@@ -15,6 +15,7 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
     ConversationRepository,
+    EmojiDescriptionRepository,
     EventLedgerRepository,
     GroupMemoryRepository,
     GroupSettingsRepository,
@@ -144,6 +145,7 @@ def build_harness(
             provider=vision_provider,
             resolver=MediaResolver(
                 max_download_bytes=settings.vision_max_download_bytes,
+                timeout_seconds=settings.vision_media_download_timeout_seconds,
             ),
             preprocessor=ImagePreprocessor(
                 max_dimension=settings.vision_max_dimension,
@@ -153,6 +155,7 @@ def build_harness(
             ),
             analyses=MediaAnalysisRepository(database),
             rate_limiter=VisionRateLimiter(),
+            emoji_descriptions=EmojiDescriptionRepository(database),
             max_prepared_bytes=settings.vision_max_prepared_bytes,
             global_concurrency=settings.vision_global_concurrency,
             queue_max_pending=settings.vision_queue_max_pending,

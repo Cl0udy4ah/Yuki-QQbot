@@ -22,6 +22,7 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
     ConversationRepository,
+    EmojiDescriptionRepository,
     EventLedgerRepository,
     GroupMemoryRepository,
     GroupSettingsRepository,
@@ -123,6 +124,7 @@ class ApplicationContainer:
         self.agent_actions = AgentActionRepository(self.database)
         self.web_sources = WebSearchSourceRepository(self.database)
         self.media_analyses = MediaAnalysisRepository(self.database)
+        self.emoji_descriptions = EmojiDescriptionRepository(self.database)
         self.relationships = RelationshipRepository(
             self.database,
             initial_affection=settings.relationship_initial_affection,
@@ -144,7 +146,7 @@ class ApplicationContainer:
                 provider=self.vision_provider,
                 resolver=MediaResolver(
                     max_download_bytes=settings.vision_max_download_bytes,
-                    timeout_seconds=10,
+                    timeout_seconds=settings.vision_media_download_timeout_seconds,
                 ),
                 preprocessor=ImagePreprocessor(
                     max_dimension=settings.vision_max_dimension,
@@ -157,6 +159,7 @@ class ApplicationContainer:
                 ),
                 analyses=self.media_analyses,
                 rate_limiter=VisionRateLimiter(),
+                emoji_descriptions=self.emoji_descriptions,
                 max_prepared_bytes=settings.vision_max_prepared_bytes,
                 global_concurrency=settings.vision_global_concurrency,
                 queue_max_pending=settings.vision_queue_max_pending,

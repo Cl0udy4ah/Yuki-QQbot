@@ -6,14 +6,19 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
 from qq_ai_bot.admin.models import VisionRuntimeConfig
 from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage, MessageAttachment
-from qq_ai_bot.persistence.repositories import MediaAnalysisRepository
+from qq_ai_bot.persistence.repositories import (
+    EmojiDescriptionRepository,
+    MediaAnalysisRepository,
+)
 from qq_ai_bot.services.image_preprocessor import (
     ImagePreprocessingError,
     ImagePreprocessor,
@@ -40,6 +45,8 @@ DEFAULT_VISUAL_QUESTION = (
     "若是表情包，说明角色、情绪和常见使用语境；若包含文字，提取清晰可见的文字。"
 )
 VISION_PROMPT_VERSION = "vision-observation-v3"
+_FILE_HASH_PATTERN = re.compile(r"(?i)(?<![0-9a-f])([0-9a-f]{32,64})(?![0-9a-f])")
+_EMOJI_HINTS = ("表情", "贴纸", "emoji", "sticker")
 
 
 class VisionProcessingError(RuntimeError):
@@ -62,6 +69,7 @@ class VisionService:
         preprocessor: ImagePreprocessor,
         analyses: MediaAnalysisRepository,
         rate_limiter: VisionRateLimiter,
+        emoji_descriptions: EmojiDescriptionRepository | None = None,
         max_prepared_bytes: int = 6_291_456,
         global_concurrency: int = 2,
         queue_max_pending: int = 32,
@@ -81,6 +89,7 @@ class VisionService:
         self._resolver = resolver
         self._preprocessor = preprocessor
         self._analyses = analyses
+        self._emoji_descriptions = emoji_descriptions
         self._rate_limiter = rate_limiter
         self._max_prepared_bytes = max_prepared_bytes
         self._prompt_version = prompt_version[:64]
@@ -268,6 +277,8 @@ class VisionService:
             if normalized_question
             else ""
         )
+        emoji_keys = _emoji_keys(references[0]) if len(references) == 1 else ()
+        explicitly_emoji = len(references) == 1 and _is_explicit_emoji(references[0])
         first_segment = references[0].segment_index or 0
         if source_event_id is not None:
             cached_by_event = await self._analyses.find_for_event(
@@ -284,6 +295,14 @@ class VisionService:
             else:
                 observation = None
             if observation is not None and cached_by_event is not None:
+                await self._save_emoji_descriptions(
+                    emoji_keys,
+                    observation,
+                    analysis_mode=cache_mode,
+                    question_hash=question_hash,
+                    prompt_version=cache_prompt_version,
+                    explicitly_emoji=explicitly_emoji,
+                )
                 self._log_result(
                     conversation_key=conversation_key,
                     image_count=len(references),
@@ -295,6 +314,25 @@ class VisionService:
                     started=time.perf_counter(),
                 )
                 return observation
+
+        persistent = await self._find_emoji_description(
+            emoji_keys,
+            analysis_mode=cache_mode,
+            question_hash=question_hash,
+            prompt_version=cache_prompt_version,
+        )
+        if persistent is not None:
+            self._log_result(
+                conversation_key=conversation_key,
+                image_count=1,
+                total_bytes=0,
+                frame_count=0,
+                content_hash="",
+                cache_hit=True,
+                success=True,
+                started=time.perf_counter(),
+            )
+            return persistent
 
         started = time.perf_counter()
         prepared: list[PreparedVisualInput] = []
@@ -334,7 +372,8 @@ class VisionService:
                 raise
             except MediaResolutionError as exc:
                 partial_failure = True
-                last_error = VisionProcessingError(exc.code, exc.detail)
+                error_code = "media_download_timeout" if exc.code == "timeout" else exc.code
+                last_error = VisionProcessingError(error_code, exc.detail)
             except ImagePreprocessingError as exc:
                 partial_failure = True
                 last_error = VisionProcessingError(exc.code, exc.detail)
@@ -361,6 +400,35 @@ class VisionService:
             raise error
 
         aggregate_hash = _aggregate_hash(tuple(item.media_hash for item in prepared))
+        durable_keys = (
+            (*emoji_keys, f"content:{aggregate_hash}") if len(references) == 1 else ()
+        )
+        persistent = await self._find_emoji_description(
+            (f"content:{aggregate_hash}",) if len(references) == 1 else (),
+            analysis_mode=cache_mode,
+            question_hash=question_hash,
+            prompt_version=cache_prompt_version,
+        )
+        if persistent is not None:
+            await self._save_emoji_descriptions(
+                durable_keys,
+                persistent,
+                analysis_mode=cache_mode,
+                question_hash=question_hash,
+                prompt_version=cache_prompt_version,
+                explicitly_emoji=True,
+            )
+            self._log_result(
+                conversation_key=conversation_key,
+                image_count=len(prepared),
+                total_bytes=total_bytes,
+                frame_count=sum(len(item.frames) for item in prepared),
+                content_hash=aggregate_hash,
+                cache_hit=True,
+                success=True,
+                started=started,
+            )
+            return persistent
         cached = await self._analyses.find_cached(
             content_hash=aggregate_hash,
             analysis_mode=cache_mode,
@@ -373,6 +441,15 @@ class VisionService:
         if observation is not None:
             if partial_failure and not observation.partial_failure:
                 observation = observation.model_copy(update={"partial_failure": True})
+            if not partial_failure:
+                await self._save_emoji_descriptions(
+                    durable_keys,
+                    observation,
+                    analysis_mode=cache_mode,
+                    question_hash=question_hash,
+                    prompt_version=cache_prompt_version,
+                    explicitly_emoji=explicitly_emoji,
+                )
             self._log_result(
                 conversation_key=conversation_key,
                 image_count=len(prepared),
@@ -443,6 +520,14 @@ class VisionService:
                         expires_at=datetime.now(UTC)
                         + timedelta(days=runtime.analysis_retention_days),
                     )
+                    await self._save_emoji_descriptions(
+                        durable_keys,
+                        observation,
+                        analysis_mode=cache_mode,
+                        question_hash=question_hash,
+                        prompt_version=cache_prompt_version,
+                        explicitly_emoji=explicitly_emoji,
+                    )
             except asyncio.CancelledError:
                 failure = VisionProcessingError("provider_cancelled", "共享图片理解请求已被取消")
                 shared_future.set_exception(failure)
@@ -490,6 +575,52 @@ class VisionService:
             started=started,
         )
         return observation
+
+    async def _find_emoji_description(
+        self,
+        keys: tuple[str, ...],
+        *,
+        analysis_mode: str,
+        question_hash: str,
+        prompt_version: str,
+    ) -> VisualObservation | None:
+        if self._emoji_descriptions is None or not keys:
+            return None
+        cached = await self._emoji_descriptions.find_first(
+            keys,
+            analysis_mode=analysis_mode,
+            question_hash=question_hash,
+            provider=self.provider_name,
+            model=self.model_name,
+            prompt_version=prompt_version,
+        )
+        return _cached_observation(cached.observation_json) if cached is not None else None
+
+    async def _save_emoji_descriptions(
+        self,
+        keys: tuple[str, ...],
+        observation: VisualObservation,
+        *,
+        analysis_mode: str,
+        question_hash: str,
+        prompt_version: str,
+        explicitly_emoji: bool,
+    ) -> None:
+        if (
+            self._emoji_descriptions is None
+            or not keys
+            or (not explicitly_emoji and not _observation_is_emoji_like(observation))
+        ):
+            return
+        await self._emoji_descriptions.save_many(
+            keys,
+            analysis_mode=analysis_mode,
+            question_hash=question_hash,
+            provider=self.provider_name,
+            model=self.model_name,
+            prompt_version=prompt_version,
+            observation_json=observation.model_dump_json(),
+        )
 
     async def close(self) -> None:
         """Close provider and downloader clients after in-flight calls finish or cancel."""
@@ -631,6 +762,52 @@ def _analysis_mode(question: str, references: tuple[MediaReference, ...]) -> Vis
     if any(token in lowered for token in ("表情", "情绪", "这个梗", "什么意思")):
         return "meme"
     return "question"
+
+
+def _emoji_keys(reference: MediaReference) -> tuple[str, ...]:
+    """Build stable candidate keys without treating the image as an emoji yet."""
+
+    package_id = _normalized_emoji_value(reference.emoji_package_id)
+    emoji_id = _normalized_emoji_value(reference.emoji_id)
+    keys: list[str] = []
+    if package_id and emoji_id:
+        keys.append(f"package:{len(package_id)}:{package_id}{emoji_id}")
+    elif emoji_id:
+        keys.append(f"emoji:{emoji_id}")
+    file_hash = _file_hash(reference.file) or _file_hash(reference.url)
+    if file_hash:
+        keys.append(f"file:{file_hash}")
+    return tuple(dict.fromkeys(keys))
+
+
+def _is_explicit_emoji(reference: MediaReference) -> bool:
+    summary = (reference.summary or "").casefold()
+    return bool(
+        _normalized_emoji_value(reference.emoji_id)
+        or _normalized_emoji_value(reference.emoji_package_id)
+        or any(hint in summary for hint in _EMOJI_HINTS)
+    )
+
+
+def _observation_is_emoji_like(observation: VisualObservation) -> bool:
+    return any(item.meme_intent.strip() for item in observation.items)
+
+
+def _normalized_emoji_value(value: str | None) -> str:
+    if value is None:
+        return ""
+    return " ".join(value.split())[:100]
+
+
+def _file_hash(value: str | None) -> str:
+    if value is None or len(value) > 2048:
+        return ""
+    candidate = value.strip().replace("\\", "/")
+    if "://" in candidate:
+        candidate = urlsplit(candidate).path
+    filename = candidate.rsplit("/", 1)[-1]
+    match = _FILE_HASH_PATTERN.search(filename)
+    return match.group(1).casefold() if match is not None else ""
 
 
 def _aggregate_hash(hashes: tuple[str, ...]) -> str:

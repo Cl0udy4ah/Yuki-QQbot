@@ -116,6 +116,9 @@ async def test_private_pure_image_flows_vision_text_into_deepseek(database) -> N
             for message in request.messages
             if message.role == "system" and "独立视觉服务" in (message.content or "")
         )
+        assert "本轮视觉识别已经成功" in visual
+        assert "必须使用" in visual
+        assert "不得声称没有收到图片" in visual
         assert "测试视觉观察" in visual
         assert "data:image" not in visual
         assert "base64://" not in visual
@@ -136,7 +139,10 @@ async def test_private_pure_image_flows_vision_text_into_deepseek(database) -> N
     assert [message.text for message in sender.messages] == ["看起来是一张测试图片。"]
     assert len(vision.requests) == 1
     assert vision.requests[0][1].startswith("请描述图片主要内容")
-    assert llm.requests[-1].messages[-1].content == "[QQ 1001] [当前消息仅包含图片]"
+    assert llm.requests[-1].messages[-1].content == (
+        "[QQ 1001] [当前消息仅包含图片；后端视觉识别已成功，"
+        "请根据本轮视觉观察直接回应图片内容]"
+    )
 
 
 @pytest.mark.asyncio
@@ -320,9 +326,7 @@ async def test_visual_failure_falls_back_to_text_but_pure_image_is_deterministic
         for message in llm.requests[-1].messages
     )
     assert pure_result.reason == "vision_provider_unavailable"
-    assert pure_sender.messages[-1].text == (
-        "这张图片暂时没有识别成功，可以重新发送一张更清晰的版本。"
-    )
+    assert pure_sender.messages[-1].text == ("图片已取得，但视觉模型暂时不可用，请稍后再试。")
 
 
 @pytest.mark.asyncio

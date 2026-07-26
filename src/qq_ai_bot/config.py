@@ -131,6 +131,7 @@ class Settings(BaseSettings):
     vision_global_concurrency: int = 4
     vision_queue_max_pending: int = 32
     vision_queue_timeout_seconds: float = 120.0
+    vision_media_download_timeout_seconds: float = 120.0
     vision_max_output_tokens: int = 8192
     vision_thinking_enabled: bool = False
     vision_thinking_budget: int = 6144
@@ -214,6 +215,7 @@ class Settings(BaseSettings):
         "web_timeout_seconds",
         "vision_timeout_seconds",
         "vision_queue_timeout_seconds",
+        "vision_media_download_timeout_seconds",
     )
     @classmethod
     def _positive_timeout(cls, value: float) -> float:
