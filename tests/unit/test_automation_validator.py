@@ -164,13 +164,9 @@ def test_capability_schema_and_backend_limits_are_enforced() -> None:
         )
 
     payload = _script().model_dump(mode="json")
-    payload["limits"]["max_steps"] = 9
-    with pytest.raises(ValueError, match="后端硬限制"):
-        _validator().validate(
-            AutomationScript.model_validate(payload),
-            _provenance(),
-            now_utc=datetime(2026, 7, 27, tzinfo=UTC),
-        )
+    payload["limits"]["max_steps"] = 17
+    with pytest.raises(ValueError, match="less than or equal to 16"):
+        AutomationScript.model_validate(payload)
 
 
 def test_llm_and_message_counts_must_fit_script_limits() -> None:

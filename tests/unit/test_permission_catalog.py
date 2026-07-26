@@ -122,11 +122,11 @@ def test_superuser_report_has_exact_registry_counts_and_complete_lists() -> None
     assert report.permission_level is PermissionLevel.SUPERUSER
     assert report.mutable_config_count == 71
     assert report.protected_config_count == 12
-    assert report.business_action_count == 18
-    assert report.mutating_action_count == 14
+    assert report.business_action_count == 19
+    assert report.mutating_action_count == 15
     assert report.self_service_operation_count == 29
     assert report.onebot_gateway_count == 1
-    assert len(report.capabilities) == 131
+    assert len(report.capabilities) == 132
 
     config_ids = {
         descriptor.id
@@ -154,11 +154,11 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
 
     assert first == second
     assert first["counts"] == {
-        "total": 131,
+        "total": 132,
         "mutable_configurations": 71,
         "protected_configurations": 12,
-        "business_actions": 18,
-        "mutating_business_actions": 14,
+        "business_actions": 19,
+        "mutating_business_actions": 15,
         "self_service_operations": 29,
         "self_service_mutations": 14,
         "onebot_api_gateways": 1,
@@ -202,7 +202,7 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
     assert summary["do_not_copy_verbatim_to_user"] is True
     assert "capability_ids" not in summary
     assert len(json.dumps(summary, ensure_ascii=False)) < 3500
-    assert len(json.dumps(full_model_view, ensure_ascii=False)) < 9000
+    assert len(json.dumps(full_model_view, ensure_ascii=False)) < 10000
 
 
 def test_focused_model_view_finds_registry_alias_without_full_catalog() -> None:
@@ -250,11 +250,11 @@ def test_deterministic_text_contains_every_capability_and_onebot_scope() -> None
         assert capability_id in rendered
 
     assert "可修改运行时配置参数：71 项" in rendered
-    assert "管理员业务接口：18 项，其中修改型 14 项" in rendered
+    assert "管理员业务接口：19 项，其中修改型 15 项" in rendered
     assert "NapCat/OneBot 通用全接口网关：1 项" in rendered
     assert "全部公开 action" in rendered
     assert "无 action 白名单或 denylist" in rendered
-    assert "不是只限于上面的 18 项应用业务接口" in rendered
+    assert "不是只限于上面的 19 项应用业务接口" in rendered
 
 
 def test_category_filter_recomputes_counts_and_preserves_sorted_output() -> None:
@@ -264,8 +264,8 @@ def test_category_filter_recomputes_counts_and_preserves_sorted_output() -> None
     )
 
     assert report.mutable_config_count == 0
-    assert report.business_action_count == 4
-    assert report.mutating_action_count == 3
+    assert report.business_action_count == 5
+    assert report.mutating_action_count == 4
     assert report.self_service_operation_count == 4
     assert all(descriptor.category == "memory" for descriptor in report.capabilities)
     assert list(report.capabilities) == sorted(
@@ -318,7 +318,7 @@ def test_injected_registry_entries_appear_without_copying_registry_tables() -> N
         descriptor.id for descriptor in report.capabilities
     }
     assert report.mutable_config_count == 72
-    assert report.business_action_count == 19
+    assert report.business_action_count == 20
 
 
 def test_duplicate_capability_ids_are_rejected() -> None:

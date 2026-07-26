@@ -1,4 +1,4 @@
-"""Resolve trusted OneBot image references with strict SSRF and size controls."""
+"""Resolve trusted OneBot image references with configurable SSRF and size controls."""
 
 from __future__ import annotations
 
@@ -58,6 +58,7 @@ class MediaResolver:
         max_download_bytes: int = 10 * 1024 * 1024,
         timeout_seconds: float = 10,
         max_redirects: int = 3,
+        allow_private_urls: bool = False,
         client: httpx.AsyncClient | None = None,
         host_resolver: HostResolver | None = None,
     ) -> None:
@@ -71,6 +72,7 @@ class MediaResolver:
         self._max_download_bytes = max_download_bytes
         self._timeout_seconds = timeout_seconds
         self._max_redirects = max_redirects
+        self._allow_private_urls = allow_private_urls
         self._host_resolver = host_resolver or _resolve_host
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
@@ -191,7 +193,10 @@ class MediaResolver:
         raise MediaResolutionError("redirect_rejected", "图片下载重定向次数过多")
 
     async def _validate_public_url(self, raw_url: str) -> tuple[str, str, str]:
-        normalized, host, port = _normalize_http_url(raw_url)
+        normalized, host, port = _normalize_http_url(
+            raw_url,
+            allow_private_urls=self._allow_private_urls,
+        )
         resolved = self._host_resolver(host, port)
         try:
             addresses = await resolved if inspect.isawaitable(resolved) else resolved
@@ -205,7 +210,7 @@ class MediaResolver:
                 address = ipaddress.ip_address(value)
             except ValueError as exc:
                 raise MediaResolutionError("dns_failed", "图片资源域名解析结果无效") from exc
-            if not address.is_global:
+            if not self._allow_private_urls and not address.is_global:
                 raise MediaResolutionError("private_url", "不允许访问本地、私有或保留地址")
             validated_addresses.append(address.compressed)
         # Connect to the exact address that was checked instead of allowing the
@@ -253,7 +258,11 @@ async def _resolve_host(host: str, port: int) -> Sequence[str]:
     return tuple(dict.fromkeys(record[4][0].split("%", 1)[0] for record in records))
 
 
-def _normalize_http_url(raw_url: str) -> tuple[str, str, int]:
+def _normalize_http_url(
+    raw_url: str,
+    *,
+    allow_private_urls: bool = False,
+) -> tuple[str, str, int]:
     candidate = raw_url.strip()
     if not candidate or len(candidate) > 4096:
         raise MediaResolutionError("invalid_url", "图片 URL 无效")
@@ -272,7 +281,7 @@ def _normalize_http_url(raw_url: str) -> tuple[str, str, int]:
         ascii_host = host.encode("idna").decode("ascii")
     except UnicodeError as exc:
         raise MediaResolutionError("invalid_url", "图片 URL 主机名无效") from exc
-    if (
+    if not allow_private_urls and (
         ascii_host in _BLOCKED_HOSTS
         or ascii_host.endswith(_BLOCKED_SUFFIXES)
         or ("." not in ascii_host and ":" not in ascii_host)
@@ -282,7 +291,7 @@ def _normalize_http_url(raw_url: str) -> tuple[str, str, int]:
         literal = ipaddress.ip_address(ascii_host)
     except ValueError:
         literal = None
-    if literal is not None and not literal.is_global:
+    if not allow_private_urls and literal is not None and not literal.is_global:
         raise MediaResolutionError("private_url", "不允许访问本地、私有或保留地址")
     port = explicit_port or (443 if scheme == "https" else 80)
     is_default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)

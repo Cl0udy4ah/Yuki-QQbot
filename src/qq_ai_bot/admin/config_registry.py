@@ -316,7 +316,7 @@ def _registered_specs() -> tuple[ConfigSpec, ...]:
             aliases=("工具调用次数",),
             value_type="integer",
             minimum=1,
-            maximum=5,
+            maximum=16,
             scopes=_GGU,
             env_alias="AGENT_MAX_TOOL_CALLS",
             getter=_field("agent_max_tool_calls"),

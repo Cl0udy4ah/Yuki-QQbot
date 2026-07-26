@@ -1519,6 +1519,34 @@ class MemoryRepository:
         )
         return bool(cast(CursorResult[Any], result).rowcount)
 
+    async def prune_person_memories(
+        self,
+        *,
+        user_id: str,
+        max_importance: int,
+        older_than: datetime,
+        session: AsyncSession | None = None,
+    ) -> int:
+        """Delete stale automatic person memories matching one bounded rule."""
+
+        if session is None:
+            async with self._database.sessions() as owned_session, owned_session.begin():
+                return await self.prune_person_memories(
+                    user_id=user_id,
+                    max_importance=max_importance,
+                    older_than=older_than,
+                    session=owned_session,
+                )
+        result = await session.execute(
+            delete(PersonMemoryModel).where(
+                PersonMemoryModel.user_id == user_id,
+                PersonMemoryModel.source_type != "explicit",
+                PersonMemoryModel.importance <= max_importance,
+                PersonMemoryModel.updated_at < older_than,
+            )
+        )
+        return int(cast(CursorResult[Any], result).rowcount or 0)
+
     async def list_preferences(
         self,
         user_id: str,

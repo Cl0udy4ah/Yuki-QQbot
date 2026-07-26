@@ -62,8 +62,25 @@ _ADMIN_MUTATING_TOOL_NAMES = frozenset(
         "admin_rollback_change",
     }
 )
+_AUTOMATION_MUTATING_TOOL_NAMES = frozenset(
+    {
+        "automation_create",
+        "automation_update",
+        "automation_pause",
+        "automation_resume",
+        "automation_cancel",
+        "automation_run_now",
+        "time_set_timezone",
+    }
+)
 _ADMIN_RETRYABLE_ERRORS = frozenset(
-    {"invalid_json", "invalid_arguments", "validation_error", "unknown_capability"}
+    {
+        "invalid_json",
+        "invalid_arguments",
+        "validation_error",
+        "unknown_capability",
+        "ValueError",
+    }
 )
 
 
@@ -150,7 +167,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._capability_was_used = False
         self._admin_retry_constraint: tuple[str, str] | None = None
         self._admin_terminal_failure: dict[str, object] | None = None
-        self._reject_admin_batch = False
+        self._completed_admin_mutations: set[tuple[str, str]] = set()
         self._batch: list[ToolCall] = []
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
@@ -176,10 +193,6 @@ class _ChatAgentBackend(AgentToolBackend):
 
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
         self._batch = list(calls)
-        mutating_admin = tuple(
-            call for call in calls if self._service._is_mutating_admin_call(call)
-        )
-        self._reject_admin_batch = bool(mutating_admin) and len(calls) != 1
 
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
         if not self._batch:
@@ -197,16 +210,20 @@ class _ChatAgentBackend(AgentToolBackend):
         is_automation_tool = bool(automation is not None and automation.owns(name))
         config = self._runtime.runtime_config
         assert config is not None
-        if self._reject_admin_batch:
+        mutation_identity = (
+            (call.function.name, call.function.arguments)
+            if self._service._is_mutating_tool_call(call)
+            else None
+        )
+        if mutation_identity is not None and mutation_identity in self._completed_admin_mutations:
             result = json.dumps(
                 {
                     "ok": False,
-                    "error": "mixed_admin_tool_batch",
-                    "detail": "一次只能执行一个修改或人物业务操作；本批次没有执行任何工具。",
+                    "error": "duplicate_mutation",
+                    "detail": "本轮已经成功执行过相同修改，不再重复执行。",
                 },
                 ensure_ascii=False,
             )
-            self._tools_closed = True
         elif is_web_tool and self._web_calls_used >= config.web.max_calls_per_turn:
             result = json.dumps(
                 {
@@ -277,11 +294,12 @@ class _ChatAgentBackend(AgentToolBackend):
                 self._web_calls_used += 1
                 self._web_was_used = True
         decoded = self._service._decode_tool_result(result)
-        if self._service._is_mutating_admin_call(call):
+        if self._service._is_mutating_tool_call(call):
             if bool(decoded.get("ok")):
                 self._admin_retry_constraint = None
                 self._admin_terminal_failure = None
-                self._tools_closed = True
+                if mutation_identity is not None:
+                    self._completed_admin_mutations.add(mutation_identity)
             elif decoded.get("error") in _ADMIN_RETRYABLE_ERRORS:
                 self._admin_terminal_failure = decoded
                 self._admin_retry_constraint = self._service._admin_retry_identity(call)
@@ -681,6 +699,10 @@ class ChatService:
                     "automation_id 的最新映射；对用户只展示从 1 开始的 number，不把数据库 "
                     "automation_id 冒充为当前编号。已结束任务使用 automation_list_history，"
                     "不要混入当前任务列表。所有自动化时间按工具返回的本地时间与时区说明。"
+                    "用户要求定期清理低重要度旧人物记忆时，创建 interval 自动化并在单个"
+                    "admin.execute_action 步骤中调用 memory.prune；不要先列出再逐条删除。"
+                    "同一轮允许按模型给出的顺序执行多个不同的修改工具，后端会阻止完全相同"
+                    "参数的重复修改；不要把旧的‘一次只能一个修改’当作当前限制。"
                 ),
             ),
             *(
@@ -817,9 +839,9 @@ class ChatService:
         detail = str(result.get("detail") or result.get("error") or "未知错误")
         return f"操作未完成：{detail}"
 
-    def _is_mutating_admin_call(self, call: ToolCall) -> bool:
+    def _is_mutating_tool_call(self, call: ToolCall) -> bool:
         name = call.function.name
-        if name in _ADMIN_MUTATING_TOOL_NAMES:
+        if name in _ADMIN_MUTATING_TOOL_NAMES or name in _AUTOMATION_MUTATING_TOOL_NAMES:
             return True
         if name != "admin_execute_action" or self._admin_tools is None:
             return False
@@ -835,6 +857,8 @@ class ChatService:
             return None
         if call.function.name == "admin_execute_action":
             operation = arguments.get("action")
+        elif call.function.name in _AUTOMATION_MUTATING_TOOL_NAMES:
+            operation = call.function.name
         elif call.function.name in {"admin_set_config", "admin_delete_config_override"}:
             operation = arguments.get("key")
         elif call.function.name == "admin_rollback_change":

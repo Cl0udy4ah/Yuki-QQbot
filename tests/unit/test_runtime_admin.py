@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError
 from tests.conftest import MemorySender, build_harness, make_settings
 
@@ -18,6 +19,10 @@ from qq_ai_bot.admin.config_registry import ConfigRegistry
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.intent_router import AdminIntentRouter
 from qq_ai_bot.admin.models import AdminActor, ConfigApplyMode
+from qq_ai_bot.automation.registry import build_capability_registry
+from qq_ai_bot.automation.repository import AutomationRepository
+from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.automation.tools import AutomationToolService
 from qq_ai_bot.container import ApplicationContainer
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
@@ -28,8 +33,10 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
+from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.models import PersonMemoryModel
 from qq_ai_bot.persistence.repositories import (
     GroupSettingsRepository,
     MemoryRepository,
@@ -45,6 +52,7 @@ from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.user_profiles import UserProfileService
+from qq_ai_bot.time.service import TimeContextService
 
 
 def actor(
@@ -866,7 +874,7 @@ async def test_single_chat_agent_keeps_persona_and_context_across_missing_target
                     ),
                 ),
             )
-        assert not tool_names
+        assert "admin_execute_action" in tool_names
         result = json.loads(
             next(
                 message.content or "{}"
@@ -974,7 +982,7 @@ async def test_single_chat_agent_tolerates_repeated_capability_lookup_then_sets_
                     ),
                 ),
             )
-        assert not tool_names
+        assert "admin_set_config" in tool_names
         changed = json.loads(
             next(
                 message.content or "{}"
@@ -1069,7 +1077,7 @@ async def test_single_chat_agent_can_list_then_delete_memory_in_one_turn(
                     ),
                 ),
             )
-        assert not tool_names
+        assert "admin_execute_action" in tool_names
         deleted = json.loads(
             next(
                 message.content or "{}"
@@ -1098,6 +1106,257 @@ async def test_single_chat_agent_can_list_then_delete_memory_in_one_turn(
     remaining = await MemoryRepository(database).list_person("9000", limit=100)
     assert all(item.id != memory.id for item in remaining)
     assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_single_chat_agent_executes_multiple_distinct_mutations_in_order(
+    database: Database,
+) -> None:
+    calls = 0
+
+    def responder(request: ChatRequest) -> ChatResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="config-write",
+                        function=ToolFunction(
+                            name="admin_set_config",
+                            arguments=json.dumps(
+                                {
+                                    "key": "autonomous.max_per_hour",
+                                    "value": 10,
+                                    "scope_type": "global",
+                                    "scope_id": "",
+                                }
+                            ),
+                        ),
+                    ),
+                    ToolCall(
+                        id="memory-write",
+                        function=ToolFunction(
+                            name="admin_execute_action",
+                            arguments=json.dumps(
+                                {
+                                    "action": "memory.add",
+                                    "arguments": {
+                                        "target": "self",
+                                        "content": "允许顺序执行不同修改",
+                                    },
+                                }
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        results = [
+            json.loads(message.content or "{}")
+            for message in request.messages
+            if message.role == "tool"
+        ]
+        assert len(results) == 2
+        assert all(item["ok"] is True for item in results)
+        return ChatResponse(content="两项修改都完成了。", latency_seconds=0)
+
+    settings = make_settings(database.url)
+    harness = build_harness(database, settings, FakeLLMProvider(responder))
+    runtime, capabilities, _router = admin_stack(database)
+    harness.processor._chat.set_admin_tools(capabilities)
+
+    sender = MemorySender()
+    result = await harness.processor.handle(
+        inbound("把上限改为10并记住允许顺序执行不同修改", message_id="two-writes"),
+        sender,
+    )
+
+    assert result.reason == "chat"
+    assert (await runtime.get_effective("autonomous.max_per_hour")).value == 10
+    memories = await MemoryRepository(database).list_person("9000", limit=100)
+    assert any(row.content == "允许顺序执行不同修改" for row in memories)
+
+
+@pytest.mark.asyncio
+async def test_agent_retries_empty_provider_response_after_tool_result(
+    database: Database,
+) -> None:
+    calls = 0
+
+    def responder(_request: ChatRequest) -> ChatResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="read-config",
+                        function=ToolFunction(
+                            name="admin_get_config",
+                            arguments=json.dumps(
+                                {
+                                    "keys": ["agent.max_tool_calls"],
+                                    "scope_type": "global",
+                                    "scope_id": "",
+                                }
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        if calls == 2:
+            raise LLMEmptyResponseError("synthetic empty response")
+        return ChatResponse(content="已经根据工具结果继续回答。", latency_seconds=0)
+
+    settings = make_settings(database.url)
+    harness = build_harness(database, settings, FakeLLMProvider(responder))
+    _runtime, capabilities, _router = admin_stack(database)
+    harness.processor._chat.set_admin_tools(capabilities)
+
+    sender = MemorySender()
+    result = await harness.processor.handle(
+        inbound("看看工具上限", message_id="empty-after-tool"), sender
+    )
+
+    assert result.reason == "chat"
+    assert sender.messages[0].text == "已经根据工具结果继续回答。"
+    assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_failed_automation_creation_cannot_be_reported_as_success(
+    database: Database,
+) -> None:
+    calls = 0
+
+    def responder(request: ChatRequest) -> ChatResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="invalid-automation",
+                        function=ToolFunction(
+                            name="automation_create",
+                            arguments=json.dumps({"script": {"version": 1}}),
+                        ),
+                    ),
+                ),
+            )
+        failed = json.loads(
+            next(
+                message.content or "{}"
+                for message in reversed(request.messages)
+                if message.role == "tool"
+            )
+        )
+        assert failed["ok"] is False
+        return ChatResponse(content="已经创建成功啦～", latency_seconds=0)
+
+    settings = make_settings(database.url, automation_enabled=True)
+    harness = build_harness(database, settings, FakeLLMProvider(responder))
+    automation = AutomationService(
+        settings=settings,
+        repository=AutomationRepository(database),
+        registry=build_capability_registry(),
+        time_service=TimeContextService(database),
+    )
+    harness.processor._chat.set_automation_tools(AutomationToolService(automation))
+
+    sender = MemorySender()
+    result = await harness.processor.handle(
+        inbound("每天清理旧记忆", message_id="invalid-automation-create"), sender
+    )
+
+    assert result.reason == "chat"
+    assert sender.messages[0].text.startswith("操作未完成：")
+    assert "创建成功" not in sender.messages[0].text
+    assert await automation.list_current("9000") == ()
+
+
+@pytest.mark.asyncio
+async def test_memory_prune_action_deletes_only_old_low_automatic_memories(
+    database: Database,
+) -> None:
+    memories = MemoryRepository(database)
+    old = await memories.upsert(
+        scope="person",
+        user_id="9000",
+        memory_key="old-low",
+        content="过时低重要度记忆",
+        importance=2,
+        source_type="automatic",
+        limit=100,
+    )
+    recent = await memories.upsert(
+        scope="person",
+        user_id="9000",
+        memory_key="recent-low",
+        content="近期低重要度记忆",
+        importance=1,
+        source_type="automatic",
+        limit=100,
+    )
+    explicit = await memories.upsert(
+        scope="person",
+        user_id="9000",
+        memory_key="explicit-low",
+        content="显式记忆永不由自动清理删除",
+        importance=1,
+        source_type="explicit",
+        limit=100,
+    )
+    stale_at = datetime.now(UTC) - timedelta(days=8)
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(PersonMemoryModel)
+            .where(PersonMemoryModel.id.in_([old.id, explicit.id]))
+            .values(updated_at=stale_at)
+        )
+
+    _runtime, capabilities, _router = admin_stack(database)
+    message = inbound("清理重要度1和2且超过7天的记忆", message_id="prune-memory")
+    runtime = ToolRuntime(
+        inbound=message,
+        gateway=None,
+        allow_generic_onebot=False,
+        allow_admin_actions=True,
+        conversation_key="private:9000",
+        trigger_message_id=message.message_id,
+        actor_user_id="9000",
+        actor_is_superuser=True,
+        current_group_id=None,
+        mentioned_user_ids=(),
+    )
+    payload = json.loads(
+        await capabilities.execute(
+            "admin_execute_action",
+            json.dumps(
+                {
+                    "action": "memory.prune",
+                    "arguments": {
+                        "target": "self",
+                        "max_importance": 2,
+                        "older_than_days": 7,
+                    },
+                }
+            ),
+            runtime,
+        )
+    )
+
+    assert payload["ok"] is True
+    assert payload["data"]["result"]["deleted_count"] == 1
+    remaining_ids = {row.id for row in await memories.list_person("9000", limit=100)}
+    assert old.id not in remaining_ids
+    assert {recent.id, explicit.id} <= remaining_ids
 
 
 @pytest.mark.asyncio
@@ -1419,10 +1678,10 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
         )
         assert payload["data"]["transient_internal_reference"] is True
         assert payload["data"]["counts"]["mutable_configurations"] == 71
-        assert payload["data"]["counts"]["business_actions"] == 18
+        assert payload["data"]["counts"]["business_actions"] == 19
         assert payload["data"]["counts"]["onebot_api_gateways"] == 1
         return ChatResponse(
-            content="你有 71 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。",
+            content="你有 71 项可改配置、19 项应用业务接口，以及全部公开 OneBot action 权限。",
             latency_seconds=0,
         )
 
@@ -1437,7 +1696,7 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
     assert result.tool_calls == 1
     assert calls == 2
     assert result.text == (
-        "你有 71 项可改配置、18 项应用业务接口，以及全部公开 OneBot action 权限。"
+        "你有 71 项可改配置、19 项应用业务接口，以及全部公开 OneBot action 权限。"
     )
     assert "transient_internal_reference" not in result.text
 
@@ -1965,10 +2224,16 @@ async def test_memory_tool_result_cannot_trigger_second_admin_write(
 
 
 @pytest.mark.asyncio
-async def test_mixed_mutating_tool_batch_is_rejected_without_partial_commit(
+async def test_legacy_router_executes_mixed_tool_batch_in_order(
     database: Database,
 ) -> None:
+    calls = 0
+
     def responder(_request: object) -> ChatResponse:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            return ChatResponse(content="修改并读取完成", latency_seconds=0)
         return ChatResponse(
             content="",
             latency_seconds=0,
@@ -2013,8 +2278,8 @@ async def test_mixed_mutating_tool_batch_is_rejected_without_partial_commit(
         "private:9000",
     )
     assert result.handled
-    assert result.tool_calls == 0
-    assert (await runtime.get_effective("autonomous.max_per_hour")).value == 3
+    assert result.tool_calls == 2
+    assert (await runtime.get_effective("autonomous.max_per_hour")).value == 10
 
 
 @pytest.mark.asyncio

@@ -26,8 +26,8 @@ class GenerateArguments(CapabilityArguments):
 class AgentArguments(CapabilityArguments):
     instruction: str = Field(min_length=1, max_length=4000)
     context_profile: Literal["none", "creator_private", "current_group"] = "none"
-    max_tool_calls: int = Field(default=3, ge=0, le=8)
-    max_model_requests: int = Field(default=4, ge=1, le=6)
+    max_tool_calls: int = Field(default=6, ge=0, le=16)
+    max_model_requests: int = Field(default=8, ge=1, le=12)
 
 
 class SendPrivateArguments(CapabilityArguments):
@@ -53,6 +53,8 @@ class AdminActionArguments(CapabilityArguments):
     value: Any = None
     delta: int | None = None
     memory_id: int | None = None
+    max_importance: int | None = Field(default=None, ge=1, le=5)
+    older_than_days: int | None = Field(default=None, ge=1, le=3650)
     content: str | None = Field(default=None, max_length=4000)
     key: str | None = Field(default=None, max_length=128)
 

@@ -42,10 +42,10 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = ""
     llm_model: str = ""
-    llm_timeout_seconds: float = 30.0
-    llm_max_retries: int = 1
+    llm_timeout_seconds: float = 120.0
+    llm_max_retries: int = 2
     llm_temperature: float = 0.7
-    llm_max_output_tokens: int = 1024
+    llm_max_output_tokens: int = 8192
     llm_thinking_enabled: bool | None = None
     system_prompt: str = (
         "你是一个运行在 QQ 中的 AI 助手。请只输出给用户的最终回答，不要输出隐藏的推理过程。"
@@ -89,8 +89,8 @@ class Settings(BaseSettings):
     memory_batch_seconds: float = 30.0
     memory_batch_trigger_count: int = 10
     memory_batch_max_events: int = 20
-    agent_max_tool_calls: int = 5
-    agent_max_model_requests: int = 6
+    agent_max_tool_calls: int = 12
+    agent_max_model_requests: int = 12
     agent_tool_result_max_characters: int = 32000
 
     relationship_enabled: bool = True
@@ -133,6 +133,7 @@ class Settings(BaseSettings):
     vision_queue_max_pending: int = 32
     vision_queue_timeout_seconds: float = 120.0
     vision_media_download_timeout_seconds: float = 120.0
+    vision_allow_private_urls: bool = False
     vision_max_output_tokens: int = 8192
     vision_thinking_enabled: bool = False
     vision_thinking_budget: int = 6144
@@ -154,11 +155,11 @@ class Settings(BaseSettings):
     automation_lease_seconds: int = 120
     automation_max_active_per_superuser: int = 50
     automation_max_active_per_user: int = 10
-    automation_max_steps: int = 8
-    automation_max_llm_calls_per_run: int = 2
-    automation_max_tool_calls_per_run: int = 8
-    automation_max_messages_per_run: int = 3
-    automation_max_runtime_seconds: int = 120
+    automation_max_steps: int = 16
+    automation_max_llm_calls_per_run: int = 5
+    automation_max_tool_calls_per_run: int = 16
+    automation_max_messages_per_run: int = 10
+    automation_max_runtime_seconds: int = 600
     automation_min_interval_seconds: int = 60
     automation_default_misfire_grace_seconds: int = 1800
     automation_max_consecutive_failures: int = 3
@@ -347,8 +348,8 @@ class Settings(BaseSettings):
             raise ValueError("PREFERENCE_MAX_ENTRIES must not exceed 30")
         if self.memory_batch_max_events > 20:
             raise ValueError("MEMORY_BATCH_MAX_EVENTS must not exceed 20")
-        if self.agent_max_tool_calls > 5:
-            raise ValueError("AGENT_MAX_TOOL_CALLS must not exceed 5")
+        if self.agent_max_tool_calls > 16:
+            raise ValueError("AGENT_MAX_TOOL_CALLS must not exceed 16")
         if self.relationship_batch_max_turns > 10:
             raise ValueError("RELATIONSHIP_BATCH_MAX_TURNS must not exceed 10")
         if self.affection_max_auto_delta > 2:

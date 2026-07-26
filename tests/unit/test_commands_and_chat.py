@@ -43,6 +43,7 @@ def inbound(
         ("media_download_timeout", "图片下载超时"),
         ("get_image_failed", "NapCat 未能取得图片资源"),
         ("download_failed", "图片资源下载失败"),
+        ("private_url", "图片资源下载失败"),
         ("corrupt_image", "图片文件无法解析"),
         ("too_large", "超过处理范围"),
         ("queue_timeout", "图片识别任务较多"),
@@ -111,7 +112,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
     assert "可修改运行时配置参数：71 项" in admin_text
-    assert "管理员业务接口：18 项，其中修改型 14 项" in admin_text
+    assert "管理员业务接口：19 项，其中修改型 15 项" in admin_text
     assert "autonomous.max_per_hour" in admin_text
     assert "relationship.set_affection" in admin_text
     assert "受保护配置（12 项，不可修改）" in admin_text

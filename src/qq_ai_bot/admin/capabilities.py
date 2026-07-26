@@ -126,6 +126,7 @@ class CapabilityRegistry:
                     "relationship.set_affection/set_trust 还需 value=0..100；"
                     "relationship.adjust_affection 还需 delta=-20..20；memory.add 需 content，"
                     "memory.update 需 memory_id+content，memory.delete 需 memory_id；"
+                    "memory.prune 需 max_importance=1..5 和 older_than_days=1..3650；"
                     "preference.set 需 key+value，preference.delete 需 key；"
                     "其余 action 只需 target。"
                     "缺少必需信息时先用自然语言简短追问，下一条结合正常聊天上下文继续。"
@@ -162,6 +163,16 @@ class CapabilityRegistry:
                                 },
                                 "delta": {"type": "integer", "minimum": -20, "maximum": 20},
                                 "memory_id": {"type": "integer", "minimum": 1},
+                                "max_importance": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 5,
+                                },
+                                "older_than_days": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 3650,
+                                },
                                 "content": {"type": "string"},
                                 "key": {"type": "string"},
                             },

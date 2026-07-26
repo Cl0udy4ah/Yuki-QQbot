@@ -107,6 +107,13 @@ class ActionRegistry:
                 self_service=True,
             ),
             ActionSpec(
+                "memory.prune",
+                "清理过时人物记忆",
+                "按最高重要度和最短保留天数批量删除自动人物记忆。",
+                "user",
+                True,
+            ),
+            ActionSpec(
                 "preference.list",
                 "查看偏好",
                 "列出人物交互偏好。",
@@ -412,6 +419,21 @@ class AdminActionService:
             if not deleted:
                 raise ValueError("没有找到该记忆")
             return {"target_user_id": target, "memory_id": memory_id, "deleted": True}
+        if action == "memory.prune":
+            max_importance = _required_int(arguments, "max_importance")
+            older_than_days = _required_int(arguments, "older_than_days")
+            deleted_count = await self._memories.prune_memories(
+                actor,
+                target,
+                max_importance=max_importance,
+                older_than_days=older_than_days,
+            )
+            return {
+                "target_user_id": target,
+                "max_importance": max_importance,
+                "older_than_days": older_than_days,
+                "deleted_count": deleted_count,
+            }
         if action == "preference.list":
             preference_rows = await self._preferences.list_preferences(actor, target)
             return {

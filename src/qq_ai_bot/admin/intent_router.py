@@ -485,16 +485,6 @@ class AdminIntentRouter:
                     tool_calls=used + 1,
                 )
 
-            terminal_calls = [
-                call for call in response.tool_calls if self._terminal_tool(call.function.name)
-            ]
-            if terminal_calls and len(response.tool_calls) != 1:
-                return AdminRouteResult(
-                    True,
-                    "操作未完成：一次只能执行一个修改或人物业务操作，请明确后重试。",
-                    tool_calls=used,
-                )
-
             handled = True
             messages.append(
                 ChatMessage(

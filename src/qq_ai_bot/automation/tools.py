@@ -108,7 +108,10 @@ class AutomationToolService:
                     "call='onebot.send_group_message'、group_id='$current_group_id'。这两个是自动化"
                     "运行时已有的主动消息网关，不需要也不应改用聊天工具 call_onebot_api 或"
                     "自动化 capability onebot.call_api。时间含糊时先追问，只有工具返回 ok 才能"
-                    "声称创建成功；失败时根据 detail 修正脚本后可重试。"
+                    "声称创建成功；失败时根据 detail 修正脚本后可重试。每天按条件清理人物"
+                    "记忆可用 interval=86400 和单个 admin.execute_action 步骤：action="
+                    "'memory.prune'、target='self'、max_importance、older_than_days；这是原子批量"
+                    "操作，不要先 list 再逐条 delete。"
                 ),
                 parameters=_object_schema(
                     {"script": script_schema, "max_runs": {"type": "integer", "minimum": 1}},

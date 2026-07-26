@@ -122,6 +122,7 @@ def _vision_failure_message(error_code: str | None, *, reply_only: bool) -> str:
     if error_code in {
         "download_failed",
         "dns_failed",
+        "private_url",
         "redirect_rejected",
         "empty_media",
     }:

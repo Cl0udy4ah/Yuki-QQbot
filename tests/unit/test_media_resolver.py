@@ -67,6 +67,32 @@ async def test_localhost_and_private_ip_are_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_private_and_fake_ip_are_allowed_only_when_explicitly_enabled() -> None:
+    async def private_host(_host: str, _port: int) -> tuple[str, ...]:
+        return ("198.18.0.105",)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "198.18.0.105"
+        assert request.headers["host"] == "multimedia.nt.qq.com.cn"
+        assert request.extensions["sni_hostname"] == "multimedia.nt.qq.com.cn"
+        return httpx.Response(200, headers={"Content-Type": "image/jpeg"}, content=b"qq")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    resolver = MediaResolver(
+        client=client,
+        host_resolver=private_host,
+        allow_private_urls=True,
+    )
+
+    result = await resolver.resolve(
+        MediaReference(url="https://multimedia.nt.qq.com.cn/download?id=1")
+    )
+
+    assert result.content == b"qq"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_redirect_target_is_revalidated() -> None:
     calls = 0
 

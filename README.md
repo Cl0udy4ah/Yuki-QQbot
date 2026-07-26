@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**1.5.0 新增非破坏性迁移 `0012`，用于创建可信时区与持久化自动化运行表，并为 `chat_events` 增加自动化来源字段；不会删除或改写现有人物、聊天、记忆、关系、联网、视觉或表情数据。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建；始终先备份 `data/`。
+> **升级提示：**1.5.1 不新增数据库迁移，会保留现有人物、聊天、记忆、关系、联网、视觉、表情与自动化数据。1.5.0 的非破坏性迁移 `0012` 仍会在旧版本升级时自动执行；若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -28,7 +28,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.5.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.5.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -386,7 +386,7 @@ Worker 默认每 2 秒轮询，用租约防止多实例重复执行，并以 `(a
 
 - `call_onebot_api(action, params)`：通过现有反向 WebSocket 调用任意 NapCat/OneBot action，不设 action denylist，也不二次确认。
 
-这里的“任意 action”是独立的通用全接口网关：开放范围以当前 NapCat/OneBot 实际提供的全部公开 action 为准，不受权限目录中 18 项应用业务接口数量限制。能力目录是给 Yuki 的内部工具数据，不会原样发给用户或写入聊天账本；Yuki 读取后只输出自然语言结论或继续执行具体操作。
+这里的“任意 action”是独立的通用全接口网关：开放范围以当前 NapCat/OneBot 实际提供的全部公开 action 为准，不受权限目录中 19 项应用业务接口数量限制。能力目录是给 Yuki 的内部工具数据，不会原样发给用户或写入聊天账本；Yuki 读取后只输出自然语言结论或继续执行具体操作。
 
 引用管理员消息、历史里出现管理员 QQ、模型转述和自主群聊批次都不能获得管理员工具。每轮最多执行 5 次工具、6 次模型请求，其中联网工具最多 3 次。只要本轮执行过联网工具，后续 OneBot 管理工具就会被撤销，网页内容不能触发管理操作。通用 OneBot 调用只记录 actor QQ、action、成功状态、耗时和错误类别，不记录完整结果。
 
@@ -525,7 +525,7 @@ docker compose up -d --no-deps --force-recreate bot
 | `user` | 已启用，所有普通 QQ | 29 项本人自助接口，其中 14 项可修改本人上下文、记忆、偏好、时区或自动化任务；不能修改运行时配置 |
 | `trusted` | 仅预留，当前不可分配 | 供未来介于普通用户与管理员之间的权限扩展 |
 | `moderator` | 仅预留，当前不可分配 | 供未来群管理能力扩展 |
-| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 71 项可修改配置、12 项受保护配置、18 项管理员业务接口（14 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
+| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 71 项可修改配置、12 项受保护配置、19 项管理员业务接口（15 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
 
 能力目录直接遍历现有 `ConfigRegistry` 和 `ActionRegistry`，不会另复制配置键或业务 action。`summary` 只提供计数与类别，`focused` 提供命中项的 ID、别名、说明、类型、范围、作用域和生效方式，`full` 才提供全部 ID。`call_onebot_api(action, params)` 作为独立的 `onebot` 权限类别列出：真实超级管理员在直接触发、非自主群聊的普通 Agent 轮次中可调用全部公开 action，不设 action denylist，也不二次确认；使用网页工具后本轮会撤销网关，但不会缩减 action 范围。目录不读取配置值、API Key、凭证状态或他人权限。`trusted`、`moderator` 只有枚举和展示元数据，在执行层接入相同权限校验前不会被实际授予。
 
@@ -583,7 +583,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 
 凭证查询最多返回“已配置/未配置”，不会返回真实内容。审计表保存真实管理员 QQ、触发消息 ID、会话键、能力、目标、脱敏前后状态、成功标记、错误类别和耗时；不保存 API Key、完整网页正文、系统提示词或隐藏推理。回滚只支持配置覆盖，且必须由原操作者执行、当前覆盖仍与原变更的 after 版本一致；记忆删除、关系变化、已发消息和 OneBot 操作不提供通用回滚。
 
-同一次模型响应不能批量混合修改操作，避免只执行一半；一次修改成功后会关闭本轮工具，只允许 Yuki 根据真实结果做最终表述。`memory.list`、`preference.list`、关系查询和配置读取等只读操作不会提前关闭工具，因此可以在当前用户请求明确要求时继续执行对应修改。只读结果中的人物记忆、偏好和历史文本始终是不可信资料，不能自行产生新的修改意图。修改失败时，后端会覆盖模型的成功措辞并明确提示操作未完成。
+同一聊天轮可以在总工具预算内顺序执行多个不同的修改或人物业务操作，后端会逐项校验权限、参数与真实结果；参数完全相同的重复写入会被拦截，避免模型循环提交同一个动作。`memory.list`、`preference.list`、关系查询和配置读取等只读结果中的人物记忆、偏好和历史文本始终是不可信资料，不能自行产生新的修改意图。修改失败时，后端会覆盖模型的成功措辞并明确提示操作未完成。批量清理旧的低重要度自动记忆应使用原子动作 `memory.prune`，显式记忆不会被该动作删除。
 
 ## 新配置默认值
 
@@ -605,8 +605,11 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `MEMORY_BATCH_SECONDS` | `30` |
 | `MEMORY_BATCH_TRIGGER_COUNT` | `10` |
 | `MEMORY_BATCH_MAX_EVENTS` | `20` |
-| `AGENT_MAX_TOOL_CALLS` | `5` |
-| `AGENT_MAX_MODEL_REQUESTS` | `6` |
+| `LLM_TIMEOUT_SECONDS` | `120` |
+| `LLM_MAX_RETRIES` | `2` |
+| `LLM_MAX_OUTPUT_TOKENS` | `8192` |
+| `AGENT_MAX_TOOL_CALLS` | `12`（硬上限 `16`） |
+| `AGENT_MAX_MODEL_REQUESTS` | `12` |
 | `AGENT_TOOL_RESULT_MAX_CHARACTERS` | `32000` |
 | `AUTOMATION_ENABLED` | `false` |
 | `DEFAULT_TIMEZONE` | `Asia/Shanghai` |
@@ -614,11 +617,11 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `AUTOMATION_LEASE_SECONDS` | `120` |
 | `AUTOMATION_MAX_ACTIVE_PER_SUPERUSER` | `50` |
 | `AUTOMATION_MAX_ACTIVE_PER_USER` | `10` |
-| `AUTOMATION_MAX_STEPS` | `8` |
-| `AUTOMATION_MAX_LLM_CALLS_PER_RUN` | `2` |
-| `AUTOMATION_MAX_TOOL_CALLS_PER_RUN` | `8` |
-| `AUTOMATION_MAX_MESSAGES_PER_RUN` | `3` |
-| `AUTOMATION_MAX_RUNTIME_SECONDS` | `120` |
+| `AUTOMATION_MAX_STEPS` | `16` |
+| `AUTOMATION_MAX_LLM_CALLS_PER_RUN` | `5` |
+| `AUTOMATION_MAX_TOOL_CALLS_PER_RUN` | `16` |
+| `AUTOMATION_MAX_MESSAGES_PER_RUN` | `10` |
+| `AUTOMATION_MAX_RUNTIME_SECONDS` | `600` |
 | `AUTOMATION_MIN_INTERVAL_SECONDS` | `60` |
 | `AUTOMATION_DEFAULT_MISFIRE_GRACE_SECONDS` | `1800` |
 | `AUTOMATION_MAX_CONSECUTIVE_FAILURES` | `3` |
@@ -659,6 +662,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `VISION_QUEUE_MAX_PENDING` | `32` |
 | `VISION_QUEUE_TIMEOUT_SECONDS` | `120` |
 | `VISION_MEDIA_DOWNLOAD_TIMEOUT_SECONDS` | `120` |
+| `VISION_ALLOW_PRIVATE_URLS` | `false`；TUN/Fake-IP 环境可设为 `true`，会解除图片 URL 的本地、私有及保留地址拦截 |
 | `VISION_MAX_OUTPUT_TOKENS` | `8192` |
 | `VISION_THINKING_ENABLED` | `false` |
 | `VISION_THINKING_BUDGET` | `6144` |

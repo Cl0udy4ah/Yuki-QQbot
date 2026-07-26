@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.models import AdminActor
@@ -13,7 +14,7 @@ from qq_ai_bot.services.admin.common import require_self_or_superuser
 
 
 class MemoryAdminService:
-    """Manage only explicit person memories within the existing capacity rules."""
+    """Manage explicit memories and bounded automatic-memory retention rules."""
 
     def __init__(
         self,
@@ -161,6 +162,48 @@ class MemoryAdminService:
                 after=None,
                 success=deleted,
                 error_category=None if deleted else "not_found",
+                duration_seconds=time.perf_counter() - started,
+                session=session,
+            )
+        return deleted
+
+    async def prune_memories(
+        self,
+        actor: AdminActor,
+        target: str,
+        *,
+        max_importance: int,
+        older_than_days: int,
+    ) -> int:
+        """Atomically prune stale low-importance automatic person memories."""
+
+        require_self_or_superuser(actor, target, self._settings)
+        if not 1 <= max_importance <= 5:
+            raise ValueError("max_importance 必须在 1～5")
+        if not 1 <= older_than_days <= 3650:
+            raise ValueError("older_than_days 必须在 1～3650")
+        cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
+        started = time.perf_counter()
+        async with self._audit.transaction() as session:
+            deleted = await self._memories.prune_person_memories(
+                user_id=target,
+                max_importance=max_importance,
+                older_than=cutoff,
+                session=session,
+            )
+            await self._audit.record(
+                actor=actor,
+                capability="memory",
+                operation="prune",
+                target_type="user",
+                target_id=target,
+                before=None,
+                after={
+                    "max_importance": max_importance,
+                    "older_than_days": older_than_days,
+                    "deleted_count": deleted,
+                },
+                success=True,
                 duration_seconds=time.perf_counter() - started,
                 session=session,
             )

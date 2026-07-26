@@ -161,6 +161,7 @@ class ApplicationContainer:
                 resolver=MediaResolver(
                     max_download_bytes=settings.vision_max_download_bytes,
                     timeout_seconds=settings.vision_media_download_timeout_seconds,
+                    allow_private_urls=settings.vision_allow_private_urls,
                 ),
                 preprocessor=ImagePreprocessor(
                     max_dimension=settings.vision_max_dimension,
