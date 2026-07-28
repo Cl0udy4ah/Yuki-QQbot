@@ -40,6 +40,7 @@ class _TurnState:
     version: int = 0
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
     mutation_started: bool = False
+    protected_version: int | None = None
     tasks: dict[TurnStage, asyncio.Task[object]] = field(default_factory=dict)
 
 
@@ -80,12 +81,17 @@ class ConversationTurnCoordinator:
         self,
         conversation_key: str,
         origin: TurnOrigin = TurnOrigin.USER_MESSAGE,
+        *,
+        observation: bool = False,
+        protect_from_observations: bool = False,
     ) -> TurnToken:
-        """Advance input version and interrupt only work safe to supersede."""
+        """Advance input version while keeping direct group turns above observations."""
 
         to_cancel: set[asyncio.Task[object]] = set()
         async with self._guard:
             state = self._states.setdefault(conversation_key, _TurnState())
+            if observation and state.protected_version == state.version:
+                return TurnToken(conversation_key, state.version, state.origin)
             previous_origin = state.origin
             if self._cancel_replies:
                 reply = state.tasks.get("reply")
@@ -103,6 +109,7 @@ class ConversationTurnCoordinator:
             state.version += 1
             state.origin = origin
             state.mutation_started = False
+            state.protected_version = state.version if protect_from_observations else None
             token = TurnToken(conversation_key, state.version, origin)
         current = asyncio.current_task()
         for task in to_cancel:
@@ -162,6 +169,7 @@ class ConversationTurnCoordinator:
                 return None
             state.origin = TurnOrigin.AUTONOMOUS_GROUP
             state.mutation_started = False
+            state.protected_version = None
             return TurnToken(
                 token.conversation_key,
                 token.version,

@@ -13,7 +13,6 @@ from typing import Any, Protocol
 from pydantic import ValidationError
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
 from qq_ai_bot.llm.base import LLMProvider
@@ -149,19 +148,25 @@ def parse_turn_plan(
 
 
 def deterministic_fallback_plan(planner_input: PlannerInput) -> TurnPlan:
-    """Return the documented safe fallback without consulting a model."""
+    """Return a deterministic fallback without consulting a model.
+
+    Autonomous turns only reach the provider after the necessity gate admits
+    them. Replying here keeps a temporary planner-format failure from turning
+    an otherwise relevant group turn into permanent silence.
+    """
 
     explicitly_triggered = (
         planner_input.scope_type is ScopeType.PRIVATE
         or planner_input.mentions_bot
         or planner_input.reply_target_is_bot
     )
-    autonomous_group = planner_input.origin is TurnOrigin.AUTONOMOUS_GROUP
-    should_reply = explicitly_triggered or not autonomous_group
+    should_reply = explicitly_triggered or planner_input.necessity.should_enter_planner
     return TurnPlan(
         decision=PlannerDecision.REPLY if should_reply else PlannerDecision.SILENT,
         intent=(
-            "回应当前真实发送者的消息" if should_reply else "自主群聊 Planner 失败，本轮保持沉默"
+            "回应当前真实发送者的消息"
+            if should_reply
+            else "Planner 失败且本轮未通过发言门槛，保持沉默"
         ),
         target_user_ids=(planner_input.current_sender_user_id,) if should_reply else (),
         delivery_mode=DeliveryMode.SINGLE,

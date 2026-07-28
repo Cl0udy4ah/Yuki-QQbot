@@ -75,10 +75,10 @@ class Settings(BaseSettings):
 
     observe_enabled_groups: bool = True
     autonomous_group_chat_enabled: bool = True
-    autonomous_silence_seconds: float = 8.0
-    autonomous_confidence_threshold: float = 0.85
-    autonomous_cooldown_seconds: int = 300
-    autonomous_max_per_hour: int = 3
+    autonomous_silence_seconds: float = 3.0
+    autonomous_confidence_threshold: float = 0.2
+    autonomous_cooldown_seconds: int = 20
+    autonomous_max_per_hour: int = 30
     recent_history_tool_limit: int = 20
     local_context_event_limit: int = 30
     related_people_limit: int = 5
@@ -99,14 +99,14 @@ class Settings(BaseSettings):
     planner_model: str = ""
     planner_direct_enabled: bool = True
     planner_group_enabled: bool = True
-    planner_group_debounce_seconds: float = 8.0
+    planner_group_debounce_seconds: float = 3.0
     planner_preferred_messages: int = 3
     planner_temperature: float = 0.1
     planner_max_output_tokens: int = 512
     planner_timeout_seconds: float = 20.0
-    planner_confidence_threshold: float = 0.65
-    planner_reply_necessity_threshold: int = 80
-    planner_max_pending_messages: int = 20
+    planner_confidence_threshold: float = 0.2
+    planner_reply_necessity_threshold: int = 0
+    planner_max_pending_messages: int = 8
     planner_recent_presence_window_seconds: int = 300
     planner_max_wait_seconds: int = 60
     planner_interrupt_autonomous_on_new_message: bool = True
@@ -260,7 +260,6 @@ class Settings(BaseSettings):
         "agent_tool_result_max_characters",
         "planner_preferred_messages",
         "planner_max_output_tokens",
-        "planner_reply_necessity_threshold",
         "planner_max_pending_messages",
         "planner_recent_presence_window_seconds",
         "planner_max_wait_seconds",
@@ -359,6 +358,13 @@ class Settings(BaseSettings):
     @field_validator("llm_max_retries", "web_max_retries")
     @classmethod
     def _non_negative_retries(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("must not be negative")
+        return value
+
+    @field_validator("planner_reply_necessity_threshold")
+    @classmethod
+    def _non_negative_planner_necessity(cls, value: int) -> int:
         if value < 0:
             raise ValueError("must not be negative")
         return value

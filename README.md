@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**1.7.0 会自动执行非破坏性迁移 `0014`，新增持久化表情资产、作用域、任务和使用统计表；原有人物、聊天、记忆、关系、旧 QQ 表情描述缓存、视觉、联网、Planner、插件与自动化数据全部保留。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
+> **升级提示：**1.7.1 不包含数据库迁移，会保留现有人物、聊天、记忆、关系、表情、视觉、联网、Planner、插件与自动化数据。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -28,7 +28,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.7.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.7.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -187,10 +187,11 @@ docker compose up -d --build --no-deps bot
 PLANNER_ENABLED=true
 PLANNER_DIRECT_ENABLED=true
 PLANNER_GROUP_ENABLED=true
-PLANNER_GROUP_DEBOUNCE_SECONDS=8
+PLANNER_GROUP_DEBOUNCE_SECONDS=3
 PLANNER_PREFERRED_MESSAGES=3
-PLANNER_REPLY_NECESSITY_THRESHOLD=80
-PLANNER_CONFIDENCE_THRESHOLD=0.65
+PLANNER_REPLY_NECESSITY_THRESHOLD=0
+PLANNER_CONFIDENCE_THRESHOLD=0.2
+PLANNER_MAX_PENDING_MESSAGES=8
 REPLY_SEQUENCE_CANCEL_ON_NEW_MESSAGE=true
 REPLY_PLAN_HARD_MAX_MESSAGES=10
 ```
@@ -206,6 +207,12 @@ Planner 开启时，已启用群由 `planner.group_enabled` 控制是否进入�
 `planner.group_debounce_seconds` 聚合连续消息。旧 `AUTONOMOUS_*` 开关、静默时间、
 置信度、冷却和小时上限完全不参与 Planner 会话；只有显式关闭 Planner 时，它们才作为
 1.5.2 兼容路径重新生效。
+
+当前默认采用高参与度群聊策略：普通群消息静默约 3 秒后进入 Planner，决策上下文限制为
+最近 8 条，必要性门槛为 0，由 Planner 判断是否能自然接话。已启用群中的真实 `@Yuki`、
+回复 Yuki 和私聊属于后端强制回复，Planner 不能把它们改成 `silent/wait`；后续普通群消息
+也不会抢占正在处理的明确触发。已通过发言门槛的批次如遇 Planner 格式异常，会降级为正常回复而非
+沉默。禁用群仍只接受超级管理员的启用命令。
 
 `planner.preferred_messages` 是 `natural_multi` 日常回复的软目标，默认 3 条；内容不足时
 不会凑数。非结构化聊天正文中的空行会直接成为两条 QQ 消息的发送边界；代码、表格、步骤
@@ -564,10 +571,12 @@ docker compose up -d --no-deps --force-recreate bot
 Planner-first 自主参与规则：
 
 - 群消息静默窗口结束后，最多按 `PLANNER_MAX_PENDING_MESSAGES` 组成受限批次；
-- 先执行纯 Python 回复必要性评分，未达到阈值不会调用 Planner；
+- 默认必要性门槛为 `0`，非空群聊批次都会交给 Planner 判断是否自然参与；
 - 达到阈值后，由 Planner 选择 `reply`、`wait` 或 `silent`，`wait` 最多重新规划一次；
+- Planner 以活跃群友为默认倾向，能自然接话、参与玩笑、回应情绪或延续话题时优先发言；
+- 真实 `@Yuki`、回复 Yuki 和私聊由后端强制回复，历史活跃度不能降低该优先级；
 - 旧置信度、冷却、每小时上限及 `AUTONOMOUS_ENABLED` 不限制 Planner-first 路径；
-- 新群消息会中断尚未完成的自主 Planner、生成及未发送回复分句；
+- 新群消息会中断自主 Planner 和自主生成，但普通观察消息不会中断明确触发的处理轮；
 - 自主轮不开放通用 OneBot 管理工具，Planner 本身也没有任何工具；
 - 最终回复仍由同一个 Yuki Agent 生成，并使用普通消息与计划内的发送节奏。
 
@@ -731,14 +740,14 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `PLANNER_MODEL` | 空；使用 `LLM_MODEL` |
 | `PLANNER_DIRECT_ENABLED` | `true` |
 | `PLANNER_GROUP_ENABLED` | `true` |
-| `PLANNER_GROUP_DEBOUNCE_SECONDS` | `8` |
+| `PLANNER_GROUP_DEBOUNCE_SECONDS` | `3` |
 | `PLANNER_PREFERRED_MESSAGES` | `3`（热配置范围 `1`～`20`） |
 | `PLANNER_TEMPERATURE` | `0.1` |
 | `PLANNER_MAX_OUTPUT_TOKENS` | `512` |
 | `PLANNER_TIMEOUT_SECONDS` | `20` |
-| `PLANNER_CONFIDENCE_THRESHOLD` | `0.65` |
-| `PLANNER_REPLY_NECESSITY_THRESHOLD` | `80` |
-| `PLANNER_MAX_PENDING_MESSAGES` | `20` |
+| `PLANNER_CONFIDENCE_THRESHOLD` | `0.2` |
+| `PLANNER_REPLY_NECESSITY_THRESHOLD` | `0` |
+| `PLANNER_MAX_PENDING_MESSAGES` | `8` |
 | `PLANNER_RECENT_PRESENCE_WINDOW_SECONDS` | `300` |
 | `PLANNER_MAX_WAIT_SECONDS` | `60` |
 | `PLANNER_INTERRUPT_AUTONOMOUS_ON_NEW_MESSAGE` | `true` |

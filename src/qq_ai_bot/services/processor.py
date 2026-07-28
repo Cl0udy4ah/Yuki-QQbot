@@ -458,9 +458,12 @@ class MessageProcessor:
         )
         if callable(configure_hook_timeout):
             configure_hook_timeout(runtime_snapshot.plugins.hook_timeout_seconds)
+        direct_turn = decision.should_respond or admin_candidate
         turn_token = await self._turn_coordinator.notify_message(
             self._turn_coordinator.key_for(message),
             TurnOrigin.USER_MESSAGE,
+            observation=not direct_turn,
+            protect_from_observations=direct_turn,
         )
         has_visual_input = VisionService.has_visual_input(message)
         image_blocks_command = bool(

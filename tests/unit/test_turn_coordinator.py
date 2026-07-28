@@ -104,3 +104,36 @@ async def test_autonomous_promotion_does_not_override_active_explicit_turn() -> 
     assert await coordinator.begin_autonomous(explicit) is None
     release.set()
     await task
+
+
+async def test_observed_group_message_does_not_supersede_protected_direct_turn() -> None:
+    coordinator = ConversationTurnCoordinator()
+    direct = await coordinator.notify_message(
+        "group:42",
+        protect_from_observations=True,
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def run_generation() -> None:
+        async with coordinator.track(direct, "generation"):
+            entered.set()
+            await release.wait()
+
+    task = asyncio.create_task(run_generation())
+    await entered.wait()
+    observed = await coordinator.notify_message(
+        "group:42",
+        observation=True,
+    )
+
+    assert observed.version == direct.version
+    assert coordinator.is_current(direct)
+    assert not task.done()
+    assert await coordinator.begin_autonomous(observed) is None
+
+    release.set()
+    await task
+    promoted = await coordinator.begin_autonomous(observed)
+    assert promoted is not None
+    assert promoted.origin is TurnOrigin.AUTONOMOUS_GROUP

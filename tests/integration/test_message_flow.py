@@ -293,7 +293,7 @@ async def test_non_admin_transport_metadata_never_opens_admin_router(
     assert not router.requests
     assert (
         await harness.processor._runtime_config.get_effective("autonomous.max_per_hour")
-    ).value == 3
+    ).value == 30
 
 
 @pytest.mark.asyncio

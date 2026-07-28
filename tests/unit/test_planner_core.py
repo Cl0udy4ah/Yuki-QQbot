@@ -422,6 +422,36 @@ def test_planner_applies_hot_natural_multi_target_without_affecting_structure() 
     assert explicit.desired_messages == 4
 
 
+@pytest.mark.parametrize(
+    "planner_input",
+    (
+        _planner_input(scope=ScopeType.PRIVATE, text="随便聊聊"),
+        _planner_input(scope=ScopeType.GROUP, text="在吗", mentions_bot=True),
+        _planner_input(scope=ScopeType.GROUP, text="接着说", reply_target_is_bot=True),
+    ),
+)
+def test_explicit_turns_cannot_be_silenced_or_delayed_by_planner(
+    planner_input: PlannerInput,
+) -> None:
+    runtime = _runtime()
+    model_plan = TurnPlan(
+        **_valid_plan_payload(
+            decision="silent",
+            wait_seconds=30,
+            reason_code="low_relevance",
+        )
+    )
+    constrained = PlannerService._constrain_business_rules(
+        model_plan,
+        planner_input,
+        runtime,
+        administrator_request=False,
+    )
+
+    assert constrained.decision is PlannerDecision.REPLY
+    assert constrained.wait_seconds == 0
+
+
 def test_json_extraction_supports_fenced_json() -> None:
     payload = _valid_plan_payload()
     result = extract_json_object(f"plan:\n```json\n{json.dumps(payload)}\n```")
@@ -537,15 +567,21 @@ async def test_invalid_planner_json_is_not_retried_and_falls_back_safely() -> No
 
 
 @pytest.mark.asyncio
-async def test_autonomous_group_failure_falls_back_to_silence() -> None:
+async def test_admitted_autonomous_group_failure_falls_back_to_reply() -> None:
     llm = FakeLLMProvider(lambda _request: "not-json")
     provider = LLMPlannerProvider(llm)
     planner_input = _planner_input(
         scope=ScopeType.GROUP,
         origin=TurnOrigin.AUTONOMOUS_GROUP,
+        text="Yuki，你觉得呢？",
+    )
+    planner_input = planner_input.model_copy(
+        update={
+            "necessity": planner_input.necessity.model_copy(update={"should_enter_planner": True})
+        }
     )
     plan = await provider.plan(planner_input, runtime=_runtime())
-    assert plan.decision is PlannerDecision.SILENT
+    assert plan.decision is PlannerDecision.REPLY
     assert plan.tool_mode is ToolMode.INHERIT
 
 

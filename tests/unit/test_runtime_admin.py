@@ -740,7 +740,7 @@ async def test_router_uses_only_current_text_and_failure_cannot_claim_success(
     result = await router.route(message, message.text, "private:9000")
     assert result.handled
     assert result.text.startswith("操作未完成")
-    assert (await runtime.get_effective("autonomous.max_per_hour")).value == 3
+    assert (await runtime.get_effective("autonomous.max_per_hour")).value == 30
 
 
 @pytest.mark.asyncio
@@ -792,7 +792,7 @@ async def test_natural_language_config_change_is_hot_and_group_scoped(
     assert result.reason == "chat"
     assert sender.messages[0].text == "本群上限已立即改为 10 次。"
     assert (await runtime.snapshot(group_id="2001")).autonomous.max_per_hour == 10
-    assert (await runtime.snapshot(group_id="2002")).autonomous.max_per_hour == 3
+    assert (await runtime.snapshot(group_id="2002")).autonomous.max_per_hour == 30
 
 
 @pytest.mark.asyncio
@@ -868,7 +868,7 @@ async def test_same_management_text_from_normal_user_is_ordinary_chat(
     )
     assert result.reason == "chat"
     assert sender.messages[0].text == "普通用户不能修改这个设置。"
-    assert (await runtime.get_effective("autonomous.max_per_hour")).value == 3
+    assert (await runtime.get_effective("autonomous.max_per_hour")).value == 30
 
 
 @pytest.mark.asyncio
@@ -1452,8 +1452,8 @@ async def test_group_override_is_visible_in_next_snapshot(database: Database) ->
     assert debounce.success
     assert (await service.snapshot(group_id="2001")).autonomous.max_per_hour == 10
     assert (await service.snapshot(group_id="2001")).planner.group_debounce_seconds == 0
-    assert (await service.snapshot(group_id="2002")).autonomous.max_per_hour == 3
-    assert (await service.snapshot(group_id="2002")).planner.group_debounce_seconds == 8
+    assert (await service.snapshot(group_id="2002")).autonomous.max_per_hour == 30
+    assert (await service.snapshot(group_id="2002")).planner.group_debounce_seconds == 3
 
 
 @pytest.mark.asyncio
@@ -1702,7 +1702,7 @@ async def test_ambiguous_admin_request_does_not_execute_any_tool(
         "private:9000",
     )
     assert not result.handled
-    assert (await runtime.get_effective("autonomous.max_per_hour")).value == 3
+    assert (await runtime.get_effective("autonomous.max_per_hour")).value == 30
 
 
 @pytest.mark.asyncio
@@ -2282,7 +2282,7 @@ async def test_memory_tool_result_cannot_trigger_second_admin_write(
     result = await router.route(message, message.text, "private:9000")
     assert result.handled
     assert result.tool_calls == 1
-    assert (await runtime.get_effective("autonomous.max_per_hour")).value == 3
+    assert (await runtime.get_effective("autonomous.max_per_hour")).value == 30
 
 
 @pytest.mark.asyncio

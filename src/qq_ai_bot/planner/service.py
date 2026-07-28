@@ -202,14 +202,17 @@ class PlannerService:
             token in text
             for token in ("?", "？", "请", "帮我", "怎么", "为什么", "能不能", "改成", "设置")
         )
-        if administrator_request or (
-            planner_input.scope_type is ScopeType.PRIVATE and looks_like_request
+        if (
+            explicit
+            or administrator_request
+            or (planner_input.scope_type is ScopeType.PRIVATE and looks_like_request)
         ):
             updates["decision"] = PlannerDecision.REPLY
             updates["wait_seconds"] = 0.0
         if (
             planner_input.origin is TurnOrigin.AUTONOMOUS_GROUP
             and plan.decision is PlannerDecision.REPLY
+            and plan.reason_code is not PlannerReasonCode.PLANNER_FALLBACK
             and plan.confidence < runtime.planner.confidence_threshold
         ):
             updates.update(

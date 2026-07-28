@@ -45,7 +45,7 @@ Yuki 1.6.0 提供 Plugin API `1.0`：插件通过独立的 `yuki_plugin_sdk` 声
 
 | 标识 | 当前值 | 用途 |
 |---|---:|---|
-| Yuki | `1.7.0` | Host 产品版本 |
+| Yuki | `1.7.1` | Host 产品版本 |
 | Plugin API | `1.0` | SDK 主兼容边界 |
 | Event/Tool/Automation Schema | `1` | 单类载荷的结构版本 |
 | Feature | 如 `planner.signal.v1` | 运行时能力探测 |

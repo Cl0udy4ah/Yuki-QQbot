@@ -57,9 +57,11 @@ def test_daily_chat_delay_range_must_be_ordered() -> None:
 def test_planner_and_plugin_defaults_are_bounded() -> None:
     settings = Settings()
     assert settings.planner_enabled
-    assert settings.planner_group_debounce_seconds == 8
+    assert settings.planner_group_debounce_seconds == 3
     assert settings.planner_preferred_messages == 3
-    assert settings.planner_reply_necessity_threshold == 80
+    assert settings.planner_confidence_threshold == 0.2
+    assert settings.planner_reply_necessity_threshold == 0
+    assert settings.planner_max_pending_messages == 8
     assert settings.reply_plan_hard_max_messages == 10
     assert not settings.plugin_system_enabled
     assert settings.plugin_api_version == "1.0"
@@ -67,6 +69,8 @@ def test_planner_and_plugin_defaults_are_bounded() -> None:
 
     with pytest.raises(ValidationError, match="PLANNER_REPLY_NECESSITY_THRESHOLD"):
         Settings.model_validate({"planner_reply_necessity_threshold": 101})
+    with pytest.raises(ValidationError, match="must not be negative"):
+        Settings.model_validate({"planner_reply_necessity_threshold": -1})
     assert Settings.model_validate({"planner_group_debounce_seconds": 0})
     with pytest.raises(ValidationError, match="PLANNER_GROUP_DEBOUNCE_SECONDS"):
         Settings.model_validate({"planner_group_debounce_seconds": 61})
