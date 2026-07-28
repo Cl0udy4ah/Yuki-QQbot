@@ -1,0 +1,73 @@
+"""Typed event names and immutable notification envelopes."""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable, Mapping
+from datetime import UTC, datetime
+from enum import StrEnum
+from uuid import UUID, uuid4
+
+from pydantic import Field
+
+from yuki_plugin_sdk.models import JsonValue, StrictModel
+
+
+class EventName(StrEnum):
+    APPLICATION_STARTING = "application.starting"
+    APPLICATION_STARTED = "application.started"
+    APPLICATION_STOPPING = "application.stopping"
+    MESSAGE_NORMALIZED = "message.normalized"
+    MESSAGE_RECORDED = "message.recorded"
+    MESSAGE_OBSERVED = "message.observed"
+    MESSAGE_TRIGGERED = "message.triggered"
+    PLANNER_NECESSITY_EVALUATED = "planner.necessity_evaluated"
+    PLANNER_ENTERED = "planner.entered"
+    PLANNER_PLANNED = "planner.planned"
+    PLANNER_SILENT = "planner.silent"
+    PLANNER_INTERRUPTED = "planner.interrupted"
+    PLANNER_FALLBACK = "planner.fallback"
+    CONTEXT_ASSEMBLED = "context.assembled"
+    PROMPT_COLLECTING = "prompt.collecting"
+    PROMPT_COMPOSED = "prompt.composed"
+    AGENT_STARTING = "agent.starting"
+    AGENT_TOOL_CALLED = "agent.tool_called"
+    AGENT_TOOL_COMPLETED = "agent.tool_completed"
+    AGENT_FINISHED = "agent.finished"
+    AGENT_INTERRUPTED = "agent.interrupted"
+    REPLY_PLANNED = "reply.planned"
+    REPLY_GENERATED = "reply.generated"
+    REPLY_SENDING = "reply.sending"
+    REPLY_SENT = "reply.sent"
+    REPLY_CANCELLED = "reply.cancelled"
+    REPLY_FAILED = "reply.failed"
+    MEMORY_CREATED = "memory.created"
+    MEMORY_UPDATED = "memory.updated"
+    MEMORY_DELETED = "memory.deleted"
+    RELATIONSHIP_CHANGED = "relationship.changed"
+    VISION_COMPLETED = "vision.completed"
+    VISION_FAILED = "vision.failed"
+    WEB_SEARCH_COMPLETED = "web.search_completed"
+    WEB_READ_COMPLETED = "web.read_completed"
+    AUTOMATION_CREATED = "automation.created"
+    AUTOMATION_STARTED = "automation.started"
+    AUTOMATION_COMPLETED = "automation.completed"
+    AUTOMATION_FAILED = "automation.failed"
+
+
+class EventEnvelope(StrictModel):
+    event_id: UUID = Field(default_factory=uuid4)
+    name: EventName
+    schema_version: int = Field(default=1, ge=1)
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    payload: Mapping[str, JsonValue] = Field(default_factory=dict)
+
+
+NotificationHandler = Callable[[EventEnvelope], Awaitable[None]]
+
+
+class HookExecution(StrictModel):
+    plugin_id: str
+    hook_id: str
+    success: bool
+    duration_seconds: float = Field(ge=0)
+    error_category: str | None = None

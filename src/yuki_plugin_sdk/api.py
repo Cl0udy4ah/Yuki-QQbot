@@ -1,0 +1,31 @@
+"""Plugin API version and stable feature identifiers."""
+
+from __future__ import annotations
+
+import re
+
+PLUGIN_API_VERSION = "1.0"
+_API_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+
+DEFAULT_FEATURES: frozenset[str] = frozenset(
+    {
+        "message.normalized.v1",
+        "prompt.fragment.v1",
+        "planner.signal.v1",
+        "automation.action.v1",
+        "plugin.agent_session.v1",
+    }
+)
+
+
+def api_major(version: str) -> int:
+    match = _API_VERSION.fullmatch(version.strip())
+    if match is None:
+        raise ValueError("plugin API version must use MAJOR.MINOR")
+    return int(match.group(1))
+
+
+def is_api_compatible(requested: str, host: str = PLUGIN_API_VERSION) -> bool:
+    """Plugin API 1.x is compatible within the same major version."""
+
+    return api_major(requested) == api_major(host)

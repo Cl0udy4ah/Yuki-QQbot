@@ -94,6 +94,9 @@ def make_settings(database_url: str, **overrides: object) -> Settings:
         "per_group_requests_per_minute": 50,
         "daily_chat_message_delay_min_seconds": 0,
         "daily_chat_message_delay_max_seconds": 0,
+        # Existing 1.5 behavior remains the compatibility baseline; Planner tests
+        # opt in explicitly with a structured FakePlannerProvider.
+        "planner_enabled": False,
     }
     values.update(overrides)
     return Settings.model_validate(values)

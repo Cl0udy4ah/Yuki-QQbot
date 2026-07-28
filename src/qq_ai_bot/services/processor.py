@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import cast
+from typing import Protocol, cast
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -19,6 +20,7 @@ from qq_ai_bot.admin.models import (
     RuntimeConfigSnapshot,
 )
 from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
+from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.worker import AutomationWorker
@@ -38,6 +40,12 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipJobRepository,
     RelationshipRepository,
 )
+from qq_ai_bot.planner.context import PlannerContextBuilder
+from qq_ai_bot.planner.fake import FakePlannerProvider
+from qq_ai_bot.planner.models import PlannedTurn, PlannerDecision, PlannerSignal
+from qq_ai_bot.planner.observability import PlannerObservability
+from qq_ai_bot.planner.provider import PlannerInterruptedError as ProviderPlannerInterruptedError
+from qq_ai_bot.planner.service import PlannerOutcome, PlannerService
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
 from qq_ai_bot.services.admin.group_admin import GroupAdminService
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
@@ -51,6 +59,10 @@ from qq_ai_bot.services.concurrency import ConcurrencyManager, RequestCancelledE
 from qq_ai_bot.services.deduplication import DeduplicationService, build_event_key
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.memory_worker import MemoryWorker
+from qq_ai_bot.services.plugin_events import (
+    LifecycleEventPublisher,
+    publish_notification,
+)
 from qq_ai_bot.services.policies import (
     CommandName,
     EffectiveGroupPolicy,
@@ -61,6 +73,12 @@ from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
 from qq_ai_bot.services.relationship_evaluator import LLMRelationshipEvaluator
 from qq_ai_bot.services.relationship_worker import RelationshipWorker
 from qq_ai_bot.services.renderer import sanitize_input
+from qq_ai_bot.services.turn_coordinator import (
+    ConversationTurnCoordinator,
+    PlannerInterruptedError,
+    TurnSupersededError,
+    TurnToken,
+)
 from qq_ai_bot.services.user_profiles import (
     UserProfileResolver,
     UserProfileService,
@@ -72,8 +90,20 @@ from qq_ai_bot.services.vision_service import (
     compact_visual_summary,
 )
 from qq_ai_bot.vision.models import VisualObservation
+from yuki_plugin_sdk.events import EventName
 
 logger = logging.getLogger(__name__)
+
+
+class PlannerSignalProvider(Protocol):
+    async def collect(
+        self,
+        *,
+        message: InboundMessage,
+        origin: TurnOrigin,
+        runtime: RuntimeConfigSnapshot,
+    ) -> tuple[PlannerSignal, ...]: ...
+
 
 UNSUPPORTED_MESSAGE = "当前版本会保存媒体消息元数据，但尚未实现图片、语音或视频理解。"
 RATE_LIMIT_MESSAGE = "请求过于频繁，请稍后再试。"
@@ -199,6 +229,11 @@ class MessageProcessor:
         automation_repository: AutomationRepository | None = None,
         automation_worker: AutomationWorker | None = None,
         command_service: CommandService | None = None,
+        planner_context: PlannerContextBuilder | None = None,
+        planner_service: PlannerService | None = None,
+        turn_coordinator: ConversationTurnCoordinator | None = None,
+        planner_signals: PlannerSignalProvider | None = None,
+        event_publisher: LifecycleEventPublisher | None = None,
     ) -> None:
         database = conversations._database
         self._settings = settings
@@ -247,6 +282,16 @@ class MessageProcessor:
             settings=settings,
             database=database,
         )
+        self._turn_coordinator = turn_coordinator or chat._turn_coordinator
+        self._planner_context = planner_context or PlannerContextBuilder(
+            ledger=self._ledger,
+            relationships=self._relationships,
+        )
+        self._planner = planner_service or PlannerService(
+            provider=FakePlannerProvider(),
+            observability=PlannerObservability(),
+        )
+        self._planner_signals = planner_signals
         audit = AdminAuditService(database)
         self._relationship_admin = relationship_admin or RelationshipAdminService(
             settings=settings,
@@ -305,7 +350,20 @@ class MessageProcessor:
             automation_service=automation_service,
             automation_repository=automation_repository,
             automation_worker=automation_worker,
+            turn_coordinator=self._turn_coordinator,
+            planner_observability=self._planner.observability,
+            planner_repository=self._planner.repository,
         )
+        self._event_publisher: LifecycleEventPublisher | None = None
+        if event_publisher is not None:
+            self.set_event_publisher(event_publisher)
+
+    def set_event_publisher(self, publisher: LifecycleEventPublisher) -> None:
+        """Attach one notification bus to the complete direct-chat lifecycle."""
+
+        self._event_publisher = publisher
+        self._chat.set_event_publisher(publisher)
+        self._planner.set_event_publisher(publisher)
 
     async def handle(
         self,
@@ -316,6 +374,19 @@ class MessageProcessor:
         """Process one message without deriving authority from model-visible data."""
 
         started = time.perf_counter()
+        await publish_notification(
+            self._event_publisher,
+            EventName.MESSAGE_NORMALIZED,
+            {
+                "message_id": message.message_id,
+                "scope_type": message.scope_type.value,
+                "has_text": bool(message.text),
+                "attachment_count": len(message.attachments),
+                "reply_attachment_count": len(message.reply_attachments),
+                "mentions_bot": message.mentions_bot,
+                "is_self_message": message.is_self_message,
+            },
+        )
         group_policy = await self._effective_group_policy(message.group_id)
         private_policy = await self._effective_private_policy(message)
         decision = evaluate_message(
@@ -364,12 +435,46 @@ class MessageProcessor:
             user_id=message.sender.user_id,
             group_id=message.group_id,
         )
+        self._chat.configure_runtime_controls(runtime_snapshot)
+        self._turn_coordinator.configure_policy(
+            cancel_replies_on_new_message=runtime_snapshot.reply.cancel_on_new_message,
+            interrupt_autonomous_on_new_message=(
+                runtime_snapshot.planner.interrupt_autonomous_on_new_message
+            ),
+        )
+        configure_signal_timeout = getattr(self._planner_signals, "configure_timeout", None)
+        if callable(configure_signal_timeout):
+            configure_signal_timeout(runtime_snapshot.plugins.hook_timeout_seconds)
+        configure_hook_timeout = getattr(
+            self._event_publisher,
+            "configure_default_timeout",
+            None,
+        )
+        if callable(configure_hook_timeout):
+            configure_hook_timeout(runtime_snapshot.plugins.hook_timeout_seconds)
+        turn_token = await self._turn_coordinator.notify_message(
+            self._turn_coordinator.key_for(message),
+            TurnOrigin.USER_MESSAGE,
+        )
         has_visual_input = VisionService.has_visual_input(message)
         image_blocks_command = bool(
             has_visual_input
             and decision.command is not None
             and self._commands.may_write(decision.command, decision.content)
         )
+        if decision.should_respond or admin_candidate:
+            await publish_notification(
+                self._event_publisher,
+                EventName.MESSAGE_TRIGGERED,
+                {
+                    "message_id": message.message_id,
+                    "scope_type": message.scope_type.value,
+                    "trigger_reason": decision.reason,
+                    "command": (decision.command.value if decision.command is not None else None),
+                    "visual_input_present": has_visual_input,
+                    "mentions_bot": message.mentions_bot,
+                },
+            )
 
         # forgetme is deliberately neither re-observed nor re-written to the ledger.
         if decision.command is CommandName.FORGETME and not image_blocks_command:
@@ -401,10 +506,13 @@ class MessageProcessor:
             if (
                 message.scope_type is ScopeType.GROUP
                 and group_policy is not None
-                and group_policy.autonomous_enabled
+                and (
+                    (runtime_snapshot.planner.enabled and runtime_snapshot.planner.group_enabled)
+                    or group_policy.autonomous_enabled
+                )
             ):
                 if self._autonomous is not None:
-                    self._autonomous.observe(message, profile, sender)
+                    self._autonomous.observe(message, profile, sender, turn_token)
             return ProcessResult(False, reason="group_observed")
 
         category = "command" if decision.command is not None else "chat"
@@ -488,6 +596,22 @@ class MessageProcessor:
             return ProcessResult(True, int(sent), "input_too_long")
 
         try:
+            planner_outcome: PlannerOutcome | None = None
+            planned_turn: PlannedTurn | None = None
+            if runtime_snapshot.planner.enabled:
+                planner_outcome = await self._plan_turn(
+                    message=message,
+                    content=content,
+                    runtime=runtime_snapshot,
+                    turn_token=turn_token,
+                    visual_input_present=has_visual_input,
+                    administrator_request=admin_candidate,
+                )
+                if planner_outcome is None:
+                    return ProcessResult(True, reason="planner_interrupted")
+                planned_turn = planner_outcome.planned_turn
+                if planned_turn.plan.decision is PlannerDecision.SILENT:
+                    return ProcessResult(True, reason="planner_silent")
             sent_count = await self._chat.respond(
                 message,
                 identity,
@@ -498,7 +622,17 @@ class MessageProcessor:
                 visual_observation=visual.observation,
                 visual_input_present=has_visual_input,
                 visual_failure=visual.failed,
+                planned_turn=planned_turn,
+                turn_token=turn_token,
             )
+            if planner_outcome is not None:
+                await self._planner.record_delivery(
+                    planner_outcome.run_id,
+                    messages_sent=sent_count,
+                    interrupted=not self._turn_coordinator.is_current(turn_token),
+                )
+        except (PlannerInterruptedError, ProviderPlannerInterruptedError, TurnSupersededError):
+            return ProcessResult(True, reason="planner_interrupted")
         except RequestCancelledError:
             return ProcessResult(True, reason="cancelled")
         except LLMConfigurationError:
@@ -537,6 +671,89 @@ class MessageProcessor:
             success=True,
         )
         return ProcessResult(True, sent_count, "chat")
+
+    async def _plan_turn(
+        self,
+        *,
+        message: InboundMessage,
+        content: str,
+        runtime: RuntimeConfigSnapshot,
+        turn_token: TurnToken,
+        visual_input_present: bool,
+        administrator_request: bool,
+    ) -> PlannerOutcome | None:
+        plugin_signals = (
+            await self._planner_signals.collect(
+                message=message,
+                origin=TurnOrigin.USER_MESSAGE,
+                runtime=runtime,
+            )
+            if self._planner_signals is not None
+            else ()
+        )
+        planner_input = await self._planner_context.build(
+            inbound=message,
+            conversation_key=turn_token.conversation_key,
+            content=content,
+            origin=TurnOrigin.USER_MESSAGE,
+            runtime=runtime,
+            visual_input_present=visual_input_present,
+            available_tool_categories=self._tool_categories(message, visual_input_present),
+            plugin_signals=plugin_signals,
+        )
+        async with self._turn_coordinator.track(turn_token, "planner"):
+            outcome = await self._planner.plan(
+                planner_input,
+                runtime=runtime,
+                turn_version=turn_token.version,
+                administrator_request=administrator_request,
+            )
+        if outcome.planned_turn.plan.decision is not PlannerDecision.WAIT:
+            return outcome
+        wait_seconds = outcome.planned_turn.plan.wait_seconds
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+        if not self._turn_coordinator.is_current(turn_token):
+            await self._planner.record_delivery(
+                outcome.run_id,
+                messages_sent=0,
+                interrupted=True,
+            )
+            return None
+        # Rebuild once after a bounded wait.  A second wait is treated as silence so
+        # one message can never create an unbounded background planning loop.
+        refreshed = await self._planner_context.build(
+            inbound=message,
+            conversation_key=turn_token.conversation_key,
+            content=content,
+            origin=TurnOrigin.USER_MESSAGE,
+            runtime=runtime,
+            visual_input_present=visual_input_present,
+            available_tool_categories=self._tool_categories(message, visual_input_present),
+            plugin_signals=plugin_signals,
+        )
+        async with self._turn_coordinator.track(turn_token, "planner"):
+            second = await self._planner.plan(
+                refreshed,
+                runtime=runtime,
+                turn_version=turn_token.version,
+                administrator_request=administrator_request,
+            )
+        if second.planned_turn.plan.decision is PlannerDecision.WAIT:
+            return None
+        return second
+
+    def _tool_categories(
+        self,
+        message: InboundMessage,
+        visual_input_present: bool,
+    ) -> tuple[str, ...]:
+        categories = ["history", "memory", "automation"]
+        if self._settings.web_enabled:
+            categories.append("web")
+        if message.sender.user_id in self._settings.superusers and not visual_input_present:
+            categories.extend(("admin", "onebot"))
+        return tuple(categories)
 
     async def _analyze_visual_input(
         self,
@@ -705,17 +922,18 @@ class MessageProcessor:
     ) -> bool:
         try:
             result = await sender.send(OutboundMessage(text=text))
+            message_id: str | None = None
+            if isinstance(result, str | int):
+                message_id = str(result)
+            elif isinstance(result, dict):
+                raw_id = result.get("message_id") or result.get("id")
+                if raw_id is not None:
+                    message_id = str(raw_id)
+            platform_message_id = message_id or f"out-{uuid.uuid4()}"
             if record:
-                message_id: str | None = None
-                if isinstance(result, str | int):
-                    message_id = str(result)
-                elif isinstance(result, dict):
-                    raw_id = result.get("message_id") or result.get("id")
-                    if raw_id is not None:
-                        message_id = str(raw_id)
                 await self._ledger.append(
                     bot_user_id=inbound.bot_user_id or "unknown-bot",
-                    platform_message_id=message_id or f"out-{uuid.uuid4()}",
+                    platform_message_id=platform_message_id,
                     scope_type=inbound.scope_type,
                     sender_user_id=inbound.bot_user_id or "unknown-bot",
                     direction="outbound",
@@ -727,6 +945,17 @@ class MessageProcessor:
                     ),
                     sender_is_bot=True,
                 )
+            await publish_notification(
+                self._event_publisher,
+                EventName.REPLY_SENT,
+                {
+                    "trigger_message_id": inbound.message_id,
+                    "platform_message_id": platform_message_id,
+                    "scope_type": inbound.scope_type.value,
+                    "character_count": len(text),
+                    "recorded": record,
+                },
+            )
             return True
         except (OSError, RuntimeError) as exc:
             logger.error("outbound_send_failed", exc_info=exc)

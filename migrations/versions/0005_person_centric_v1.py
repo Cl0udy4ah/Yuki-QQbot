@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from alembic import op
 from sqlalchemy import inspect
 
-from qq_ai_bot.persistence.models import Base
+from qq_ai_bot.persistence.metadata import Base
 
 revision: str = "0005"
 down_revision: str | None = "0004"
@@ -56,6 +56,19 @@ def upgrade() -> None:
             "runtime_config_overrides",
             "admin_operation_events",
             "media_analyses",
+            "emoji_descriptions",
+            "person_time_settings",
+            "automations",
+            "automation_versions",
+            "automation_runs",
+            "automation_step_runs",
+            "planner_runs",
+            "plugin_installations",
+            "plugin_config_values",
+            "plugin_state",
+            "plugin_audit_events",
+            "plugin_agent_sessions",
+            "plugin_agent_messages",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

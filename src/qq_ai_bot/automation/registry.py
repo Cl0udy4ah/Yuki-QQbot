@@ -141,6 +141,9 @@ class AutomationCapability:
     retry_policy: RetryPolicy
     allowed_origins: frozenset[TurnOrigin]
     schema_version: int = 1
+    provider_plugin_id: str | None = None
+    provider_version: str | None = None
+    provider_manifest_hash: str | None = None
     handler: CapabilityHandler | None = field(default=None, repr=False)
 
     @property
@@ -167,6 +170,15 @@ class AutomationCapabilityRegistry:
 
     def get(self, name: str) -> AutomationCapability | None:
         return self._items.get(name)
+
+    def unregister(self, name: str) -> bool:
+        return self._items.pop(name, None) is not None
+
+    def unregister_plugin(self, plugin_id: str) -> int:
+        names = [name for name, item in self._items.items() if item.provider_plugin_id == plugin_id]
+        for name in names:
+            self._items.pop(name, None)
+        return len(names)
 
     def require(self, name: str) -> AutomationCapability:
         definition = self.get(name)

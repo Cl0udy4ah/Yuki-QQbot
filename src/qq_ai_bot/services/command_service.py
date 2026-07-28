@@ -23,6 +23,9 @@ from qq_ai_bot.persistence.repositories import (
     MemoryRepository,
     PeopleRepository,
 )
+from qq_ai_bot.planner.observability import PlannerObservability
+from qq_ai_bot.planner.repository import PlannerRepository
+from qq_ai_bot.plugin_host.command_adapter import PluginCommandAdapter
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
 from qq_ai_bot.services.admin.group_admin import GroupAdminService
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
@@ -34,6 +37,7 @@ from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.config_commands import ConfigCommandHandler
 from qq_ai_bot.services.policies import CommandName, command_requires_superuser
 from qq_ai_bot.services.profile_commands import ProfileCommandHandler
+from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.services.vision_service import VisionService
 
 _NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
@@ -72,6 +76,10 @@ class CommandService:
         automation_service: AutomationService | None = None,
         automation_repository: AutomationRepository | None = None,
         automation_worker: AutomationWorker | None = None,
+        turn_coordinator: ConversationTurnCoordinator | None = None,
+        planner_observability: PlannerObservability | None = None,
+        planner_repository: PlannerRepository | None = None,
+        plugin_commands: PluginCommandAdapter | None = None,
     ) -> None:
         self._settings = settings
         self._conversations = conversations
@@ -84,6 +92,10 @@ class CommandService:
         self._vision = vision_service
         self._automation_repository = automation_repository
         self._automation_worker = automation_worker
+        self._turn_coordinator = turn_coordinator
+        self._planner_observability = planner_observability
+        self._planner_repository = planner_repository
+        self._plugin_commands = plugin_commands
         self._profile_commands = ProfileCommandHandler(
             people=people,
             memories=memories,
@@ -123,6 +135,8 @@ class CommandService:
             return operation not in {"", "list", "get", "history"}
         if command is CommandName.AUTOMATION:
             return operation not in {"", "list", "show", "history"}
+        if command is CommandName.PLUGIN:
+            return operation not in {"", "list", "show", "permissions", "doctor"}
         return False
 
     async def execute(
@@ -181,6 +195,22 @@ class CommandService:
             )
             automation_last_text = automation_last_run.isoformat() if automation_last_run else "无"
             automation_next_text = automation_next_run.isoformat() if automation_next_run else "无"
+            planner_metrics = (
+                self._planner_observability.snapshot()
+                if self._planner_observability is not None
+                else None
+            )
+            latest_planner = (
+                await self._planner_repository.latest()
+                if self._planner_repository is not None
+                else None
+            )
+            planner_model = self._settings.planner_model or self._settings.llm_model or "未配置"
+            planner_latency = (
+                planner_metrics.last_latency_seconds
+                if planner_metrics and planner_metrics.last_latency_seconds is not None
+                else "无"
+            )
             text = (
                 f"OneBot 连接：{'已连接' if self._onebot_connected() else '未连接'}\n"
                 f"模型：{self._settings.llm_model or '未配置'}\n"
@@ -190,6 +220,13 @@ class CommandService:
                 f"视觉排队/运行：{vision_queue_depth}/{vision_running}\n"
                 f"当前切点后的事件数：{count}\n"
                 f"请求处理中：{'是' if self._concurrency.is_processing(identity.key) else '否'}\n"
+                f"Planner：{'已启用' if self._settings.planner_enabled else '未启用'}\n"
+                f"Planner 模型：{planner_model}\n"
+                f"活动 Planner：{planner_metrics.active_requests if planner_metrics else 0}\n"
+                f"最近 Planner 延迟："
+                f"{planner_latency}\n"
+                f"最近 Planner 决策时间："
+                f"{latest_planner.created_at.isoformat() if latest_planner else '无'}\n"
                 f"待重启配置数：{pending_restart}\n"
                 f"自动化：{'已启用' if self._settings.automation_enabled else '未启用'}\n"
                 f"自动化 Worker：{automation_worker_status}\n"
@@ -200,6 +237,13 @@ class CommandService:
             )
         elif command is CommandName.STOP:
             cancelled = await self._concurrency.cancel(identity.key)
+            if self._turn_coordinator is not None:
+                cancelled = (
+                    await self._turn_coordinator.cancel_interruptible(
+                        self._turn_coordinator.key_for(message)
+                    )
+                    or cancelled
+                )
             text = "已取消当前 AI 请求。" if cancelled else "当前没有正在处理的 AI 请求。"
         elif command in {CommandName.ON, CommandName.OFF}:
             if message.scope_type is not ScopeType.GROUP or message.group_id is None:
@@ -276,6 +320,19 @@ class CommandService:
                 identity=identity,
                 argument=argument,
             )
+        elif command is CommandName.PLUGIN:
+            if self._plugin_commands is None:
+                text = "插件系统当前未启用。"
+            else:
+                text = await self._plugin_commands.execute(
+                    message=message,
+                    identity=identity,
+                    argument=argument,
+                    runtime=await self._runtime_config.snapshot(
+                        user_id=message.sender.user_id,
+                        group_id=message.group_id,
+                    ),
+                )
         else:
             text = "未知命令，请使用 /ai help 查看帮助。"
 
@@ -297,6 +354,7 @@ class CommandService:
             "/ai capabilities [类别]（查看当前 QQ 的完整权限与可改范围）\n"
             "/ai config list|get|set|unset|history|rollback（超级管理员）\n"
             "/ai automation list|show|pause|resume|cancel|run|history <任务ID>\n"
+            "/ai plugin list|show|permissions|approve|enable|disable|doctor|run\n"
             "/ai on|off（超级管理员，当前群）\n"
             "/ai group <群号> on|off（超级管理员）\n"
             "/ai private <QQ号> on|off（超级管理员；阻止/恢复私聊）\n"

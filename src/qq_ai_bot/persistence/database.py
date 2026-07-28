@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from qq_ai_bot.persistence.models import Base
+from qq_ai_bot.persistence.metadata import Base
 
 _SQLITE_BUSY_TIMEOUT_MS = 5_000
 

@@ -166,6 +166,8 @@ def test_registry_is_explicit_and_converts_supported_types() -> None:
     assert registry.convert(registry.get("autonomous.max_per_hour"), "10") == 10
     assert registry.convert(registry.get("llm.temperature"), "0.25") == 0.25
     assert registry.convert(registry.get("autonomous.enabled"), "开启") is True
+    assert registry.get("desired_messages").key == "planner.preferred_messages"
+    assert registry.convert(registry.get("日常回复条数"), "5") == 5
     with pytest.raises(KeyError):
         registry.get("arbitrary_config_set")
     with pytest.raises(ValueError):
@@ -794,6 +796,55 @@ async def test_natural_language_config_change_is_hot_and_group_scoped(
 
 
 @pytest.mark.asyncio
+async def test_natural_language_can_change_planner_message_target(
+    database: Database,
+) -> None:
+    calls = 0
+
+    def responder(_request: object) -> ChatResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="planner-message-target",
+                        function=ToolFunction(
+                            name="admin_set_config",
+                            arguments=json.dumps(
+                                {
+                                    "key": "desired_messages",
+                                    "value": 5,
+                                    "scope_type": "global",
+                                    "scope_id": "",
+                                }
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        return ChatResponse(content="日常回复现在会尽量分成 5 条。", latency_seconds=0)
+
+    settings = make_settings(database.url)
+    provider = FakeLLMProvider(responder)
+    harness = build_harness(database, settings, provider)
+    runtime, capabilities, _router = admin_stack(database)
+    harness.processor._chat.set_admin_tools(capabilities)
+    sender = MemorySender()
+
+    result = await harness.processor.handle(
+        inbound("把 Planner 日常回复偏好改成 5 条", message_id="planner-message-config"),
+        sender,
+    )
+
+    assert result.reason == "chat"
+    assert sender.messages[0].text == "日常回复现在会尽量分成 5 条。"
+    assert (await runtime.snapshot()).planner.preferred_messages == 5
+
+
+@pytest.mark.asyncio
 async def test_same_management_text_from_normal_user_is_ordinary_chat(
     database: Database,
 ) -> None:
@@ -1390,8 +1441,19 @@ async def test_group_override_is_visible_in_next_snapshot(database: Database) ->
         trigger_message_id="group-runtime",
     )
     assert changed.success
+    debounce = await service.set_override(
+        "planner.group_debounce_seconds",
+        0,
+        scope_type="group",
+        scope_id="2001",
+        actor_user_id="9000",
+        trigger_message_id="planner-debounce",
+    )
+    assert debounce.success
     assert (await service.snapshot(group_id="2001")).autonomous.max_per_hour == 10
+    assert (await service.snapshot(group_id="2001")).planner.group_debounce_seconds == 0
     assert (await service.snapshot(group_id="2002")).autonomous.max_per_hour == 3
+    assert (await service.snapshot(group_id="2002")).planner.group_debounce_seconds == 8
 
 
 @pytest.mark.asyncio
@@ -1677,11 +1739,11 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
             )
         )
         assert payload["data"]["transient_internal_reference"] is True
-        assert payload["data"]["counts"]["mutable_configurations"] == 71
+        assert payload["data"]["counts"]["mutable_configurations"] == 96
         assert payload["data"]["counts"]["business_actions"] == 19
         assert payload["data"]["counts"]["onebot_api_gateways"] == 1
         return ChatResponse(
-            content="你有 71 项可改配置、19 项应用业务接口，以及全部公开 OneBot action 权限。",
+            content="你有 96 项可改配置、19 项应用业务接口，以及全部公开 OneBot action 权限。",
             latency_seconds=0,
         )
 
@@ -1696,7 +1758,7 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
     assert result.tool_calls == 1
     assert calls == 2
     assert result.text == (
-        "你有 71 项可改配置、19 项应用业务接口，以及全部公开 OneBot action 权限。"
+        "你有 96 项可改配置、19 项应用业务接口，以及全部公开 OneBot action 权限。"
     )
     assert "transient_internal_reference" not in result.text
 

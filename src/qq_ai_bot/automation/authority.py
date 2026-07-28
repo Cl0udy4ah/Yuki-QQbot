@@ -27,6 +27,7 @@ class DelegatedAuthority(StrictModel):
     permission_level: PermissionLevel
     granted_capabilities: tuple[str, ...]
     capability_schema_versions: dict[str, int]
+    capability_provenance: dict[str, dict[str, str]] = Field(default_factory=dict)
     authority_version: int = 1
     origin: TurnOrigin = TurnOrigin.SCHEDULED_AUTOMATION
     current_group_id: str | None = None
@@ -65,6 +66,14 @@ def effective_delegated_capabilities(
             continue
         if authority.capability_schema_versions.get(name) != definition.schema_version:
             continue
+        if definition.provider_plugin_id is not None:
+            expected = authority.capability_provenance.get(name, {})
+            if expected != {
+                "plugin_id": definition.provider_plugin_id,
+                "plugin_version": definition.provider_version or "",
+                "manifest_hash": definition.provider_manifest_hash or "",
+            }:
+                continue
         if not definition.permits(current_permission):
             continue
         if TurnOrigin.SCHEDULED_AUTOMATION not in definition.allowed_origins:

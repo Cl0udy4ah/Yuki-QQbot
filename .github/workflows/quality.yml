@@ -18,13 +18,17 @@ jobs:
           version: "0.11.31"
           enable-cache: true
       - name: Install dependencies
-        run: uv sync --frozen --extra dev
-      - name: Ruff
-        run: uv run ruff check src tests migrations
+        run: uv sync --frozen --all-extras
+      - name: Ruff format
+        run: uv run ruff format --check .
+      - name: Ruff check
+        run: uv run ruff check .
       - name: Mypy
         run: uv run mypy src
       - name: Pytest
         run: uv run pytest -q
+      - name: Example plugin contract
+        run: uv run pytest -q examples/plugins/com.example.echo/tests
       - name: Alembic fresh install
         env:
           DATABASE_URL: sqlite+aiosqlite:///./data/ci.db
@@ -36,5 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Validate Compose
+        run: docker compose config --quiet
       - name: Build runtime image
-        run: docker build --tag yuki-qqbot:ci .
+        run: docker compose build bot

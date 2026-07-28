@@ -30,6 +30,7 @@ class CommandName(StrEnum):
     CAPABILITIES = "capabilities"
     CONFIG = "config"
     AUTOMATION = "automation"
+    PLUGIN = "plugin"
 
 
 @dataclass(frozen=True, slots=True)

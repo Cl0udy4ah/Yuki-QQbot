@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from functools import cached_property
 from pathlib import Path
 from typing import Self
@@ -90,6 +91,44 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = 12
     agent_max_model_requests: int = 12
     agent_tool_result_max_characters: int = 32000
+
+    # Planner-first conversation orchestration.  The legacy autonomous confidence,
+    # cooldown and hourly limit settings remain readable for 1.x compatibility but
+    # are not used by the 1.6 Planner pipeline.
+    planner_enabled: bool = True
+    planner_model: str = ""
+    planner_direct_enabled: bool = True
+    planner_group_enabled: bool = True
+    planner_group_debounce_seconds: float = 8.0
+    planner_preferred_messages: int = 3
+    planner_temperature: float = 0.1
+    planner_max_output_tokens: int = 512
+    planner_timeout_seconds: float = 20.0
+    planner_confidence_threshold: float = 0.65
+    planner_reply_necessity_threshold: int = 80
+    planner_max_pending_messages: int = 20
+    planner_recent_presence_window_seconds: int = 300
+    planner_max_wait_seconds: int = 60
+    planner_interrupt_autonomous_on_new_message: bool = True
+    planner_record_runs: bool = True
+    reply_sequence_cancel_on_new_message: bool = True
+    reply_plan_hard_max_messages: int = 10
+
+    # Local in-process plugins.  Approval is API governance, not a Python sandbox.
+    plugin_system_enabled: bool = False
+    plugin_directory: Path = Path("plugins")
+    plugin_api_version: str = "1.0"
+    plugin_hook_timeout_seconds: float = 3.0
+    plugin_start_timeout_seconds: float = 10.0
+    plugin_stop_timeout_seconds: float = 10.0
+    plugin_max_prompt_fragment_characters: int = 2000
+    plugin_max_prompt_characters_per_plugin: int = 4000
+    plugin_max_total_prompt_characters: int = 8000
+    plugin_background_task_limit: int = 4
+    plugin_failure_disable_threshold: int = 3
+    plugin_http_max_response_bytes: int = 2_097_152
+    plugin_http_timeout_seconds: float = 15.0
+    plugin_ai_session_max_history_messages: int = 200
 
     relationship_enabled: bool = True
     relationship_initial_affection: int = 50
@@ -191,6 +230,20 @@ class Settings(BaseSettings):
         "agent_max_tool_calls",
         "agent_max_model_requests",
         "agent_tool_result_max_characters",
+        "planner_preferred_messages",
+        "planner_max_output_tokens",
+        "planner_reply_necessity_threshold",
+        "planner_max_pending_messages",
+        "planner_recent_presence_window_seconds",
+        "planner_max_wait_seconds",
+        "reply_plan_hard_max_messages",
+        "plugin_max_prompt_fragment_characters",
+        "plugin_max_prompt_characters_per_plugin",
+        "plugin_max_total_prompt_characters",
+        "plugin_background_task_limit",
+        "plugin_failure_disable_threshold",
+        "plugin_http_max_response_bytes",
+        "plugin_ai_session_max_history_messages",
         "relationship_batch_trigger_count",
         "relationship_batch_max_turns",
         "relationship_max_attempts",
@@ -244,6 +297,11 @@ class Settings(BaseSettings):
         "vision_queue_timeout_seconds",
         "vision_media_download_timeout_seconds",
         "automation_poll_seconds",
+        "planner_timeout_seconds",
+        "plugin_hook_timeout_seconds",
+        "plugin_start_timeout_seconds",
+        "plugin_stop_timeout_seconds",
+        "plugin_http_timeout_seconds",
     )
     @classmethod
     def _positive_timeout(cls, value: float) -> float:
@@ -272,6 +330,7 @@ class Settings(BaseSettings):
         "daily_chat_message_delay_min_seconds",
         "daily_chat_message_delay_max_seconds",
         "autonomous_silence_seconds",
+        "planner_group_debounce_seconds",
         "memory_batch_seconds",
         "relationship_batch_seconds",
     )
@@ -292,6 +351,8 @@ class Settings(BaseSettings):
 
     @field_validator(
         "autonomous_confidence_threshold",
+        "planner_temperature",
+        "planner_confidence_threshold",
         "relationship_confidence_threshold",
         "vision_low_confidence_retry_threshold",
     )
@@ -387,7 +448,53 @@ class Settings(BaseSettings):
             raise ValueError("AUTOMATION_MAX_MESSAGES_PER_RUN must not exceed 10")
         if self.automation_min_interval_seconds < 60:
             raise ValueError("AUTOMATION_MIN_INTERVAL_SECONDS must be at least 60")
+        if self.planner_reply_necessity_threshold > 100:
+            raise ValueError("PLANNER_REPLY_NECESSITY_THRESHOLD must not exceed 100")
+        if self.planner_group_debounce_seconds > 60:
+            raise ValueError("PLANNER_GROUP_DEBOUNCE_SECONDS must not exceed 60")
+        if self.planner_preferred_messages > 20:
+            raise ValueError("PLANNER_PREFERRED_MESSAGES must not exceed 20")
+        if self.planner_max_pending_messages > 100:
+            raise ValueError("PLANNER_MAX_PENDING_MESSAGES must not exceed 100")
+        if self.planner_max_wait_seconds > 300:
+            raise ValueError("PLANNER_MAX_WAIT_SECONDS must not exceed 300")
+        if self.reply_plan_hard_max_messages > 20:
+            raise ValueError("REPLY_PLAN_HARD_MAX_MESSAGES must not exceed 20")
+        if self.plugin_max_total_prompt_characters <= self.plugin_max_prompt_fragment_characters:
+            raise ValueError(
+                "PLUGIN_MAX_TOTAL_PROMPT_CHARACTERS must exceed "
+                "PLUGIN_MAX_PROMPT_FRAGMENT_CHARACTERS"
+            )
+        if (
+            self.plugin_max_prompt_characters_per_plugin
+            < self.plugin_max_prompt_fragment_characters
+        ):
+            raise ValueError(
+                "PLUGIN_MAX_PROMPT_CHARACTERS_PER_PLUGIN must be at least "
+                "PLUGIN_MAX_PROMPT_FRAGMENT_CHARACTERS"
+            )
         return self
+
+    @field_validator("plugin_api_version")
+    @classmethod
+    def _valid_plugin_api_version(cls, value: str) -> str:
+        normalized = value.strip()
+        if re.fullmatch(r"[1-9][0-9]*\.[0-9]+", normalized) is None:
+            raise ValueError("PLUGIN_API_VERSION must use major.minor format")
+        return normalized
+
+    @field_validator("plugin_directory")
+    @classmethod
+    def _safe_plugin_directory(cls, value: Path) -> Path:
+        path = Path(value)
+        resolved = path.resolve(strict=False)
+        sensitive = {Path(resolved.anchor), Path.home().resolve(strict=False)}
+        if resolved in sensitive:
+            raise ValueError("PLUGIN_DIRECTORY must not point to a filesystem root or home")
+        lowered = {part.casefold() for part in resolved.parts}
+        if {"windows", "system32"}.issubset(lowered):
+            raise ValueError("PLUGIN_DIRECTORY must not point to a system directory")
+        return path
 
     @model_validator(mode="after")
     def _validate_web_configuration(self) -> Self:
@@ -475,3 +582,9 @@ class Settings(BaseSettings):
             and self.vision_api_key.strip()
             and self.vision_model.strip()
         )
+
+    @property
+    def planner_configured(self) -> bool:
+        """Whether Planner may use the already configured main LLM provider."""
+
+        return bool(self.planner_enabled and self.llm_configured)

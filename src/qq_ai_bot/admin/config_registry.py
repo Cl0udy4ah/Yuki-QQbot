@@ -7,6 +7,7 @@ from collections.abc import Iterable
 
 from qq_ai_bot.admin.config_specs_future import future_config_specs
 from qq_ai_bot.admin.config_specs_hot import hot_config_specs
+from qq_ai_bot.admin.config_specs_planner_plugins import planner_plugin_config_specs
 from qq_ai_bot.admin.config_specs_protected import protected_config_specs
 from qq_ai_bot.admin.config_specs_restart import restart_config_specs
 from qq_ai_bot.admin.models import ConfigSpec, ConfigValue
@@ -17,6 +18,7 @@ def _registered_specs() -> tuple[ConfigSpec, ...]:
 
     return (
         *hot_config_specs(),
+        *planner_plugin_config_specs(),
         *future_config_specs(),
         *restart_config_specs(),
         *protected_config_specs(),

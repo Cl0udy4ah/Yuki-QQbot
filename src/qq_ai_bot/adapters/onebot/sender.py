@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from nonebot.adapters.onebot.v11 import Bot, MessageEvent, MessageSegment
+from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
 
 from qq_ai_bot.domain.messages import OutboundMessage
 
@@ -17,19 +17,22 @@ class OneBotSendError(RuntimeError):
 
 
 class OneBotSender:
-    """Send plain text to the event source without quoting another message."""
+    """Send plain text, optionally quoting one backend-validated message."""
 
     def __init__(self, bot: Bot, event: MessageEvent) -> None:
         self._bot = bot
         self._event = event
 
     async def send(self, message: OutboundMessage) -> object:
-        """Send one plain text message."""
+        """Send one text message and prepend a reply segment when requested."""
 
         try:
-            return await self._bot.send(
-                event=self._event, message=MessageSegment.text(message.text)
-            )
+            payload: MessageSegment | Message = MessageSegment.text(message.text)
+            if message.reply_to_message_id:
+                if not message.reply_to_message_id.isdigit():
+                    raise ValueError("reply target must be a numeric OneBot message ID")
+                payload = MessageSegment.reply(int(message.reply_to_message_id)) + payload
+            return await self._bot.send(event=self._event, message=payload)
         except Exception as exc:
             logger.error("onebot_send_failed exception_category=%s", type(exc).__name__)
             raise OneBotSendError("OneBot send failed") from exc

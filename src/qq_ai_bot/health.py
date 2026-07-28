@@ -22,6 +22,11 @@ class HealthPayload(TypedDict):
     automation_enabled: bool
     automation_worker_running: bool
     active_automation_count: int
+    planner_enabled: bool
+    planner_configured: bool
+    planner_active_requests: int
+    plugin_system_enabled: bool
+    plugin_running_count: int
     uptime_seconds: int
 
 
@@ -29,6 +34,9 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     """Check dependencies without probing or billing the LLM provider."""
 
     database_ok = await container.database.ping()
+    planner_metrics = container.planner_observability.snapshot()
+    plugin_manager = getattr(container, "plugin_manager", None)
+    plugin_running_count = int(getattr(plugin_manager, "running_count", 0))
     return HealthPayload(
         status="ok" if database_ok else "degraded",
         version=__version__,
@@ -40,5 +48,10 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         automation_enabled=container.settings.automation_enabled,
         automation_worker_running=container.automation_worker.running,
         active_automation_count=await container.automation_repository.active_count(),
+        planner_enabled=container.settings.planner_enabled,
+        planner_configured=container.settings.planner_configured,
+        planner_active_requests=planner_metrics.active_requests,
+        plugin_system_enabled=container.settings.plugin_system_enabled,
+        plugin_running_count=plugin_running_count,
         uptime_seconds=max(0, int(time.monotonic() - container.started_at)),
     )

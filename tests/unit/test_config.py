@@ -54,6 +54,39 @@ def test_daily_chat_delay_range_must_be_ordered() -> None:
         )
 
 
+def test_planner_and_plugin_defaults_are_bounded() -> None:
+    settings = Settings()
+    assert settings.planner_enabled
+    assert settings.planner_group_debounce_seconds == 8
+    assert settings.planner_preferred_messages == 3
+    assert settings.planner_reply_necessity_threshold == 80
+    assert settings.reply_plan_hard_max_messages == 10
+    assert not settings.plugin_system_enabled
+    assert settings.plugin_api_version == "1.0"
+    assert settings.plugin_ai_session_max_history_messages == 200
+
+    with pytest.raises(ValidationError, match="PLANNER_REPLY_NECESSITY_THRESHOLD"):
+        Settings.model_validate({"planner_reply_necessity_threshold": 101})
+    assert Settings.model_validate({"planner_group_debounce_seconds": 0})
+    with pytest.raises(ValidationError, match="PLANNER_GROUP_DEBOUNCE_SECONDS"):
+        Settings.model_validate({"planner_group_debounce_seconds": 61})
+    assert Settings.model_validate({"planner_preferred_messages": 20})
+    with pytest.raises(ValidationError, match="PLANNER_PREFERRED_MESSAGES"):
+        Settings.model_validate({"planner_preferred_messages": 21})
+    assert Settings.model_validate({"reply_plan_hard_max_messages": 20})
+    with pytest.raises(ValidationError, match="REPLY_PLAN_HARD_MAX_MESSAGES"):
+        Settings.model_validate({"reply_plan_hard_max_messages": 21})
+    with pytest.raises(ValidationError, match="PLUGIN_API_VERSION"):
+        Settings.model_validate({"plugin_api_version": "v1"})
+    with pytest.raises(ValidationError, match="PLUGIN_MAX_TOTAL_PROMPT_CHARACTERS"):
+        Settings.model_validate(
+            {
+                "plugin_max_prompt_fragment_characters": 2000,
+                "plugin_max_total_prompt_characters": 2000,
+            }
+        )
+
+
 def test_v1_memory_limits_accept_group_hundred_and_reject_member_over_fifty() -> None:
     assert Settings.model_validate({"group_memory_max_entries": 100})
     with pytest.raises(ValidationError, match="PERSON_GROUP_MEMORY_MAX_ENTRIES"):

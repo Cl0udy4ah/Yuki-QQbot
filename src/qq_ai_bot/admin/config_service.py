@@ -26,6 +26,8 @@ from qq_ai_bot.admin.models import (
     ContextRuntimeConfig,
     EffectiveConfigValue,
     LLMRuntimeConfig,
+    PlannerRuntimeConfig,
+    PluginRuntimeConfig,
     RelationshipRuntimeConfig,
     ReplyRuntimeConfig,
     RuntimeConfigSnapshot,
@@ -1012,6 +1014,48 @@ class RuntimeConfigService:
                 cooldown_seconds=int(cast(int, value("autonomous.cooldown_seconds"))),
                 max_per_hour=int(cast(int, value("autonomous.max_per_hour"))),
             ),
+            planner=PlannerRuntimeConfig(
+                enabled=bool(value("planner.enabled")),
+                model=str(value("planner.model") or ""),
+                direct_enabled=bool(value("planner.direct_enabled")),
+                group_enabled=bool(value("planner.group_enabled")),
+                group_debounce_seconds=float(
+                    cast(float | int, value("planner.group_debounce_seconds"))
+                ),
+                temperature=float(cast(float | int, value("planner.temperature"))),
+                max_output_tokens=int(cast(int, value("planner.max_output_tokens"))),
+                timeout_seconds=float(cast(float | int, value("planner.timeout_seconds"))),
+                confidence_threshold=float(
+                    cast(float | int, value("planner.confidence_threshold"))
+                ),
+                reply_necessity_threshold=int(
+                    cast(int, value("planner.reply_necessity_threshold"))
+                ),
+                max_pending_messages=int(cast(int, value("planner.max_pending_messages"))),
+                recent_presence_window_seconds=int(
+                    cast(int, value("planner.recent_presence_window_seconds"))
+                ),
+                max_wait_seconds=int(cast(int, value("planner.max_wait_seconds"))),
+                interrupt_autonomous_on_new_message=bool(
+                    value("planner.interrupt_autonomous_on_new_message")
+                ),
+                record_runs=bool(value("planner.record_runs")),
+                preferred_messages=int(cast(int, value("planner.preferred_messages"))),
+            ),
+            plugins=PluginRuntimeConfig(
+                hook_timeout_seconds=float(
+                    cast(float | int, value("plugins.hook_timeout_seconds"))
+                ),
+                max_prompt_fragment_characters=int(
+                    cast(int, value("plugins.max_prompt_fragment_characters"))
+                ),
+                max_prompt_characters_per_plugin=int(
+                    cast(int, value("plugins.max_prompt_characters_per_plugin"))
+                ),
+                max_total_prompt_characters=int(
+                    cast(int, value("plugins.max_total_prompt_characters"))
+                ),
+            ),
             context=ContextRuntimeConfig(
                 local_event_limit=int(cast(int, value("context.local_event_limit"))),
                 related_people_limit=int(cast(int, value("context.related_people_limit"))),
@@ -1025,6 +1069,8 @@ class RuntimeConfigService:
                 delay_min_seconds=min(delay_min, delay_max),
                 delay_max_seconds=max(delay_min, delay_max),
                 max_qq_message_chars=int(cast(int, value("reply.max_qq_message_chars"))),
+                cancel_on_new_message=bool(value("reply.cancel_on_new_message")),
+                plan_hard_max_messages=int(cast(int, value("reply.plan_hard_max_messages"))),
             ),
             llm=LLMRuntimeConfig(
                 model=str(value("llm.model") or ""),

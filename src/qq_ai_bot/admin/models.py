@@ -151,6 +151,40 @@ class ReplyRuntimeConfig:
     delay_min_seconds: float
     delay_max_seconds: float
     max_qq_message_chars: int
+    cancel_on_new_message: bool
+    plan_hard_max_messages: int
+
+
+@dataclass(frozen=True, slots=True)
+class PlannerRuntimeConfig:
+    """One effective Planner policy snapshot for a real turn."""
+
+    enabled: bool
+    model: str
+    direct_enabled: bool
+    group_enabled: bool
+    temperature: float
+    max_output_tokens: int
+    timeout_seconds: float
+    confidence_threshold: float
+    reply_necessity_threshold: int
+    max_pending_messages: int
+    recent_presence_window_seconds: int
+    max_wait_seconds: int
+    interrupt_autonomous_on_new_message: bool
+    record_runs: bool
+    group_debounce_seconds: float = 8.0
+    preferred_messages: int = 3
+
+
+@dataclass(frozen=True, slots=True)
+class PluginRuntimeConfig:
+    """Hot plugin limits that never include credentials or installation paths."""
+
+    hook_timeout_seconds: float
+    max_prompt_fragment_characters: int
+    max_prompt_characters_per_plugin: int
+    max_total_prompt_characters: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +243,8 @@ class RuntimeConfigSnapshot:
     """One internally consistent runtime view for an incoming message."""
 
     autonomous: AutonomousRuntimeConfig
+    planner: PlannerRuntimeConfig
+    plugins: PluginRuntimeConfig
     context: ContextRuntimeConfig
     reply: ReplyRuntimeConfig
     llm: LLMRuntimeConfig

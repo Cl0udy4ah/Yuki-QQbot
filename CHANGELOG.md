@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+## 1.6.0 - 2026-07-28
+
+### Planner-first 会话重写
+
+- 新增确定性的 `ReplyNecessityScorer`、严格 `TurnPlan`、`PlannerProvider/Service`、受限上下文构建、失败降级与脱敏可观测性；普通聊天先规划 `reply/wait/silent`、意图、发送模式、目标消息数和工具收窄方式，再进入现有单一 Yuki Agent。
+- 私聊、明确 @/回复、管理员自然语言操作和群聊自主观察采用不同的后端门槛与降级规则；Planner 不提供工具、不产生最终正文，也不能修改身份、权限、记忆、关系、配置、自动化或插件批准。
+- 新增 `ConversationTurnCoordinator` 和 `ReplySequenceManager`：群聊新消息可中断过期的自主 Planner/生成，私聊新消息可停止尚未发送的旧分句；已经开始的修改型工具不自动取消，代码块、表格、来源和结构化内容不会被机械逐句拆散。
+- Planner 默认开启；`PLANNER_ENABLED=false` 保留 1.5.2 兼容路径。Planner-first 群聊不再读取任何旧 `AUTONOMOUS_*` 限制，群消息聚合改由新的热配置 `planner.group_debounce_seconds` 独立控制。
+- `/ai` 确定性命令继续绕过 Planner；正常聊天、管理员工具、联网和自动化创建仍共用原有单一 Agent，不新增管理员人格或隐藏客服路由。
+- 新增热配置 `planner.preferred_messages`（默认 3、范围 1～20）：Planner 在日常聊天和用户明确要求多条回复时选择 `natural_multi`，Agent 按句子或自然段形成语义边界，短内容不凑数，结构化内容保持完整。
+- 超级管理员可用自然语言修改日常消息目标条数及单轮硬上限；`desired_messages` 作为配置别名可被能力目录检索。`reply.plan_hard_max_messages` 的可配置上限由 10 提高到 20，默认值仍为 10。
+- 日常分句器不再因句子数超过目标就退回单条，而是按原顺序合并相邻语义单元，并支持以自然换行为分隔位置。
+- 非结构化聊天输出中的空行现在是强发送边界，即使 Planner 选择 `single` 或 `concise` 也会拆成多条 QQ 消息；超过硬上限时只用单换行合并相邻段落，结构化模式仍保持完整。
+- `TurnPlan` 新增受后端校验的 `reply_to_message_id`：Planner 可在多人聊天指向关系足够明确时自主选择引用回复，默认继续普通发送；目标只能取当前受限会话输入中的真实消息，多条回复仅第一条引用，并将引用关系写入永久事件账本。
+
+### Plugin API v1
+
+- 新增可独立安装的 `yuki_plugin_sdk` 和 Plugin API `1.0`，提供严格 Manifest、Feature Registry、Permission Catalog、生命周期 Protocol、声明型 Registrar、类型化结果与网络为空的测试 Fake。
+- 新增插件发现、Manifest 哈希批准、名称冲突保护、通知 Event Bus、Prompt Fragment、PlannerSignal、Agent 工具、确定性命令、普通用户自动化 Action、配置 Schema、私有 KV 和托管后台服务扩展契约。
+- 插件能力按“Manifest 声明 ∩ 管理员批准 ∩ 当前真实用户/群/来源 ∩ 本轮安全策略”计算；Planner、历史、网页、OCR、记忆、参数和用户自报不能扩大权限。图片轮次、联网后撤权和自动化委托继续收窄插件写能力。
+- 新增绑定 `PluginContext` 的消息、人物、群、记忆、关系、LLM/Agent、联网、HTTP、视觉、媒体、自动化、配置、Secret、Storage、Scheduler 和 OneBot Facade Protocol；不向插件暴露 Container、Settings、主数据库、Repository、NoneBot Bot、原始事件、完整 Prompt 或隐藏推理。
+- `ctx.agent.run()` 接入现有 `AgentRunner` 的只读工具后端；历史、人物记忆、群记忆与联网能力严格取 Manifest 批准交集，普通用户的历史和记忆查询自动锁定当前本人/群，不能借插件 Agent 扩大作用域。
+- 插件 HTTP 对每次请求和重定向执行公网 DNS 复检与连接地址固定，跨源重定向丢弃调用方数据，并按 Manifest 限制并发；私有 KV 同样按 `storage_mb` 执行容量上限。
+- 插件消息发送和 OneBot 读/写调用增加脱敏审计；仅成功发送写入 `chat_events`，媒体账本不保存文件 ID、签名 URL 或正文参数。持久化插件自动化 Action 在到期执行时恢复经过校验的创建者委托上下文。
+- Plugin API v1 是本地可信代码的 API 治理，不是恶意 Python 沙盒；插件与 Yuki 同进程运行，默认 `PLUGIN_SYSTEM_ENABLED=false`，不提供在线下载、市场、热更新或第三方独立进程。
+
+### 独立插件 AI 会话
+
+- 新增 `ctx.agent_sessions.create/run/reset/close`，支持 `durable` 与 `ephemeral`、`none/current_user/current_group` 上下文策略、最长 8000 字符插件指令以及批准能力交集，适合骰子跑团、游戏主持和插件向导。
+- 独立会话使用 `plugin-session:<plugin_id>:<uuid>` 并发键；历史只来自 `plugin_agent_messages`，不写 `chat_events`，默认不读取主聊天、人物记忆或关系，不向 SDK 返回或持久化 `reasoning_content`。
+- Facade 固定真实插件、用户、群和批准权限，Agent 运行时始终不能伪造 `actor_is_superuser`；会话 UUID 不能跨插件或跨真实场景访问。
+
+### 数据、配置与开发体验
+
+- 新增非破坏性 Alembic `0013`：创建 `planner_runs`、插件安装/配置/KV/审计、独立 Agent 会话及消息表；保留 1.5.2 的人物、聊天、记忆、关系、联网、视觉、表情和自动化数据。
+- 新增 `PLANNER_*`、`REPLY_SEQUENCE_CANCEL_ON_NEW_MESSAGE`、`REPLY_PLAN_HARD_MAX_MESSAGES` 与 `PLUGIN_*` 配置；Planner 热配置进入现有显式运行时注册表，插件目录/API 版本和系统开关按需重启。
+- 新增 `docs/plugin-development/` 的 29 页完整手册与 API Reference，覆盖 10 分钟入门、Manifest、权限、生命周期、Facade、事件、Prompt、PlannerSignal、工具、命令、自动化、网络、视觉、测试、发布、兼容与真实安全边界。
+- 新增无网络 `examples/plugins/com.example.echo`，演示普通工具、确定性命令、`reply.sent` Hook、`plugin_context`、普通用户自动化 Action、global/user/group 配置和私有 KV；GitHub Actions 增加示例插件契约测试。
+- Docker Compose 新增只读 `./plugins:/app/plugins` 挂载；插件目录不进入运行镜像，也不会默认启用示例插件。
+- 版本提升至 `1.6.0`，同步 README、`.env.example`、包版本、锁文件和升级说明。
+
 ## 1.5.2 - 2026-07-28
 
 ### 架构与上下文治理

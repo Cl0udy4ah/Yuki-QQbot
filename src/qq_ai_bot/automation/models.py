@@ -128,6 +128,7 @@ class TurnOrigin(StrEnum):
     AUTONOMOUS_GROUP = "autonomous_group"
     SCHEDULED_AUTOMATION = "scheduled_automation"
     SYSTEM_TASK = "system_task"
+    PLUGIN_SESSION = "plugin_session"
 
 
 class RiskClass(StrEnum):

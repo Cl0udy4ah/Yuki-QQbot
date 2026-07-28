@@ -50,32 +50,46 @@ def clean_model_output(text: str, *, max_characters: int) -> str:
 def _plain_sentences(text: str) -> tuple[str, ...]:
     """Split plain conversational prose while preserving sentence punctuation."""
 
-    normalized = re.sub(r"\s+", " ", text).strip()
     sentences: list[str] = []
-    start = 0
-    index = 0
-    while index < len(normalized):
-        character = normalized[index]
-        boundary = character in _DAILY_SENTENCE_ENDINGS
-        end = index + 1
-        while end < len(normalized) and (
-            normalized[end] in _DAILY_SENTENCE_ENDINGS or normalized[end] in _SENTENCE_CLOSERS
-        ):
-            end += 1
-        if character == ".":
-            boundary = end == len(normalized) or normalized[end].isspace()
-        if boundary:
-            sentence = normalized[start:end].strip()
-            if sentence:
-                sentences.append(sentence)
-            start = end
-            index = end
-        else:
-            index += 1
-    tail = normalized[start:].strip()
-    if tail:
-        sentences.append(tail)
+    for raw_line in text.splitlines():
+        normalized = re.sub(r"\s+", " ", raw_line).strip()
+        if not normalized:
+            continue
+        start = 0
+        index = 0
+        while index < len(normalized):
+            character = normalized[index]
+            boundary = character in _DAILY_SENTENCE_ENDINGS
+            end = index + 1
+            while end < len(normalized) and (
+                normalized[end] in _DAILY_SENTENCE_ENDINGS or normalized[end] in _SENTENCE_CLOSERS
+            ):
+                end += 1
+            if character == ".":
+                boundary = end == len(normalized) or normalized[end].isspace()
+            if boundary:
+                sentence = normalized[start:end].strip()
+                if sentence:
+                    sentences.append(sentence)
+                start = end
+                index = end
+            else:
+                index += 1
+        tail = normalized[start:].strip()
+        if tail:
+            sentences.append(tail)
     return tuple(sentences)
+
+
+def _group_chat_sentences(sentences: tuple[str, ...], target: int) -> tuple[str, ...]:
+    """Group adjacent semantic units without exceeding the requested message count."""
+
+    group_count = min(len(sentences), target)
+    groups: list[list[str]] = [[] for _ in range(group_count)]
+    for index, sentence in enumerate(sentences):
+        group_index = min(index * group_count // len(sentences), group_count - 1)
+        groups[group_index].append(sentence)
+    return tuple(" ".join(group) for group in groups if group)
 
 
 def split_daily_chat_sentences(
@@ -95,9 +109,9 @@ def split_daily_chat_sentences(
     ):
         return (text,) if text else ()
     sentences = _plain_sentences(text)
-    if len(sentences) < 2 or len(sentences) > max_messages:
+    if len(sentences) < 2 or max_messages < 2:
         return (text,)
-    return sentences
+    return _group_chat_sentences(sentences, max_messages)
 
 
 def _split_hard(text: str, limit: int) -> list[str]:

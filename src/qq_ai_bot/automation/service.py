@@ -95,6 +95,7 @@ class AutomationService:
                 name: self._registry.require(name).schema_version
                 for name in validated.required_capabilities
             },
+            capability_provenance=self._capability_provenance(validated.required_capabilities),
             current_group_id=inbound.group_id,
         )
         row = await self._repository.create(
@@ -153,6 +154,7 @@ class AutomationService:
                 name: self._registry.require(name).schema_version
                 for name in validated.required_capabilities
             },
+            capability_provenance=self._capability_provenance(validated.required_capabilities),
             current_group_id=inbound.group_id,
         )
         row = await self._repository.update_script(
@@ -304,6 +306,22 @@ class AutomationService:
     def _require_enabled(self) -> None:
         if not self._settings.automation_enabled:
             raise ValueError("自动化功能当前未启用")
+
+    def _capability_provenance(
+        self,
+        names: tuple[str, ...],
+    ) -> dict[str, dict[str, str]]:
+        result: dict[str, dict[str, str]] = {}
+        for name in names:
+            definition = self._registry.require(name)
+            if definition.provider_plugin_id is None:
+                continue
+            result[name] = {
+                "plugin_id": definition.provider_plugin_id,
+                "plugin_version": definition.provider_version or "",
+                "manifest_hash": definition.provider_manifest_hash or "",
+            }
+        return result
 
     async def _audit_event(
         self,

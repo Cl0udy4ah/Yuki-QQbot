@@ -1,0 +1,131 @@
+"""Stable, dependency-light value objects shared by Yuki plugins."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, Field
+
+type JsonScalar = str | int | float | bool | None
+type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+
+
+class StrictModel(BaseModel):
+    """Base for public SDK payloads; unknown fields are never silently accepted."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class PermissionLevel(StrEnum):
+    USER = "user"
+    TRUSTED = "trusted"
+    MODERATOR = "moderator"
+    SUPERUSER = "superuser"
+
+
+class RiskClass(StrEnum):
+    READ = "read"
+    GENERATE = "generate"
+    SEND = "send"
+    MUTATE = "mutate"
+    DESTRUCTIVE = "destructive"
+
+
+class RetryPolicy(StrEnum):
+    NONE = "none"
+    TRANSIENT_ONCE = "transient_once"
+
+
+class RestartPolicy(StrEnum):
+    NEVER = "never"
+    ON_FAILURE = "on_failure"
+
+
+class TurnOrigin(StrEnum):
+    USER_MESSAGE = "user_message"
+    AUTONOMOUS_GROUP = "autonomous_group"
+    SCHEDULED_AUTOMATION = "scheduled_automation"
+    SYSTEM_TASK = "system_task"
+    PLUGIN_SESSION = "plugin_session"
+
+
+class PromptStage(StrEnum):
+    CORE_IDENTITY = "core_identity"
+    CORE_SECURITY = "core_security"
+    CORE_BEHAVIOR = "core_behavior"
+    TRUSTED_TIME = "trusted_time"
+    TRUSTED_AUTHORITY = "trusted_authority"
+    RELATIONSHIP = "relationship"
+    SCENE = "scene"
+    MEMORY = "memory"
+    VISUAL_CONTEXT = "visual_context"
+    WEB_POLICY = "web_policy"
+    PLANNER_PLAN = "planner_plan"
+    PLUGIN_CONTEXT = "plugin_context"
+    TOOL_GUIDANCE = "tool_guidance"
+    FINAL_CONSTRAINTS = "final_constraints"
+
+
+class PromptTarget(StrEnum):
+    PLANNER = "planner"
+    AGENT = "agent"
+    BOTH = "both"
+    PLUGIN_SESSION = "plugin_session"
+
+
+class TrustedLevel(StrEnum):
+    CORE = "core"
+    HOST = "host"
+    PLUGIN_UNTRUSTED = "plugin_untrusted"
+
+
+class PromptFragment(StrictModel):
+    """One bounded prompt contribution; third-party text remains untrusted."""
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,127}$")
+    plugin_id: str | None = None
+    stage: PromptStage
+    priority: int = Field(default=0, ge=-10_000, le=10_000)
+    content: str = Field(min_length=1, max_length=16_000)
+    trusted_level: TrustedLevel = TrustedLevel.PLUGIN_UNTRUSTED
+    max_characters: int = Field(default=2_000, ge=1, le=16_000)
+    target: PromptTarget = PromptTarget.AGENT
+    source: str = Field(default="plugin", min_length=1, max_length=128)
+    cache_key: str | None = Field(default=None, max_length=256)
+
+
+class PlannerSignal(StrictModel):
+    source_plugin_id: str
+    score_delta: int = Field(ge=-10, le=10)
+    reason_code: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,63}$")
+    summary: str = Field(min_length=1, max_length=500)
+    confidence: float = Field(ge=0, le=1)
+    expires_at: datetime | None = None
+
+
+class CurrentMessage(StrictModel):
+    """Sanitized current-event projection, never a raw NoneBot event."""
+
+    message_id: str = Field(min_length=1, max_length=128)
+    sender_user_id: str = Field(min_length=1, max_length=64)
+    scope_type: str = Field(pattern=r"^(private|group)$")
+    group_id: str | None = Field(default=None, max_length=64)
+    text: str = Field(default="", max_length=12_000)
+    received_at: datetime
+
+
+class PlannerSignalContext(StrictModel):
+    """Current trusted envelope plus untrusted message text for one signal callback."""
+
+    conversation_key: str = Field(min_length=1, max_length=256)
+    origin: TurnOrigin
+    current: CurrentMessage
+    text_is_untrusted: bool = True
+
+
+class PluginResourceLimits(StrictModel):
+    background_tasks: int = Field(default=0, ge=0, le=64)
+    http_concurrency: int = Field(default=1, ge=1, le=64)
+    storage_mb: int = Field(default=10, ge=1, le=10_240)
+    prompt_characters: int = Field(default=2_000, ge=0, le=16_000)

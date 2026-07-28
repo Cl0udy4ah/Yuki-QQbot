@@ -11,7 +11,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from qq_ai_bot.config import Settings
-from qq_ai_bot.persistence.models import Base
+from qq_ai_bot.persistence.metadata import Base
 
 config = context.config
 if config.config_file_name is not None:

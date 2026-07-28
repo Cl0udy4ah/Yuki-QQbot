@@ -1,0 +1,494 @@
+"""Invocation authority and public-surface tests for Host Plugin Facades."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.messages import (
+    AttachmentKind,
+    InboundMessage,
+    MessageAttachment,
+    SenderIdentity,
+)
+from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from qq_ai_bot.plugin_host.audit import PluginAuditService
+from qq_ai_bot.plugin_host.facades import (
+    HostPluginContext,
+    PluginFacadeServices,
+    PluginInvocation,
+)
+from qq_ai_bot.plugin_host.repository import PluginAuditRepository
+from yuki_plugin_sdk.errors import PluginPermissionError
+from yuki_plugin_sdk.permissions import PluginPermission
+
+
+@dataclass(slots=True)
+class Gateway:
+    calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+
+    async def call_api(self, action: str, params: dict[str, Any]) -> object:
+        self.calls.append((action, params))
+        return {
+            "message_id": 41 + len(self.calls),
+            "access_token": "must-not-leak",
+        }
+
+
+@dataclass(slots=True)
+class FailingGateway:
+    calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+
+    async def call_api(self, action: str, params: dict[str, Any]) -> object:
+        self.calls.append((action, params))
+        raise RuntimeError("https://private.example/result?token=exception-secret-must-not-leak")
+
+
+def inbound(
+    *,
+    user_id: str = "10001",
+    group_id: str | None = None,
+    attachments: tuple[MessageAttachment, ...] = (),
+    mentioned_user_ids: tuple[str, ...] = (),
+) -> InboundMessage:
+    return InboundMessage(
+        message_id=f"message-{user_id}",
+        event_type="message",
+        scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id=user_id, nickname="Tester"),
+        text="hello",
+        bot_user_id="99999",
+        group_id=group_id,
+        attachments=attachments,
+        mentioned_user_ids=mentioned_user_ids,
+        received_at=datetime.now(UTC),
+    )
+
+
+def invocation(
+    *,
+    plugin_id: str = "example.plugin",
+    user_id: str = "10001",
+    group_id: str | None = None,
+    gateway: Gateway | FailingGateway | None = None,
+    attachments: tuple[MessageAttachment, ...] = (),
+    web_was_used: bool = False,
+) -> PluginInvocation:
+    message = inbound(
+        user_id=user_id,
+        group_id=group_id,
+        attachments=attachments,
+    )
+    return PluginInvocation(
+        plugin_id=plugin_id,
+        origin=TurnOrigin.USER_MESSAGE,
+        actor_user_id=user_id,
+        bot_user_id=message.bot_user_id,
+        inbound=message,
+        gateway=gateway,
+        web_was_used=web_was_used,
+    )
+
+
+@pytest.mark.asyncio
+async def test_contextvar_binding_is_required_scoped_and_task_local() -> None:
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(PluginPermission.MESSAGE_CURRENT_READ,),
+    )
+    assert context.current is None
+    with pytest.raises(PluginPermissionError, match="trusted invocation"):
+        await context.messages.get_current()
+
+    async def bound_user(user_id: str) -> str:
+        with context.bind(invocation(user_id=user_id)):
+            await asyncio.sleep(0)
+            current = await context.messages.get_current()
+            assert current is not None
+            return current.sender_user_id
+
+    assert tuple(await asyncio.gather(bound_user("10001"), bound_user("10002"))) == (
+        "10001",
+        "10002",
+    )
+    assert context.current is None
+
+
+def test_public_context_does_not_expose_core_objects_or_raw_media() -> None:
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(PluginPermission.MESSAGE_CURRENT_READ,),
+    )
+    attachment = MessageAttachment(
+        kind=AttachmentKind.IMAGE,
+        label="image",
+        file="secret-file-id",
+        url="https://signed.example/image?token=secret",
+    )
+    with context.bind(invocation(attachments=(attachment,))):
+        current = context.current
+        assert current is not None
+        assert current.sender_user_id == "10001"
+        assert not hasattr(current, "file")
+        assert not hasattr(current, "url")
+
+    for forbidden in ("settings", "container", "database", "session", "bot", "event"):
+        assert not hasattr(context, forbidden)
+
+
+@pytest.mark.asyncio
+async def test_message_facade_rechecks_permission_scope_and_redacts_gateway_result() -> None:
+    gateway = Gateway()
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(
+            PluginPermission.MESSAGE_PRIVATE_SEND,
+            PluginPermission.MESSAGE_GROUP_SEND,
+        ),
+    )
+    with context.bind(invocation(group_id="20001", gateway=gateway)):
+        result = await context.messages.send_group("20001", "hello group")
+        assert result.ok
+        assert result.data["result"] == {
+            "message_id": 42,
+            "access_token": "[redacted]",
+        }
+        with pytest.raises(PluginPermissionError, match="target user"):
+            await context.messages.send_private("10002", "cross-user")
+        with pytest.raises(PluginPermissionError, match="target group"):
+            await context.messages.send_group("20002", "cross-group")
+
+    assert gateway.calls == [("send_group_msg", {"group_id": "20001", "message": "hello group"})]
+
+
+@pytest.mark.asyncio
+async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
+    database: Database,
+) -> None:
+    gateway = Gateway()
+    audit_repository = PluginAuditRepository(database)
+    ledger = EventLedgerRepository(database)
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(
+            PluginPermission.MESSAGE_PRIVATE_SEND,
+            PluginPermission.MESSAGE_GROUP_SEND,
+            PluginPermission.MESSAGE_MEDIA_SEND,
+            PluginPermission.ONEBOT_SEND,
+        ),
+        services=PluginFacadeServices(
+            ledger=ledger,
+            audit=PluginAuditService(audit_repository),
+        ),
+    )
+    with context.bind(invocation(group_id="20001", gateway=gateway)):
+        result = await context.messages.send_text("send-text-body-secret")
+        assert result.data["result"] == {
+            "message_id": 42,
+            "access_token": "[redacted]",
+        }
+        await context.messages.send_private("10001", "private-body-secret")
+        await context.messages.send_group("20001", "group-body-secret")
+        await context.messages.send_image(
+            target_type="group",
+            target_id="20001",
+            media_reference="event-file-secret",
+        )
+        await context.onebot.send_private("10001", "onebot-private-body-secret")
+        await context.onebot.send_group("20001", "onebot-group-body-secret")
+
+    group_events = await ledger.list_recent(
+        scope_type=ScopeType.GROUP,
+        user_id="10001",
+        group_id="20001",
+        limit=20,
+    )
+    assert [row.content for row in group_events] == [
+        "send-text-body-secret",
+        "group-body-secret",
+        "",
+        "onebot-group-body-secret",
+    ]
+    assert all(row.direction == "outbound" for row in group_events)
+    assert all(row.sender_user_id == "99999" for row in group_events)
+    assert all(row.group_id == "20001" for row in group_events)
+    assert all(row.private_peer_user_id is None for row in group_events)
+    assert group_events[2].segments == ({"type": "image", "data": {}},)
+
+    private_events = await ledger.list_recent(
+        scope_type=ScopeType.PRIVATE,
+        user_id="10001",
+        group_id=None,
+        limit=20,
+    )
+    assert [row.content for row in private_events] == [
+        "private-body-secret",
+        "onebot-private-body-secret",
+    ]
+    assert all(row.direction == "outbound" for row in private_events)
+    assert all(row.sender_user_id == "99999" for row in private_events)
+    assert all(row.private_peer_user_id == "10001" for row in private_events)
+    assert all(row.group_id is None for row in private_events)
+
+    audit_rows = await audit_repository.history(plugin_id="example.plugin")
+    by_operation = {row.operation: row for row in audit_rows}
+    assert set(by_operation) == {
+        "message.send_text",
+        "message.send_private",
+        "message.send_group",
+        "message.send_image",
+        "onebot.send_private",
+        "onebot.send_group",
+    }
+    assert all(row.actor_user_id == "10001" for row in audit_rows)
+    assert all(row.success and row.error_category is None for row in audit_rows)
+    assert by_operation["message.send_text"].permission == "message.group.send"
+    assert by_operation["message.send_image"].permission == "message.media.send"
+    assert by_operation["onebot.send_private"].permission == "onebot.send"
+    assert all(row.detail == {} for row in audit_rows)
+    serialized_audit = json.dumps(
+        [
+            {
+                "operation": row.operation,
+                "permission": row.permission,
+                "error_category": row.error_category,
+                "detail": row.detail,
+            }
+            for row in audit_rows
+        ],
+        ensure_ascii=False,
+    )
+    for sensitive in (
+        "send-text-body-secret",
+        "private-body-secret",
+        "group-body-secret",
+        "onebot-private-body-secret",
+        "onebot-group-body-secret",
+        "event-file-secret",
+        "must-not-leak",
+        "https://",
+    ):
+        assert sensitive not in serialized_audit
+
+
+@pytest.mark.asyncio
+async def test_onebot_read_and_mutation_audit_omits_action_params_and_results(
+    database: Database,
+) -> None:
+    gateway = Gateway()
+    audit_repository = PluginAuditRepository(database)
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(
+            PluginPermission.ONEBOT_READ,
+            PluginPermission.ONEBOT_MUTATE,
+        ),
+        superuser_ids=("90000",),
+        services=PluginFacadeServices(
+            audit=PluginAuditService(audit_repository),
+        ),
+    )
+    with context.bind(invocation(user_id="90000", group_id="20001", gateway=gateway)):
+        assert (
+            await context.onebot.call_read_action(
+                "get_group_info",
+                {
+                    "group_id": "20001",
+                    "access_token": "read-param-secret",
+                },
+            )
+        ).ok
+        assert (
+            await context.onebot.call_mutating_action(
+                "set_group_name",
+                {
+                    "group_id": "20001",
+                    "group_name": "https://private.example/?token=mutation-param-secret",
+                },
+            )
+        ).ok
+
+    audit_rows = await audit_repository.history(plugin_id="example.plugin")
+    by_operation = {row.operation: row for row in audit_rows}
+    assert set(by_operation) == {
+        "onebot.call_read_action",
+        "onebot.call_mutating_action",
+    }
+    assert by_operation["onebot.call_read_action"].permission == "onebot.read"
+    assert by_operation["onebot.call_mutating_action"].permission == "onebot.mutate"
+    assert all(row.actor_user_id == "90000" for row in audit_rows)
+    assert all(row.success and row.error_category is None for row in audit_rows)
+    assert all(row.detail == {} for row in audit_rows)
+    serialized_audit = json.dumps(
+        [
+            {
+                "operation": row.operation,
+                "permission": row.permission,
+                "detail": row.detail,
+            }
+            for row in audit_rows
+        ]
+    )
+    for sensitive in (
+        "get_group_info",
+        "set_group_name",
+        "read-param-secret",
+        "mutation-param-secret",
+        "must-not-leak",
+        "https://",
+    ):
+        assert sensitive not in serialized_audit
+
+
+@pytest.mark.asyncio
+async def test_failed_plugin_send_is_audited_without_fabricating_ledger_event(
+    database: Database,
+) -> None:
+    gateway = FailingGateway()
+    audit_repository = PluginAuditRepository(database)
+    ledger = EventLedgerRepository(database)
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(PluginPermission.MESSAGE_PRIVATE_SEND,),
+        services=PluginFacadeServices(
+            ledger=ledger,
+            audit=PluginAuditService(audit_repository),
+        ),
+    )
+    with context.bind(invocation(gateway=gateway)):
+        result = await context.messages.send_private(
+            "10001",
+            "failed-body-secret",
+        )
+    assert not result.ok
+    assert result.error_code == "onebot.call_failed"
+    assert result.detail == "RuntimeError"
+    assert (
+        await ledger.list_recent(
+            scope_type=ScopeType.PRIVATE,
+            user_id="10001",
+            group_id=None,
+            limit=20,
+        )
+        == ()
+    )
+    audit_rows = await audit_repository.history(plugin_id="example.plugin")
+    assert len(audit_rows) == 1
+    row = audit_rows[0]
+    assert row.actor_user_id == "10001"
+    assert row.operation == "message.send_private"
+    assert row.permission == "message.private.send"
+    assert not row.success
+    assert row.error_category == "RuntimeError"
+    assert row.detail == {}
+    assert "failed-body-secret" not in repr(row)
+    assert "exception-secret-must-not-leak" not in repr(row)
+
+
+@pytest.mark.asyncio
+async def test_image_and_web_turns_keep_side_effect_isolation() -> None:
+    gateway = Gateway()
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(
+            PluginPermission.MESSAGE_PRIVATE_SEND,
+            PluginPermission.ONEBOT_MUTATE,
+        ),
+        superuser_ids=("90000",),
+    )
+    image = MessageAttachment(kind=AttachmentKind.IMAGE, label="image", file="file-id")
+    with context.bind(invocation(user_id="90000", gateway=gateway, attachments=(image,))):
+        with pytest.raises(PluginPermissionError, match="image turns"):
+            await context.messages.send_private("90000", "blocked")
+
+    with context.bind(invocation(user_id="90000", gateway=gateway, web_was_used=True)):
+        with pytest.raises(PluginPermissionError, match="after web access"):
+            await context.onebot.call_mutating_action("delete_msg", {"message_id": 1})
+    assert not gateway.calls
+
+
+@pytest.mark.asyncio
+async def test_privileged_onebot_mutation_uses_real_superusers_and_direct_origin() -> None:
+    gateway = Gateway()
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(PluginPermission.ONEBOT_MUTATE,),
+        superuser_ids=("90000",),
+    )
+    with context.bind(invocation(user_id="10001", gateway=gateway)):
+        with pytest.raises(PluginPermissionError, match="SUPERUSERS"):
+            await context.onebot.call_mutating_action("delete_msg", {"message_id": 1})
+
+    with context.bind(invocation(user_id="90000", gateway=gateway)):
+        result = await context.onebot.call_mutating_action(
+            "delete_msg",
+            {"message_id": 1},
+        )
+        assert result.ok
+    assert gateway.calls == [("delete_msg", {"message_id": 1})]
+
+
+def test_binding_rejects_other_plugin_and_spoofed_runtime_actor() -> None:
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(PluginPermission.MESSAGE_CURRENT_READ,),
+    )
+    with pytest.raises(PluginPermissionError, match="another plugin"):
+        with context.bind(invocation(plugin_id="other.plugin")):
+            pass
+
+    runtime = SimpleNamespace(
+        inbound=inbound(user_id="10001"),
+        origin=TurnOrigin.USER_MESSAGE,
+        actor_user_id="90000",
+        gateway=None,
+        runtime_config=None,
+        delegated_authority=None,
+        allowed_capabilities=(),
+    )
+    with pytest.raises(ValueError, match="actor must match"):
+        context.invocation_scope(
+            "example.plugin",
+            runtime,
+            web_was_used=False,
+        )
+
+
+def test_context_exposes_every_sdk_facade_but_not_dependency_bundle() -> None:
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(),
+        services=PluginFacadeServices(),
+    )
+    names = (
+        "messages",
+        "people",
+        "groups",
+        "memory",
+        "relationship",
+        "llm",
+        "agent",
+        "agent_sessions",
+        "web",
+        "http",
+        "vision",
+        "media",
+        "automation",
+        "config",
+        "secrets",
+        "storage",
+        "scheduler",
+        "onebot",
+        "events",
+    )
+    assert all(getattr(context, name) is not None for name in names)
+    assert not hasattr(context, "services")

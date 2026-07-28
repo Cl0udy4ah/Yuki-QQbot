@@ -31,6 +31,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.planner.models import PlannedTurn, ToolMode
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRuntime,
@@ -39,16 +40,23 @@ from qq_ai_bot.services.agent_runner import (
 from qq_ai_bot.services.agent_tools import AgentToolService, OneBotToolGateway, ToolRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.context_assembler import ContextAssembler
+from qq_ai_bot.services.plugin_events import (
+    LifecycleEventPublisher,
+    publish_notification,
+)
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.services.renderer import (
     clean_model_output,
     split_daily_chat_sentences,
     split_qq_message,
 )
+from qq_ai_bot.services.reply_sequence import ReplySequenceManager
 from qq_ai_bot.services.source_policy import SourceDisplayPolicy
 from qq_ai_bot.services.source_renderer import SourceRenderer
+from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator, TurnToken
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
+from yuki_plugin_sdk.events import EventName
 
 _WEB_TOOL_NAMES = frozenset({"web_search", "read_webpage"})
 _ADMIN_CAPABILITY_TOOL_NAMES = frozenset({"get_my_capabilities", "admin_list_capabilities"})
@@ -77,6 +85,25 @@ _ADMIN_RETRYABLE_ERRORS = frozenset(
         "validation_error",
         "unknown_capability",
         "ValueError",
+    }
+)
+_READ_ONLY_TOOL_NAMES = frozenset(
+    {
+        "get_my_capabilities",
+        "get_recent_chat_history",
+        "search_chat_history",
+        "get_person_memories",
+        "get_group_memories",
+        "web_search",
+        "read_webpage",
+        "admin_list_capabilities",
+        "admin_get_config",
+        "admin_get_history",
+        "automation_list",
+        "automation_list_history",
+        "automation_get",
+        "time_get_current",
+        "time_get_timezone",
     }
 )
 
@@ -116,6 +143,32 @@ class AutomationToolProvider(Protocol):
     async def execute(self, name: str, arguments_json: str, runtime: ToolRuntime) -> str: ...
 
 
+class PluginToolProvider(Protocol):
+    """Approved Plugin API tools merged into the existing Yuki Agent loop."""
+
+    def definitions(
+        self,
+        runtime: ToolRuntime,
+        *,
+        web_was_used: bool,
+    ) -> tuple[ChatTool, ...]: ...
+
+    def owns(self, name: str) -> bool: ...
+
+    def is_mutating(self, name: str) -> bool: ...
+
+    def is_read_only(self, name: str) -> bool: ...
+
+    async def execute(
+        self,
+        name: str,
+        arguments_json: str,
+        runtime: ToolRuntime,
+        *,
+        web_was_used: bool,
+    ) -> str: ...
+
+
 class _ChatAgentBackend(AgentToolBackend):
     """Preserve event-bound chat policies behind the shared model tool loop."""
 
@@ -146,9 +199,24 @@ class _ChatAgentBackend(AgentToolBackend):
                 tuple(tool for tool in definitions if tool.name != "get_my_capabilities")
                 + admin.definitions()
             )
+        plugin = self._service._plugin_tools
+        if plugin is not None:
+            definitions += plugin.definitions(
+                request_runtime,
+                web_was_used=self._web_was_used,
+            )
         if self._admin_retry_constraint is not None:
             definitions = tuple(
                 tool for tool in definitions if tool.name == self._admin_retry_constraint[0]
+            )
+        if self._runtime.tool_mode is ToolMode.NONE:
+            return ()
+        if self._runtime.tool_mode is ToolMode.READ_ONLY:
+            definitions = tuple(
+                tool
+                for tool in definitions
+                if tool.name in _READ_ONLY_TOOL_NAMES
+                or (plugin is not None and plugin.is_read_only(tool.name))
             )
         return definitions
 
@@ -169,6 +237,8 @@ class _ChatAgentBackend(AgentToolBackend):
         is_admin_tool = name.startswith("admin_")
         automation = self._service._automation_tools
         is_automation_tool = bool(automation is not None and automation.owns(name))
+        plugin = self._service._plugin_tools
+        is_plugin_tool = bool(plugin is not None and plugin.owns(name))
         config = self._runtime.runtime_config
         assert config is not None
         mutation_identity = (
@@ -233,6 +303,10 @@ class _ChatAgentBackend(AgentToolBackend):
             self._tools_closed = True
         else:
             execution_runtime = self._request_runtime()
+            if mutation_identity is not None and execution_runtime.turn_token is not None:
+                await self._service._turn_coordinator.mark_mutation_started(
+                    execution_runtime.turn_token
+                )
             if is_admin_tool:
                 assert self._service._admin_tools is not None
                 result = await self._service._admin_tools.execute(
@@ -243,6 +317,14 @@ class _ChatAgentBackend(AgentToolBackend):
             elif is_automation_tool:
                 assert automation is not None
                 result = await automation.execute(name, arguments_json, execution_runtime)
+            elif is_plugin_tool:
+                assert plugin is not None
+                result = await plugin.execute(
+                    name,
+                    arguments_json,
+                    execution_runtime,
+                    web_was_used=self._web_was_used,
+                )
             else:
                 result = await self._service._tools.execute(
                     name,
@@ -312,6 +394,9 @@ class ChatService:
         source_renderer: SourceRenderer | None = None,
         context_assembler: ContextAssembler | None = None,
         prompt_composer: PromptComposer | None = None,
+        turn_coordinator: ConversationTurnCoordinator | None = None,
+        reply_sequence: ReplySequenceManager | None = None,
+        event_publisher: LifecycleEventPublisher | None = None,
     ) -> None:
         self._settings = settings
         self._provider = provider
@@ -328,6 +413,7 @@ class ChatService:
         self._agent_runner = AgentRunner(provider, concurrency)
         self._admin_tools: AdminToolService | None = None
         self._automation_tools: AutomationToolProvider | None = None
+        self._plugin_tools: PluginToolProvider | None = None
         self._time = time_service
         self._context_assembler = context_assembler or ContextAssembler(
             settings=settings,
@@ -338,6 +424,14 @@ class ChatService:
             time_service=self._time,
         )
         self._prompt_composer = prompt_composer or PromptComposer(settings)
+        self._turn_coordinator = turn_coordinator or ConversationTurnCoordinator(
+            cancel_replies_on_new_message=settings.reply_sequence_cancel_on_new_message,
+            interrupt_autonomous_on_new_message=(
+                settings.planner_interrupt_autonomous_on_new_message
+            ),
+        )
+        self._reply_sequence = reply_sequence or ReplySequenceManager(self._turn_coordinator)
+        self._event_publisher = event_publisher
 
     def set_admin_tools(self, service: AdminToolService) -> None:
         """Attach privileged tools to this same Agent loop without a second router."""
@@ -348,6 +442,21 @@ class ChatService:
         """Attach owner-scoped scheduling tools without introducing a second Agent."""
 
         self._automation_tools = service
+
+    def set_plugin_tools(self, service: PluginToolProvider) -> None:
+        """Attach approved plugin tools without a parallel chat router."""
+
+        self._plugin_tools = service
+
+    def configure_runtime_controls(self, runtime: RuntimeConfigSnapshot) -> None:
+        """Apply HOT controls shared by the Agent and Planner prompt pipeline."""
+
+        self._prompt_composer.configure_plugin_limits(runtime)
+
+    def set_event_publisher(self, publisher: LifecycleEventPublisher) -> None:
+        """Attach the host notification bus without changing reply control flow."""
+
+        self._event_publisher = publisher
 
     async def respond(
         self,
@@ -362,6 +471,8 @@ class ChatService:
         visual_observation: VisualObservation | None = None,
         visual_input_present: bool = False,
         visual_failure: bool = False,
+        planned_turn: PlannedTurn | None = None,
+        turn_token: TurnToken | None = None,
     ) -> int:
         """Run one ordered Agent turn and return the sent message count."""
 
@@ -390,6 +501,7 @@ class ChatService:
                 runtime_config,
                 visual_observation=visual_observation,
                 visual_failure=visual_failure,
+                planned_turn=planned_turn,
             )
             gateway = (
                 cast(OneBotToolGateway, sender)
@@ -419,8 +531,16 @@ class ChatService:
                 mentioned_user_ids=inbound.mentioned_user_ids,
                 runtime_config=runtime_config,
                 origin=(TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE),
+                tool_mode=(
+                    planned_turn.plan.tool_mode if planned_turn is not None else ToolMode.INHERIT
+                ),
+                turn_token=turn_token,
             )
-            response_text = await self._run_agent(identity.key, messages, runtime)
+            if turn_token is not None:
+                async with self._turn_coordinator.track(turn_token, "generation"):
+                    response_text = await self._run_agent(identity.key, messages, runtime)
+            else:
+                response_text = await self._run_agent(identity.key, messages, runtime)
             sources = await self._web_sources.for_trigger(
                 conversation_key=identity.key,
                 trigger_message_id=inbound.message_id,
@@ -432,6 +552,35 @@ class ChatService:
                 response_text,
                 max_characters=self._settings.max_output_characters,
             )
+            if planned_turn is not None and turn_token is not None:
+                if source_display_requested:
+                    source_text = self._source_renderer.render(
+                        sources,
+                        maximum=runtime_config.web.extract_max_results,
+                    )
+                    if source_text:
+                        rendered = clean_model_output(
+                            f"{rendered}\n\n{source_text}",
+                            max_characters=self._settings.max_output_characters,
+                        )
+
+                async def record_chunk(message: OutboundMessage, result: Any) -> None:
+                    await self._record_outbound(
+                        inbound,
+                        message.text,
+                        result,
+                        reply_to_message_id=message.reply_to_message_id,
+                    )
+
+                sequence = await self._reply_sequence.send(
+                    text=rendered,
+                    plan=planned_turn.plan,
+                    runtime=runtime_config,
+                    token=turn_token,
+                    sender=sender,
+                    record_outbound=record_chunk,
+                )
+                return sequence.sent_messages
             chunks = self._render_chunks(rendered, runtime_config)
             for index, chunk in enumerate(chunks):
                 if len(chunks) > 1 and index > 0:
@@ -465,6 +614,7 @@ class ChatService:
         *,
         visual_observation: VisualObservation | None = None,
         visual_failure: bool = False,
+        planned_turn: PlannedTurn | None = None,
     ) -> tuple[ChatMessage, ...]:
         context = await self._context_assembler.assemble(
             inbound=inbound,
@@ -479,6 +629,7 @@ class ChatService:
             runtime=runtime,
             visual_observation=visual_observation,
             visual_failure=visual_failure,
+            planned_turn=planned_turn,
         )
 
     async def _run_agent(
@@ -531,6 +682,8 @@ class ChatService:
 
     def _is_mutating_tool_call(self, call: ToolCall) -> bool:
         name = call.function.name
+        if self._plugin_tools is not None and self._plugin_tools.is_mutating(name):
+            return True
         if name in _ADMIN_MUTATING_TOOL_NAMES or name in _AUTOMATION_MUTATING_TOOL_NAMES:
             return True
         if name != "admin_execute_action" or self._admin_tools is None:
@@ -589,7 +742,12 @@ class ChatService:
         )
 
     async def _record_outbound(
-        self, inbound: InboundMessage, content: str, send_result: Any
+        self,
+        inbound: InboundMessage,
+        content: str,
+        send_result: Any,
+        *,
+        reply_to_message_id: str | None = None,
     ) -> None:
         message_id: str | None = None
         if isinstance(send_result, str | int):
@@ -598,17 +756,37 @@ class ChatService:
             raw_id = send_result.get("message_id") or send_result.get("id")
             if raw_id is not None:
                 message_id = str(raw_id)
+        platform_message_id = message_id or f"out-{uuid.uuid4()}"
         await self._ledger.append(
             bot_user_id=inbound.bot_user_id or "unknown-bot",
-            platform_message_id=message_id or f"out-{uuid.uuid4()}",
+            platform_message_id=platform_message_id,
             scope_type=inbound.scope_type,
             sender_user_id=inbound.bot_user_id or "unknown-bot",
             direction="outbound",
             content=content,
-            segments=({"type": "text", "data": {"text": content}},),
+            segments=(
+                *(
+                    ({"type": "reply", "data": {"id": reply_to_message_id}},)
+                    if reply_to_message_id
+                    else ()
+                ),
+                {"type": "text", "data": {"text": content}},
+            ),
             group_id=inbound.group_id,
             private_peer_user_id=(
                 inbound.sender.user_id if inbound.scope_type is ScopeType.PRIVATE else None
             ),
+            reply_to_message_id=reply_to_message_id,
             sender_is_bot=True,
+        )
+        await publish_notification(
+            self._event_publisher,
+            EventName.REPLY_SENT,
+            {
+                "trigger_message_id": inbound.message_id,
+                "platform_message_id": platform_message_id,
+                "scope_type": inbound.scope_type.value,
+                "character_count": len(content),
+                "recorded": True,
+            },
         )

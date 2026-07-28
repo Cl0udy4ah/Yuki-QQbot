@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**1.5.2 不新增数据库迁移，会保留现有人物、聊天、记忆、关系、联网、视觉、表情与自动化数据。1.5.0 的非破坏性迁移 `0012` 仍会在旧版本升级时自动执行；若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
+> **升级提示：**1.6.0 会自动执行非破坏性迁移 `0013`，新增 Planner 可观测性、插件安装/配置/KV/审计和独立插件 AI 会话表；现有人物、聊天、记忆、关系、联网、视觉、表情与自动化数据均保留。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -28,7 +28,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.5.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.6.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -45,18 +45,22 @@ Yuki-QQbot 1.5.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 运行时配置保存在 SQLite，不修改 `.env`；所有修改都有脱敏审计，配置覆盖可安全回滚。
 - 每轮聊天获得后端可信当前时间；每个 QQ 可保存独立 IANA 时区，历史消息按本地时间显示。
 - 普通用户和超级管理员都可以用自然语言创建自己的持久化自动化任务；普通用户严格限于本人和当前群，超级管理员可显式委托现有管理员与 OneBot 能力。
+- 默认启用 Planner-first 会话：后端先做确定性回复必要性评分，再生成受约束 `TurnPlan`，规划回复/等待/沉默、工具上限、消息条数和发送节奏。
+- 新消息可以中断过期的自主 Planner、自主生成和尚未发送的旧分句；已经开始的修改型业务操作不会被自动取消。
+- 提供 Plugin API v1、独立 `yuki_plugin_sdk`、Manifest/批准/权限/事件/Prompt/PlannerSignal 扩展点和无网络测试 SDK；插件系统默认关闭。
+- 插件可以创建与主聊天账本、人物记忆分离的持久或临时 AI 会话，适合骰子跑团等连续任务；插件拿不到模型隐藏推理，也不能伪造超级管理员。
 
 ### 当前架构约束
 
-- 正常聊天、管理员自然语言操作、联网和自动化创建都进入同一个聊天 Agent；不存在第二套管理员会话或独立人格路由。
+- 正常聊天、管理员自然语言操作、联网和自动化创建继续使用同一个聊天 Agent；Planner 只规划，不能执行工具或产生权限。插件独立 AI 会话只服务插件任务，不是第二套管理员人格或主聊天路由。
 - `ContextAssembler` 统一装配人物、群、关系和近期事件，并用 `MAX_CONTEXT_CHARACTERS` 限制动态上下文总量；当前消息优先保留，低优先级旧资料先裁剪。
 - `PromptComposer` 集中生成后端可信的时间、权限、关系、视觉和联网规则，业务服务不再各自拼接一套运行说明。
 - 持久化仓储按人物与访问、事件账本、记忆、关系、媒体和联网来源分域实现；`persistence.repositories` 仅作为稳定兼容门面，不再承载全部 SQL 逻辑。
-- `/ai` 确定性命令由 `CommandService` 调度，并分别交给人物、运行时配置和自动化处理器；`MessageProcessor` 只负责准入、观察、视觉和聊天流水线。
+- `/ai` 确定性命令由 `CommandService` 调度并绕过 Planner；普通聊天由 `ReplyNecessityScorer → PlannerService → AgentRunner → ReplySequenceManager` 协作，`MessageProcessor` 继续负责准入、观察、账本、视觉和最终异常边界。
 - 运行时配置注册表只负责查找、别名和类型转换；热更新、仅影响未来、需重启、受保护/密钥配置分别维护在独立声明目录中。
 - 相关人物按批次读取，避免群聊中按 QQ 串行查询多组资料；群名片仍严格按当前群号隔离。
 - SQLite 使用 WAL 和有限等待支持多个后台 Worker；部署仍定位于单 Bot、小型服务器，未来需要多进程横向扩展时再迁移 PostgreSQL。
-- GitHub Actions 会在推送和 PR 时执行 Ruff、严格 mypy、pytest、Alembic 全新安装和 Docker 构建。
+- GitHub Actions 会在推送和 PR 时执行 Ruff、严格 mypy、pytest、Echo 示例插件契约测试、Alembic 全新安装和 Docker 构建。
 
 本版本只处理当前真实消息或其回复中的图片，不处理视频、语音、PDF 和普通文件，也不会主动回溯群历史中的任意旧图片。已启用群里未触发 Yuki 的普通图片只写入原有事件账本，不下载、不分析，也不会因此触发自主发言。
 
@@ -151,6 +155,66 @@ docker compose up -d --build --no-deps bot
 
 普通用户可以创建提醒、定时生成文本、给自己发私聊，以及在创建消息所在的当前群执行受限任务；只能查看、修改和运行本人任务。超级管理员可以额外委托已登记的管理员业务接口、运行时配置和 NapCat/OneBot 全部公开 action。引用、历史、记忆、网页、OCR 和模型自行生成的 QQ/群号不能扩大目标范围。
 
+### Planner-first 会话
+
+1.6.0 默认启用 Planner。Planner 使用当前主 LLM（`PLANNER_MODEL` 留空）或单独模型，关闭思考、不提供工具，只输出严格结构化计划。它只能缩小本轮工具和回复计划，不能修改配置、记忆、关系、权限或直接发送消息。
+
+```dotenv
+PLANNER_ENABLED=true
+PLANNER_DIRECT_ENABLED=true
+PLANNER_GROUP_ENABLED=true
+PLANNER_GROUP_DEBOUNCE_SECONDS=8
+PLANNER_PREFERRED_MESSAGES=3
+PLANNER_REPLY_NECESSITY_THRESHOLD=80
+PLANNER_CONFIDENCE_THRESHOLD=0.65
+REPLY_SEQUENCE_CANCEL_ON_NEW_MESSAGE=true
+REPLY_PLAN_HARD_MAX_MESSAGES=10
+```
+
+要先用 1.5.2 兼容聊天路径验证升级，可临时设置：
+
+```dotenv
+PLANNER_ENABLED=false
+PLUGIN_SYSTEM_ENABLED=false
+```
+
+Planner 开启时，已启用群由 `planner.group_enabled` 控制是否进入自主规划，并使用
+`planner.group_debounce_seconds` 聚合连续消息。旧 `AUTONOMOUS_*` 开关、静默时间、
+置信度、冷却和小时上限完全不参与 Planner 会话；只有显式关闭 Planner 时，它们才作为
+1.5.2 兼容路径重新生效。
+
+`planner.preferred_messages` 是 `natural_multi` 日常回复的软目标，默认 3 条；内容不足时
+不会凑数。非结构化聊天正文中的空行会直接成为两条 QQ 消息的发送边界；代码、表格、步骤
+和长篇结构化回答不会逐句拆散。超级管理员可直接对 Yuki 说
+“把 Planner 日常回复偏好改成 5 条”或“把单轮发送硬上限改成 15 条”，修改会热生效。
+
+Planner 还可在多人聊天中为指向关系非常明确的回答选择引用消息发送；默认仍是普通发送。
+引用目标必须来自当前受限 Planner 上下文中的真实消息 ID，多条回复只在第一条携带引用，避免
+连续引用气泡刷屏。
+
+### 可选：启用本地插件
+
+插件系统默认关闭。先阅读 [插件开发手册](docs/plugin-development/index.md) 和 [真实安全边界](docs/plugin-development/security.md)：1.6.0 插件运行在 Yuki 进程内，权限系统是官方 API 的访问治理，不是恶意 Python 沙盒，只能安装管理员完全信任并审阅过源码的插件。
+
+```dotenv
+PLUGIN_SYSTEM_ENABLED=true
+PLUGIN_DIRECTORY=plugins
+PLUGIN_API_VERSION=1.0
+```
+
+仓库提供无网络 [`com.example.echo`](examples/plugins/com.example.echo/README.md) 示例：
+
+```bash
+mkdir -p plugins
+cp -R examples/plugins/com.example.echo plugins/com.example.echo
+uv run qq-ai-bot-cli plugin validate plugins/com.example.echo
+uv run qq-ai-bot-cli plugin test plugins/com.example.echo
+```
+
+通过插件 CLI 发现、审阅权限、批准并启用后重启 Bot。Manifest 任何变化都会使批准失效，必须重新审阅。Docker Compose 将 `./plugins` 只读挂载到 `/app/plugins`，插件热更新和在线下载不属于 1.6.0。
+
+插件需要连续独立上下文时可使用 `ctx.agent_sessions`。例如跑团插件可以创建 `durable + current_group` 会话；历史只写 `plugin_agent_messages`，不写主 `chat_events`，默认不注入主聊天或人物记忆，也不返回隐藏推理。详见 [独立 AI 会话](docs/plugin-development/service-facades.md#独立-ai-会话跑团示例)。
+
 ## 1.x 数据模型
 
 `0005` 会创建以下主要数据：
@@ -184,6 +248,13 @@ docker compose up -d --build --no-deps bot
 | `automation_versions` | 每次脚本修改的不可变版本与稳定哈希 |
 | `automation_runs` | 幂等执行记录、资源计数、状态和脱敏结果摘要 |
 | `automation_step_runs` | 每个步骤的 capability、时间、状态和脱敏摘要 |
+| `planner_runs` | `0013` 新增的 Planner 必要性、计划、降级、中断、耗时和发送计数；只保存脱敏哈希与摘要 |
+| `plugin_installations` | 插件 Manifest 哈希、请求/批准权限、状态和失败计数 |
+| `plugin_config_values` | 按插件及 global/group/user 作用域保存已校验配置 |
+| `plugin_state` | 按插件强制隔离的私有 KV，不用于保存 Secret |
+| `plugin_audit_events` | 插件操作的脱敏审计元数据 |
+| `plugin_agent_sessions` | 插件独立 AI 会话的模型、指令、上下文策略、批准能力和生命周期 |
+| `plugin_agent_messages` | 独立插件 AI 会话的可见正文；不保存隐藏推理，也不混入主聊天账本 |
 
 消息到达后的顺序是：
 
@@ -194,10 +265,13 @@ docker compose up -d --build --no-deps bot
   → 写入永久事件账本
   → 记忆任务入队
   → 已触发且含图片时，按需解析、预处理并调用独立视觉前端
-  → 确定性命令，或进入同一个正常聊天 Agent
+  → /ai 与确定性插件命令直接处理
+  → 其他轮次由 ReplyNecessityScorer 判断是否值得进入 Planner
+  → Planner 生成并由后端裁剪 TurnPlan（reply / wait / silent）
+  → reply 才装配上下文并进入同一个正常聊天 Agent
   → 纯文本轮次可按当前真实 QQ 创建或管理本人自动化任务
   → 当前真实发送者是超级管理员时，为该 Agent 动态增加管理员工具
-  → 显式回复或自主参与判断
+  → ReplySequenceManager 按计划发送，并在新消息到达时停止过期的剩余分句
   → 普通聊天成功发送后，关系评价任务入队
 ```
 
@@ -463,15 +537,17 @@ docker compose up -d --no-deps --force-recreate bot
 
 在已启用群中，可以只发送一个 `@Yuki` 而不附带文字；该消息会进入正常聊天 Agent，让 Yuki 自然回应。后端只把最小的“仅被提及”上下文交给模型，永久事件账本仍保存真实的空文本消息，不伪造用户发言。
 
-谨慎自主参与的默认规则：
+Planner-first 自主参与规则：
 
-- 群消息静默 8 秒后，最多 20 条组成判断批次；
-- 只有回复机器人、提到机器人、向群提问或与已有记忆明显相关时才进入模型判断；
-- 判断置信度至少为 `0.85` 才发言；
-- 每群自主发言后冷却 300 秒，每小时最多 3 次；
-- 两次自主发言之间必须出现新的人类消息；
-- 自主发言不开放通用 OneBot 管理工具；
-- 仍使用普通消息发送、日常分句和 3–5 秒间隔。
+- 群消息静默窗口结束后，最多按 `PLANNER_MAX_PENDING_MESSAGES` 组成受限批次；
+- 先执行纯 Python 回复必要性评分，未达到阈值不会调用 Planner；
+- 达到阈值后，由 Planner 选择 `reply`、`wait` 或 `silent`，`wait` 最多重新规划一次；
+- 旧置信度、冷却、每小时上限及 `AUTONOMOUS_ENABLED` 不限制 Planner-first 路径；
+- 新群消息会中断尚未完成的自主 Planner、生成及未发送回复分句；
+- 自主轮不开放通用 OneBot 管理工具，Planner 本身也没有任何工具；
+- 最终回复仍由同一个 Yuki Agent 生成，并使用普通消息与计划内的发送节奏。
+
+设置 `PLANNER_ENABLED=false` 后才恢复 1.5.2 的候选判断、置信度、冷却与每小时上限。
 
 ## 命令
 
@@ -577,6 +653,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | 模式 | 配置键 |
 |---|---|
 | HOT | `autonomous.enabled`、`autonomous.silence_seconds`、`autonomous.confidence_threshold`、`autonomous.cooldown_seconds`、`autonomous.max_per_hour` |
+| HOT | `planner.enabled`、`planner.direct_enabled`、`planner.group_enabled`、`planner.group_debounce_seconds`、`planner.confidence_threshold`、`planner.reply_necessity_threshold`、`planner.max_pending_messages`、`planner.recent_presence_window_seconds`、`planner.max_wait_seconds`、`planner.interrupt_autonomous_on_new_message` |
 | HOT | `context.local_event_limit`、`context.related_people_limit` |
 | HOT | `reply.daily_split_enabled`、`reply.daily_split_max_characters`、`reply.daily_split_max_messages`、`reply.delay_min_seconds`、`reply.delay_max_seconds`、`reply.max_qq_message_chars` |
 | HOT | `llm.temperature`、`llm.max_output_tokens`、`llm.thinking_enabled` |
@@ -626,6 +703,38 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `AGENT_MAX_TOOL_CALLS` | `12`（硬上限 `16`） |
 | `AGENT_MAX_MODEL_REQUESTS` | `12` |
 | `AGENT_TOOL_RESULT_MAX_CHARACTERS` | `32000` |
+| `PLANNER_ENABLED` | `true` |
+| `PLANNER_MODEL` | 空；使用 `LLM_MODEL` |
+| `PLANNER_DIRECT_ENABLED` | `true` |
+| `PLANNER_GROUP_ENABLED` | `true` |
+| `PLANNER_GROUP_DEBOUNCE_SECONDS` | `8` |
+| `PLANNER_PREFERRED_MESSAGES` | `3`（热配置范围 `1`～`20`） |
+| `PLANNER_TEMPERATURE` | `0.1` |
+| `PLANNER_MAX_OUTPUT_TOKENS` | `512` |
+| `PLANNER_TIMEOUT_SECONDS` | `20` |
+| `PLANNER_CONFIDENCE_THRESHOLD` | `0.65` |
+| `PLANNER_REPLY_NECESSITY_THRESHOLD` | `80` |
+| `PLANNER_MAX_PENDING_MESSAGES` | `20` |
+| `PLANNER_RECENT_PRESENCE_WINDOW_SECONDS` | `300` |
+| `PLANNER_MAX_WAIT_SECONDS` | `60` |
+| `PLANNER_INTERRUPT_AUTONOMOUS_ON_NEW_MESSAGE` | `true` |
+| `PLANNER_RECORD_RUNS` | `true` |
+| `REPLY_SEQUENCE_CANCEL_ON_NEW_MESSAGE` | `true` |
+| `REPLY_PLAN_HARD_MAX_MESSAGES` | `10`（可热更新至 `20`） |
+| `PLUGIN_SYSTEM_ENABLED` | `false` |
+| `PLUGIN_DIRECTORY` | `plugins` |
+| `PLUGIN_API_VERSION` | `1.0` |
+| `PLUGIN_HOOK_TIMEOUT_SECONDS` | `3` |
+| `PLUGIN_START_TIMEOUT_SECONDS` | `10` |
+| `PLUGIN_STOP_TIMEOUT_SECONDS` | `10` |
+| `PLUGIN_MAX_PROMPT_FRAGMENT_CHARACTERS` | `2000` |
+| `PLUGIN_MAX_PROMPT_CHARACTERS_PER_PLUGIN` | `4000` |
+| `PLUGIN_MAX_TOTAL_PROMPT_CHARACTERS` | `8000` |
+| `PLUGIN_BACKGROUND_TASK_LIMIT` | `4` |
+| `PLUGIN_FAILURE_DISABLE_THRESHOLD` | `3` |
+| `PLUGIN_HTTP_MAX_RESPONSE_BYTES` | `2097152` |
+| `PLUGIN_HTTP_TIMEOUT_SECONDS` | `15` |
+| `PLUGIN_AI_SESSION_MAX_HISTORY_MESSAGES` | `200` |
 | `AUTOMATION_ENABLED` | `false` |
 | `DEFAULT_TIMEZONE` | `Asia/Shanghai` |
 | `AUTOMATION_POLL_SECONDS` | `2` |
@@ -704,6 +813,7 @@ uv run ruff format --check .
 uv run ruff check .
 uv run mypy src
 uv run pytest
+uv run pytest -q examples/plugins/com.example.echo/tests
 uv run qq-ai-bot
 ```
 
@@ -716,7 +826,7 @@ docker compose up -d
 docker compose ps
 ```
 
-健康检查不会请求 DeepSeek、Tavily、Qwen 或执行真实自动化，也不会暴露密钥；`web_configured` 表示联网已启用且配置完整，`vision_configured` 表示视觉功能已启用且 `BASE_URL`、`API_KEY`、模型均已配置，`automation_worker_running` 和 `active_automation_count` 只读取本地运行状态：
+健康检查不会请求 DeepSeek、Planner、Tavily、Qwen 或执行真实自动化，也不会暴露密钥；`planner_enabled/configured/active_requests`、`plugin_system_enabled/running_count`、`web_configured`、`vision_configured`、`automation_worker_running` 和 `active_automation_count` 都只读取本地配置或运行状态：
 
 ```bash
 docker compose exec bot python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz').read().decode())"
@@ -737,13 +847,14 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 
 `/ai status` 会同时显示视觉是否启用、视觉模型、是否繁忙以及当前“排队/运行”数量，不显示密钥或完整接口查询参数。
 
-## 1.5 升级步骤
+## 1.6 升级步骤
 
 1. 停止 Bot 写入但保持 NapCat 和 QQ 登录态运行：`docker compose stop bot`。
 2. 完整备份 `data/`、`napcat-data/` 和 `napcat-config/`。
-3. 将 `.env.example` 新增的 `AUTOMATION_*` 与 `DEFAULT_TIMEZONE` 同步到 `.env`。暂不使用时保留 `AUTOMATION_ENABLED=false`；启用后普通用户也可以创建自己的受限任务。
-4. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 不会被替换，Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0012`。
-5. 检查 `docker compose ps`、`/healthz` 和日志。
-6. 依次人工验证：普通用户本人提醒、当前群提醒、超级管理员指定目标、暂停/恢复/取消、重启后继续、Bot 断线后宽限，以及旧有文本、视觉、记忆、联网、关系和管理员工具。
+3. 将 `.env.example` 新增的 `PLANNER_*`、`REPLY_*` 和 `PLUGIN_*` 同步到 `.env`。建议首次升级保留 `PLUGIN_SYSTEM_ENABLED=false`；若要先验证旧聊天路径，可临时设 `PLANNER_ENABLED=false`。
+4. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 不会被替换，Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0013`。
+5. 检查 `docker compose ps`、`/healthz` 和日志；确认 Planner 状态及插件运行数没有触发外部探测。
+6. 依次人工验证：私聊明确请求、群聊 @、低必要性群消息静默、新消息中断剩余分句、管理员自然语言工具、自动化、视觉、联网、关系和旧命令。
+7. 需要插件时再复制已审阅目录，通过 CLI 发现、查看权限、批准并启用；不要直接启用未知第三方 Python 代码。
 
-`0012` 是非破坏性迁移，回退只移除自动化/时区表和 `chat_events` 的自动化来源字段；`0011` 回退只删除表情描述库，`0010` 回退只删除图片派生摘要。它们都不删除聊天正文、人物、记忆、联网来源、关系和运行时配置。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。
+`0013` 是非破坏性迁移，只新增 Planner 与插件运行时表；回退 `0013 → 0012` 会删除这些新增表，因此应先导出仍需保留的插件 KV/配置/独立会话。它不删除聊天正文、人物、记忆、联网来源、关系、视觉或自动化数据。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。

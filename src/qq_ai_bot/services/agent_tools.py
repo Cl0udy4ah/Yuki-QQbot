@@ -24,6 +24,8 @@ from qq_ai_bot.persistence.repositories import (
     MemoryRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.planner.models import ToolMode
+from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import (
     WebSearchRequest,
@@ -67,6 +69,8 @@ class ToolRuntime:
     mentioned_user_ids: tuple[str, ...] = ()
     runtime_config: RuntimeConfigSnapshot | None = None
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
+    tool_mode: ToolMode = ToolMode.INHERIT
+    turn_token: TurnToken | None = None
 
 
 def _object_schema(

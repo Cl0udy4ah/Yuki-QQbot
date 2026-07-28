@@ -120,13 +120,13 @@ def test_superuser_report_has_exact_registry_counts_and_complete_lists() -> None
     ).report_for_message(inbound("9000"))
 
     assert report.permission_level is PermissionLevel.SUPERUSER
-    assert report.mutable_config_count == 71
+    assert report.mutable_config_count == 96
     assert report.protected_config_count == 12
     assert report.business_action_count == 19
     assert report.mutating_action_count == 15
     assert report.self_service_operation_count == 29
     assert report.onebot_gateway_count == 1
-    assert len(report.capabilities) == 132
+    assert len(report.capabilities) == 157
 
     config_ids = {
         descriptor.id
@@ -154,8 +154,8 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
 
     assert first == second
     assert first["counts"] == {
-        "total": 132,
-        "mutable_configurations": 71,
+        "total": 157,
+        "mutable_configurations": 96,
         "protected_configurations": 12,
         "business_actions": 19,
         "mutating_business_actions": 15,
@@ -193,7 +193,7 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
         for items in kinds.values()
         for item in items
     }
-    assert len(rendered) < 24000
+    assert len(rendered) < 28000
     assert compact_ids == {descriptor.id for descriptor in report.capabilities}
 
     summary = report.to_model_dict("summary")
@@ -201,8 +201,8 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
     assert summary["transient_internal_reference"] is True
     assert summary["do_not_copy_verbatim_to_user"] is True
     assert "capability_ids" not in summary
-    assert len(json.dumps(summary, ensure_ascii=False)) < 3500
-    assert len(json.dumps(full_model_view, ensure_ascii=False)) < 10000
+    assert len(json.dumps(summary, ensure_ascii=False)) < 4000
+    assert len(json.dumps(full_model_view, ensure_ascii=False)) < 12000
 
 
 def test_focused_model_view_finds_registry_alias_without_full_catalog() -> None:
@@ -249,7 +249,7 @@ def test_deterministic_text_contains_every_capability_and_onebot_scope() -> None
             capability_id = capability_id.removeprefix("onebot:")
         assert capability_id in rendered
 
-    assert "可修改运行时配置参数：71 项" in rendered
+    assert "可修改运行时配置参数：96 项" in rendered
     assert "管理员业务接口：19 项，其中修改型 15 项" in rendered
     assert "NapCat/OneBot 通用全接口网关：1 项" in rendered
     assert "全部公开 action" in rendered
@@ -317,7 +317,7 @@ def test_injected_registry_entries_appear_without_copying_registry_tables() -> N
     assert "action:diagnostics.snapshot:any_group" in {
         descriptor.id for descriptor in report.capabilities
     }
-    assert report.mutable_config_count == 72
+    assert report.mutable_config_count == 97
     assert report.business_action_count == 20
 
 

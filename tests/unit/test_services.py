@@ -79,15 +79,30 @@ def test_short_plain_chat_splits_into_one_message_per_sentence() -> None:
         "- 第一步\n- 第二步",
         "```python\nprint('hello')\n```",
         "| 名称 | 值 |\n|---|---|\n| A | B |",
-        "第一句。第二句。第三句。第四句。第五句。",
     ],
 )
-def test_structured_or_excessive_output_is_not_split_as_daily_chat(text: str) -> None:
+def test_structured_output_is_not_split_as_daily_chat(text: str) -> None:
     assert split_daily_chat_sentences(
         text,
         max_characters=240,
         max_messages=4,
     ) == (text,)
+
+
+def test_excess_sentences_are_grouped_at_semantic_boundaries() -> None:
+    assert split_daily_chat_sentences(
+        "第一句。第二句。第三句。第四句。第五句。",
+        max_characters=240,
+        max_messages=3,
+    ) == ("第一句。 第二句。", "第三句。 第四句。", "第五句。")
+
+
+def test_natural_line_breaks_can_be_message_boundaries() -> None:
+    assert split_daily_chat_sentences(
+        "先告诉你一件事\n然后我们再继续",
+        max_characters=240,
+        max_messages=3,
+    ) == ("先告诉你一件事", "然后我们再继续")
 
 
 def test_long_plain_output_is_not_split_as_daily_chat() -> None:

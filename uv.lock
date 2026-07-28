@@ -586,7 +586,7 @@ wheels = [
 
 [[package]]
 name = "qq-ai-bot"
-version = "1.5.2"
+version = "1.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -594,6 +594,7 @@ dependencies = [
     { name = "httpx" },
     { name = "nonebot-adapter-onebot" },
     { name = "nonebot2", extra = ["fastapi"] },
+    { name = "packaging" },
     { name = "pillow" },
     { name = "pydantic-settings" },
     { name = "sqlalchemy" },
@@ -616,6 +617,7 @@ requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13,<2" },
     { name = "nonebot-adapter-onebot", specifier = ">=2.4,<3" },
     { name = "nonebot2", extras = ["fastapi"], specifier = ">=2.4,<3" },
+    { name = "packaging", specifier = ">=24,<27" },
     { name = "pillow", specifier = ">=11,<13" },
     { name = "pydantic-settings", specifier = ">=2.7,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<9" },
