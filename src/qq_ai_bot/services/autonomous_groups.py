@@ -119,7 +119,6 @@ class AutonomousGroupService:
                 last,
                 identity,
                 profile,
-                (),
                 f"以下是群聊刚刚的消息，请像普通群友一样谨慎参与：\n{batch}",
                 sender,
                 autonomous=True,

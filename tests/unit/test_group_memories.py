@@ -6,11 +6,10 @@ import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
 
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.memories import GroupMemoryUpsert
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repositories import GroupMemoryRepository
+from qq_ai_bot.persistence.repositories import MemoryRepository
 
 
 def group_message(
@@ -36,37 +35,38 @@ def group_message(
 
 @pytest.mark.asyncio
 async def test_repository_updates_and_hard_limits_each_group(database: Database) -> None:
-    repository = GroupMemoryRepository(database)
-    await repository.apply_updates(
-        "2001",
-        upserts=tuple(
-            GroupMemoryUpsert(memory_key=f"fact_{index}", content=f"事实 {index}")
-            for index in range(35)
-        ),
-        delete_keys=(),
-        limit=30,
-    )
-    await repository.apply_updates(
-        "2002",
-        upserts=(GroupMemoryUpsert(memory_key="other_group", content="另一个群"),),
-        delete_keys=(),
+    repository = MemoryRepository(database)
+    for index in range(35):
+        await repository.upsert(
+            scope="group",
+            group_id="2001",
+            memory_key=f"fact_{index}",
+            content=f"事实 {index}",
+            limit=30,
+        )
+    await repository.upsert(
+        scope="group",
+        group_id="2002",
+        memory_key="other_group",
+        content="另一个群",
         limit=30,
     )
 
-    first_group = await repository.list_recent("2001", limit=30)
-    second_group = await repository.list_recent("2002", limit=30)
+    first_group = await repository.list_group("2001", limit=30)
+    second_group = await repository.list_group("2002", limit=30)
     assert len(first_group) == 30
     assert all(memory.group_id == "2001" for memory in first_group)
     assert [memory.content for memory in second_group] == ["另一个群"]
 
     existing_key = first_group[-1].memory_key
-    await repository.apply_updates(
-        "2001",
-        upserts=(GroupMemoryUpsert(memory_key=existing_key, content="更新后的事实"),),
-        delete_keys=(),
+    await repository.upsert(
+        scope="group",
+        group_id="2001",
+        memory_key=existing_key,
+        content="更新后的事实",
         limit=30,
     )
-    updated = await repository.list_recent("2001", limit=30)
+    updated = await repository.list_group("2001", limit=30)
     assert len(updated) == 30
     assert any(
         item.memory_key == existing_key and item.content == "更新后的事实" for item in updated
@@ -102,7 +102,7 @@ async def test_triggered_group_chat_queues_memory_instead_of_extracting_synchron
     first_result = await harness.processor.handle(first, MemorySender())
 
     assert first_result.reason == "chat"
-    memories = await harness.group_memories.list_recent("2001", limit=30)
+    memories = await MemoryRepository(database).list_group("2001", limit=30)
     assert not memories
     assert len(provider.requests) == 1
 
@@ -112,7 +112,7 @@ async def test_triggered_group_chat_queues_memory_instead_of_extracting_synchron
         mentioned_user_ids=("12345678",),
     )
     await harness.processor.handle(second, MemorySender())
-    memories = await harness.group_memories.list_recent("2001", limit=30)
+    memories = await MemoryRepository(database).list_group("2001", limit=30)
     assert not memories
     assert len(provider.requests) == 2
 
@@ -131,10 +131,11 @@ async def test_group_memories_never_cross_group_or_private_scope(database: Datab
         group_message("我们喜欢猫", message_id="group-one"),
         MemorySender(),
     )
-    await harness.group_memories.apply_updates(
-        "2001",
-        upserts=(GroupMemoryUpsert(memory_key="group:topic", content="一群喜欢猫"),),
-        delete_keys=(),
+    await MemoryRepository(database).upsert(
+        scope="group",
+        group_id="2001",
+        memory_key="group:topic",
+        content="一群喜欢猫",
         limit=100,
     )
 
@@ -180,7 +181,7 @@ async def test_untriggered_group_chat_is_observed_without_synchronous_extraction
 
     assert not result.handled
     assert not provider.requests
-    assert await harness.group_memories.count("2001") == 0
+    assert not await MemoryRepository(database).list_group("2001", limit=1)
 
 
 @pytest.mark.asyncio
@@ -196,4 +197,4 @@ async def test_invalid_extractor_output_does_not_break_chat(database: Database) 
 
     assert result.reason == "chat"
     assert sender.messages[0].text == "不是 JSON"
-    assert await harness.group_memories.count("2001") == 0
+    assert not await MemoryRepository(database).list_group("2001", limit=1)

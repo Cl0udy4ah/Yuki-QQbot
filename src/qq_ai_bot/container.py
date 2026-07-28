@@ -33,7 +33,6 @@ from qq_ai_bot.persistence.repositories import (
     ConversationRepository,
     EmojiDescriptionRepository,
     EventLedgerRepository,
-    GroupMemoryRepository,
     GroupSettingsRepository,
     MediaAnalysisRepository,
     MemoryJobRepository,
@@ -56,8 +55,6 @@ from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
-from qq_ai_bot.services.group_members import GroupMemberService
-from qq_ai_bot.services.group_memories import GroupMemoryService
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.services.memory_worker import MemoryWorker
@@ -125,8 +122,6 @@ class ApplicationContainer:
             self.user_profile_repository,
             self.runtime_config,
         )
-        self.group_members = GroupMemberService(self.user_profile_repository)
-        self.group_memory_repository = GroupMemoryRepository(self.database)
         self.processed_events = ProcessedEventRepository(self.database)
         self.ledger = EventLedgerRepository(self.database)
         self.memories = MemoryRepository(self.database)
@@ -202,12 +197,6 @@ class ApplicationContainer:
         self.rate_limiter = SlidingWindowRateLimiter(
             per_user=settings.per_user_requests_per_minute,
             per_group=settings.per_group_requests_per_minute,
-        )
-        self.group_memories = GroupMemoryService(
-            settings=settings,
-            repository=self.group_memory_repository,
-            provider=self.provider,
-            concurrency=self.concurrency,
         )
         self.agent_tools = AgentToolService(
             settings=settings,
@@ -354,7 +343,6 @@ class ApplicationContainer:
             groups=self.groups,
             private_users=self.private_users,
             user_profiles=self.user_profiles,
-            group_members=self.group_members,
             chat=self.chat,
             deduplication=self.deduplication,
             rate_limiter=self.rate_limiter,

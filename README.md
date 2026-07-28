@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**1.5.1 不新增数据库迁移，会保留现有人物、聊天、记忆、关系、联网、视觉、表情与自动化数据。1.5.0 的非破坏性迁移 `0012` 仍会在旧版本升级时自动执行；若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
+> **升级提示：**1.5.2 不新增数据库迁移，会保留现有人物、聊天、记忆、关系、联网、视觉、表情与自动化数据。1.5.0 的非破坏性迁移 `0012` 仍会在旧版本升级时自动执行；若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -28,7 +28,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.5.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.5.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -45,6 +45,18 @@ Yuki-QQbot 1.5.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 运行时配置保存在 SQLite，不修改 `.env`；所有修改都有脱敏审计，配置覆盖可安全回滚。
 - 每轮聊天获得后端可信当前时间；每个 QQ 可保存独立 IANA 时区，历史消息按本地时间显示。
 - 普通用户和超级管理员都可以用自然语言创建自己的持久化自动化任务；普通用户严格限于本人和当前群，超级管理员可显式委托现有管理员与 OneBot 能力。
+
+### 当前架构约束
+
+- 正常聊天、管理员自然语言操作、联网和自动化创建都进入同一个聊天 Agent；不存在第二套管理员会话或独立人格路由。
+- `ContextAssembler` 统一装配人物、群、关系和近期事件，并用 `MAX_CONTEXT_CHARACTERS` 限制动态上下文总量；当前消息优先保留，低优先级旧资料先裁剪。
+- `PromptComposer` 集中生成后端可信的时间、权限、关系、视觉和联网规则，业务服务不再各自拼接一套运行说明。
+- 持久化仓储按人物与访问、事件账本、记忆、关系、媒体和联网来源分域实现；`persistence.repositories` 仅作为稳定兼容门面，不再承载全部 SQL 逻辑。
+- `/ai` 确定性命令由 `CommandService` 调度，并分别交给人物、运行时配置和自动化处理器；`MessageProcessor` 只负责准入、观察、视觉和聊天流水线。
+- 运行时配置注册表只负责查找、别名和类型转换；热更新、仅影响未来、需重启、受保护/密钥配置分别维护在独立声明目录中。
+- 相关人物按批次读取，避免群聊中按 QQ 串行查询多组资料；群名片仍严格按当前群号隔离。
+- SQLite 使用 WAL 和有限等待支持多个后台 Worker；部署仍定位于单 Bot、小型服务器，未来需要多进程横向扩展时再迁移 PostgreSQL。
+- GitHub Actions 会在推送和 PR 时执行 Ruff、严格 mypy、pytest、Alembic 全新安装和 Docker 构建。
 
 本版本只处理当前真实消息或其回复中的图片，不处理视频、语音、PDF 和普通文件，也不会主动回溯群历史中的任意旧图片。已启用群里未触发 Yuki 的普通图片只写入原有事件账本，不下载、不分析，也不会因此触发自主发言。
 
@@ -449,6 +461,8 @@ docker compose up -d --no-deps --force-recreate bot
 
 禁用群只处理超级管理员的启用命令。已启用群的未触发消息会更新人物、成员、账本和记忆任务，但不会阻断其他 NoneBot 插件。
 
+在已启用群中，可以只发送一个 `@Yuki` 而不附带文字；该消息会进入正常聊天 Agent，让 Yuki 自然回应。后端只把最小的“仅被提及”上下文交给模型，永久事件账本仍保存真实的空文本消息，不伪造用户发言。
+
 谨慎自主参与的默认规则：
 
 - 群消息静默 8 秒后，最多 20 条组成判断批次；
@@ -597,6 +611,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `AUTONOMOUS_MAX_PER_HOUR` | `3` |
 | `RECENT_HISTORY_TOOL_LIMIT` | `20` |
 | `LOCAL_CONTEXT_EVENT_LIMIT` | `30` |
+| `MAX_CONTEXT_CHARACTERS` | `12000` |
 | `RELATED_PEOPLE_LIMIT` | `5` |
 | `PERSON_MEMORY_MAX_ENTRIES` | `100` |
 | `GROUP_MEMORY_MAX_ENTRIES` | `100` |

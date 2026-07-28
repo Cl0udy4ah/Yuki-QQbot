@@ -1,0 +1,313 @@
+"""Deterministic `/ai` command execution, separate from the chat message pipeline."""
+
+from __future__ import annotations
+
+import re
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+
+from qq_ai_bot import __version__
+from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.admin.models import AdminActor
+from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
+from qq_ai_bot.automation.repository import AutomationRepository
+from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.automation.worker import AutomationWorker
+from qq_ai_bot.config import Settings
+from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.persistence.repositories import (
+    ConversationRepository,
+    MemoryRepository,
+    PeopleRepository,
+)
+from qq_ai_bot.services.admin.config_admin import ConfigAdminService
+from qq_ai_bot.services.admin.group_admin import GroupAdminService
+from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
+from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
+from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminService
+from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
+from qq_ai_bot.services.automation_commands import AutomationCommandHandler
+from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.services.config_commands import ConfigCommandHandler
+from qq_ai_bot.services.policies import CommandName, command_requires_superuser
+from qq_ai_bot.services.profile_commands import ProfileCommandHandler
+from qq_ai_bot.services.vision_service import VisionService
+
+_NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
+
+
+@dataclass(frozen=True, slots=True)
+class CommandExecution:
+    """Text and lifecycle effects produced by one deterministic command."""
+
+    text: str
+    record_reply: bool = True
+    reset_after_reply: bool = False
+
+
+class CommandService:
+    """Execute deterministic commands without creating a second AI routing layer."""
+
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        conversations: ConversationRepository,
+        people: PeopleRepository,
+        memories: MemoryRepository,
+        concurrency: ConcurrencyManager,
+        onebot_connected: Callable[[], bool],
+        runtime_config: RuntimeConfigService,
+        relationship_admin: RelationshipAdminService,
+        memory_admin: MemoryAdminService,
+        preference_admin: PreferenceAdminService,
+        group_admin: GroupAdminService,
+        private_access_admin: PrivateAccessAdminService,
+        config_admin: ConfigAdminService,
+        permission_catalog: PermissionCatalogService,
+        vision_service: VisionService | None = None,
+        automation_service: AutomationService | None = None,
+        automation_repository: AutomationRepository | None = None,
+        automation_worker: AutomationWorker | None = None,
+    ) -> None:
+        self._settings = settings
+        self._conversations = conversations
+        self._people = people
+        self._concurrency = concurrency
+        self._onebot_connected = onebot_connected
+        self._runtime_config = runtime_config
+        self._group_admin = group_admin
+        self._private_access_admin = private_access_admin
+        self._vision = vision_service
+        self._automation_repository = automation_repository
+        self._automation_worker = automation_worker
+        self._profile_commands = ProfileCommandHandler(
+            people=people,
+            memories=memories,
+            memory_admin=memory_admin,
+            preference_admin=preference_admin,
+            relationship_admin=relationship_admin,
+        )
+        self._config_commands = ConfigCommandHandler(
+            config_admin=config_admin,
+            permission_catalog=permission_catalog,
+        )
+        self._automation_commands = AutomationCommandHandler(
+            settings=settings,
+            automation_service=automation_service,
+        )
+
+    @staticmethod
+    def may_write(command: CommandName, argument: str) -> bool:
+        """Conservatively close deterministic writes on every image-bearing turn."""
+
+        if command in {
+            CommandName.ON,
+            CommandName.OFF,
+            CommandName.GROUP,
+            CommandName.PRIVATE,
+            CommandName.FORGETME,
+        }:
+            return True
+        operation = argument.split(maxsplit=1)[0].casefold() if argument.strip() else ""
+        if command is CommandName.MEMORY:
+            return operation not in {"", "list"}
+        if command is CommandName.PREFERENCE:
+            return operation not in {"", "list"}
+        if command is CommandName.AFFECTION:
+            return operation not in {"", "show", "history"}
+        if command is CommandName.CONFIG:
+            return operation not in {"", "list", "get", "history"}
+        if command is CommandName.AUTOMATION:
+            return operation not in {"", "list", "show", "history"}
+        return False
+
+    async def execute(
+        self,
+        command: CommandName,
+        message: InboundMessage,
+        identity: ConversationIdentity,
+        profile: UserProfileSnapshot,
+        argument: str,
+        started: float,
+    ) -> CommandExecution:
+        is_superuser = message.sender.user_id in self._settings.superusers
+        actor = AdminActor(
+            user_id=message.sender.user_id,
+            is_superuser=is_superuser,
+            trigger_message_id=message.message_id,
+            conversation_key=identity.key,
+            current_group_id=message.group_id,
+            mentioned_user_ids=message.mentioned_user_ids,
+            current_message_text=message.text,
+        )
+        record_reply = command is not CommandName.FORGETME
+        reset_after_reply = False
+        if command_requires_superuser(command) and not is_superuser:
+            text = "权限不足：该命令仅限超级管理员。"
+        elif command is CommandName.HELP:
+            text = self._help_text()
+        elif command is CommandName.NEW:
+            text = "已开始新的当前场景上下文；永久聊天账本和人物记忆仍然保留。"
+            reset_after_reply = True
+        elif command is CommandName.STATUS:
+            count = await self._conversations.count_messages(identity)
+            pending_restart = await self._runtime_config.pending_restart_count()
+            vision_busy = self._vision is not None and self._vision.busy
+            vision_queue_depth = self._vision.queue_depth if self._vision is not None else 0
+            vision_running = self._vision.running_count if self._vision is not None else 0
+            automation_count = (
+                await self._automation_repository.active_count()
+                if self._automation_repository is not None
+                else 0
+            )
+            automation_last_run = (
+                await self._automation_repository.latest_run_at()
+                if self._automation_repository is not None
+                else None
+            )
+            automation_next_run = (
+                await self._automation_repository.next_due_at()
+                if self._automation_repository is not None
+                else None
+            )
+            automation_worker_status = (
+                "运行中"
+                if self._automation_worker is not None and self._automation_worker.running
+                else "未运行"
+            )
+            automation_last_text = automation_last_run.isoformat() if automation_last_run else "无"
+            automation_next_text = automation_next_run.isoformat() if automation_next_run else "无"
+            text = (
+                f"OneBot 连接：{'已连接' if self._onebot_connected() else '未连接'}\n"
+                f"模型：{self._settings.llm_model or '未配置'}\n"
+                f"视觉功能：{'已启用' if self._settings.vision_enabled else '未启用'}\n"
+                f"视觉模型：{self._settings.vision_model or '未配置'}\n"
+                f"视觉请求繁忙：{'是' if vision_busy else '否'}\n"
+                f"视觉排队/运行：{vision_queue_depth}/{vision_running}\n"
+                f"当前切点后的事件数：{count}\n"
+                f"请求处理中：{'是' if self._concurrency.is_processing(identity.key) else '否'}\n"
+                f"待重启配置数：{pending_restart}\n"
+                f"自动化：{'已启用' if self._settings.automation_enabled else '未启用'}\n"
+                f"自动化 Worker：{automation_worker_status}\n"
+                f"活跃自动化任务：{automation_count}\n"
+                f"最近自动化执行：{automation_last_text}\n"
+                f"最近待执行时间：{automation_next_text}\n"
+                f"服务版本：{__version__}"
+            )
+        elif command is CommandName.STOP:
+            cancelled = await self._concurrency.cancel(identity.key)
+            text = "已取消当前 AI 请求。" if cancelled else "当前没有正在处理的 AI 请求。"
+        elif command in {CommandName.ON, CommandName.OFF}:
+            if message.scope_type is not ScopeType.GROUP or message.group_id is None:
+                text = "该命令只能在群聊中使用。"
+            else:
+                enabled = command is CommandName.ON
+                if enabled:
+                    await self._group_admin.enable_current_group(actor, message.group_id)
+                else:
+                    await self._group_admin.disable_current_group(actor, message.group_id)
+                text = "已启用当前群。" if enabled else "已停用当前群。"
+        elif command in {CommandName.PRIVATE, CommandName.GROUP}:
+            parsed = self._parse_access_switch(argument)
+            if parsed is None:
+                noun = "QQ号" if command is CommandName.PRIVATE else "群号"
+                text = f"格式错误，请使用 /ai {command.value} <{noun}> on|off。"
+            else:
+                target_id, enabled = parsed
+                try:
+                    if command is CommandName.PRIVATE:
+                        if enabled:
+                            await self._private_access_admin.enable_user(actor, target_id)
+                        else:
+                            await self._private_access_admin.disable_user(actor, target_id)
+                        text = (
+                            "已开启指定 QQ 用户的私聊权限。"
+                            if enabled
+                            else "已关闭指定 QQ 用户的私聊权限。"
+                        )
+                    else:
+                        if enabled:
+                            await self._group_admin.enable_current_group(actor, target_id)
+                        else:
+                            await self._group_admin.disable_current_group(actor, target_id)
+                        text = f"已{'启用' if enabled else '停用'}群 {target_id}。"
+                except ValueError as exc:
+                    text = str(exc)
+        elif command is CommandName.PING:
+            text = f"pong ({(time.perf_counter() - started) * 1000:.1f} ms)"
+        elif command is CommandName.WHOAMI:
+            text = await self._profile_commands.whoami(message, profile, argument)
+        elif command is CommandName.FORGETME:
+            if argument:
+                text = "该命令不接受参数，只能删除发送者本人数据。"
+            else:
+                deleted = await self._people.delete_person(message.sender.user_id)
+                text = (
+                    "已彻底删除与你 QQ 号关联的人物、关系分数、记忆、成员关系和可归属聊天事件。"
+                    if deleted
+                    else "没有找到与你 QQ 号关联的数据。"
+                )
+        elif command is CommandName.MEMORY:
+            text = await self._profile_commands.memory(
+                actor=actor,
+                argument=argument,
+            )
+        elif command is CommandName.PREFERENCE:
+            text = await self._profile_commands.preference(
+                actor=actor,
+                argument=argument,
+            )
+        elif command is CommandName.AFFECTION:
+            text = await self._profile_commands.affection(
+                actor=actor,
+                argument=argument,
+            )
+        elif command is CommandName.CAPABILITIES:
+            text = self._config_commands.capabilities(message, argument)
+        elif command is CommandName.CONFIG:
+            text = await self._config_commands.config(actor, argument)
+        elif command is CommandName.AUTOMATION:
+            text = await self._automation_commands.execute(
+                message=message,
+                identity=identity,
+                argument=argument,
+            )
+        else:
+            text = "未知命令，请使用 /ai help 查看帮助。"
+
+        return CommandExecution(
+            text=text,
+            record_reply=record_reply,
+            reset_after_reply=reset_after_reply,
+        )
+
+    @staticmethod
+    def _help_text() -> str:
+        return (
+            "QQ AI 助手命令：\n"
+            "/ai help | new | status | stop | ping | whoami | forgetme\n"
+            "/ai memory list|add|update|delete\n"
+            "/ai preference list|set|delete\n"
+            "/ai affection show|history\n"
+            "/ai affection set|adjust|trust user <QQ号> <数值>（超级管理员）\n"
+            "/ai capabilities [类别]（查看当前 QQ 的完整权限与可改范围）\n"
+            "/ai config list|get|set|unset|history|rollback（超级管理员）\n"
+            "/ai automation list|show|pause|resume|cancel|run|history <任务ID>\n"
+            "/ai on|off（超级管理员，当前群）\n"
+            "/ai group <群号> on|off（超级管理员）\n"
+            "/ai private <QQ号> on|off（超级管理员；阻止/恢复私聊）\n"
+            "超级管理员可在 memory/preference 操作名后加 user <QQ号>。"
+        )
+
+    @staticmethod
+    def _parse_access_switch(argument: str) -> tuple[str, bool] | None:
+        parts = argument.casefold().split()
+        if len(parts) != 2 or _NUMERIC_PLATFORM_ID.fullmatch(parts[0]) is None:
+            return None
+        if parts[1] not in {"on", "off"}:
+            return None
+        return parts[0], parts[1] == "on"

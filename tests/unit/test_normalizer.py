@@ -74,6 +74,13 @@ def test_group_mention_uses_original_message_after_nonebot_strips_at() -> None:
     assert normalized.text == "question"
 
 
+def test_group_message_with_only_bot_mention_keeps_empty_text_trigger() -> None:
+    normalized = normalize_event(group_event(Message([MessageSegment.at(9999)])))
+
+    assert normalized.mentions_bot
+    assert normalized.text == ""
+
+
 def test_other_member_mentions_use_opaque_placeholders() -> None:
     normalized = normalize_event(
         group_event(

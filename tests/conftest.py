@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest_asyncio
 
+from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import OutboundMessage
 from qq_ai_bot.llm.base import LLMProvider
@@ -17,7 +18,6 @@ from qq_ai_bot.persistence.repositories import (
     ConversationRepository,
     EmojiDescriptionRepository,
     EventLedgerRepository,
-    GroupMemoryRepository,
     GroupSettingsRepository,
     MediaAnalysisRepository,
     MemoryRepository,
@@ -32,8 +32,6 @@ from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
-from qq_ai_bot.services.group_members import GroupMemberService
-from qq_ai_bot.services.group_memories import GroupMemoryService
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.services.processor import MessageProcessor
@@ -45,6 +43,7 @@ from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.user_profiles import UserProfileService
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
 from qq_ai_bot.services.vision_service import VisionService
+from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.base import VisionProvider
 from qq_ai_bot.web.base import WebSearchProvider
 
@@ -72,7 +71,6 @@ class Harness:
     groups: GroupSettingsRepository
     private_users: PrivateUserSettingsRepository
     profiles: UserProfileRepository
-    group_memories: GroupMemoryRepository
     relationships: RelationshipRepository
     relationship_jobs: RelationshipJobRepository
     relationship_worker: RelationshipWorker
@@ -122,8 +120,6 @@ def build_harness(
         initial_trust=settings.relationship_initial_trust,
     )
     user_profiles = UserProfileService(profiles)
-    group_members = GroupMemberService(profiles)
-    group_memories = GroupMemoryRepository(database)
     processed_events = ProcessedEventRepository(database)
     ledger = EventLedgerRepository(database)
     memories = MemoryRepository(database)
@@ -166,17 +162,13 @@ def build_harness(
     )
     llm = provider or FakeLLMProvider()
     concurrency = ConcurrencyManager(settings.global_llm_concurrency)
+    runtime_config = RuntimeConfigService(settings=settings, database=database)
+    time_service = TimeContextService(database, default_timezone=settings.default_timezone)
     relationship_worker = RelationshipWorker(
         settings=settings,
         jobs=relationship_jobs,
         relationships=relationships,
         evaluator=FakeRelationshipEvaluator(),
-    )
-    group_memory_service = GroupMemoryService(
-        settings=settings,
-        repository=group_memories,
-        provider=llm,
-        concurrency=concurrency,
     )
     agent_tools = AgentToolService(
         settings=settings,
@@ -185,6 +177,7 @@ def build_harness(
         actions=AgentActionRepository(database),
         web_provider=web_provider,
         web_sources=web_sources,
+        runtime_config=runtime_config,
     )
     chat = ChatService(
         settings=settings,
@@ -198,7 +191,8 @@ def build_harness(
         web_sources=web_sources,
         source_policy=SourceDisplayPolicy(),
         source_renderer=SourceRenderer(),
-        group_memories=group_memory_service,
+        runtime_config=runtime_config,
+        time_service=time_service,
     )
     processor = MessageProcessor(
         settings=settings,
@@ -206,7 +200,6 @@ def build_harness(
         groups=groups,
         private_users=private_users,
         user_profiles=user_profiles,
-        group_members=group_members,
         chat=chat,
         deduplication=DeduplicationService(
             processed_events,
@@ -223,6 +216,7 @@ def build_harness(
         memories=memories,
         relationships=relationships,
         relationship_worker=relationship_worker,
+        runtime_config=runtime_config,
         vision_service=vision,
     )
     return Harness(
@@ -232,7 +226,6 @@ def build_harness(
         groups,
         private_users,
         profiles,
-        group_memories,
         relationships,
         relationship_jobs,
         relationship_worker,

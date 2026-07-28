@@ -57,7 +57,6 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/qq_ai_bot.db"
     processed_event_ttl_seconds: int = 86400
     processed_event_cleanup_seconds: int = 3600
-    max_context_messages: int = 30
     max_context_characters: int = 12000
 
     global_llm_concurrency: int = 4
@@ -71,7 +70,6 @@ class Settings(BaseSettings):
     daily_chat_split_max_messages: int = 4
     daily_chat_message_delay_min_seconds: float = 3.0
     daily_chat_message_delay_max_seconds: float = 5.0
-    group_memory_enabled: bool = True
     group_memory_max_entries: int = 100
 
     observe_enabled_groups: bool = True
@@ -170,7 +168,6 @@ class Settings(BaseSettings):
         "llm_max_output_tokens",
         "processed_event_ttl_seconds",
         "processed_event_cleanup_seconds",
-        "max_context_messages",
         "max_context_characters",
         "global_llm_concurrency",
         "per_user_requests_per_minute",

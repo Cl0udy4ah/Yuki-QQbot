@@ -33,7 +33,6 @@ async def handle_ai_message(bot: Bot, event: MessageEvent, matcher: Matcher) -> 
             inbound,
             OneBotSender(bot, event),
             profile_resolver,
-            profile_resolver,
         )
     except Exception as exc:
         logger.error(

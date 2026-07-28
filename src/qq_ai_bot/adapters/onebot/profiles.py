@@ -10,7 +10,6 @@ from nonebot.adapters.onebot.v11 import Bot
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage
-from qq_ai_bot.services.group_members import GroupMemberResolution
 from qq_ai_bot.services.user_profiles import ProfileResolution
 
 logger = logging.getLogger(__name__)
@@ -89,42 +88,6 @@ class OneBotUserProfileResolver:
             nickname_known=nickname_known,
             group_card_known=group_card_known,
         )
-
-    async def resolve_members(
-        self,
-        message: InboundMessage,
-    ) -> tuple[GroupMemberResolution, ...]:
-        """Resolve only explicitly mentioned members in the current group."""
-
-        if message.group_id is None:
-            return ()
-        resolutions: list[GroupMemberResolution] = []
-        for user_id in message.mentioned_user_ids[:5]:
-            try:
-                payload = await self._bot.call_api(
-                    "get_group_member_info",
-                    group_id=int(message.group_id),
-                    user_id=int(user_id),
-                    no_cache=False,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "onebot_mentioned_member_lookup_failed exception_category=%s",
-                    type(exc).__name__,
-                )
-                continue
-            if not isinstance(payload, Mapping):
-                continue
-            nickname = payload.get("nickname")
-            group_card = payload.get("card")
-            resolutions.append(
-                GroupMemberResolution(
-                    user_id=user_id,
-                    nickname=nickname if isinstance(nickname, str) else "",
-                    group_card=group_card if isinstance(group_card, str) else "",
-                )
-            )
-        return tuple(resolutions)
 
     @staticmethod
     def _merge_payload(

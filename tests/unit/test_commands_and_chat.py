@@ -11,7 +11,8 @@ from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.services.processor import _vision_failure_message
+from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from qq_ai_bot.services.processor import MENTION_ONLY_CONTEXT, _vision_failure_message
 
 
 def inbound(
@@ -316,6 +317,37 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
     result = await harness.processor.handle(inbound("hello", message_id="empty"), sender)
     assert result.reason == "empty_llm_response"
     assert "空内容" in sender.messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_group_mention_without_text_starts_a_natural_chat_turn(database: Database) -> None:
+    provider = FakeLLMProvider(lambda _request: "在呢，怎么啦？")
+    harness = build_harness(database, make_settings(database.url), provider)
+    sender = MemorySender()
+
+    result = await harness.processor.handle(
+        inbound(
+            "",
+            message_id="mention-only",
+            group_id="2001",
+            mentions_bot=True,
+        ),
+        sender,
+    )
+
+    assert result.reason == "chat"
+    assert sender.messages[0].text == "在呢，怎么啦？"
+    request = provider.requests[0]
+    assert request.messages[-1].role == "user"
+    assert request.messages[-1].content.endswith(MENTION_ONLY_CONTEXT)
+    events = await EventLedgerRepository(database).list_recent(
+        scope_type=ScopeType.GROUP,
+        user_id="1001",
+        group_id="2001",
+        limit=10,
+    )
+    inbound_event = next(row for row in events if row.direction == "inbound")
+    assert inbound_event.content == ""
 
 
 @pytest.mark.asyncio

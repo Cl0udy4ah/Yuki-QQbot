@@ -1,0 +1,40 @@
+name: Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.31"
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+      - name: Ruff
+        run: uv run ruff check src tests migrations
+      - name: Mypy
+        run: uv run mypy src
+      - name: Pytest
+        run: uv run pytest -q
+      - name: Alembic fresh install
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///./data/ci.db
+        run: |
+          mkdir -p data
+          uv run alembic upgrade head
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build runtime image
+        run: docker build --tag yuki-qqbot:ci .

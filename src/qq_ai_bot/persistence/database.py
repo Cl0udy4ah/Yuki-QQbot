@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import (
 
 from qq_ai_bot.persistence.models import Base
 
+_SQLITE_BUSY_TIMEOUT_MS = 5_000
+
 
 class Database:
     """Own the async SQLAlchemy engine and explicit session factory."""
@@ -30,16 +32,21 @@ class Database:
         self.runtime_config_mutation_lock = asyncio.Lock()
         self.engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
         if url.startswith("sqlite+aiosqlite:///"):
-            event.listen(self.engine.sync_engine, "connect", self._enable_sqlite_foreign_keys)
+            event.listen(self.engine.sync_engine, "connect", self._configure_sqlite_connection)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
 
     @staticmethod
-    def _enable_sqlite_foreign_keys(
+    def _configure_sqlite_connection(
         dbapi_connection: Any,
         _connection_record: Any,
     ) -> None:
+        """Enable integrity and bounded writer waiting for concurrent workers."""
+
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
     @staticmethod

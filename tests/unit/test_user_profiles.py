@@ -203,21 +203,6 @@ async def test_onebot_resolver_queries_only_when_event_fields_are_missing() -> N
     )
     assert fallback.nickname == "事件昵称" and not fallback.group_card
 
-    mentioned_bot = FakeOneBot({"nickname": "成员昵称", "card": "成员名片"})
-    mentioned_resolver = OneBotUserProfileResolver(cast(Any, mentioned_bot))
-    mentioned = await mentioned_resolver.resolve_members(
-        inbound(
-            "hello",
-            message_id="mentioned-member",
-            group_id="2001",
-            mentions_bot=True,
-            mentioned_user_ids=("12345678",),
-        )
-    )
-    assert mentioned[0].nickname == "成员昵称"
-    assert mentioned[0].group_card == "成员名片"
-    assert mentioned_bot.calls[0][0] == "get_group_member_info"
-
 
 @pytest.mark.asyncio
 async def test_llm_identity_context_is_sanitized_ephemeral_and_uses_qq_identity(

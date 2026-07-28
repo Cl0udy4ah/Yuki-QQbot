@@ -1,0 +1,239 @@
+"""Commands for a person's memories, preferences, identity, and relationship."""
+
+from __future__ import annotations
+
+import re
+
+from qq_ai_bot.admin.models import AdminActor
+from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.persistence.repositories import MemoryRepository, PeopleRepository
+from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
+from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
+from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
+
+_NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
+
+
+class ProfileCommandHandler:
+    """Handle deterministic commands scoped to one QQ person."""
+
+    def __init__(
+        self,
+        *,
+        people: PeopleRepository,
+        memories: MemoryRepository,
+        memory_admin: MemoryAdminService,
+        preference_admin: PreferenceAdminService,
+        relationship_admin: RelationshipAdminService,
+    ) -> None:
+        self._people = people
+        self._memories = memories
+        self._memory_admin = memory_admin
+        self._preference_admin = preference_admin
+        self._relationship_admin = relationship_admin
+
+    async def memory(self, *, actor: AdminActor, argument: str) -> str:
+        parsed = self._parse_scoped_operation(
+            argument,
+            actor.user_id,
+            actor.is_superuser,
+        )
+        if isinstance(parsed, str):
+            return parsed
+        operation, target, rest = parsed
+        if operation == "list":
+            rows = await self._memory_admin.list_memories(actor, target)
+            if not rows:
+                return f"QQ {target} 暂无人物记忆。"
+            return "\n".join(f"{row.id}. [{row.source_type}] {row.content}" for row in rows)
+        if operation == "add":
+            content = " ".join(rest).strip()
+            if not content:
+                return "格式：/ai memory add <内容>"
+            try:
+                row = await self._memory_admin.add_memory(actor, target, content)
+            except ValueError as exc:
+                return str(exc)
+            return f"已添加人物记忆 {row.id}。"
+        if operation == "update":
+            if len(rest) < 2 or not rest[0].isdigit():
+                return "格式：/ai memory update <记忆ID> <内容>"
+            updated = await self._memory_admin.update_memory(
+                actor,
+                target,
+                int(rest[0]),
+                " ".join(rest[1:]),
+            )
+            return "记忆已更新。" if updated else "没有找到可修改的记忆。"
+        if operation == "delete":
+            if len(rest) != 1 or not rest[0].isdigit():
+                return "格式：/ai memory delete <记忆ID>"
+            deleted = await self._memory_admin.delete_memory(
+                actor,
+                target,
+                int(rest[0]),
+            )
+            return "记忆已删除。" if deleted else "没有找到该记忆。"
+        return "可用操作：list、add、update、delete。"
+
+    async def preference(self, *, actor: AdminActor, argument: str) -> str:
+        parsed = self._parse_scoped_operation(
+            argument,
+            actor.user_id,
+            actor.is_superuser,
+        )
+        if isinstance(parsed, str):
+            return parsed
+        operation, target, rest = parsed
+        if operation == "list":
+            rows = await self._preference_admin.list_preferences(actor, target)
+            if not rows:
+                return f"QQ {target} 暂无交互偏好。"
+            return "\n".join(f"{row.key} = {row.value}" for row in rows)
+        if operation == "set":
+            if len(rest) < 2:
+                return "格式：/ai preference set <键> <值>"
+            await self._preference_admin.set_preference(
+                actor,
+                target,
+                rest[0],
+                " ".join(rest[1:]),
+            )
+            return f"偏好 {rest[0]} 已设置。"
+        if operation == "delete":
+            if len(rest) != 1:
+                return "格式：/ai preference delete <键>"
+            deleted = await self._preference_admin.delete_preference(
+                actor,
+                target,
+                rest[0],
+            )
+            return "偏好已删除。" if deleted else "没有找到该偏好。"
+        return "可用操作：list、set、delete。"
+
+    async def affection(
+        self,
+        *,
+        actor: AdminActor,
+        argument: str,
+    ) -> str:
+        parts = argument.split()
+        if not parts:
+            return "格式：/ai affection show|history"
+        operation = parts.pop(0).casefold()
+        if operation in {"show", "history"}:
+            target = actor.user_id
+            if parts:
+                if len(parts) != 2 or parts[0].casefold() != "user":
+                    return f"格式：/ai affection {operation} [user <QQ号>]"
+                if not actor.is_superuser:
+                    return "只有超级管理员可以查看其他 QQ 人物的关系数据。"
+                if _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None:
+                    return "目标 QQ 号格式错误。"
+                target = parts[1]
+            if operation == "show":
+                snapshot = await self._relationship_admin.get_relationship(actor, target)
+                return (
+                    f"好感度：{snapshot.affection_score}\n"
+                    f"信任度：{snapshot.trust_score}\n"
+                    f"有效信任度：{snapshot.effective_trust}\n"
+                    f"当前关系阶段：{snapshot.stage.name}"
+                )
+            history = await self._relationship_admin.get_history(actor, target, limit=10)
+            if not history:
+                return "暂无关系变化记录。"
+            return "\n".join(
+                (
+                    f"{row.created_at:%Y-%m-%d %H:%M} "
+                    f"好感{row.affection_delta:+d} 信任{row.trust_delta:+d} "
+                    f"[{row.change_type}/{row.reason_code}]"
+                )
+                for row in history
+            )
+
+        if operation not in {"set", "adjust", "trust"}:
+            return "可用操作：show、history；超级管理员另可使用 set、adjust、trust。"
+        if not actor.is_superuser:
+            return "权限不足：只有超级管理员可以修改关系分数。"
+        if (
+            len(parts) != 3
+            or parts[0].casefold() != "user"
+            or _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None
+        ):
+            return f"格式：/ai affection {operation} user <QQ号> <数值>"
+        try:
+            value = int(parts[2])
+        except ValueError:
+            return "分数必须是整数。"
+        target = parts[1]
+        try:
+            if operation == "set":
+                _, snapshot = await self._relationship_admin.set_affection(actor, target, value)
+            elif operation == "adjust":
+                _, snapshot = await self._relationship_admin.adjust_affection(
+                    actor,
+                    target,
+                    value,
+                )
+            else:
+                _, snapshot = await self._relationship_admin.set_trust(actor, target, value)
+        except ValueError:
+            return "好感度/信任度必须在 0～100；好感度单次调整必须在 -20～20。"
+        return (
+            f"已更新 QQ {target}：好感度 {snapshot.affection_score}，"
+            f"信任度 {snapshot.trust_score}，阶段 {snapshot.stage.name}。"
+        )
+
+    @staticmethod
+    def _parse_scoped_operation(
+        argument: str, actor: str, is_superuser: bool
+    ) -> tuple[str, str, list[str]] | str:
+        parts = argument.split()
+        if not parts:
+            return "缺少操作名。"
+        operation = parts.pop(0).casefold()
+        target = actor
+        if len(parts) >= 2 and parts[0].casefold() == "user":
+            if not is_superuser:
+                return "只有超级管理员可以管理其他 QQ 人物。"
+            candidate = parts[1]
+            if _NUMERIC_PLATFORM_ID.fullmatch(candidate) is None:
+                return "目标 QQ 号格式错误。"
+            target = candidate
+            del parts[:2]
+        return operation, target, parts
+
+    async def whoami(
+        self,
+        message: InboundMessage,
+        profile: UserProfileSnapshot,
+        argument: str,
+    ) -> str:
+        if argument:
+            return "该命令不接受参数，只能查看发送者本人。"
+        aliases = await self._people.aliases(profile.user_id)
+        memory_count = await self._memories.count_person(profile.user_id)
+        membership_count = await self._people.membership_count(profile.user_id)
+        lines = [
+            f"QQ：{profile.user_id}",
+            f"当前昵称：{profile.nickname or '未获取'}",
+        ]
+        if message.scope_type is ScopeType.GROUP:
+            lines.extend(
+                [
+                    f"本群群名片：{profile.group_card or '未设置'}",
+                    f"当前群：{profile.group_id}",
+                ]
+            )
+        else:
+            lines.append("当前场景：私聊")
+        lines.extend(
+            [
+                f"已知别名：{'、'.join(aliases) if aliases else '无'}",
+                f"个人记忆数：{memory_count}",
+                f"群成员关系数：{membership_count}",
+            ]
+        )
+        return "\n".join(lines)
