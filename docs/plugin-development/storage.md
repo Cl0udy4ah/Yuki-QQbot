@@ -19,9 +19,7 @@ deleted = await ctx.storage.delete("campaign", "temporary_roll")
 ```python
 current = await ctx.storage.get("stats", "calls")
 next_value = (current if isinstance(current, int) else 0) + 1
-changed = await ctx.storage.compare_and_set(
-    "stats", "calls", current, next_value
-)
+changed = await ctx.storage.compare_and_set("stats", "calls", current, next_value)
 if not changed:
     # 有并发写入；重新读取后有限重试。
     ...

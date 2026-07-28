@@ -25,9 +25,7 @@ global_value = await ctx.config.get("units", scope_type="global")
 user_value = await ctx.config.get("units", scope_type="user", scope_id=user_id)
 group_value = await ctx.config.get("units", scope_type="group", scope_id=group_id)
 
-await ctx.config.set(
-    "units", "imperial", scope_type="group", scope_id=group_id
-)
+await ctx.config.set("units", "imperial", scope_type="group", scope_id=group_id)
 ```
 
 - `global` 的 `scope_id` 必须为空。

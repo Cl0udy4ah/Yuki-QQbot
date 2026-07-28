@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.relationships import RelationshipStage
+from qq_ai_bot.emoji.models import EmojiReplyPlan
 
 
 class _StrictPlannerModel(BaseModel):
@@ -172,6 +173,7 @@ class TurnPlan(_StrictPlannerModel):
     confidence: float = Field(ge=0, le=1, strict=True)
     reason_code: PlannerReasonCode
     planner_note: str = ""
+    emoji: EmojiReplyPlan = EmojiReplyPlan()
 
 
 class PlannedTurn(_StrictPlannerModel):

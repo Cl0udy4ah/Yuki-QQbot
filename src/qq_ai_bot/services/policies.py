@@ -31,6 +31,7 @@ class CommandName(StrEnum):
     CONFIG = "config"
     AUTOMATION = "automation"
     PLUGIN = "plugin"
+    EMOJI = "emoji"
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,4 +142,5 @@ def command_requires_superuser(command: CommandName) -> bool:
         CommandName.PRIVATE,
         CommandName.GROUP,
         CommandName.CONFIG,
+        CommandName.EMOJI,
     }

@@ -69,6 +69,10 @@ def upgrade() -> None:
             "plugin_audit_events",
             "plugin_agent_sessions",
             "plugin_agent_messages",
+            "emoji_assets",
+            "emoji_scope_states",
+            "emoji_jobs",
+            "emoji_usage_events",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

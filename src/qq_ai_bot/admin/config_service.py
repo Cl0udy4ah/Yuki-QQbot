@@ -25,6 +25,7 @@ from qq_ai_bot.admin.models import (
     ConfigValue,
     ContextRuntimeConfig,
     EffectiveConfigValue,
+    EmojiRuntimeConfig,
     LLMRuntimeConfig,
     PlannerRuntimeConfig,
     PluginRuntimeConfig,
@@ -1126,6 +1127,43 @@ class RuntimeConfigService:
                     cast(int, value("vision.per_group_requests_per_minute"))
                 ),
                 analysis_retention_days=int(cast(int, value("vision.analysis_retention_days"))),
+            ),
+            emoji=EmojiRuntimeConfig(
+                enabled=bool(value("emoji.enabled")),
+                collection_enabled=bool(value("emoji.collection_enabled")),
+                collection_mode=str(value("emoji.collection_mode")),
+                collect_private=bool(value("emoji.collect_private")),
+                collect_group=bool(value("emoji.collect_group")),
+                auto_adopt_enabled=bool(value("emoji.auto_adopt_enabled")),
+                auto_adopt_min_confidence=float(
+                    cast(float | int, value("emoji.auto_adopt_min_confidence"))
+                ),
+                pool_capacity=(
+                    int(cast(int, value("emoji.pool_capacity")))
+                    if value("emoji.pool_capacity") is not None
+                    else None
+                ),
+                replacement_mode=str(value("emoji.replacement_mode")),
+                selector_enabled=bool(value("emoji.selector_enabled")),
+                selector_candidate_count=int(cast(int, value("emoji.selector_candidate_count"))),
+                max_effects_per_reply=int(cast(int, value("emoji.max_effects_per_reply"))),
+                near_duplicate_enabled=bool(value("emoji.near_duplicate_enabled")),
+                near_duplicate_distance=int(cast(int, value("emoji.near_duplicate_distance"))),
+                same_emoji_cooldown_seconds=int(
+                    cast(int, value("emoji.same_emoji_cooldown_seconds"))
+                ),
+                scope_repeat_cooldown_seconds=int(
+                    cast(int, value("emoji.scope_repeat_cooldown_seconds"))
+                ),
+                cache_retention_days=int(cast(int, value("emoji.cache_retention_days"))),
+                worker_batch_size=int(cast(int, value("emoji.worker_batch_size"))),
+                worker_poll_seconds=float(cast(float | int, value("emoji.worker_poll_seconds"))),
+                worker_lease_seconds=int(cast(int, value("emoji.worker_lease_seconds"))),
+                worker_max_attempts=int(cast(int, value("emoji.worker_max_attempts"))),
+                worker_retry_delay_seconds=float(
+                    cast(float | int, value("emoji.worker_retry_delay_seconds"))
+                ),
+                analysis_version=str(value("emoji.analysis_version")),
             ),
         )
 

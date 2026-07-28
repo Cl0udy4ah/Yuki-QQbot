@@ -93,11 +93,24 @@ class InboundMessage:
 
 
 @dataclass(frozen=True, slots=True)
-class OutboundMessage:
-    """Transport-independent outbound text."""
+class OutboundMedia:
+    """Ephemeral outbound media bytes with ledger-safe descriptive metadata."""
 
-    text: str
+    kind: AttachmentKind
+    content: bytes = field(repr=False)
+    mime_type: str = "application/octet-stream"
+    summary: str = ""
+    emoji_id: str | None = None
+    animated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class OutboundMessage:
+    """Transport-independent text and optional ephemeral media."""
+
+    text: str = ""
     reply_to_message_id: str | None = None
+    media: tuple[OutboundMedia, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

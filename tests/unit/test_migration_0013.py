@@ -30,6 +30,12 @@ _NEW_TABLES = {
     "plugin_agent_sessions",
     "plugin_agent_messages",
 }
+_EMOJI_TABLES = {
+    "emoji_assets",
+    "emoji_scope_states",
+    "emoji_jobs",
+    "emoji_usage_events",
+}
 
 
 def _alembic_config(database_url: str, monkeypatch: pytest.MonkeyPatch) -> Config:
@@ -55,7 +61,7 @@ def test_0005_does_not_create_0013_tables_early(
 
     command.upgrade(config, "0005")
 
-    assert not (_NEW_TABLES & _tables(path))
+    assert not ((_NEW_TABLES | _EMOJI_TABLES) & _tables(path))
 
 
 def test_0013_non_destructively_upgrades_0012(
@@ -82,9 +88,10 @@ def test_0013_non_destructively_upgrades_0012(
         person = connection.execute(
             "SELECT nickname FROM people WHERE user_id = '10001'"
         ).fetchone()
-    assert revision == ("0013",)
+    assert revision == ("0014",)
     assert person == ("保留用户",)
     assert _NEW_TABLES <= _tables(path)
+    assert _EMOJI_TABLES <= _tables(path)
 
     command.downgrade(config, "0012")
     with sqlite3.connect(path) as connection:
@@ -97,6 +104,7 @@ def test_0013_non_destructively_upgrades_0012(
     assert downgraded_revision == ("0012",)
     assert retained_person == ("保留用户",)
     assert not (_NEW_TABLES & _tables(path))
+    assert not (_EMOJI_TABLES & _tables(path))
 
 
 async def _install(repository: PluginInstallationRepository, plugin_id: str) -> None:

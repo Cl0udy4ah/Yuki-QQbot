@@ -52,6 +52,23 @@ class EventName(StrEnum):
     AUTOMATION_STARTED = "automation.started"
     AUTOMATION_COMPLETED = "automation.completed"
     AUTOMATION_FAILED = "automation.failed"
+    EMOJI_CANDIDATE_COLLECTED = "emoji.candidate_collected"
+    EMOJI_ANALYSIS_COMPLETED = "emoji.analysis_completed"
+    EMOJI_ADOPTED = "emoji.adopted"
+    EMOJI_REJECTED = "emoji.rejected"
+    EMOJI_BANNED = "emoji.banned"
+    EMOJI_SELECTION_STARTED = "emoji.selection_started"
+    EMOJI_SELECTED = "emoji.selected"
+    EMOJI_SENT = "emoji.sent"
+    EMOJI_COLLECTED = "emoji.collected"
+    EMOJI_ANALYZED = "emoji.analyzed"
+    EMOJI_UNADOPTED = "emoji.unadopted"
+    EMOJI_BEFORE_SELECT = "emoji.before_select"
+    EMOJI_AFTER_SELECT = "emoji.after_select"
+    EMOJI_QUEUED = "emoji.queued"
+    EMOJI_SEND_FAILED = "emoji.send_failed"
+    EMOJI_MISSING = "emoji.missing"
+    EMOJI_RESTORED = "emoji.restored"
 
 
 class EventEnvelope(StrictModel):

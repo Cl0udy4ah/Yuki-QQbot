@@ -23,6 +23,14 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool, ToolCall
 from qq_ai_bot.domain.relationships import style_policy
+from qq_ai_bot.emoji.models import (
+    EmojiPlacement,
+    EmojiReplyMode,
+    EmojiSelectionRequest,
+)
+from qq_ai_bot.emoji.repository import EmojiRepository
+from qq_ai_bot.emoji.selector import EmojiSelector
+from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.llm.base import LLMError, LLMProvider
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
@@ -59,6 +67,9 @@ class AutomationCapabilityHandlers:
         admin_actions: AdminActionService,
         web_provider: WebSearchProvider | None,
         gateway_factory: GatewayFactory,
+        emoji_repository: EmojiRepository | None = None,
+        emoji_selector: EmojiSelector | None = None,
+        emoji_storage: EmojiStorage | None = None,
     ) -> None:
         self._settings = settings
         self._provider = provider
@@ -71,6 +82,9 @@ class AutomationCapabilityHandlers:
         self._admin_actions = admin_actions
         self._web = web_provider
         self._gateway_factory = gateway_factory
+        self._emoji_repository = emoji_repository
+        self._emoji_selector = emoji_selector
+        self._emoji_storage = emoji_storage
         self._agent_runner = AgentRunner(provider, concurrency)
         self._registry: AutomationCapabilityRegistry | None = None
 
@@ -83,6 +97,8 @@ class AutomationCapabilityHandlers:
             "yuki.agent": self.agent,
             "onebot.send_private_message": self.send_private,
             "onebot.send_group_message": self.send_group,
+            "emoji.send": self.send_emoji,
+            "emoji.send_by_id": self.send_emoji,
             "onebot.call_api": self.call_onebot,
             "admin.execute_action": self.admin_action,
             "config.get": self.config_get,
@@ -173,6 +189,89 @@ class AutomationCapabilityHandlers:
         return CapabilityResult(
             data={"sent": True, "group_id": str(arguments["group_id"])}, messages_sent=1
         )
+
+    async def send_emoji(
+        self, arguments: dict[str, Any], context: CapabilityExecutionContext
+    ) -> CapabilityResult:
+        repository = self._emoji_repository
+        selector = self._emoji_selector
+        storage = self._emoji_storage
+        if repository is None or selector is None or storage is None:
+            raise AutomationExecutionError("emoji_system_unavailable")
+        user_id = str(arguments["user_id"]) if arguments.get("user_id") else None
+        group_id = str(arguments["group_id"]) if arguments.get("group_id") else None
+        self._validate_emoji_target(user_id=user_id, group_id=group_id, context=context)
+        snapshot = await self._runtime_config.snapshot(
+            user_id=context.creator_user_id,
+            group_id=group_id,
+        )
+        if not snapshot.emoji.enabled:
+            raise AutomationExecutionError("emoji_disabled")
+        emoji_id = str(arguments.get("emoji_id") or "")
+        if not emoji_id:
+            selected = await selector.select(
+                EmojiSelectionRequest(
+                    actor_user_id=context.creator_user_id,
+                    group_id=group_id,
+                    reply_text="",
+                    goal=str(arguments.get("intended_tone") or "自然发送一个合适的表情"),
+                    emotion=str(arguments.get("emotion") or ""),
+                    mode=EmojiReplyMode.PREFERRED,
+                    placement=EmojiPlacement(str(arguments.get("placement") or "only")),
+                ),
+                runtime=snapshot.emoji,
+                vision_runtime=snapshot.vision,
+            )
+            emoji_id = selected.emoji_id or ""
+        if not emoji_id or not await repository.enabled_in_scope(emoji_id, group_id=group_id):
+            raise AutomationExecutionError("emoji_not_available")
+        asset = await repository.get(emoji_id)
+        if asset is None:
+            raise AutomationExecutionError("emoji_not_available")
+        try:
+            content = storage.read(asset.relative_path)
+        except RuntimeError as exc:
+            raise AutomationExecutionError("emoji_file_missing") from exc
+        await self._gateway_factory(context).send_emoji(
+            user_id=user_id,
+            group_id=group_id,
+            content=content,
+            mime_type=asset.mime_type,
+            emoji_id=asset.id,
+            summary=asset.description or "Yuki 发送的表情",
+        )
+        await repository.mark_used(
+            asset.id,
+            actor_user_id=context.creator_user_id,
+            group_id=group_id,
+            trigger_message_id=f"automation:{context.automation_id}:{context.automation_run_id}",
+            source="automation",
+        )
+        return CapabilityResult(
+            data={
+                "sent": True,
+                "emoji_id": asset.id,
+                "scope": "group" if group_id is not None else "private",
+                "placement": str(arguments.get("placement") or "only"),
+            },
+            messages_sent=1,
+        )
+
+    @staticmethod
+    def _validate_emoji_target(
+        *,
+        user_id: str | None,
+        group_id: str | None,
+        context: CapabilityExecutionContext,
+    ) -> None:
+        if (user_id is None) == (group_id is None):
+            raise AutomationExecutionError("emoji_target_invalid")
+        if context.authority.actor_is_superuser:
+            return
+        if user_id is not None and user_id != context.creator_user_id:
+            raise AutomationExecutionError("person_scope_denied")
+        if group_id is not None and group_id != context.current_group_id:
+            raise AutomationExecutionError("group_scope_denied")
 
     async def call_onebot(
         self, arguments: dict[str, Any], context: CapabilityExecutionContext

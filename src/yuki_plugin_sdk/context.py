@@ -166,6 +166,44 @@ class MediaFacade(Protocol):
     async def get_current(self) -> tuple[Mapping[str, JsonValue], ...]: ...
 
 
+class EmojiFacade(Protocol):
+    async def list(
+        self, status: str | None = None, limit: int = 30
+    ) -> tuple[Mapping[str, JsonValue], ...]: ...
+
+    async def get(self, emoji_id: str) -> Mapping[str, JsonValue] | None: ...
+
+    async def search(self, query: str, limit: int = 20) -> tuple[Mapping[str, JsonValue], ...]: ...
+
+    async def collect_current(self) -> PluginResult: ...
+
+    async def select(
+        self,
+        *,
+        goal: str,
+        emotion: str = "",
+        mode: str = "optional",
+        placement: str = "after_text",
+    ) -> PluginResult: ...
+
+    async def queue_reply_effect(
+        self,
+        *,
+        goal: str,
+        emotion: str = "",
+        mode: str = "optional",
+        placement: str = "after_text",
+    ) -> PluginResult: ...
+
+    async def adopt(
+        self, emoji_id: str, *, scope_type: str = "global", scope_id: str = ""
+    ) -> PluginResult: ...
+
+    async def reject(self, emoji_id: str) -> PluginResult: ...
+
+    async def ban(self, emoji_id: str) -> PluginResult: ...
+
+
 class AutomationFacade(Protocol):
     async def list_current_owner(self) -> tuple[Mapping[str, JsonValue], ...]: ...
 
@@ -298,6 +336,9 @@ class PluginContext(Protocol):
 
     @property
     def media(self) -> MediaFacade: ...
+
+    @property
+    def emoji(self) -> EmojiFacade: ...
 
     @property
     def automation(self) -> AutomationFacade: ...

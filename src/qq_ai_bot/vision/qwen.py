@@ -40,7 +40,8 @@ _VISION_TASK_PROMPT = """分析模式：{analysis_mode}
 
 只返回以下 JSON，不要 Markdown 代码块或额外说明：
 {{"items":[{{"index":1,"description":"可见内容","ocr_text":"清晰文字",
-"expression":"情绪或动作","meme_intent":"表情包含义",
+"expression":"情绪或动作","meme_intent":"表情包含义","is_emoji":true,
+"emotion_tags":["情绪标签"],"usage_scenarios":["适用语境"],"intensity":0.5,
 "recognized_character":"高置信度角色名或空字符串","franchise":"作品名或空字符串",
 "character_candidates":[{{"name":"候选名","work":"作品名","evidence":"视觉依据",
 "confidence":0.0}}],"notable_objects":["显著对象"],"uncertainty":"不确定之处",
@@ -81,6 +82,10 @@ class _ItemPayload(BaseModel):
     ocr_text: str = ""
     expression: str = ""
     meme_intent: str = ""
+    is_emoji: bool | None = None
+    emotion_tags: list[str] = Field(default_factory=list)
+    usage_scenarios: list[str] = Field(default_factory=list)
+    intensity: float = 0.5
     recognized_character: str = ""
     franchise: str = ""
     character_candidates: list[_CharacterCandidatePayload] = Field(default_factory=list)
@@ -114,6 +119,13 @@ class _ItemPayload(BaseModel):
             return []
         return [clean for item in value[:20] if (clean := _clean_text(item, 100))]
 
+    @field_validator("emotion_tags", "usage_scenarios", mode="before")
+    @classmethod
+    def _bounded_emoji_labels(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [clean for item in value[:20] if (clean := _clean_text(item, 100))]
+
     @field_validator("character_candidates", mode="before")
     @classmethod
     def _bounded_candidates(cls, value: Any) -> list[Any]:
@@ -122,6 +134,11 @@ class _ItemPayload(BaseModel):
     @field_validator("confidence", mode="before")
     @classmethod
     def _clamp_confidence(cls, value: Any) -> float:
+        return _clamped_confidence(value)
+
+    @field_validator("intensity", mode="before")
+    @classmethod
+    def _clamp_intensity(cls, value: Any) -> float:
         return _clamped_confidence(value)
 
 
@@ -359,6 +376,10 @@ class QwenVisionProvider:
                     ocr_text=item.ocr_text,
                     expression=item.expression,
                     meme_intent=item.meme_intent,
+                    is_emoji=item.is_emoji,
+                    emotion_tags=tuple(item.emotion_tags),
+                    usage_scenarios=tuple(item.usage_scenarios),
+                    intensity=item.intensity,
                     recognized_character=item.recognized_character,
                     franchise=item.franchise,
                     character_candidates=tuple(

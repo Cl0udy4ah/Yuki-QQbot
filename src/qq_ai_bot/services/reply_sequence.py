@@ -20,6 +20,7 @@ from qq_ai_bot.services.turn_coordinator import (
 )
 
 RecordOutbound = Callable[[OutboundMessage, Any], Awaitable[None]]
+RecordFailure = Callable[[OutboundMessage, Exception], Awaitable[None]]
 _FENCED_BLOCK = re.compile(r"(```[^\n]*\n.*?\n```|~~~[^\n]*\n.*?\n~~~)", re.DOTALL)
 _BLANK_LINE = re.compile(r"\n[ \t]*\n+")
 
@@ -118,12 +119,25 @@ class ReplySequenceManager:
         token: TurnToken,
         sender: OutboundSender,
         record_outbound: RecordOutbound,
+        record_failure: RecordFailure | None = None,
+        before_messages: tuple[OutboundMessage, ...] = (),
+        after_messages: tuple[OutboundMessage, ...] = (),
+        suppress_text: bool = False,
     ) -> ReplySequenceResult:
-        chunks = self.render(text, plan=plan, runtime=runtime)
+        chunks = () if suppress_text else self.render(text, plan=plan, runtime=runtime)
+        outbound_messages = [*before_messages]
+        outbound_messages.extend(
+            OutboundMessage(
+                text=chunk,
+                reply_to_message_id=(plan.reply_to_message_id if index == 0 else None),
+            )
+            for index, chunk in enumerate(chunks)
+        )
+        outbound_messages.extend(after_messages)
         sent = 0
         try:
             async with self._coordinator.track(token, "reply"):
-                for index, chunk in enumerate(chunks):
+                for index, outbound in enumerate(outbound_messages):
                     if runtime.reply.cancel_on_new_message and not self._coordinator.is_current(
                         token
                     ):
@@ -135,16 +149,17 @@ class ReplySequenceManager:
                         )
                         if delay > 0:
                             await asyncio.sleep(delay)
-                    outbound = OutboundMessage(
-                        text=chunk,
-                        reply_to_message_id=(plan.reply_to_message_id if index == 0 else None),
-                    )
-                    result = await sender.send(outbound)
+                    try:
+                        result = await sender.send(outbound)
+                    except Exception as exc:
+                        if record_failure is not None:
+                            await record_failure(outbound, exc)
+                        raise
                     await record_outbound(outbound, result)
                     sent += 1
         except ReplySequenceCancelled:
-            return ReplySequenceResult(len(chunks), sent, True)
-        return ReplySequenceResult(len(chunks), sent, False)
+            return ReplySequenceResult(len(outbound_messages), sent, True)
+        return ReplySequenceResult(len(outbound_messages), sent, False)
 
     @staticmethod
     def _split_preserving_structure(text: str, *, limit: int) -> tuple[str, ...]:

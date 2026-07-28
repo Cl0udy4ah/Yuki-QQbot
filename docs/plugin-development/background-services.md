@@ -9,10 +9,12 @@ from yuki_plugin_sdk.registrar import (
     BackgroundServiceRegistration,
 )
 
+
 async def worker() -> None:
     while True:
         await run_one_bounded_iteration()
         await asyncio.sleep(30)
+
 
 registrar.register_background_service(
     BackgroundServiceRegistration(

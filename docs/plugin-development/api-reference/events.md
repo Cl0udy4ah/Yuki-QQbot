@@ -76,6 +76,7 @@ class EventEnvelope(StrictModel):
     occurred_at: datetime
     payload: Mapping[str, JsonValue]
 
+
 class HookExecution(StrictModel):
     plugin_id: str
     hook_id: str

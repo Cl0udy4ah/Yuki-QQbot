@@ -120,13 +120,13 @@ def test_superuser_report_has_exact_registry_counts_and_complete_lists() -> None
     ).report_for_message(inbound("9000"))
 
     assert report.permission_level is PermissionLevel.SUPERUSER
-    assert report.mutable_config_count == 96
+    assert report.mutable_config_count == 120
     assert report.protected_config_count == 12
-    assert report.business_action_count == 19
-    assert report.mutating_action_count == 15
+    assert report.business_action_count == 33
+    assert report.mutating_action_count == 26
     assert report.self_service_operation_count == 29
     assert report.onebot_gateway_count == 1
-    assert len(report.capabilities) == 157
+    assert len(report.capabilities) == 195
 
     config_ids = {
         descriptor.id
@@ -154,11 +154,11 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
 
     assert first == second
     assert first["counts"] == {
-        "total": 157,
-        "mutable_configurations": 96,
+        "total": 195,
+        "mutable_configurations": 120,
         "protected_configurations": 12,
-        "business_actions": 19,
-        "mutating_business_actions": 15,
+        "business_actions": 33,
+        "mutating_business_actions": 26,
         "self_service_operations": 29,
         "self_service_mutations": 14,
         "onebot_api_gateways": 1,
@@ -193,7 +193,7 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
         for items in kinds.values()
         for item in items
     }
-    assert len(rendered) < 28000
+    assert len(rendered) < 32000
     assert compact_ids == {descriptor.id for descriptor in report.capabilities}
 
     summary = report.to_model_dict("summary")
@@ -249,12 +249,12 @@ def test_deterministic_text_contains_every_capability_and_onebot_scope() -> None
             capability_id = capability_id.removeprefix("onebot:")
         assert capability_id in rendered
 
-    assert "可修改运行时配置参数：96 项" in rendered
-    assert "管理员业务接口：19 项，其中修改型 15 项" in rendered
+    assert "可修改运行时配置参数：120 项" in rendered
+    assert "管理员业务接口：33 项，其中修改型 26 项" in rendered
     assert "NapCat/OneBot 通用全接口网关：1 项" in rendered
     assert "全部公开 action" in rendered
     assert "无 action 白名单或 denylist" in rendered
-    assert "不是只限于上面的 19 项应用业务接口" in rendered
+    assert "不是只限于上面的 33 项应用业务接口" in rendered
 
 
 def test_category_filter_recomputes_counts_and_preserves_sorted_output() -> None:
@@ -317,8 +317,8 @@ def test_injected_registry_entries_appear_without_copying_registry_tables() -> N
     assert "action:diagnostics.snapshot:any_group" in {
         descriptor.id for descriptor in report.capabilities
     }
-    assert report.mutable_config_count == 97
-    assert report.business_action_count == 20
+    assert report.mutable_config_count == 121
+    assert report.business_action_count == 34
 
 
 def test_duplicate_capability_ids_are_rejected() -> None:

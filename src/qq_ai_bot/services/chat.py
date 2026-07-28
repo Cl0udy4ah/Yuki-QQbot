@@ -23,6 +23,8 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
 )
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.emoji.effects import EmojiReplyEffectService
+from qq_ai_bot.emoji.models import EmojiPlacement, EmojiReplyMode, PendingReplyEffect
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
@@ -360,6 +362,11 @@ class _ChatAgentBackend(AgentToolBackend):
             return "我已经在本轮内部读取了权限范围，但没有生成合适的简短回答。请再问一次。"
         return content
 
+    def has_visible_effects(self) -> bool:
+        """Tell AgentRunner that an empty final text can still yield a real reply."""
+
+        return bool(self._runtime.reply_effects)
+
     def exhausted(self, runtime: AgentRuntime) -> str:
         if self._admin_terminal_failure is not None:
             return self._service._admin_failure_text(self._admin_terminal_failure)
@@ -396,6 +403,7 @@ class ChatService:
         prompt_composer: PromptComposer | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
         reply_sequence: ReplySequenceManager | None = None,
+        emoji_effects: EmojiReplyEffectService | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
     ) -> None:
         self._settings = settings
@@ -431,6 +439,7 @@ class ChatService:
             ),
         )
         self._reply_sequence = reply_sequence or ReplySequenceManager(self._turn_coordinator)
+        self._emoji_effects = emoji_effects
         self._event_publisher = event_publisher
 
     def set_admin_tools(self, service: AdminToolService) -> None:
@@ -535,6 +544,7 @@ class ChatService:
                     planned_turn.plan.tool_mode if planned_turn is not None else ToolMode.INHERIT
                 ),
                 turn_token=turn_token,
+                reply_effects=[],
             )
             if turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
@@ -546,12 +556,38 @@ class ChatService:
                 trigger_message_id=inbound.message_id,
             )
             response_text = self._source_renderer.sanitize_model_text(response_text, sources)
-            if not response_text:
+            if not response_text and not runtime.reply_effects:
                 response_text = "已完成联网查询，但模型没有生成可用的正文。"
             rendered = clean_model_output(
                 response_text,
                 max_characters=self._settings.max_output_characters,
             )
+            effects = runtime.reply_effects or []
+            if (
+                planned_turn is not None
+                and planned_turn.plan.emoji.mode is not EmojiReplyMode.NONE
+                and not effects
+            ):
+                effects.append(
+                    PendingReplyEffect(
+                        mode=planned_turn.plan.emoji.mode,
+                        placement=planned_turn.plan.emoji.placement,
+                        goal=planned_turn.plan.emoji.goal,
+                        emotion=planned_turn.plan.emoji.emotion,
+                        source="planner",
+                    )
+                )
+            prepared_effects: list[tuple[PendingReplyEffect, OutboundMessage]] = []
+            if self._emoji_effects is not None:
+                for effect in effects[: runtime_config.emoji.max_effects_per_reply]:
+                    prepared = await self._emoji_effects.prepare(
+                        effect,
+                        inbound=inbound,
+                        response_text=rendered,
+                        runtime=runtime_config,
+                    )
+                    if prepared is not None:
+                        prepared_effects.append((effect, prepared))
             if planned_turn is not None and turn_token is not None:
                 if source_display_requested:
                     source_text = self._source_renderer.render(
@@ -565,12 +601,36 @@ class ChatService:
                         )
 
                 async def record_chunk(message: OutboundMessage, result: Any) -> None:
-                    await self._record_outbound(
-                        inbound,
-                        message.text,
-                        result,
-                        reply_to_message_id=message.reply_to_message_id,
-                    )
+                    await self._record_outbound_message(inbound, message, result)
+                    if message.media and self._emoji_effects is not None:
+                        await self._emoji_effects.record_success(
+                            message,
+                            inbound=inbound,
+                            source="reply_effect",
+                        )
+
+                async def record_failure(message: OutboundMessage, _error: Exception) -> None:
+                    if message.media and self._emoji_effects is not None:
+                        await self._emoji_effects.record_failure(
+                            message,
+                            source="reply_effect",
+                        )
+
+                before = tuple(
+                    message
+                    for effect, message in prepared_effects
+                    if effect.placement is EmojiPlacement.BEFORE_TEXT
+                )
+                after = tuple(
+                    message
+                    for effect, message in prepared_effects
+                    if effect.placement is not EmojiPlacement.BEFORE_TEXT
+                )
+                suppress_text = bool(prepared_effects) and any(
+                    effect.mode is EmojiReplyMode.EMOJI_ONLY
+                    or effect.placement is EmojiPlacement.ONLY
+                    for effect, _message in prepared_effects
+                )
 
                 sequence = await self._reply_sequence.send(
                     text=rendered,
@@ -579,20 +639,54 @@ class ChatService:
                     token=turn_token,
                     sender=sender,
                     record_outbound=record_chunk,
+                    record_failure=record_failure,
+                    before_messages=before,
+                    after_messages=after,
+                    suppress_text=suppress_text,
                 )
                 return sequence.sent_messages
-            chunks = self._render_chunks(rendered, runtime_config)
-            for index, chunk in enumerate(chunks):
-                if len(chunks) > 1 and index > 0:
+            chunks = self._render_chunks(rendered, runtime_config) if rendered else ()
+            legacy_messages = [
+                message
+                for effect, message in prepared_effects
+                if effect.placement is EmojiPlacement.BEFORE_TEXT
+            ]
+            suppress_text = bool(prepared_effects) and any(
+                effect.mode is EmojiReplyMode.EMOJI_ONLY or effect.placement is EmojiPlacement.ONLY
+                for effect, _message in prepared_effects
+            )
+            if not suppress_text:
+                legacy_messages.extend(OutboundMessage(text=chunk) for chunk in chunks)
+            legacy_messages.extend(
+                message
+                for effect, message in prepared_effects
+                if effect.placement is not EmojiPlacement.BEFORE_TEXT
+            )
+            for index, outbound in enumerate(legacy_messages):
+                if len(legacy_messages) > 1 and index > 0:
                     delay = random.uniform(
                         runtime_config.reply.delay_min_seconds,
                         runtime_config.reply.delay_max_seconds,
                     )
                     if delay > 0:
                         await asyncio.sleep(delay)
-                result = await sender.send(OutboundMessage(text=chunk))
-                await self._record_outbound(inbound, chunk, result)
-            sent_count = len(chunks)
+                try:
+                    result = await sender.send(outbound)
+                except Exception:
+                    if outbound.media and self._emoji_effects is not None:
+                        await self._emoji_effects.record_failure(
+                            outbound,
+                            source="reply_effect",
+                        )
+                    raise
+                await self._record_outbound_message(inbound, outbound, result)
+                if outbound.media and self._emoji_effects is not None:
+                    await self._emoji_effects.record_success(
+                        outbound,
+                        inbound=inbound,
+                        source="reply_effect",
+                    )
+            sent_count = len(legacy_messages)
             if source_display_requested:
                 source_text = self._source_renderer.render(
                     sources,
@@ -749,6 +843,20 @@ class ChatService:
         *,
         reply_to_message_id: str | None = None,
     ) -> None:
+        await self._record_outbound_message(
+            inbound,
+            OutboundMessage(text=content, reply_to_message_id=reply_to_message_id),
+            send_result,
+        )
+
+    async def _record_outbound_message(
+        self,
+        inbound: InboundMessage,
+        message: OutboundMessage,
+        send_result: Any,
+    ) -> None:
+        """Persist text and ledger-safe media metadata after confirmed delivery."""
+
         message_id: str | None = None
         if isinstance(send_result, str | int):
             message_id = str(send_result)
@@ -757,6 +865,21 @@ class ChatService:
             if raw_id is not None:
                 message_id = str(raw_id)
         platform_message_id = message_id or f"out-{uuid.uuid4()}"
+        media_segments = tuple(
+            {
+                "type": "image",
+                "data": {
+                    "emoji_id": media.emoji_id or "",
+                    "summary": media.summary[:2000],
+                    "mime_type": media.mime_type,
+                    "animated": media.animated,
+                },
+            }
+            for media in message.media
+        )
+        content = message.text or " ".join(
+            f"[表情：{media.summary or '图片表情'}]" for media in message.media
+        )
         await self._ledger.append(
             bot_user_id=inbound.bot_user_id or "unknown-bot",
             platform_message_id=platform_message_id,
@@ -766,17 +889,18 @@ class ChatService:
             content=content,
             segments=(
                 *(
-                    ({"type": "reply", "data": {"id": reply_to_message_id}},)
-                    if reply_to_message_id
+                    ({"type": "reply", "data": {"id": message.reply_to_message_id}},)
+                    if message.reply_to_message_id
                     else ()
                 ),
-                {"type": "text", "data": {"text": content}},
+                *(({"type": "text", "data": {"text": message.text}},) if message.text else ()),
+                *media_segments,
             ),
             group_id=inbound.group_id,
             private_peer_user_id=(
                 inbound.sender.user_id if inbound.scope_type is ScopeType.PRIVATE else None
             ),
-            reply_to_message_id=reply_to_message_id,
+            reply_to_message_id=message.reply_to_message_id,
             sender_is_bot=True,
         )
         await publish_notification(

@@ -7,13 +7,15 @@ class PluginResult(StrictModel):
     ok: bool = True
     data: dict[str, JsonValue] = {}
     error_code: str | None = None
-    detail: str = ""                 # <=1000
+    detail: str = ""  # <=1000
+
 
 class ToolResult(PluginResult):
     pass
 
+
 class CommandResult(PluginResult):
-    text: str = ""                   # <=12000
+    text: str = ""  # <=12000
 ```
 
 成功结果不能带 `error_code`；失败结果必须带匹配 `[a-z][a-z0-9_.-]{0,63}` 的稳定错误码：
@@ -32,7 +34,7 @@ class CurrentMessage(StrictModel):
     sender_user_id: str
     scope_type: Literal["private", "group"]
     group_id: str | None
-    text: str                         # <=12000
+    text: str  # <=12000
     received_at: datetime
 ```
 
@@ -42,19 +44,21 @@ class CurrentMessage(StrictModel):
 
 ```python
 class CreateAgentSessionRequest(StrictModel):
-    name: str                         # 1..128
-    instructions: str                 # 1..8000
+    name: str  # 1..128
+    instructions: str  # 1..8000
     persistence: ephemeral | durable = durable
     context_profile: none | current_user | current_group = none
-    allowed_capabilities: tuple[str, ...] = ()   # <=64, 不重复
+    allowed_capabilities: tuple[str, ...] = ()  # <=64, 不重复
     metadata: dict[str, JsonValue] = {}
+
 
 class RunAgentSessionRequest(StrictModel):
     session_id: UUID
-    user_input: str                   # 1..12000
+    user_input: str  # 1..12000
     allowed_capabilities: tuple[str, ...] | None
-    max_tool_calls: int | None        # 0..64
-    max_model_requests: int | None    # 1..64
+    max_tool_calls: int | None  # 0..64
+    max_model_requests: int | None  # 1..64
+
 
 class AgentSession(StrictModel):
     session_id: UUID
@@ -66,9 +70,10 @@ class AgentSession(StrictModel):
     updated_at: datetime
     turn_count: int
 
+
 class AgentSessionRunResult(StrictModel):
     session: AgentSession
-    text: str                         # <=24000
+    text: str  # <=24000
     tool_calls_used: int = 0
     model_requests: int = 1
 ```

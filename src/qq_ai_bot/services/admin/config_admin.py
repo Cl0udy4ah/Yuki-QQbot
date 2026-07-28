@@ -9,6 +9,7 @@ from qq_ai_bot.admin.models import (
     ConfigChangeResult,
     ConfigSpec,
     EffectiveConfigValue,
+    RuntimeConfigSnapshot,
 )
 
 
@@ -20,6 +21,14 @@ class ConfigAdminService:
 
     def list_capabilities(self, category: str | None = None) -> tuple[ConfigSpec, ...]:
         return self._runtime_config.registry.list(category)
+
+    async def snapshot(
+        self,
+        *,
+        user_id: str | None = None,
+        group_id: str | None = None,
+    ) -> RuntimeConfigSnapshot:
+        return await self._runtime_config.snapshot(user_id=user_id, group_id=group_id)
 
     async def get(
         self,

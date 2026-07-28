@@ -186,6 +186,34 @@ class Settings(BaseSettings):
     vision_per_group_requests_per_minute: int = 60
     vision_analysis_retention_days: int = 7
 
+    # Persistent emoji collection and reply effects. Recognition reuses the
+    # configured VisionProvider; no second visual client or review pipeline exists.
+    emoji_enabled: bool = True
+    emoji_collection_enabled: bool = True
+    emoji_collection_mode: str = "likely"
+    emoji_collect_private: bool = True
+    emoji_collect_group: bool = True
+    emoji_auto_adopt_enabled: bool = True
+    emoji_auto_adopt_min_confidence: float = 0.78
+    emoji_pool_capacity: int | None = None
+    emoji_replacement_mode: str = "score"
+    emoji_selector_enabled: bool = True
+    emoji_selector_candidate_count: int = 6
+    emoji_max_effects_per_reply: int = 1
+    emoji_near_duplicate_enabled: bool = True
+    emoji_near_duplicate_distance: int = 6
+    emoji_same_emoji_cooldown_seconds: int = 300
+    emoji_scope_repeat_cooldown_seconds: int = 60
+    emoji_cache_retention_days: int = 30
+    emoji_worker_batch_size: int = 10
+    emoji_worker_poll_seconds: float = 2.0
+    emoji_worker_lease_seconds: int = 120
+    emoji_worker_max_attempts: int = 3
+    emoji_worker_retry_delay_seconds: float = 30.0
+    emoji_analysis_version: str = "emoji-v1"
+    emoji_storage_root: Path = Path("data/emoji")
+    emoji_preview_max_dimension: int = 512
+
     automation_enabled: bool = False
     default_timezone: str = "Asia/Shanghai"
     automation_poll_seconds: float = 2.0
@@ -271,6 +299,13 @@ class Settings(BaseSettings):
         "vision_per_user_requests_per_minute",
         "vision_per_group_requests_per_minute",
         "vision_analysis_retention_days",
+        "emoji_selector_candidate_count",
+        "emoji_max_effects_per_reply",
+        "emoji_cache_retention_days",
+        "emoji_worker_batch_size",
+        "emoji_worker_lease_seconds",
+        "emoji_worker_max_attempts",
+        "emoji_preview_max_dimension",
         "automation_lease_seconds",
         "automation_max_active_per_superuser",
         "automation_max_active_per_user",
@@ -296,6 +331,7 @@ class Settings(BaseSettings):
         "vision_timeout_seconds",
         "vision_queue_timeout_seconds",
         "vision_media_download_timeout_seconds",
+        "emoji_worker_poll_seconds",
         "automation_poll_seconds",
         "planner_timeout_seconds",
         "plugin_hook_timeout_seconds",
@@ -307,6 +343,17 @@ class Settings(BaseSettings):
     def _positive_timeout(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("must be greater than zero")
+        return value
+
+    @field_validator(
+        "emoji_same_emoji_cooldown_seconds",
+        "emoji_scope_repeat_cooldown_seconds",
+        "emoji_worker_retry_delay_seconds",
+    )
+    @classmethod
+    def _non_negative_emoji_delay(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("must not be negative")
         return value
 
     @field_validator("llm_max_retries", "web_max_retries")
@@ -355,6 +402,7 @@ class Settings(BaseSettings):
         "planner_confidence_threshold",
         "relationship_confidence_threshold",
         "vision_low_confidence_retry_threshold",
+        "emoji_auto_adopt_min_confidence",
     )
     @classmethod
     def _probability(cls, value: float) -> float:
@@ -369,6 +417,36 @@ class Settings(BaseSettings):
         if normalized not in {"basic", "advanced"}:
             raise ValueError("WEB_SEARCH_DEPTH must be basic or advanced")
         return normalized
+
+    @field_validator("emoji_collection_mode")
+    @classmethod
+    def _emoji_collection_mode(cls, value: str) -> str:
+        normalized = value.strip().casefold()
+        if normalized not in {"metadata_only", "likely", "all_images"}:
+            raise ValueError("EMOJI_COLLECTION_MODE must be metadata_only, likely, or all_images")
+        return normalized
+
+    @field_validator("emoji_replacement_mode")
+    @classmethod
+    def _emoji_replacement_mode(cls, value: str) -> str:
+        normalized = value.strip().casefold()
+        if normalized not in {"off", "score", "llm", "hybrid"}:
+            raise ValueError("EMOJI_REPLACEMENT_MODE must be off, score, llm, or hybrid")
+        return normalized
+
+    @field_validator("emoji_near_duplicate_distance")
+    @classmethod
+    def _emoji_near_duplicate_distance(cls, value: int) -> int:
+        if not 0 <= value <= 64:
+            raise ValueError("EMOJI_NEAR_DUPLICATE_DISTANCE must be between zero and 64")
+        return value
+
+    @field_validator("emoji_pool_capacity")
+    @classmethod
+    def _emoji_pool_capacity(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("EMOJI_POOL_CAPACITY must be positive when configured")
+        return value
 
     @field_validator("default_timezone")
     @classmethod

@@ -14,6 +14,8 @@ DEFAULT_FEATURES: frozenset[str] = frozenset(
         "planner.signal.v1",
         "automation.action.v1",
         "plugin.agent_session.v1",
+        "emoji.facade.v1",
+        "emoji.selection_signals.v1",
     }
 )
 

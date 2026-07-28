@@ -9,9 +9,11 @@ from yuki_plugin_sdk.registrar import (
     EventHookRegistration,
 )
 
+
 async def on_reply_sent(event: EventEnvelope) -> None:
     sent = event.payload.get("sent", False)
     logger.debug("reply.sent: %s", sent)
+
 
 registrar.register_event_hook(
     EventHookRegistration(

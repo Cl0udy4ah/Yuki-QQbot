@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qq_ai_bot.automation.authority import AuthorityContext, PermissionLevel
 from qq_ai_bot.automation.models import AutomationContext, RetryPolicy, RiskClass, TurnOrigin
@@ -38,6 +38,24 @@ class SendPrivateArguments(CapabilityArguments):
 class SendGroupArguments(CapabilityArguments):
     group_id: str = Field(min_length=1, max_length=64)
     text: str = Field(min_length=1, max_length=12000)
+
+
+class EmojiSendArguments(CapabilityArguments):
+    emotion: str = Field(default="", max_length=100)
+    intended_tone: str = Field(default="", max_length=300)
+    group_id: str | None = Field(default=None, min_length=1, max_length=64)
+    user_id: str | None = Field(default=None, min_length=1, max_length=64)
+    placement: Literal["before_text", "after_text", "only"] = "only"
+
+    @model_validator(mode="after")
+    def _one_target(self) -> EmojiSendArguments:
+        if (self.group_id is None) == (self.user_id is None):
+            raise ValueError("group_id 和 user_id 必须且只能提供一个")
+        return self
+
+
+class EmojiSendByIdArguments(EmojiSendArguments):
+    emoji_id: str = Field(min_length=8, max_length=64)
 
 
 class OneBotCallArguments(CapabilityArguments):
@@ -238,6 +256,22 @@ def build_capability_registry(
             "onebot.send_group_message",
             "主动发送一条普通群消息。",
             SendGroupArguments,
+            PermissionLevel.USER,
+            RiskClass.SEND,
+            RetryPolicy.NONE,
+        ),
+        (
+            "emoji.send",
+            "按语气和情绪选择已采用表情，并发送到已授权的本人私聊或当前群。",
+            EmojiSendArguments,
+            PermissionLevel.USER,
+            RiskClass.SEND,
+            RetryPolicy.NONE,
+        ),
+        (
+            "emoji.send_by_id",
+            "发送任务创建时明确指定、且当前作用域可用的已采用表情。",
+            EmojiSendByIdArguments,
             PermissionLevel.USER,
             RiskClass.SEND,
             RetryPolicy.NONE,

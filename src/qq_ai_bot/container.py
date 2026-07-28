@@ -31,6 +31,19 @@ from qq_ai_bot.automation.tools import AutomationToolService
 from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.emoji.admin import EmojiAdminService
+from qq_ai_bot.emoji.classifier import EmojiClassifier
+from qq_ai_bot.emoji.collector import EmojiCollector
+from qq_ai_bot.emoji.detector import EmojiCandidateDetector
+from qq_ai_bot.emoji.effects import EmojiReplyEffectService
+from qq_ai_bot.emoji.grid import EmojiGridBuilder
+from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
+from qq_ai_bot.emoji.replacement import EmojiReplacementService
+from qq_ai_bot.emoji.repository import EmojiRepository
+from qq_ai_bot.emoji.retriever import EmojiRetriever
+from qq_ai_bot.emoji.selector import EmojiSelector
+from qq_ai_bot.emoji.storage import EmojiStorage
+from qq_ai_bot.emoji.worker import EmojiWorker
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
@@ -63,6 +76,7 @@ from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
 from qq_ai_bot.plugin_host.command_adapter import PluginCommandAdapter
 from qq_ai_bot.plugin_host.config import BoundConfigFacade
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
+from qq_ai_bot.plugin_host.emoji_adapter import PluginEmojiSelectionSignalAdapter
 from qq_ai_bot.plugin_host.event_bus import PluginEventBus
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from qq_ai_bot.plugin_host.facades import (
@@ -182,6 +196,7 @@ class ApplicationContainer:
         self.web_sources = WebSearchSourceRepository(self.database)
         self.media_analyses = MediaAnalysisRepository(self.database)
         self.emoji_descriptions = EmojiDescriptionRepository(self.database)
+        self.emoji_repository = EmojiRepository(self.database)
         self.planner_runs = PlannerRepository(self.database)
         self.time_context = TimeContextService(
             self.database,
@@ -202,24 +217,23 @@ class ApplicationContainer:
         self.provider = self._build_provider(settings)
         self.web_provider = self._build_web_provider(settings)
         self.vision_provider = vision_provider or self._build_vision_provider(settings)
+        self.media_resolver = MediaResolver(
+            max_download_bytes=settings.vision_max_download_bytes,
+            timeout_seconds=settings.vision_media_download_timeout_seconds,
+            allow_private_urls=settings.vision_allow_private_urls,
+        )
+        self.image_preprocessor = ImagePreprocessor(
+            max_dimension=settings.vision_max_dimension,
+            max_pixels=settings.vision_max_pixels,
+            max_prepared_bytes=settings.vision_max_prepared_bytes,
+            gif_max_frames=8,
+        )
         self.vision: VisionService | None = None
         if self.vision_provider is not None:
             self.vision = VisionService(
                 provider=self.vision_provider,
-                resolver=MediaResolver(
-                    max_download_bytes=settings.vision_max_download_bytes,
-                    timeout_seconds=settings.vision_media_download_timeout_seconds,
-                    allow_private_urls=settings.vision_allow_private_urls,
-                ),
-                preprocessor=ImagePreprocessor(
-                    max_dimension=settings.vision_max_dimension,
-                    max_pixels=settings.vision_max_pixels,
-                    max_prepared_bytes=settings.vision_max_prepared_bytes,
-                    # The per-turn value is HOT-configurable up to eight frames.
-                    # Construct the preprocessor at that reviewed hard ceiling so
-                    # raising the runtime value does not remain capped by startup.
-                    gif_max_frames=8,
-                ),
+                resolver=self.media_resolver,
+                preprocessor=self.image_preprocessor,
                 analyses=self.media_analyses,
                 rate_limiter=VisionRateLimiter(),
                 emoji_descriptions=self.emoji_descriptions,
@@ -229,8 +243,55 @@ class ApplicationContainer:
                 queue_timeout_seconds=settings.vision_queue_timeout_seconds,
                 prompt_version=(
                     f"{VISION_PROMPT_VERSION}-{settings.vision_max_dimension:x}-"
-                    f"{settings.vision_max_pixels:x}-{settings.vision_max_prepared_bytes:x}"
+                    f"{settings.vision_max_pixels:x}-{settings.vision_max_prepared_bytes:x}-"
+                    f"{settings.emoji_analysis_version}"
                 ),
+                emoji_assets=self.emoji_repository,
+                emoji_analysis_version=settings.emoji_analysis_version,
+            )
+        self.emoji_storage = EmojiStorage(
+            settings.emoji_storage_root,
+            preview_max_dimension=settings.emoji_preview_max_dimension,
+        )
+        self.emoji_lifecycle = EmojiLifecycleService(
+            self.emoji_repository,
+            replacement=EmojiReplacementService(
+                self.provider,
+                model=settings.llm_model or "fake",
+                max_prompt_characters=settings.max_context_characters,
+            ),
+        )
+        self.emoji_collector = EmojiCollector(
+            detector=EmojiCandidateDetector(),
+            resolver=self.media_resolver,
+            storage=self.emoji_storage,
+            repository=self.emoji_repository,
+        )
+        emoji_retriever = EmojiRetriever(self.emoji_repository, self.emoji_storage)
+        self.emoji_selector = EmojiSelector(
+            retriever=emoji_retriever,
+            grid_builder=EmojiGridBuilder(self.emoji_storage),
+            preprocessor=self.image_preprocessor,
+            provider=self.vision_provider,
+        )
+        self.emoji_effects = EmojiReplyEffectService(
+            selector=self.emoji_selector,
+            repository=self.emoji_repository,
+            storage=self.emoji_storage,
+        )
+        self.emoji_worker: EmojiWorker | None = None
+        if self.vision_provider is not None:
+            self.emoji_worker = EmojiWorker(
+                repository=self.emoji_repository,
+                classifier=EmojiClassifier(
+                    provider=self.vision_provider,
+                    preprocessor=self.image_preprocessor,
+                    storage=self.emoji_storage,
+                    analyses=self.media_analyses,
+                ),
+                lifecycle=self.emoji_lifecycle,
+                storage=self.emoji_storage,
+                runtime_config=self.runtime_config,
             )
         self.concurrency = ConcurrencyManager(settings.global_llm_concurrency)
         self.turn_coordinator = ConversationTurnCoordinator(
@@ -312,6 +373,7 @@ class ApplicationContainer:
             prompt_composer=PromptComposer(settings, self.prompt_registry),
             turn_coordinator=self.turn_coordinator,
             reply_sequence=self.reply_sequence,
+            emoji_effects=self.emoji_effects,
         )
         self.memory_worker = MemoryWorker(
             settings=settings,
@@ -357,6 +419,14 @@ class ApplicationContainer:
             runtime_config=self.runtime_config,
         )
         self.config_admin = ConfigAdminService(self.runtime_config)
+        self.emoji_admin = EmojiAdminService(
+            repository=self.emoji_repository,
+            lifecycle=self.emoji_lifecycle,
+            storage=self.emoji_storage,
+            collector=self.emoji_collector,
+            config=self.config_admin,
+            worker=self.emoji_worker,
+        )
         self.admin_actions = AdminActionService(
             settings=settings,
             relationships=self.relationship_admin,
@@ -364,6 +434,7 @@ class ApplicationContainer:
             preferences=self.preference_admin,
             groups=self.group_admin,
             private_access=self.private_access_admin,
+            emoji=self.emoji_admin,
             registry=self.admin_action_registry,
         )
         self.admin_capabilities = AdminCapabilityService(
@@ -394,6 +465,9 @@ class ApplicationContainer:
                 ledger=self.ledger,
                 actions=self.agent_actions,
             ),
+            emoji_repository=self.emoji_repository,
+            emoji_selector=self.emoji_selector,
+            emoji_storage=self.emoji_storage,
         )
         self.automation_registry = build_capability_registry(self._automation_handlers.mapping())
         self._automation_handlers.bind_registry(self.automation_registry)
@@ -439,7 +513,16 @@ class ApplicationContainer:
         self.plugin_events = PluginEventBus(
             default_timeout_seconds=settings.plugin_hook_timeout_seconds,
         )
+        self.emoji_collector.set_event_publisher(self.plugin_events)
+        self.emoji_lifecycle.set_event_publisher(self.plugin_events)
+        self.emoji_selector.set_event_publisher(self.plugin_events)
+        self.emoji_effects.set_event_publisher(self.plugin_events)
         self.plugin_extensions = ExtensionRegistry()
+        self.plugin_emoji_signals = PluginEmojiSelectionSignalAdapter(
+            self.plugin_extensions,
+            timeout_seconds=settings.plugin_hook_timeout_seconds,
+        )
+        self.emoji_selector.set_plugin_signals(self.plugin_emoji_signals)
         self.plugin_prompts = PluginPromptAdapter(
             self.plugin_extensions,
             self.prompt_registry,
@@ -524,6 +607,7 @@ class ApplicationContainer:
             planner_observability=self.planner_observability,
             planner_repository=self.planner_runs,
             plugin_commands=self.plugin_commands,
+            emoji_admin=self.emoji_admin,
         )
         self.processor = MessageProcessor(
             settings=settings,
@@ -561,6 +645,8 @@ class ApplicationContainer:
             turn_coordinator=self.turn_coordinator,
             planner_signals=self.plugin_planner_signals,
             event_publisher=self.plugin_events,
+            emoji_collector=self.emoji_collector,
+            emoji_worker=self.emoji_worker,
         )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
@@ -634,6 +720,10 @@ class ApplicationContainer:
                 agent_capabilities=frozenset(agent_capabilities),
                 web_provider=self.web_provider,
                 vision=self.vision,
+                emoji_repository=self.emoji_repository,
+                emoji_collector=self.emoji_collector,
+                emoji_selector=self.emoji_selector,
+                emoji_lifecycle=self.emoji_lifecycle,
                 automation=self.automation,
                 storage=BoundStorageFacade(
                     repository=self.plugin_state,
@@ -809,6 +899,8 @@ class ApplicationContainer:
         )
         await self.memory_worker.start()
         await self.relationship_worker.start()
+        if self.emoji_worker is not None:
+            await self.emoji_worker.start()
         await self.automation_worker.start()
 
     async def _cleanup_loop(self) -> None:
@@ -826,6 +918,9 @@ class ApplicationContainer:
                 vision_deleted = await self.media_analyses.cleanup_expired()
                 if vision_deleted:
                     logger.info("media_analyses_cleaned count=%d", vision_deleted)
+                emoji_deleted = await self.emoji_admin.cleanup_expired()
+                if emoji_deleted:
+                    logger.info("emoji_assets_cleaned count=%d", emoji_deleted)
                 automation_runs_deleted = await self.automation_repository.cleanup_runs(
                     before=datetime.now(UTC)
                     - timedelta(days=self.settings.automation_run_retention_days)
@@ -865,12 +960,17 @@ class ApplicationContainer:
         )
         await self.plugin_manager.stop()
         await self.automation_worker.close()
+        await self.emoji_collector.close()
+        if self.emoji_worker is not None:
+            await self.emoji_worker.close()
         await self.relationship_worker.close()
         await self.memory_worker.close()
         if self.web_provider is not None:
             await self.web_provider.close()
         if self.vision is not None:
             await self.vision.close()
+        else:
+            await self.media_resolver.close()
         await self.plugin_http.close()
         await self.plugin_session_repository.delete_ephemeral()
         await self.provider.close()

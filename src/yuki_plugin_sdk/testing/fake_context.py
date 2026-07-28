@@ -14,6 +14,7 @@ from yuki_plugin_sdk.testing.fake_services import (
     FakeAgentSessionFacade,
     FakeAutomationFacade,
     FakeConfigFacade,
+    FakeEmojiFacade,
     FakeEventBus,
     FakeGroupFacade,
     FakeHttpFacade,
@@ -51,6 +52,7 @@ class FakePluginContext:
     media: FakeMediaFacade = field(default_factory=FakeMediaFacade)
     automation: FakeAutomationFacade = field(default_factory=FakeAutomationFacade)
     config: FakeConfigFacade = field(default_factory=FakeConfigFacade)
+    emoji: FakeEmojiFacade = field(default_factory=FakeEmojiFacade)
     secrets: FakeSecretsFacade = field(default_factory=FakeSecretsFacade)
     storage: FakeStorage = field(default_factory=FakeStorage)
     scheduler: FakeScheduler = field(default_factory=FakeScheduler)

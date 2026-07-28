@@ -15,6 +15,8 @@ from pydantic import ValidationError
 
 from qq_ai_bot.admin.models import VisionRuntimeConfig
 from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage, MessageAttachment
+from qq_ai_bot.emoji.models import EmojiLifecycleStatus
+from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.persistence.repositories import (
     EmojiDescriptionRepository,
     MediaAnalysisRepository,
@@ -35,6 +37,7 @@ from qq_ai_bot.vision.models import (
     PreparedVisualInput,
     VisionAnalysisMode,
     VisionAnalysisOptions,
+    VisualItemObservation,
     VisualObservation,
 )
 
@@ -75,6 +78,8 @@ class VisionService:
         queue_max_pending: int = 32,
         queue_timeout_seconds: float = 120.0,
         prompt_version: str = VISION_PROMPT_VERSION,
+        emoji_assets: EmojiRepository | None = None,
+        emoji_analysis_version: str = "",
     ) -> None:
         if (
             max_prepared_bytes <= 0
@@ -93,6 +98,8 @@ class VisionService:
         self._rate_limiter = rate_limiter
         self._max_prepared_bytes = max_prepared_bytes
         self._prompt_version = prompt_version[:64]
+        self._emoji_assets = emoji_assets
+        self._emoji_analysis_version = emoji_analysis_version
         self._pipeline_semaphore = asyncio.Semaphore(global_concurrency)
         self._queue_max_pending = queue_max_pending
         self._queue_timeout_seconds = queue_timeout_seconds
@@ -400,6 +407,39 @@ class VisionService:
             raise error
 
         aggregate_hash = _aggregate_hash(tuple(item.media_hash for item in prepared))
+        if cache_mode == "meme" and self._emoji_assets is not None and self._emoji_analysis_version:
+            emoji_asset = await self._emoji_assets.get_by_hash(aggregate_hash)
+            if (
+                emoji_asset is not None
+                and emoji_asset.analysis_version == self._emoji_analysis_version
+                and emoji_asset.status
+                in {
+                    EmojiLifecycleStatus.RECOGNIZED,
+                    EmojiLifecycleStatus.ADOPTED,
+                    EmojiLifecycleStatus.REJECTED,
+                }
+                and emoji_asset.description
+            ):
+                return VisualObservation(
+                    items=(
+                        VisualItemObservation(
+                            index=1,
+                            description=emoji_asset.description,
+                            ocr_text=emoji_asset.ocr_text,
+                            meme_intent="、".join(emoji_asset.usage_scenarios),
+                            is_emoji=(emoji_asset.status is not EmojiLifecycleStatus.REJECTED),
+                            emotion_tags=emoji_asset.emotion_tags,
+                            usage_scenarios=emoji_asset.usage_scenarios,
+                            intensity=emoji_asset.intensity,
+                            confidence=emoji_asset.confidence,
+                        ),
+                    ),
+                    overall_description=emoji_asset.description,
+                    partial_failure=partial_failure,
+                    provider="emoji-cache",
+                    model=emoji_asset.analysis_version,
+                    latency_seconds=0,
+                )
         durable_keys = (*emoji_keys, f"content:{aggregate_hash}") if len(references) == 1 else ()
         persistent = await self._find_emoji_description(
             (f"content:{aggregate_hash}",) if len(references) == 1 else (),
@@ -835,7 +875,7 @@ def _cache_prompt_version(
         )
     )
     variant = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
-    return f"{base[:40]}:{variant}"
+    return f"{base[:30]}:{variant}:{base[-12:]}"
 
 
 def _cached_observation(payload: str) -> VisualObservation | None:

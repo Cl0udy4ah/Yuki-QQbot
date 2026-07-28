@@ -117,7 +117,12 @@ class AgentRunner:
                 content = response.content
                 if tools is not None:
                     content = tools.finalize(content, runtime)
-                if not content.strip():
+                has_visible_effects = bool(
+                    tools is not None
+                    and callable(getattr(tools, "has_visible_effects", None))
+                    and tools.has_visible_effects()  # type: ignore[attr-defined]
+                )
+                if not content.strip() and not has_visible_effects:
                     raise LLMEmptyResponseError("model returned no final answer")
                 return AgentRunResult(
                     text=content,

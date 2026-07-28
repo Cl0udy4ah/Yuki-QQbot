@@ -39,6 +39,12 @@ class PluginPermission(StrEnum):
     VISION_CURRENT_READ = "vision.current.read"
     VISION_ANALYZE = "vision.analyze"
     MEDIA_CURRENT_READ = "media.current.read"
+    EMOJI_READ = "emoji.read"
+    EMOJI_COLLECT = "emoji.collect"
+    EMOJI_SELECT = "emoji.select"
+    EMOJI_SEND = "emoji.send"
+    EMOJI_MANAGE = "emoji.manage"
+    EMOJI_HOOK = "emoji.hook"
     AUTOMATION_READ = "automation.read"
     AUTOMATION_MANAGE_SELF = "automation.manage_self"
     AUTOMATION_ACTION_REGISTER = "automation.action.register"
@@ -68,6 +74,7 @@ HIGH_RISK_PERMISSIONS: frozenset[PluginPermission] = frozenset(
         PluginPermission.ONEBOT_MUTATE,
         PluginPermission.AGENT_RUN,
         PluginPermission.AGENT_SESSION,
+        PluginPermission.EMOJI_MANAGE,
     }
 )
 

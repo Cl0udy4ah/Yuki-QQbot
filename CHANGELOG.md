@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 1.7.0 - 2026-07-28
+
+### 持久化表情系统
+
+- 新增 `emoji_assets`、`emoji_scope_states`、`emoji_jobs` 和 `emoji_usage_events`，通过非破坏性 Alembic `0014` 保留全部 1.6 数据；旧 `emoji_descriptions` 继续作为 QQ 表情视觉描述缓存，不再承担新表情池状态。
+- 新增格式感知、SHA-256 去重、可选 dHash、原子文件写入、动画原图保存和第一帧 WebP 预览；正式文件位于 `data/emoji/`，数据库、账本与普通日志不保存图片 Base64、绝对路径或签名 URL。
+- 已启用群的未触发图片可按 `metadata_only/likely/all_images` 进入独立后台收集，但不会触发回复、关系评价、人物记忆或命令；私聊与群聊收集开关独立。
+- 表情分类复用现有 `VisionProvider`、`MediaResolver` 和 `ImagePreprocessor`，写入结构化描述、情绪、场景、OCR、强度和置信度；按本次要求不实现审核系统、审核队列或第二次审核模型调用。
+- 生命周期集中为 `candidate/recognized/adopted/rejected/banned/missing`；满足运行时阈值直接自动采用，容量为空时无限，容量满时按配置执行替换且保护 pinned 资产。
+- Planner 新增不含资产标识的表情意图；Agent 新增只排队 `PendingReplyEffect` 的 `send_emoji` 工具。ReplySequence 支持文字前、文字后与仅表情发送，新消息可取消尚未发送部分，只有 OneBot 成功后才增加使用次数。
+- 新增 `/ai emoji` 管理命令、自然语言 `emoji.*` 管理动作、`/ai status` 与 `/healthz` 状态；定时清理只删除过期且未采用、未固定的候选。
+- Plugin API 新增 `EmojiFacade`、六项 `emoji.*` 权限、表情生命周期事件和 `emoji.selection_signals.v1`；插件信号失败不影响核心选择，也不能引入核心候选集之外的 ID。
+- 自动化注册 `emoji.send` 与 `emoji.send_by_id`，复用既有调度器和 `DelegatedAuthority`；普通用户仅限本人私聊或任务创建时的当前群，发送写回永久账本及使用统计。
+- 新增 Emoji 运行时配置组、`.env.example`、架构/生命周期/收集/视觉/选择/Planner/管理/配置/插件/自动化/存储文档，并将版本升级为 `1.7.0`。
+
 ## 1.6.0 - 2026-07-28
 
 ### Planner-first 会话重写

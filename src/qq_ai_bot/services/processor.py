@@ -28,6 +28,8 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.emoji.collector import EmojiCollector
+from qq_ai_bot.emoji.worker import EmojiWorker
 from qq_ai_bot.llm.base import LLMConfigurationError, LLMEmptyResponseError, LLMError
 from qq_ai_bot.persistence.repositories import (
     ConversationRepository,
@@ -234,6 +236,8 @@ class MessageProcessor:
         turn_coordinator: ConversationTurnCoordinator | None = None,
         planner_signals: PlannerSignalProvider | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
+        emoji_collector: EmojiCollector | None = None,
+        emoji_worker: EmojiWorker | None = None,
     ) -> None:
         database = conversations._database
         self._settings = settings
@@ -355,6 +359,8 @@ class MessageProcessor:
             planner_repository=self._planner.repository,
         )
         self._event_publisher: LifecycleEventPublisher | None = None
+        self._emoji_collector = emoji_collector
+        self._emoji_worker = emoji_worker
         if event_publisher is not None:
             self.set_event_publisher(event_publisher)
 
@@ -461,6 +467,10 @@ class MessageProcessor:
             has_visual_input
             and decision.command is not None
             and self._commands.may_write(decision.command, decision.content)
+            and not (
+                decision.command is CommandName.EMOJI
+                and decision.content.strip().casefold().startswith("import")
+            )
         )
         if decision.should_respond or admin_candidate:
             await publish_notification(
@@ -501,6 +511,28 @@ class MessageProcessor:
         )
         if created:
             await self._memory_worker.enqueue(record.id)
+        is_explicit_emoji_import = bool(
+            decision.command is CommandName.EMOJI
+            and decision.content.strip().casefold().startswith("import")
+        )
+        if (
+            self._emoji_collector is not None
+            and message.attachments
+            and not is_explicit_emoji_import
+        ):
+            media_gateway = (
+                cast(OneBotMediaGateway, sender)
+                if callable(getattr(sender, "call_api", None))
+                else None
+            )
+            self._emoji_collector.submit(
+                message,
+                source_event_id=record.id,
+                runtime=runtime_snapshot.emoji,
+                gateway=media_gateway,
+            )
+            if self._emoji_worker is not None:
+                self._emoji_worker.wake()
 
         if not decision.should_respond and not admin_candidate:
             if (
@@ -883,6 +915,11 @@ class MessageProcessor:
             profile,
             argument,
             started,
+            gateway=(
+                cast(OneBotMediaGateway, sender)
+                if callable(getattr(sender, "call_api", None))
+                else None
+            ),
         )
         sent = await self._send_text(
             message,

@@ -1739,11 +1739,11 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
             )
         )
         assert payload["data"]["transient_internal_reference"] is True
-        assert payload["data"]["counts"]["mutable_configurations"] == 96
-        assert payload["data"]["counts"]["business_actions"] == 19
+        assert payload["data"]["counts"]["mutable_configurations"] == 120
+        assert payload["data"]["counts"]["business_actions"] == 33
         assert payload["data"]["counts"]["onebot_api_gateways"] == 1
         return ChatResponse(
-            content="你有 96 项可改配置、19 项应用业务接口，以及全部公开 OneBot action 权限。",
+            content="你有 120 项可改配置、33 项应用业务接口，以及全部公开 OneBot action 权限。",
             latency_seconds=0,
         )
 
@@ -1758,7 +1758,7 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
     assert result.tool_calls == 1
     assert calls == 2
     assert result.text == (
-        "你有 96 项可改配置、19 项应用业务接口，以及全部公开 OneBot action 权限。"
+        "你有 120 项可改配置、33 项应用业务接口，以及全部公开 OneBot action 权限。"
     )
     assert "transient_internal_reference" not in result.text
 

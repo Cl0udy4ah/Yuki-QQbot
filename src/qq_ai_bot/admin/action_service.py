@@ -8,6 +8,7 @@ from typing import Any
 
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.config import Settings
+from qq_ai_bot.emoji.admin import EmojiAdminService
 from qq_ai_bot.services.admin import (
     GroupAdminService,
     MemoryAdminService,
@@ -167,6 +168,38 @@ class ActionRegistry:
                 "user",
                 True,
             ),
+            ActionSpec("emoji.list", "列出表情", "按状态列出表情库。", "emoji", False),
+            ActionSpec("emoji.show", "查看表情", "读取指定表情的安全元数据。", "emoji", False),
+            ActionSpec(
+                "emoji.adopt", "采用表情", "将识别过的表情加入全局或当前群表情池。", "emoji", True
+            ),
+            ActionSpec(
+                "emoji.unadopt", "取消采用表情", "从全局或当前群表情池移除表情。", "emoji", True
+            ),
+            ActionSpec("emoji.reject", "拒绝表情", "把表情标记为 rejected。", "emoji", True),
+            ActionSpec("emoji.ban", "封禁表情", "封禁表情并退出所有表情池。", "emoji", True),
+            ActionSpec("emoji.unban", "解除表情封禁", "恢复为 recognized。", "emoji", True),
+            ActionSpec("emoji.pin", "固定表情", "设置表情是否免于自动替换。", "emoji", True),
+            ActionSpec("emoji.reanalyze", "重新识别表情", "加入后台重新识别队列。", "emoji", True),
+            ActionSpec(
+                "emoji.enable_for_group",
+                "启用群表情",
+                "允许指定表情在当前或明确群中使用。",
+                "emoji",
+                True,
+            ),
+            ActionSpec(
+                "emoji.disable_for_group",
+                "禁用群表情",
+                "禁止指定表情在当前或明确群中使用。",
+                "emoji",
+                True,
+            ),
+            ActionSpec("emoji.stats", "表情统计", "读取表情状态和任务统计。", "emoji", False),
+            ActionSpec(
+                "emoji.cleanup", "清理表情候选", "清理超过保留期且未采用的候选。", "emoji", True
+            ),
+            ActionSpec("emoji.doctor", "检查表情存储", "检查原图、预览和缺失状态。", "emoji", True),
         )
         self._specs = {spec.name: spec for spec in specs}
 
@@ -301,6 +334,7 @@ class AdminActionService:
         preferences: PreferenceAdminService,
         groups: GroupAdminService,
         private_access: PrivateAccessAdminService,
+        emoji: EmojiAdminService | None = None,
         registry: ActionRegistry | None = None,
     ) -> None:
         self._settings = settings
@@ -309,6 +343,7 @@ class AdminActionService:
         self._preferences = preferences
         self._groups = groups
         self._private_access = private_access
+        self._emoji = emoji
         self.registry = registry or ActionRegistry()
 
     async def execute(
@@ -321,6 +356,10 @@ class AdminActionService:
 
         require_real_superuser(actor, self._settings)
         spec = self.registry.get(action)
+        if spec.target_kind == "emoji":
+            if self._emoji is None:
+                raise RuntimeError("表情系统当前不可用")
+            return await self._emoji.execute_action(action, arguments, actor)
         target = (
             TargetResolver.user(arguments, actor)
             if spec.target_kind == "user"

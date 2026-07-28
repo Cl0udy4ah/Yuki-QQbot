@@ -6,6 +6,7 @@ PlannerSignal 允许插件向群聊回复必要性提供一个很小、可观察
 from yuki_plugin_sdk.models import PlannerSignal
 from yuki_plugin_sdk.registrar import PlannerSignalRegistration
 
+
 async def campaign_signal() -> PlannerSignal | None:
     if not campaign_is_active:
         return None
@@ -16,6 +17,7 @@ async def campaign_signal() -> PlannerSignal | None:
         summary="当前群正在进行插件主持的跑团",
         confidence=0.9,
     )
+
 
 registrar.register_planner_signal(
     PlannerSignalRegistration(name="campaign_active", provider=campaign_signal)

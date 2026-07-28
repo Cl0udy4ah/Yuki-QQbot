@@ -86,6 +86,10 @@ class VisualItemObservation(_FrozenModel):
     ocr_text: str = Field(default="", max_length=2000)
     expression: str = Field(default="", max_length=1200)
     meme_intent: str = Field(default="", max_length=1200)
+    is_emoji: bool | None = None
+    emotion_tags: tuple[str, ...] = Field(default=(), max_length=20)
+    usage_scenarios: tuple[str, ...] = Field(default=(), max_length=20)
+    intensity: float = Field(default=0.5, ge=0.0, le=1.0)
     recognized_character: str = Field(default="", max_length=200)
     franchise: str = Field(default="", max_length=200)
     character_candidates: tuple[VisualCharacterCandidate, ...] = Field(default=(), max_length=3)

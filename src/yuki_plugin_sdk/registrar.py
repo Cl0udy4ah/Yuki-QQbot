@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from yuki_plugin_sdk.events import EventName, NotificationHandler
 from yuki_plugin_sdk.models import (
+    EmojiSelectionSignal,
+    EmojiSelectionSignalContext,
     PermissionLevel,
     PlannerSignal,
     PlannerSignalContext,
@@ -29,6 +31,9 @@ PlannerSignalProvider = (
     Callable[[PlannerSignalContext], Awaitable[PlannerSignal | None]]
     | Callable[[], Awaitable[PlannerSignal | None]]
 )
+EmojiSelectionSignalProvider = Callable[
+    [EmojiSelectionSignalContext], Awaitable[EmojiSelectionSignal | None]
+]
 BackgroundRunner = Callable[[], Awaitable[None]]
 
 
@@ -110,6 +115,12 @@ class PlannerSignalRegistration:
 
 
 @dataclass(frozen=True, slots=True)
+class EmojiSelectionSignalRegistration:
+    name: str
+    provider: EmojiSelectionSignalProvider
+
+
+@dataclass(frozen=True, slots=True)
 class BackgroundServiceRegistration:
     metadata: BackgroundServiceMetadata
     runner: BackgroundRunner
@@ -129,6 +140,10 @@ class PluginRegistrar(Protocol):
     def register_automation_action(self, registration: AutomationActionRegistration) -> None: ...
 
     def register_planner_signal(self, registration: PlannerSignalRegistration) -> None: ...
+
+    def register_emoji_selection_signal(
+        self, registration: EmojiSelectionSignalRegistration
+    ) -> None: ...
 
     def register_config_schema(self, schema: type[BaseModel]) -> None: ...
 

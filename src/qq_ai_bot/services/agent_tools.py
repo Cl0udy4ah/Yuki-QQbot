@@ -18,6 +18,11 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage
+from qq_ai_bot.emoji.models import (
+    EmojiPlacement,
+    EmojiReplyMode,
+    PendingReplyEffect,
+)
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
     EventLedgerRepository,
@@ -71,6 +76,7 @@ class ToolRuntime:
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
     tool_mode: ToolMode = ToolMode.INHERIT
     turn_token: TurnToken | None = None
+    reply_effects: list[PendingReplyEffect] | None = None
 
 
 def _object_schema(
@@ -257,6 +263,32 @@ class AgentToolService:
                     ),
                 )
             )
+        if runtime.runtime_config is not None and runtime.runtime_config.emoji.enabled:
+            tools.append(
+                ChatTool(
+                    name="send_emoji",
+                    description=(
+                        "为本轮最终回复排队一个表情效果，不会立即发送，也不能指定表情 ID、"
+                        "文件或 URL。仅在表情比纯文字更自然时调用；goal 和 emotion 描述想表达"
+                        "的语义，placement 决定文字前后，mode 可为 optional/preferred/emoji_only。"
+                    ),
+                    parameters=_object_schema(
+                        {
+                            "goal": {"type": "string", "maxLength": 300},
+                            "emotion": {"type": "string", "maxLength": 100},
+                            "placement": {
+                                "type": "string",
+                                "enum": ["before_text", "after_text", "only"],
+                            },
+                            "mode": {
+                                "type": "string",
+                                "enum": ["optional", "preferred", "emoji_only"],
+                            },
+                        },
+                        required=("goal",),
+                    ),
+                )
+            )
         return tuple(tools)
 
     async def execute(
@@ -296,6 +328,8 @@ class AgentToolService:
                     return await self._read_webpage(arguments, runtime)
                 if name == "call_onebot_api":
                     return await self._call_onebot(arguments, runtime)
+                if name == "send_emoji":
+                    return self._queue_emoji(arguments, runtime)
                 return self._result(error="unknown_tool", detail=f"未知工具：{name}")
             except WebSearchError as exc:
                 return self._web_result(error=exc.code, detail=exc.detail)
@@ -303,6 +337,40 @@ class AgentToolService:
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
         finally:
             _RUNTIME_SNAPSHOT.reset(token)
+
+    def _queue_emoji(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+        queue = runtime.reply_effects
+        config = runtime.runtime_config
+        if queue is None or config is None or not config.emoji.enabled:
+            return self._result(error="emoji_unavailable", detail="当前回复没有启用表情效果")
+        if len(queue) >= config.emoji.max_effects_per_reply:
+            return self._result(
+                error="emoji_effect_limit",
+                detail="本轮表情效果数量已达到当前配置上限",
+            )
+        extra = set(arguments) - {"goal", "emotion", "placement", "mode"}
+        if extra:
+            return self._result(error="invalid_arguments", detail="表情工具参数包含未知字段")
+        goal = arguments.get("goal")
+        emotion = arguments.get("emotion", "")
+        placement = arguments.get("placement", "after_text")
+        mode = arguments.get("mode", "optional")
+        if not isinstance(goal, str) or not goal.strip() or len(goal) > 300:
+            return self._result(error="invalid_arguments", detail="goal 必须是 1..300 字符")
+        if not isinstance(emotion, str) or len(emotion) > 100:
+            return self._result(error="invalid_arguments", detail="emotion 最多 100 字符")
+        try:
+            effect = PendingReplyEffect(
+                mode=EmojiReplyMode(mode),
+                placement=EmojiPlacement(placement),
+                goal=" ".join(goal.split()),
+                emotion=" ".join(emotion.split()),
+                source="agent",
+            )
+        except ValueError:
+            return self._result(error="invalid_arguments", detail="mode 或 placement 无效")
+        queue.append(effect)
+        return self._result(data={"queued": True, "effect": "emoji"})
 
     def _my_capabilities(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         """Return only the report derived from this authoritative inbound event."""

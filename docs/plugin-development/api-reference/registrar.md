@@ -17,36 +17,40 @@ register_background_service(BackgroundServiceRegistration) -> None
 
 ```python
 class ToolMetadata(StrictModel):
-    name: str                         # [a-z][a-z0-9_]{0,63}
-    description: str                 # 1..1000
+    name: str  # [a-z][a-z0-9_]{0,63}
+    description: str  # 1..1000
     permission: PermissionLevel = user
     risk: RiskClass = read
     schema_version: int = 1
     allowed_origins: frozenset[TurnOrigin] = {user_message}
-    timeout_seconds: float = 10       # >0, <=600
+    timeout_seconds: float = 10  # >0, <=600
     retry_policy: RetryPolicy = none
 
+
 class CommandMetadata(StrictModel):
-    name: str                         # [a-z][a-z0-9_-]{0,63}
-    description: str                 # 1..1000
+    name: str  # [a-z][a-z0-9_-]{0,63}
+    description: str  # 1..1000
     permission: PermissionLevel = user
     short_alias: str | None
     timeout_seconds: float = 10
 
+
 class AutomationActionMetadata(ToolMetadata):
     allowed_origins = {scheduled_automation, system_task}
 
+
 class EventHookMetadata(StrictModel):
-    id: str                           # [a-z][a-z0-9_.-]{0,127}
+    id: str  # [a-z][a-z0-9_.-]{0,127}
     event: EventName
-    priority: int = 0                 # -10000..10000
+    priority: int = 0  # -10000..10000
     timeout_seconds: float | None
 
+
 class BackgroundServiceMetadata(StrictModel):
-    name: str                         # [a-z][a-z0-9_]{0,63}
+    name: str  # [a-z][a-z0-9_]{0,63}
     description: str = ""
     shutdown_timeout_seconds: float = 10
-    max_concurrency: int = 1          # 1..64
+    max_concurrency: int = 1  # 1..64
     restart_policy: RestartPolicy = never
 ```
 

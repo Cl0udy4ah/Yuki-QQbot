@@ -18,6 +18,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.emoji.admin import EmojiAdminService
 from qq_ai_bot.persistence.repositories import (
     ConversationRepository,
     MemoryRepository,
@@ -35,6 +36,7 @@ from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
 from qq_ai_bot.services.automation_commands import AutomationCommandHandler
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.config_commands import ConfigCommandHandler
+from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.policies import CommandName, command_requires_superuser
 from qq_ai_bot.services.profile_commands import ProfileCommandHandler
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
@@ -80,6 +82,7 @@ class CommandService:
         planner_observability: PlannerObservability | None = None,
         planner_repository: PlannerRepository | None = None,
         plugin_commands: PluginCommandAdapter | None = None,
+        emoji_admin: EmojiAdminService | None = None,
     ) -> None:
         self._settings = settings
         self._conversations = conversations
@@ -96,6 +99,7 @@ class CommandService:
         self._planner_observability = planner_observability
         self._planner_repository = planner_repository
         self._plugin_commands = plugin_commands
+        self._emoji_admin = emoji_admin
         self._profile_commands = ProfileCommandHandler(
             people=people,
             memories=memories,
@@ -137,6 +141,8 @@ class CommandService:
             return operation not in {"", "list", "show", "history"}
         if command is CommandName.PLUGIN:
             return operation not in {"", "list", "show", "permissions", "doctor"}
+        if command is CommandName.EMOJI:
+            return operation not in {"", "list", "show", "stats", "doctor"}
         return False
 
     async def execute(
@@ -147,6 +153,7 @@ class CommandService:
         profile: UserProfileSnapshot,
         argument: str,
         started: float,
+        gateway: OneBotMediaGateway | None = None,
     ) -> CommandExecution:
         is_superuser = message.sender.user_id in self._settings.superusers
         actor = AdminActor(
@@ -173,6 +180,8 @@ class CommandService:
             vision_busy = self._vision is not None and self._vision.busy
             vision_queue_depth = self._vision.queue_depth if self._vision is not None else 0
             vision_running = self._vision.running_count if self._vision is not None else 0
+            emoji_status = await self._emoji_admin.status() if self._emoji_admin is not None else {}
+            emoji_counts = emoji_status.get("counts", {})
             automation_count = (
                 await self._automation_repository.active_count()
                 if self._automation_repository is not None
@@ -218,6 +227,12 @@ class CommandService:
                 f"视觉模型：{self._settings.vision_model or '未配置'}\n"
                 f"视觉请求繁忙：{'是' if vision_busy else '否'}\n"
                 f"视觉排队/运行：{vision_queue_depth}/{vision_running}\n"
+                f"表情系统：{'已启用' if self._settings.emoji_enabled else '未启用'}\n"
+                f"表情 Worker：{'运行中' if emoji_status.get('worker_running') else '未运行'}\n"
+                f"表情候选/已采用/待处理："
+                f"{emoji_counts.get('candidate', 0)}/"
+                f"{emoji_counts.get('adopted', 0)}/"
+                f"{emoji_counts.get('jobs_pending', 0)}\n"
                 f"当前切点后的事件数：{count}\n"
                 f"请求处理中：{'是' if self._concurrency.is_processing(identity.key) else '否'}\n"
                 f"Planner：{'已启用' if self._settings.planner_enabled else '未启用'}\n"
@@ -333,6 +348,16 @@ class CommandService:
                         group_id=message.group_id,
                     ),
                 )
+        elif command is CommandName.EMOJI:
+            if self._emoji_admin is None:
+                text = "表情系统当前未启用。"
+            else:
+                text = await self._emoji_admin.execute(
+                    actor=actor,
+                    message=message,
+                    argument=argument,
+                    gateway=gateway,
+                )
         else:
             text = "未知命令，请使用 /ai help 查看帮助。"
 
@@ -355,6 +380,8 @@ class CommandService:
             "/ai config list|get|set|unset|history|rollback（超级管理员）\n"
             "/ai automation list|show|pause|resume|cancel|run|history <任务ID>\n"
             "/ai plugin list|show|permissions|approve|enable|disable|doctor|run\n"
+            "/ai emoji list|show|adopt|unadopt|reject|ban|pin|reanalyze\n"
+            "/ai emoji stats|cleanup|doctor|import\n"
             "/ai on|off（超级管理员，当前群）\n"
             "/ai group <群号> on|off（超级管理员）\n"
             "/ai private <QQ号> on|off（超级管理员；阻止/恢复私聊）\n"

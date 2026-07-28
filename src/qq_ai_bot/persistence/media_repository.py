@@ -80,6 +80,31 @@ class MediaAnalysisRepository:
             now=now,
         )
 
+    async def find_latest_for_content(
+        self,
+        *,
+        content_hash: str,
+        analysis_mode: str,
+        prompt_version_suffix: str,
+        now: datetime | None = None,
+    ) -> MediaAnalysisRecord | None:
+        """Reuse a current structured observation across compatible media consumers."""
+
+        timestamp = now or datetime.now(UTC)
+        async with self._database.sessions() as session:
+            row = await session.scalar(
+                select(MediaAnalysisModel)
+                .where(
+                    MediaAnalysisModel.content_hash == content_hash,
+                    MediaAnalysisModel.analysis_mode == analysis_mode,
+                    MediaAnalysisModel.prompt_version.endswith(prompt_version_suffix),
+                    MediaAnalysisModel.expires_at > timestamp,
+                )
+                .order_by(MediaAnalysisModel.created_at.desc())
+                .limit(1)
+            )
+        return self._record(row) if row is not None else None
+
     async def find_for_event(
         self,
         source_event_id: int,

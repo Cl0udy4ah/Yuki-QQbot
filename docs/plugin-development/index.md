@@ -37,6 +37,7 @@ Yuki 1.6.0 提供 Plugin API `1.0`：插件通过独立的 `yuki_plugin_sdk` 声
 - [Facade Protocol](api-reference/facades.md)
 - [Registrar Schema](api-reference/registrar.md)
 - [Result 与会话模型](api-reference/results.md)
+- [EmojiFacade 与选择信号](api-reference/emoji.md)
 
 仓库中的 [`com.example.echo`](../../examples/plugins/com.example.echo/README.md) 是可运行的无网络参考实现，覆盖工具、命令、事件、Prompt、普通用户自动化、配置和 KV。
 
@@ -44,7 +45,7 @@ Yuki 1.6.0 提供 Plugin API `1.0`：插件通过独立的 `yuki_plugin_sdk` 声
 
 | 标识 | 当前值 | 用途 |
 |---|---:|---|
-| Yuki | `1.6.0` | Host 产品版本 |
+| Yuki | `1.7.0` | Host 产品版本 |
 | Plugin API | `1.0` | SDK 主兼容边界 |
 | Event/Tool/Automation Schema | `1` | 单类载荷的结构版本 |
 | Feature | 如 `planner.signal.v1` | 运行时能力探测 |

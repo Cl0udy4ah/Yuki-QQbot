@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**1.6.0 会自动执行非破坏性迁移 `0013`，新增 Planner 可观测性、插件安装/配置/KV/审计和独立插件 AI 会话表；现有人物、聊天、记忆、关系、联网、视觉、表情与自动化数据均保留。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
+> **升级提示：**1.7.0 会自动执行非破坏性迁移 `0014`，新增持久化表情资产、作用域、任务和使用统计表；原有人物、聊天、记忆、关系、旧 QQ 表情描述缓存、视觉、联网、Planner、插件与自动化数据全部保留。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -28,7 +28,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.6.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.7.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -49,6 +49,7 @@ Yuki-QQbot 1.6.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 新消息可以中断过期的自主 Planner、自主生成和尚未发送的旧分句；已经开始的修改型业务操作不会被自动取消。
 - 提供 Plugin API v1、独立 `yuki_plugin_sdk`、Manifest/批准/权限/事件/Prompt/PlannerSignal 扩展点和无网络测试 SDK；插件系统默认关闭。
 - 插件可以创建与主聊天账本、人物记忆分离的持久或临时 AI 会话，适合骰子跑团等连续任务；插件拿不到模型隐藏推理，也不能伪造超级管理员。
+- 内置持久化表情系统会按配置观察图片、保存原图与静态预览、复用 Qwen 视觉分类、自动采用合格表情，并由 Planner 或 Agent 在正常回复序列中选择发送。
 
 ### 当前架构约束
 
@@ -62,7 +63,30 @@ Yuki-QQbot 1.6.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - SQLite 使用 WAL 和有限等待支持多个后台 Worker；部署仍定位于单 Bot、小型服务器，未来需要多进程横向扩展时再迁移 PostgreSQL。
 - GitHub Actions 会在推送和 PR 时执行 Ruff、严格 mypy、pytest、Echo 示例插件契约测试、Alembic 全新安装和 Docker 构建。
 
-本版本只处理当前真实消息或其回复中的图片，不处理视频、语音、PDF 和普通文件，也不会主动回溯群历史中的任意旧图片。已启用群里未触发 Yuki 的普通图片只写入原有事件账本，不下载、不分析，也不会因此触发自主发言。
+本版本不处理视频、语音、PDF 和普通文件，也不会主动回溯群历史中的任意旧图片。已启用群里未触发 Yuki 的图片可以按 `EMOJI_COLLECTION_MODE` 进入独立后台表情候选流程；这不会触发聊天回复、人物记忆、关系评价或管理员操作。普通聊天视觉理解仍只处理当前真实消息或回复中的图片。
+
+## 持久化表情系统
+
+表情系统默认启用，视觉分类复用现有 `VISION_*` Provider。不存在第二套视觉客户端，也没有表情审核队列或审核模型调用：分类为表情后进入 `recognized`，满足 `EMOJI_AUTO_ADOPT_MIN_CONFIDENCE` 时直接进入 `adopted`。
+
+- 状态：`candidate → recognized → adopted`；普通照片进入 `rejected`，管理员可 `ban`，文件丢失时标记 `missing`。
+- 自动收集：`metadata_only` 只看 OneBot 明确表情字段；`likely` 还接受表情相关元数据；`all_images` 接受作用域内全部图片作为候选。
+- 去重与文件：SHA-256 完全去重；可选 dHash 只标识近似候选，不会误删。原图保存到 `data/emoji/original/`，第一帧 WebP 预览保存到 `data/emoji/preview/`；GIF/WebP 原动画保持不变。
+- 回复：Planner 只输出语义目标、情绪、模式和位置，不能指定文件或表情 ID；核心先粗排，再可选用候选拼图做视觉精排。发送可以位于文字前、文字后或仅发表情，并服从新消息取消与发送成功后计数。
+- 隔离：OCR、描述、插件和网页都不能执行命令、改变关系或写人物记忆；数据库和日志不保存图片 Base64。
+
+常用命令（仅真实 `SUPERUSERS`）：
+
+```text
+/ai emoji list [candidate|recognized|adopted|rejected|banned|missing]
+/ai emoji show|adopt|unadopt|reject|ban|unban|reanalyze <ID>
+/ai emoji pin <ID> on|off
+/ai emoji group enable|disable
+/ai emoji import              # 与当前图片一起发，或回复一张图片
+/ai emoji stats|cleanup|doctor
+```
+
+自动化注册 `emoji.send` 和 `emoji.send_by_id`。普通用户只能委托发送给本人私聊或任务创建时的当前群；固定 ID 必须在创建任务时明确提供。插件 API 新增 `EmojiFacade`、`emoji.*` 权限、通知事件和 `emoji.selection_signals.v1`；插件只能调整核心候选分数，不能构造候选外 ID。完整设计见 [表情系统文档](docs/emoji-system/architecture.md)。本版本明确不包含语音、ASR、TTS、实时语音或 WebRTC。
 
 ## 首次配置
 
@@ -852,9 +876,9 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 1. 停止 Bot 写入但保持 NapCat 和 QQ 登录态运行：`docker compose stop bot`。
 2. 完整备份 `data/`、`napcat-data/` 和 `napcat-config/`。
 3. 将 `.env.example` 新增的 `PLANNER_*`、`REPLY_*` 和 `PLUGIN_*` 同步到 `.env`。建议首次升级保留 `PLUGIN_SYSTEM_ENABLED=false`；若要先验证旧聊天路径，可临时设 `PLANNER_ENABLED=false`。
-4. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 不会被替换，Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0013`。
+4. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 不会被替换，Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0014`。
 5. 检查 `docker compose ps`、`/healthz` 和日志；确认 Planner 状态及插件运行数没有触发外部探测。
 6. 依次人工验证：私聊明确请求、群聊 @、低必要性群消息静默、新消息中断剩余分句、管理员自然语言工具、自动化、视觉、联网、关系和旧命令。
 7. 需要插件时再复制已审阅目录，通过 CLI 发现、查看权限、批准并启用；不要直接启用未知第三方 Python 代码。
 
-`0013` 是非破坏性迁移，只新增 Planner 与插件运行时表；回退 `0013 → 0012` 会删除这些新增表，因此应先导出仍需保留的插件 KV/配置/独立会话。它不删除聊天正文、人物、记忆、联网来源、关系、视觉或自动化数据。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。
+`0014` 是非破坏性迁移，只新增持久化表情资产、作用域、后台任务和使用事件表；回退 `0014 → 0013` 会删除这些表情元数据，因此应先备份 `data/`。`0013` 新增 Planner 与插件运行时表。两次迁移都不会删除聊天正文、人物、记忆、联网来源、关系、既有视觉缓存或自动化数据。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。

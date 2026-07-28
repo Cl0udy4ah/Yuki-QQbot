@@ -128,7 +128,9 @@ class CapabilityRegistry:
                     "memory.update 需 memory_id+content，memory.delete 需 memory_id；"
                     "memory.prune 需 max_importance=1..5 和 older_than_days=1..3650；"
                     "preference.set 需 key+value，preference.delete 需 key；"
-                    "其余 action 只需 target。"
+                    "表情 action 使用 emoji_id（可为唯一前缀）；emoji.list 可选 status；"
+                    "emoji.adopt/unadopt 可选 scope_type=global|group 和 scope_id=current_group；"
+                    "emoji.pin 还需 enabled。其余人物/群 action 只需 target。"
                     "缺少必需信息时先用自然语言简短追问，下一条结合正常聊天上下文继续。"
                 ),
                 parameters=_object_schema(
@@ -175,8 +177,15 @@ class CapabilityRegistry:
                                 },
                                 "content": {"type": "string"},
                                 "key": {"type": "string"},
+                                "emoji_id": {"type": "string"},
+                                "status": {"type": "string"},
+                                "scope_type": {
+                                    "type": "string",
+                                    "enum": ["global", "group"],
+                                },
+                                "scope_id": {"type": "string"},
+                                "enabled": {"type": "boolean"},
                             },
-                            required=("target",),
                         ),
                     },
                     required=("action", "arguments"),

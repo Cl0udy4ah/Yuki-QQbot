@@ -28,11 +28,19 @@ _SENSITIVE_KEYS = frozenset(
         "key",
         "scope_id",
         "automation_id",
+        "emoji_id",
         "target",
     }
 )
 _LLM_CAPABILITIES = frozenset({"yuki.generate", "yuki.agent"})
-_MESSAGE_CAPABILITIES = frozenset({"onebot.send_private_message", "onebot.send_group_message"})
+_MESSAGE_CAPABILITIES = frozenset(
+    {
+        "onebot.send_private_message",
+        "onebot.send_group_message",
+        "emoji.send",
+        "emoji.send_by_id",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +216,15 @@ class AutomationValidator:
             cls._validate_user_target(arguments.get("user_id"), provenance)
         elif call == "onebot.send_group_message":
             cls._validate_group_target(arguments.get("group_id"), provenance)
+        elif call in {"emoji.send", "emoji.send_by_id"}:
+            if arguments.get("user_id"):
+                cls._validate_user_target(arguments["user_id"], provenance)
+            if arguments.get("group_id"):
+                cls._validate_group_target(arguments["group_id"], provenance)
+            if call == "emoji.send_by_id":
+                emoji_id = arguments.get("emoji_id")
+                if not isinstance(emoji_id, str) or "${" in emoji_id:
+                    raise ValueError("emoji_id 必须在创建任务时明确提供")
         elif call == "memory.get_person":
             cls._validate_user_target(arguments.get("user_id"), provenance, read_only=True)
         elif call == "memory.get_group":
