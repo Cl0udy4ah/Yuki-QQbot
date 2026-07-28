@@ -159,9 +159,11 @@ class ToolGatewaySender:
     def __init__(self) -> None:
         self.messages: list[OutboundMessage] = []
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.message_sent = asyncio.Event()
 
     async def send(self, message: OutboundMessage) -> dict[str, int]:
         self.messages.append(message)
+        self.message_sent.set()
         return {"message_id": 90001 + len(self.messages)}
 
     async def call_api(self, action: str, params: dict[str, Any]) -> Any:
@@ -497,10 +499,7 @@ async def test_autonomous_group_chat_uses_threshold_and_cooldown_without_admin_t
         sender,
     )
     assert first.reason == "group_observed"
-    for _ in range(20):
-        if sender.messages:
-            break
-        await asyncio.sleep(0.05)
+    await asyncio.wait_for(sender.message_sent.wait(), timeout=5)
     assert [message.text for message in sender.messages] == ["我觉得可以。"]
     assert len(provider.requests) == 2
 
