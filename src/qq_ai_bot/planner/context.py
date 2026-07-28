@@ -32,9 +32,7 @@ class _ConversationMetrics:
 
 
 class SpeechPlannerContextProvider(Protocol):
-    async def planner_context(
-        self, *, runtime: SpeechRuntimeConfig
-    ) -> PlannerSpeechContext: ...
+    async def planner_context(self, *, runtime: SpeechRuntimeConfig) -> PlannerSpeechContext: ...
 
 
 class PlannerContextBuilder:

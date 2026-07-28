@@ -265,9 +265,7 @@ class SpeechService:
         try:
             if self._turns is not None and request.turn_token is not None:
                 async with self._turns.track(request.turn_token, "generation"):
-                    result = await self._provider.synthesize(
-                        normalized, cancellation=cancellation
-                    )
+                    result = await self._provider.synthesize(normalized, cancellation=cancellation)
                 if not self._turns.is_current(request.turn_token):
                     raise TurnSupersededError("speech completed after its turn was superseded")
             else:

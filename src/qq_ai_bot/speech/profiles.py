@@ -162,9 +162,7 @@ class VoiceProfileService:
             reference = VoiceManifestReference.model_validate_json(
                 json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             )
-            updated = manifest.model_copy(
-                update={"references": (*manifest.references, reference)}
-            )
+            updated = manifest.model_copy(update={"references": (*manifest.references, reference)})
             updated = VoiceProfileManifest.model_validate(updated.model_dump())
         except ValidationError as exc:
             raise ValueError("invalid reference metadata") from exc

@@ -508,9 +508,7 @@ class Settings(BaseSettings):
     def _speech_default_mode(cls, value: str) -> str:
         normalized = value.strip().casefold()
         if normalized not in {"text", "voice", "text_and_voice", "optional"}:
-            raise ValueError(
-                "SPEECH_DEFAULT_MODE must be text, voice, text_and_voice, or optional"
-            )
+            raise ValueError("SPEECH_DEFAULT_MODE must be text, voice, text_and_voice, or optional")
         return normalized
 
     @field_validator("default_timezone")

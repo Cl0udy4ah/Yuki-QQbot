@@ -587,15 +587,11 @@ class FakeSpeechFacade:
         self.queued.append((profile_id, style_hint, mode))
         return PluginResult(data={"queued": True})
 
-    async def send_private(
-        self, user_id: str, handle: GeneratedSpeechHandle
-    ) -> PluginResult:
+    async def send_private(self, user_id: str, handle: GeneratedSpeechHandle) -> PluginResult:
         self.sent.append(("private", user_id, handle.handle_id))
         return PluginResult(data={"sent": True})
 
-    async def send_group(
-        self, group_id: str, handle: GeneratedSpeechHandle
-    ) -> PluginResult:
+    async def send_group(self, group_id: str, handle: GeneratedSpeechHandle) -> PluginResult:
         self.sent.append(("group", group_id, handle.handle_id))
         return PluginResult(data={"sent": True})
 

@@ -168,14 +168,14 @@ async def test_reference_sidecar_import_rewrites_manifest_atomically(
     source = tmp_path / "happy.wav"
     source.write_bytes(b"happy-reference")
     source.with_suffix(".toml").write_text(
-        '''id = "happy"
+        """id = "happy"
 style = "happy"
 aliases = ["开心"]
 text = "今天真开心。"
 language = "zh"
 enabled = true
 priority = 3
-''',
+""",
         encoding="utf-8",
     )
 

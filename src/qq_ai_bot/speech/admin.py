@@ -121,8 +121,7 @@ class SpeechAdminService:
             self._require_superuser(actor)
             expired_count, file_count = await self._speech.cleanup(runtime=runtime.speech)
             return SpeechAdminResult(
-                f"语音缓存清理完成：过期记录 {expired_count} 条，"
-                f"删除文件 {file_count} 个。"
+                f"语音缓存清理完成：过期记录 {expired_count} 条，删除文件 {file_count} 个。"
             )
         if operation == "test":
             return await self._test(actor, message, remainder, runtime)

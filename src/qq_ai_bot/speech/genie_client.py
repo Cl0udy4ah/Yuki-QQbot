@@ -155,9 +155,7 @@ class GenieWorkerClient:
             return await call
         cancelled = asyncio.create_task(cancellation.wait())
         try:
-            done, _ = await asyncio.wait(
-                {call, cancelled}, return_when=asyncio.FIRST_COMPLETED
-            )
+            done, _ = await asyncio.wait({call, cancelled}, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError:
             cancelled.cancel()
             try:

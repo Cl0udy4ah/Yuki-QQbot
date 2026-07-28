@@ -912,13 +912,17 @@ class ChatService:
         platform_message_id = message_id or f"out-{uuid.uuid4()}"
         media_segments = tuple(self._ledger_media_segment(media) for media in message.media)
         spoken_text = next((media.spoken_text for media in message.media if media.spoken_text), "")
-        content = message.text or spoken_text or " ".join(
-            (
-                f"[语音：{media.summary or 'Yuki发送了一条语音'}]"
-                if media.kind is AttachmentKind.AUDIO
-                else f"[表情：{media.summary or '图片表情'}]"
+        content = (
+            message.text
+            or spoken_text
+            or " ".join(
+                (
+                    f"[语音：{media.summary or 'Yuki发送了一条语音'}]"
+                    if media.kind is AttachmentKind.AUDIO
+                    else f"[表情：{media.summary or '图片表情'}]"
+                )
+                for media in message.media
             )
-            for media in message.media
         )
         await self._ledger.append(
             bot_user_id=inbound.bot_user_id or "unknown-bot",

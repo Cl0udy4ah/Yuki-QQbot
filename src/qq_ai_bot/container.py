@@ -952,9 +952,7 @@ class ApplicationContainer:
         )
         if self.settings.speech_enabled:
             try:
-                async with asyncio.timeout(
-                    self.settings.speech_worker_start_timeout_seconds
-                ):
+                async with asyncio.timeout(self.settings.speech_worker_start_timeout_seconds):
                     speech_health = await self.speech.health()
                     if speech_health.connected:
                         await publish_notification(

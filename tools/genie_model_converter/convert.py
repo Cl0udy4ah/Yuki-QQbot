@@ -13,7 +13,7 @@ def _quote(value: str) -> str:
 
 
 def _profile_toml(args: argparse.Namespace, audio_name: str) -> str:
-    return f'''id = {_quote(args.profile_id)}
+    return f"""id = {_quote(args.profile_id)}
 display_name = {_quote(args.display_name)}
 provider = "genie"
 engine_model_version = {_quote(args.model_version)}
@@ -36,7 +36,7 @@ text = {_quote(args.reference_text)}
 language = {_quote(args.language)}
 enabled = true
 priority = 0
-'''
+"""
 
 
 def main() -> None:

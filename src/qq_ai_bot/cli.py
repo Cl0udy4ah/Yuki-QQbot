@@ -301,9 +301,7 @@ async def _speech_command(settings: Settings, args: argparse.Namespace) -> int:
         await database.close()
 
 
-async def _runtime_snapshot(
-    settings: Settings, database: Database
-) -> RuntimeConfigSnapshot:
+async def _runtime_snapshot(settings: Settings, database: Database) -> RuntimeConfigSnapshot:
     from qq_ai_bot.admin.config_service import RuntimeConfigService
 
     runtime = RuntimeConfigService(settings=settings, database=database)
