@@ -19,6 +19,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--speech-root", type=Path, required=True)
     parser.add_argument("--socket-mode", default="0660")
+    parser.add_argument("--idle-recycle-seconds", type=float, default=0)
     return parser
 
 
@@ -37,6 +38,7 @@ async def run(args: argparse.Namespace) -> None:
         socket_path=args.socket,
         engine=engine,
         socket_mode=int(args.socket_mode, 8),
+        idle_recycle_seconds=max(0.0, args.idle_recycle_seconds),
     )
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):

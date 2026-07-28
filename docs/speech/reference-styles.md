@@ -7,3 +7,7 @@ gentle、happy、shy 等参考；Planner 和插件只能给 `style_hint`，不�
 匹配顺序是规范化后的 style/alias，未匹配时回到 `default_style`，相同候选按优先级稳定选择，
 不额外调用 LLM。新增参考可提供含 `reference.toml` 的目录，或音频文件与同名 `.toml`
 sidecar：`qq-ai-bot-cli speech reference add <profile> <目录或音频>`。
+
+reference 的 `language` 描述的是这段参考音频本身，不是生成文本的目标语言。Worker 会始终用它
+解析参考音频，同时用本轮 `target_language` 处理正文；因此无需为了中文和日文复制两套相同
+音色档案。目标语言参与缓存键，同一句跨语言生成不会错误命中旧缓存。

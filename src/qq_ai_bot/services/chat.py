@@ -623,6 +623,11 @@ class ChatService:
                         if queued_voice is not None
                         else planned_turn.plan.voice.style_hint
                     ),
+                    language_hint=(
+                        queued_voice.language_hint
+                        if queued_voice is not None
+                        else planned_turn.plan.voice.language.value
+                    ),
                     profile_id=queued_voice.profile_id if queued_voice is not None else "",
                 )
             if planned_turn is not None and turn_token is not None:

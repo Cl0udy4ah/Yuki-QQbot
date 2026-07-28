@@ -32,6 +32,8 @@ class FakeGenie:
         self.loaded: str | None = None
         self.reference_path = ""
         self.reference_text = ""
+        self.reference_language = ""
+        self.loaded_languages: list[str] = []
         self.delay = delay
         self.active = 0
         self.max_active = 0
@@ -43,15 +45,19 @@ class FakeGenie:
         assert Path(onnx_model_dir).is_dir()
         assert language
         self.loaded = character_name
+        self.loaded_languages.append(language)
 
     def unload_character(self, character_name: str) -> None:
         assert character_name == self.loaded
         self.loaded = None
 
-    def set_reference_audio(self, *, character_name: str, audio_path: str, audio_text: str) -> None:
+    def set_reference_audio(
+        self, *, character_name: str, audio_path: str, audio_text: str, language: str
+    ) -> None:
         assert character_name == self.loaded
         self.reference_path = audio_path
         self.reference_text = audio_text
+        self.reference_language = language
 
     def tts(
         self,
@@ -192,6 +198,29 @@ def test_engine_loads_reference_and_writes_valid_atomic_wave(
     assert (root / result.relative_path).is_file()
     assert not tuple((root / "cache").glob("*.part.wav"))
     assert fake.reference_path.endswith("neutral.wav")
+    assert fake.reference_language == "zh"
+
+
+def test_engine_reloads_same_profile_when_target_language_changes(
+    speech_layout: tuple[Path, Path],
+) -> None:
+    root, data = speech_layout
+    configure_offline_environment(data)
+    fake = FakeGenie()
+    engine = GenieEngine(paths=SpeechPathPolicy(root), genie_data_dir=data, module=fake)
+    engine.initialize()
+    engine.synthesize(_synthesis("zh-request"))
+    japanese = _synthesis("jp-request").model_copy(
+        update={
+            "language": "jp",
+            "reference": _synthesis().reference.model_copy(update={"language": "jp"}),
+            "text": "おやすみ",
+        }
+    )
+    engine.synthesize(japanese)
+
+    assert fake.loaded_languages == ["zh", "jp"]
+    assert fake.reference_language == "jp"
 
 
 async def _roundtrip(socket_path: Path, request: HealthRequest | SynthesizeRequest):
@@ -252,3 +281,29 @@ async def test_worker_rejects_invalid_frame(
     finally:
         await server.request_shutdown()
         await server.serve_until_shutdown()
+
+
+@pytest.mark.asyncio
+async def test_worker_recycles_after_synthesis_idle_timeout(
+    speech_layout: tuple[Path, Path], tmp_path: Path
+) -> None:
+    root, data = speech_layout
+    configure_offline_environment(data)
+    fake = FakeGenie()
+    engine = GenieEngine(paths=SpeechPathPolicy(root), genie_data_dir=data, module=fake)
+    socket_path = tmp_path / "recycle.sock"
+    server = GenieWorkerServer(
+        socket_path=socket_path,
+        engine=engine,
+        socket_mode=0o600,
+        idle_recycle_seconds=0.01,
+    )
+    await server.start()
+
+    response = await _roundtrip(socket_path, _synthesis("idle-recycle"))
+    assert response.ok
+    await asyncio.wait_for(server.serve_until_shutdown(), timeout=1)
+
+    assert fake.stopped
+    assert fake.loaded is None
+    assert not socket_path.exists()

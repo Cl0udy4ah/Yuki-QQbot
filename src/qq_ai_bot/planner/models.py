@@ -93,6 +93,7 @@ class PlannerSpeechContext(_StrictPlannerModel):
     available: bool = False
     default_profile: str = ""
     available_styles: tuple[str, ...] = ()
+    available_languages: tuple[str, ...] = ()
 
 
 class ReplyNecessitySnapshot(_StrictPlannerModel):

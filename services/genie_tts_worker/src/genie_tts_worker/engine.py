@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ctypes
+import gc
 import importlib
 import os
 import wave
@@ -42,7 +44,7 @@ class GenieModule(Protocol):
     def unload_character(self, character_name: str) -> object: ...
 
     def set_reference_audio(
-        self, *, character_name: str, audio_path: str, audio_text: str
+        self, *, character_name: str, audio_path: str, audio_text: str, language: str
     ) -> object: ...
 
     def tts(
@@ -72,6 +74,7 @@ class GenieEngine:
         self._genie_data_dir = genie_data_dir.resolve()
         self._module = module
         self._loaded_profile_id: str | None = None
+        self._loaded_language: str | None = None
 
     @property
     def loaded_profile_id(self) -> str | None:
@@ -108,10 +111,15 @@ class GenieEngine:
             raise EngineFailure(WorkerErrorCode.PROFILE_INVALID, str(exc)) from exc
         module = self._require_module()
         try:
-            if self._loaded_profile_id == profile_id and not reload:
+            if (
+                self._loaded_profile_id == profile_id
+                and self._loaded_language == language
+                and not reload
+            ):
                 return
             if self._loaded_profile_id is not None:
                 module.unload_character(self._loaded_profile_id)
+                _return_unused_heap_memory()
             module.load_character(
                 character_name=profile_id,
                 onnx_model_dir=str(model_path),
@@ -119,8 +127,12 @@ class GenieEngine:
             )
         except (OSError, RuntimeError, ValueError) as exc:
             self._loaded_profile_id = None
+            self._loaded_language = None
+            _return_unused_heap_memory()
             raise EngineFailure(WorkerErrorCode.MODEL_LOAD_FAILED, type(exc).__name__) from exc
+        _return_unused_heap_memory()
         self._loaded_profile_id = profile_id
+        self._loaded_language = language
 
     def unload_profile(self, profile_id: str) -> None:
         if self._loaded_profile_id != profile_id:
@@ -130,7 +142,9 @@ class GenieEngine:
             module.unload_character(profile_id)
         except (OSError, RuntimeError, ValueError) as exc:
             raise EngineFailure(WorkerErrorCode.MODEL_LOAD_FAILED, type(exc).__name__) from exc
+        _return_unused_heap_memory()
         self._loaded_profile_id = None
+        self._loaded_language = None
 
     def synthesize(self, request: SynthesizeRequest) -> WaveMetadata:
         self.load_profile(
@@ -153,6 +167,7 @@ class GenieEngine:
                 character_name=request.profile_id,
                 audio_path=str(reference_path),
                 audio_text=request.reference.transcript,
+                language=request.reference.language,
             )
             module.tts(
                 character_name=request.profile_id,
@@ -170,6 +185,8 @@ class GenieEngine:
         except (OSError, RuntimeError, ValueError, wave.Error) as exc:
             temporary.unlink(missing_ok=True)
             raise EngineFailure(WorkerErrorCode.SYNTHESIS_FAILED, type(exc).__name__) from exc
+        finally:
+            _return_unused_heap_memory()
 
     def stop(self) -> None:
         module = self._require_module()
@@ -184,6 +201,7 @@ class GenieEngine:
             module.clear_reference_audio_cache()
         except (OSError, RuntimeError, ValueError) as exc:
             raise EngineFailure(WorkerErrorCode.INTERNAL_ERROR, type(exc).__name__) from exc
+        _return_unused_heap_memory()
 
     def discard_output(self, relative_path: str) -> None:
         self._paths.resolve(relative_path).unlink(missing_ok=True)
@@ -198,6 +216,8 @@ class GenieEngine:
             raise EngineFailure(WorkerErrorCode.INTERNAL_ERROR, type(exc).__name__) from exc
         finally:
             self._loaded_profile_id = None
+            self._loaded_language = None
+            _return_unused_heap_memory()
 
     def _validate_wave(self, path: Path, relative_path: str) -> WaveMetadata:
         if not path.is_file() or path.stat().st_size == 0:
@@ -222,3 +242,18 @@ class GenieEngine:
         if self._module is None:
             raise EngineFailure(WorkerErrorCode.INTERNAL_ERROR, "Genie engine is not initialized")
         return self._module
+
+
+def _return_unused_heap_memory() -> None:
+    """Best-effort release of large temporary ONNX buffers back to the Linux host."""
+
+    gc.collect()
+    if os.name != "posix":
+        return
+    try:
+        malloc_trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if malloc_trim is not None:
+            malloc_trim(0)
+    except (AttributeError, OSError):
+        # Non-glibc platforms can safely rely on their allocator's own policy.
+        return

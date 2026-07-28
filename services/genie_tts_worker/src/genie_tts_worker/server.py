@@ -36,6 +36,7 @@ class GenieWorkerServer:
         socket_path: Path,
         engine: GenieEngine,
         socket_mode: int,
+        idle_recycle_seconds: float = 0,
     ) -> None:
         self._socket_path = socket_path
         self._engine = engine
@@ -46,6 +47,8 @@ class GenieWorkerServer:
         self._shutdown_task: asyncio.Task[None] | None = None
         self._current_request_id: str | None = None
         self._cancelled_request_ids: set[str] = set()
+        self._idle_recycle_seconds = max(0.0, idle_recycle_seconds)
+        self._idle_recycle_task: asyncio.Task[None] | None = None
 
     @property
     def queue_depth(self) -> int:
@@ -72,8 +75,12 @@ class GenieWorkerServer:
         self._server.close()
         await self._server.wait_closed()
         self._socket_path.unlink(missing_ok=True)
+        self._cancel_idle_recycle()
 
     async def request_shutdown(self) -> None:
+        if self._shutdown.is_set():
+            return
+        self._cancel_idle_recycle()
         if self._current_request_id is not None:
             await self._stop_engine(self._current_request_id)
         await asyncio.to_thread(self._engine.shutdown)
@@ -126,6 +133,7 @@ class GenieWorkerServer:
                     loaded_profile_id=self._engine.loaded_profile_id,
                 )
             if isinstance(request, LoadProfileRequest):
+                self._cancel_idle_recycle()
                 await asyncio.to_thread(
                     self._engine.load_profile,
                     profile_id=request.profile_id,
@@ -133,8 +141,10 @@ class GenieWorkerServer:
                     engine_model_version=request.engine_model_version,
                     language=request.language,
                 )
+                self._schedule_idle_recycle()
                 return self._success(request, loaded_profile_id=request.profile_id)
             if isinstance(request, ReloadProfileRequest):
+                self._cancel_idle_recycle()
                 await asyncio.to_thread(
                     self._engine.load_profile,
                     profile_id=request.profile_id,
@@ -143,11 +153,15 @@ class GenieWorkerServer:
                     language=request.language,
                     reload=True,
                 )
+                self._schedule_idle_recycle()
                 return self._success(request, loaded_profile_id=request.profile_id)
             if isinstance(request, UnloadProfileRequest):
+                self._cancel_idle_recycle()
                 await asyncio.to_thread(self._engine.unload_profile, request.profile_id)
+                self._schedule_idle_recycle()
                 return self._success(request)
             if isinstance(request, SynthesizeRequest):
+                self._cancel_idle_recycle()
                 return await self._synthesize(request)
             if isinstance(request, CancelRequest):
                 cancelled = await self._stop_engine(request.target_request_id)
@@ -196,6 +210,7 @@ class GenieWorkerServer:
             finally:
                 self._cancelled_request_ids.discard(request.request_id)
                 self._current_request_id = None
+                self._schedule_idle_recycle()
 
     async def _stop_engine(self, request_id: str) -> bool:
         if request_id != self._current_request_id:
@@ -206,6 +221,28 @@ class GenieWorkerServer:
         except EngineFailure:
             return True
         return True
+
+    def _schedule_idle_recycle(self) -> None:
+        if self._idle_recycle_seconds <= 0 or self._shutdown.is_set():
+            return
+        self._cancel_idle_recycle()
+        self._idle_recycle_task = asyncio.create_task(self._recycle_after_idle())
+
+    def _cancel_idle_recycle(self) -> None:
+        task = self._idle_recycle_task
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+        if task is not asyncio.current_task():
+            self._idle_recycle_task = None
+
+    async def _recycle_after_idle(self) -> None:
+        try:
+            await asyncio.sleep(self._idle_recycle_seconds)
+            if self._synthesis_lock.locked() or self._shutdown.is_set():
+                return
+            await self.request_shutdown()
+        except asyncio.CancelledError:
+            return
 
     @staticmethod
     def _success(request: WorkerRequest, **updates: object) -> SuccessResponse:

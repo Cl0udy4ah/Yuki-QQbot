@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
 
+from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
     ChatRequest,
@@ -19,6 +20,7 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
+from qq_ai_bot.emoji.models import PendingReplyEffect
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
@@ -31,6 +33,8 @@ from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.memory_worker import MemoryWorker
+from qq_ai_bot.speech.models import VoiceMode
+from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 
 
 def inbound(
@@ -274,6 +278,49 @@ async def test_recent_history_always_calls_napcat_and_imports_unseen_events(
         limit=10,
     )
     assert [row.content for row in rows] == ["NapCat 历史消息"]
+
+
+@pytest.mark.asyncio
+async def test_agent_can_queue_a_path_free_voice_reply(database: Database) -> None:
+    settings = make_settings(
+        database.url,
+        speech_enabled=True,
+        speech_default_profile="roxy",
+    )
+    config = RuntimeConfigService(settings=settings, database=database)
+    await config.initialize()
+    tools = AgentToolService(
+        settings=settings,
+        ledger=EventLedgerRepository(database),
+        memories=MemoryRepository(database),
+        actions=AgentActionRepository(database),
+        runtime_config=config,
+    )
+    effects: list[PendingReplyEffect | PendingVoiceReplyEffect] = []
+    runtime = ToolRuntime(
+        inbound("用语音说晚安", message_id="voice-current"),
+        None,
+        False,
+        runtime_config=await config.snapshot(user_id="1001"),
+        reply_effects=effects,
+    )
+
+    assert "send_voice" in {tool.name for tool in tools.definitions(runtime)}
+    result = await tools.execute(
+        "send_voice",
+        '{"style_hint":"gentle","language":"jp","mode":"voice"}',
+        runtime,
+    )
+
+    assert '"queued": true' in result
+    assert effects == [
+        PendingVoiceReplyEffect(
+            style_hint="gentle",
+            language_hint="jp",
+            mode=VoiceMode.VOICE,
+            source="agent",
+        )
+    ]
 
 
 @pytest.mark.asyncio

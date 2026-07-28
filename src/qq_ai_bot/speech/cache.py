@@ -20,11 +20,14 @@ def speech_cache_key(
     reference: VoiceReference,
     normalized_text: str,
     split_sentence: bool,
+    target_language: str,
 ) -> str:
     payload = {
         "engine": GENIE_TTS_VERSION,
         "model_checksum": profile.model_checksum,
         "reference_checksum": reference.audio_checksum,
+        "reference_language": reference.language,
+        "target_language": target_language,
         "text": normalized_text,
         "split_sentence": split_sentence,
         "normalizer": NORMALIZER_VERSION,

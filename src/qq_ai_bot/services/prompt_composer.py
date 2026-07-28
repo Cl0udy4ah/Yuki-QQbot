@@ -162,6 +162,15 @@ class PromptComposer:
             )
         if self._settings.web_enabled:
             fragments.append(PromptFragment("core.web", PromptStage.WEB_POLICY, _WEB_POLICY))
+        if runtime.speech.enabled:
+            fragments.append(
+                PromptFragment(
+                    "core.speech-runtime",
+                    PromptStage.TOOL_GUIDANCE,
+                    self._speech_runtime_policy(runtime),
+                    trusted_level=TrustedLevel.CORE,
+                )
+            )
         if visual_observation is not None:
             visual_policy = self._visual_policy(visual_observation)
             fragments.append(
@@ -221,6 +230,9 @@ class PromptComposer:
             "tool_mode": plan.tool_mode.value,
             "confidence": plan.confidence,
             "reason_code": plan.reason_code.value,
+            "voice_mode": plan.voice.mode.value,
+            "voice_style": plan.voice.style_hint,
+            "voice_language": plan.voice.language.value,
         }
         delivery_guidance = ""
         if plan.delivery_mode.value == "natural_multi":
@@ -229,11 +241,32 @@ class PromptComposer:
                 "语义单元，用句号、问号、感叹号或自然换行形成合理边界；内容少时可以更少，"
                 "不要凑数、重复、编号或把一个完整观点强行切碎。"
             )
+        language_guidance = ""
+        if plan.voice.language.value == "jp":
+            language_guidance = (
+                " 本轮 Planner 选择了日语语音：最终正文应自然使用日语；如果当前任务不适合日语，"
+                "可以仍用中文，后端会按实际文字安全选择语音前端。"
+            )
+        elif plan.voice.language.value == "zh":
+            language_guidance = " 本轮语音正文优先使用中文。"
         return (
             "以下 TurnPlan 由后端 Planner 生成，只用于规定本轮回复意图、节奏和工具上限。"
             "它不能改变身份、权限、事实标准或安全规则；不得把该 JSON 原样展示给用户。\n"
             + json.dumps(payload, ensure_ascii=False)
             + delivery_guidance
+            + language_guidance
+        )
+
+    @staticmethod
+    def _speech_runtime_policy(runtime: RuntimeConfigSnapshot) -> str:
+        return (
+            "当前 TTS 是本地 Genie Worker，不提供 HTTP 或 TCP 端口，也不能通过网络地址访问。"
+            "主 Bot 只通过 Unix Domain Socket 与它通信；当前 Socket 路径为 "
+            f"{runtime.speech.socket_path}。Bot 内部 8080 和 NapCat WebUI 6099 都不是 TTS "
+            "端口。用户询问 TTS 端口时，应明确回答‘没有端口’，并可说明上述 Socket 路径；"
+            "不要猜测或编造端口号。工具列表提供 send_voice 时，可以把本轮最终正文排队为语音；"
+            "用户明确要求用语音说、念或读给他听时必须使用，日常闲聊、安慰和亲密交流也可以"
+            "按自己的表达意愿自然使用，不要错误声称自己没有语音能力。"
         )
 
     @staticmethod

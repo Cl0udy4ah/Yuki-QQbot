@@ -67,6 +67,7 @@ class VoiceProfileRepository:
         provider: str,
         engine_model_version: str,
         language: str,
+        supported_languages: tuple[str, ...],
         model_relative_path: str,
         model_checksum: str,
         default_style: str,
@@ -92,6 +93,9 @@ class VoiceProfileRepository:
             row.provider = provider
             row.engine_model_version = engine_model_version
             row.language = language
+            row.supported_languages_json = json.dumps(
+                supported_languages, ensure_ascii=False, separators=(",", ":")
+            )
             row.model_relative_path = model_relative_path
             row.model_checksum = model_checksum
             row.default_style = default_style
@@ -246,12 +250,18 @@ class VoiceProfileRepository:
     def _profile(
         row: SpeechVoiceProfileModel, references: tuple[VoiceReference, ...]
     ) -> VoiceProfile:
+        supported_languages = json.loads(row.supported_languages_json)
+        if not isinstance(supported_languages, list) or not all(
+            isinstance(item, str) for item in supported_languages
+        ):
+            raise ValueError("stored supported speech languages are invalid")
         return VoiceProfile(
             profile_id=row.profile_id,
             display_name=row.display_name,
             provider="genie",
             engine_model_version=SpeechEngineModelVersion(row.engine_model_version),
             language=row.language,
+            supported_languages=tuple(supported_languages) or (row.language,),
             model_relative_path=row.model_relative_path,
             model_checksum=row.model_checksum,
             default_style=row.default_style,
@@ -301,6 +311,7 @@ class SpeechGenerationRepository:
         profile_id: str,
         reference_id: int,
         engine_version: str,
+        target_language: str,
         text_hash: str,
         normalized_text_hash: str,
         character_count: int,
@@ -314,6 +325,7 @@ class SpeechGenerationRepository:
             profile_id=profile_id,
             reference_id=reference_id,
             engine_version=engine_version,
+            target_language=target_language,
             text_hash=text_hash,
             normalized_text_hash=normalized_text_hash,
             character_count=character_count,
@@ -481,6 +493,7 @@ class SpeechGenerationRepository:
             profile_id=row.profile_id,
             reference_id=row.reference_id,
             engine_version=row.engine_version,
+            target_language=row.target_language,
             text_hash=row.text_hash,
             normalized_text_hash=row.normalized_text_hash,
             character_count=row.character_count,

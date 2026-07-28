@@ -18,6 +18,7 @@ display_name = {_quote(args.display_name)}
 provider = "genie"
 engine_model_version = {_quote(args.model_version)}
 language = {_quote(args.language)}
+supported_languages = [{", ".join(_quote(item) for item in args.languages)}]
 default_style = "neutral"
 enabled = true
 source = "user_supplied"
@@ -33,7 +34,7 @@ style = "neutral"
 aliases = ["日常", "平静"]
 audio = {_quote(f"references/{audio_name}")}
 text = {_quote(args.reference_text)}
-language = {_quote(args.language)}
+language = {_quote(args.reference_language)}
 enabled = true
 priority = 0
 """
@@ -48,11 +49,27 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True, help="new voice-profile directory")
     parser.add_argument("--profile-id", required=True)
     parser.add_argument("--display-name", required=True)
-    parser.add_argument("--language", default="zh", choices=("zh", "jp", "en", "kr"))
+    parser.add_argument("--language", default="zh", choices=("zh", "jp", "en"))
+    parser.add_argument(
+        "--languages",
+        nargs="+",
+        choices=("zh", "jp", "en"),
+        default=("zh",),
+        help="target languages supported by the resulting profile",
+    )
+    parser.add_argument(
+        "--reference-language",
+        choices=("zh", "jp", "en"),
+        help="language actually spoken in the reference audio",
+    )
     parser.add_argument("--model-version", choices=("v2", "v2proplus"), required=True)
     parser.add_argument("--reference-audio", type=Path, required=True)
     parser.add_argument("--reference-text", required=True)
     args = parser.parse_args()
+    args.reference_language = args.reference_language or args.language
+    args.languages = tuple(dict.fromkeys(args.languages))
+    if args.language not in args.languages:
+        raise SystemExit("--language must also be present in --languages")
 
     for path, label in (
         (args.pth, "PTH model"),

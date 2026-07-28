@@ -37,6 +37,7 @@ class PendingVoiceReplyEffect:
 
     profile_id: str = ""
     style_hint: str = ""
+    language_hint: str = "auto"
     mode: VoiceMode = VoiceMode.OPTIONAL
     source: str = "plugin"
 
@@ -70,6 +71,7 @@ class VoiceReplyEffectService:
         token: TurnToken,
         mode: VoiceMode,
         style_hint: str,
+        language_hint: str = "auto",
         profile_id: str = "",
     ) -> PreparedVoiceReply | None:
         if mode is VoiceMode.TEXT:
@@ -93,6 +95,7 @@ class VoiceReplyEffectService:
                     conversation_key=token.conversation_key,
                     trigger_event_id=None,
                     turn_token=token,
+                    language_hint=language_hint,
                 ),
                 runtime=runtime.speech,
                 cancellation=cancellation,
@@ -127,7 +130,7 @@ class VoiceReplyEffectService:
                         mime_type="audio/wav",
                         summary=(
                             f"Yuki 发送了一条语音，声线：{generated.profile_id}，"
-                            f"风格：{generated.reference_key}"
+                            f"风格：{generated.reference_key}，语言：{generated.target_language}"
                         ),
                         local_path=str(path),
                         spoken_text=response_text if voice_only else "",

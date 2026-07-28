@@ -60,6 +60,8 @@ services:
       - /data/speech/genie_data
       - --speech-root
       - /data/speech
+      - --idle-recycle-seconds
+      - ${SPEECH_WORKER_IDLE_RECYCLE_SECONDS:-300}
     volumes:
       - ./data/speech/genie_data:/data/speech/genie_data:ro
       - ./data/speech/voices:/data/speech/voices:ro

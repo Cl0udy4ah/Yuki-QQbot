@@ -39,6 +39,7 @@ class FakeTTSProvider:
             generation_id=1,
             profile_id=request.profile_id or "default",
             reference_key="neutral",
+            target_language="zh",
             relative_path="cache/fake.wav",
             format="wav",
             sample_rate=32_000,

@@ -24,7 +24,7 @@ from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
     publish_notification,
 )
-from qq_ai_bot.speech.models import VoiceMode, VoiceReplyPlan
+from qq_ai_bot.speech.models import SpeechLanguageHint, VoiceMode, VoiceReplyPlan
 from yuki_plugin_sdk.events import EventName
 
 _MULTI_MESSAGE_REQUESTS = (
@@ -35,6 +35,42 @@ _MULTI_MESSAGE_REQUESTS = (
     "拆成几条",
     "分开发",
     "一句一条",
+)
+
+_VOICE_REQUESTS = (
+    "用语音说",
+    "语音说",
+    "发条语音",
+    "发一条语音",
+    "发个语音",
+    "发语音",
+    "念给我听",
+    "念一下",
+    "读给我听",
+    "用声音说",
+)
+_VOICE_OPT_OUTS = (
+    "不要语音",
+    "别发语音",
+    "不用语音",
+    "只要文字",
+    "文字回复",
+    "用文字说",
+)
+_TECHNICAL_VOICE_MARKERS = (
+    "代码",
+    "报错",
+    "日志",
+    "配置",
+    "命令",
+    "参数",
+    "数据库",
+    "接口",
+    "端口",
+    "docker",
+    "github",
+    "http",
+    "tts",
 )
 
 
@@ -205,11 +241,50 @@ class PlannerService:
         )
         if not speech_allowed:
             updates["voice"] = VoiceReplyPlan(mode=VoiceMode.TEXT)
-        elif (
-            plan.voice.style_hint
-            and plan.voice.style_hint not in planner_input.speech.available_styles
-        ):
-            updates["voice"] = plan.voice.model_copy(update={"style_hint": ""})
+        else:
+            voice_plan = plan.voice
+            normalized_text = planner_input.current_message.text.casefold()
+            explicit_text = any(token in normalized_text for token in _VOICE_OPT_OUTS)
+            explicit_voice = not explicit_text and any(
+                token in normalized_text for token in _VOICE_REQUESTS
+            )
+            if explicit_text:
+                voice_plan = VoiceReplyPlan(
+                    mode=VoiceMode.TEXT,
+                    reason="用户明确要求文字回复",
+                )
+            elif explicit_voice:
+                voice_plan = voice_plan.model_copy(
+                    update={
+                        "mode": VoiceMode.VOICE,
+                        "reason": "用户明确要求语音回复",
+                    }
+                )
+            elif (
+                voice_plan.mode is VoiceMode.TEXT
+                and runtime.speech.default_mode != VoiceMode.TEXT.value
+                and PlannerService._default_voice_suits_turn(plan, normalized_text)
+            ):
+                voice_plan = voice_plan.model_copy(
+                    update={
+                        "mode": VoiceMode(runtime.speech.default_mode),
+                        "reason": voice_plan.reason or "日常聊天采用默认语音模式",
+                    }
+                )
+            voice_updates: dict[str, object] = {}
+            if (
+                voice_plan.style_hint
+                and voice_plan.style_hint not in planner_input.speech.available_styles
+            ):
+                voice_updates["style_hint"] = ""
+            if (
+                voice_plan.language is not SpeechLanguageHint.AUTO
+                and voice_plan.language.value not in planner_input.speech.available_languages
+            ):
+                voice_updates["language"] = SpeechLanguageHint.AUTO
+            if voice_updates:
+                voice_plan = voice_plan.model_copy(update=voice_updates)
+            updates["voice"] = voice_plan
         explicit = (
             planner_input.scope_type is ScopeType.PRIVATE
             or planner_input.mentions_bot
@@ -243,6 +318,14 @@ class PlannerService:
             if not planner_input.necessity.should_enter_planner:
                 updates["decision"] = PlannerDecision.SILENT
         return plan.model_copy(update=updates)
+
+    @staticmethod
+    def _default_voice_suits_turn(plan: TurnPlan, normalized_text: str) -> bool:
+        if plan.delivery_mode in {DeliveryMode.STRUCTURED, DeliveryMode.DETAILED}:
+            return False
+        if len(normalized_text) > 200:
+            return False
+        return not any(marker in normalized_text for marker in _TECHNICAL_VOICE_MARKERS)
 
     async def _begin_run(
         self,

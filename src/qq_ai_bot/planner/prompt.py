@@ -31,10 +31,14 @@ emoji 必须是 {"mode":"none|optional|preferred|emoji_only","placement":
 情绪表达或一句话难以自然传达语气时可用 optional/preferred；emoji_only 只适合无需文字也能明确
 表达的简短社交反应。表情系统是否启用、候选检索和实际发送全部由后端决定。
 voice 必须是 {"mode":"text|voice|text_and_voice|optional","style_hint":"简短风格",
-"reason":"简短原因"}。用户明确要求语音时优先考虑 voice；日常闲聊、安慰和亲密交流可以
-自然选择语音，但不要每轮都使用。代码、公式、网址、配置结果和结构化技术内容通常使用 text。
+"language":"auto|zh|jp","reason":"简短原因"}。用户明确要求语音时必须选择 voice；
+语音可用时，日常闲聊、安慰和亲密交流优先考虑 optional 或 voice，可以较频繁地自然使用，
+不要因为“不是每轮都使用”而连续回避语音。代码、公式、网址、配置结果和
+结构化技术内容通常使用 text。
 voice 只发语音；text_and_voice 先发文字再发同内容语音；optional 在语音可用时尝试，失败只发文字。
 style_hint 只能从后端给出的 available_styles 中选择或留空，不得包含 profile_id、模型名、路径或 URL。
+language 只能从 available_languages 中选择或使用 auto。可以根据语境自然选择日语；选择 jp 时，
+最终回复 Agent 会被要求真正使用自然日语正文，不能把中文正文交给日语 G2P。
 语音计划不能改变工具权限和事实标准。speech.available=false 时必须使用 text。
 """
 

@@ -43,6 +43,7 @@ class SpeechVoiceProfileModel(Base):
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     engine_model_version: Mapped[str] = mapped_column(String(32), nullable=False)
     language: Mapped[str] = mapped_column(String(32), nullable=False)
+    supported_languages_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     model_relative_path: Mapped[str] = mapped_column(String(512), nullable=False)
     model_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     default_style: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -108,6 +109,7 @@ class SpeechGenerationModel(Base):
         ForeignKey("speech_voice_references.id", ondelete="SET NULL"), nullable=True
     )
     engine_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_language: Mapped[str] = mapped_column(String(16), nullable=False, default="zh")
     text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     normalized_text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     character_count: Mapped[int] = mapped_column(Integer, nullable=False)

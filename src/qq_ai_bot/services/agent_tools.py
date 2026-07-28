@@ -31,6 +31,7 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.planner.models import ToolMode
 from qq_ai_bot.services.turn_coordinator import TurnToken
+from qq_ai_bot.speech.models import VoiceMode
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import (
@@ -290,6 +291,31 @@ class AgentToolService:
                     ),
                 )
             )
+        if self._voice_available_for_turn(runtime):
+            tools.append(
+                ChatTool(
+                    name="send_voice",
+                    description=(
+                        "把本轮最终回复排队为本地 TTS 语音，不会立即发送。用户明确要求用语音"
+                        "说、念或读给他听时应调用；日常闲聊、安慰或亲密交流中也可以自主调用。"
+                        "不能指定 profile、模型、参考音频、文件或路径。mode=voice 只发语音，"
+                        "text_and_voice 同时发送文字和语音，optional 在不可用时自然回退文字。"
+                    ),
+                    parameters=_object_schema(
+                        {
+                            "style_hint": {"type": "string", "maxLength": 128},
+                            "language": {
+                                "type": "string",
+                                "enum": ["auto", "zh", "jp"],
+                            },
+                            "mode": {
+                                "type": "string",
+                                "enum": ["voice", "text_and_voice", "optional"],
+                            },
+                        }
+                    ),
+                )
+            )
         return tuple(tools)
 
     async def execute(
@@ -331,6 +357,8 @@ class AgentToolService:
                     return await self._call_onebot(arguments, runtime)
                 if name == "send_emoji":
                     return self._queue_emoji(arguments, runtime)
+                if name == "send_voice":
+                    return self._queue_voice(arguments, runtime)
                 return self._result(error="unknown_tool", detail=f"未知工具：{name}")
             except WebSearchError as exc:
                 return self._web_result(error=exc.code, detail=exc.detail)
@@ -372,6 +400,54 @@ class AgentToolService:
             return self._result(error="invalid_arguments", detail="mode 或 placement 无效")
         queue.append(effect)
         return self._result(data={"queued": True, "effect": "emoji"})
+
+    @staticmethod
+    def _voice_available_for_turn(runtime: ToolRuntime) -> bool:
+        config = runtime.runtime_config
+        if config is None or runtime.reply_effects is None or not config.speech.enabled:
+            return False
+        return (
+            config.speech.private_enabled
+            if runtime.inbound.scope_type is ScopeType.PRIVATE
+            else config.speech.group_enabled
+        )
+
+    def _queue_voice(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+        queue = runtime.reply_effects
+        if queue is None or not self._voice_available_for_turn(runtime):
+            return self._result(error="speech_unavailable", detail="当前回复没有启用语音效果")
+        if any(isinstance(item, PendingVoiceReplyEffect) for item in queue):
+            return self._result(error="speech_effect_limit", detail="本轮已经排队了一条语音")
+        extra = set(arguments) - {"style_hint", "language", "mode"}
+        if extra:
+            return self._result(error="invalid_arguments", detail="语音工具参数包含未知字段")
+        style_hint = arguments.get("style_hint", "")
+        language = arguments.get("language", "auto")
+        mode = arguments.get("mode", "voice")
+        if not isinstance(style_hint, str) or len(style_hint) > 128:
+            return self._result(error="invalid_arguments", detail="style_hint 最多 128 字符")
+        if any(token in style_hint for token in ("/", "\\", "://")):
+            return self._result(error="invalid_arguments", detail="style_hint 不能包含路径")
+        if language not in {"auto", "zh", "jp"}:
+            return self._result(error="invalid_arguments", detail="language 必须是 auto、zh 或 jp")
+        try:
+            voice_mode = VoiceMode(mode)
+        except ValueError:
+            return self._result(
+                error="invalid_arguments",
+                detail="mode 必须是 voice、text_and_voice 或 optional",
+            )
+        if voice_mode is VoiceMode.TEXT:
+            return self._result(error="invalid_arguments", detail="send_voice 不能使用 text 模式")
+        queue.append(
+            PendingVoiceReplyEffect(
+                style_hint=" ".join(style_hint.split()),
+                language_hint=language,
+                mode=voice_mode,
+                source="agent",
+            )
+        )
+        return self._result(data={"queued": True, "effect": "voice", "mode": mode})
 
     def _my_capabilities(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         """Return only the report derived from this authoritative inbound event."""

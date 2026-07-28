@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**1.8.0 会执行非破坏性 Alembic `0015`，新增本地声线和语音生成表，保留现有人物、聊天、记忆、关系、表情、视觉、联网、Planner、插件与自动化数据。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
+> **升级提示：**1.8.1 会执行非破坏性 Alembic `0016`，增加声线支持语言与每次生成的目标语言；1.8.0 的 `0015` 本地声线和语音生成表及其他现有数据均会保留。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -34,7 +34,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.8.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.8.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -98,6 +98,10 @@ Yuki-QQbot 1.8.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 ## 完全本地 QQ 语音
 
 1.8.0 的语音是独立可选服务：主 Bot 通过 Unix Domain Socket 调用无网络、无 HTTP 端口的 Genie Worker；Worker 只加载本地 GenieData、GPT-SoVITS V2/V2ProPlus ONNX 模型和参考音频，输出 32 kHz 单声道 16 位 WAV。主进程在 OneBot Adapter 边界把 WAV 编为 Base64 `record`，NapCat 不需要访问本地路径。
+
+同一声线可声明多种目标语言。Planner 可以按当前语境在中文和日文间自然选择，Agent 会生成对应语言的正文；后端还会根据最终文本中的中文汉字或日语假名再次校验，避免语言提示与实际文本不一致。参考音频的语言独立保存，因此日语参考音频也可以用于合成中文目标文本。
+
+用户明确要求“用语音说/念/读”时，后端会确定性启用语音；Agent 也拥有不接触模型路径的 `send_voice` 回复效果工具，可以在日常聊天中自主使用。CPU ONNX 模型可能占用数 GiB，Bot 启动时只同步声线元数据、首次合成时才按需加载模型；Worker 会主动归还空闲堆内存，并在 `SPEECH_WORKER_IDLE_RECYCLE_SECONDS`（默认 300 秒）后由 Compose 自动回收重启；设为 `0` 可关闭空闲回收。
 
 仓库不会下载或附带任何角色模型、Galgame/动漫声线或原始语音，生产 Worker 也不安装 PyTorch。部署者必须确认模型权重和参考音频授权。准备流程、Manifest、转换、Planner、插件、自动化与排障见 [语音文档](docs/speech/architecture.md)。
 

@@ -7,7 +7,8 @@ import pytest
 
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.speech.cache import speech_cache_key
-from qq_ai_bot.speech.models import VoiceProfileManifest
+from qq_ai_bot.speech.language import resolve_target_language
+from qq_ai_bot.speech.models import VoiceProfile, VoiceProfileManifest
 from qq_ai_bot.speech.paths import SpeechPathError, SpeechPathPolicy
 from qq_ai_bot.speech.profiles import VoiceProfileService
 from qq_ai_bot.speech.repository import VoiceProfileRepository
@@ -21,6 +22,7 @@ display_name = "Yuki"
 provider = "genie"
 engine_model_version = "v2proplus"
 language = "zh"
+supported_languages = ["zh", "jp"]
 default_style = "{default_style}"
 enabled = true
 source = "user_supplied"
@@ -72,6 +74,7 @@ def test_profile_manifest_parses_and_rejects_unknown_fields(tmp_path: Path) -> N
     manifest = service.validate_profile(source)
     assert isinstance(manifest, VoiceProfileManifest)
     assert tuple(item.style for item in manifest.references) == ("neutral", "shy")
+    assert manifest.supported_languages == ("zh", "jp")
 
     invalid = _make_profile(tmp_path / "other", content=_profile_toml(extra="unknown = true"))
     with pytest.raises(ValueError, match="invalid voice profile manifest"):
@@ -147,6 +150,39 @@ async def test_profile_model_and_reference_checksums_change_independently(
     assert profile.references[0].audio_checksum != profile.references[1].audio_checksum
 
 
+async def test_profile_metadata_sync_does_not_warm_synthesis_model(
+    database: Database, tmp_path: Path
+) -> None:
+    class Loader:
+        def __init__(self) -> None:
+            self.loaded: list[tuple[str, bool]] = []
+
+        async def load_profile(self, profile: VoiceProfile, *, reload: bool = False) -> None:
+            self.loaded.append((profile.profile_id, reload))
+
+        async def unload_profile(self, profile_id: str) -> None:
+            pass
+
+    speech_root = tmp_path / "speech"
+    repository = VoiceProfileRepository(database)
+    bootstrap = VoiceProfileService(
+        repository=repository,
+        paths=SpeechPathPolicy(speech_root),
+    )
+    await bootstrap.import_profile(_make_profile(tmp_path / "input"))
+    loader = Loader()
+    service = VoiceProfileService(
+        repository=repository,
+        paths=SpeechPathPolicy(speech_root),
+        loader=loader,
+    )
+
+    profile = await service.sync_profile_metadata("yuki")
+
+    assert profile.profile_id == "yuki"
+    assert loader.loaded == []
+
+
 def test_speech_path_policy_never_persists_absolute_paths(tmp_path: Path) -> None:
     policy = SpeechPathPolicy(tmp_path / "speech")
     policy.ensure_layout()
@@ -202,19 +238,43 @@ async def test_cache_key_uses_model_reference_and_normalized_text(
         reference=reference,
         normalized_text="晚安",
         split_sentence=True,
+        target_language="zh",
     )
     assert key != speech_cache_key(
         profile=profile,
         reference=reference.model_copy(update={"audio_checksum": "f" * 64}),
         normalized_text="晚安",
         split_sentence=True,
+        target_language="zh",
     )
     assert key != speech_cache_key(
         profile=profile,
         reference=reference,
         normalized_text="早安",
         split_sentence=True,
+        target_language="zh",
     )
+    assert key != speech_cache_key(
+        profile=profile,
+        reference=reference,
+        normalized_text="晚安",
+        split_sentence=True,
+        target_language="jp",
+    )
+
+
+async def test_target_language_uses_actual_script_before_planner_hint(
+    database: Database, tmp_path: Path
+) -> None:
+    service = VoiceProfileService(
+        repository=VoiceProfileRepository(database),
+        paths=SpeechPathPolicy(tmp_path / "speech"),
+    )
+    profile = await service.import_profile(_make_profile(tmp_path / "input"))
+
+    assert resolve_target_language(profile, "晚安，明天见。", "jp") == "zh"
+    assert resolve_target_language(profile, "おやすみ、また明日。", "zh") == "jp"
+    assert resolve_target_language(profile, "……", "jp") == "jp"
 
 
 def test_speech_text_normalizer_omits_code_and_full_urls() -> None:

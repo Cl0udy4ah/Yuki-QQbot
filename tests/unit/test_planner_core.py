@@ -46,8 +46,11 @@ from qq_ai_bot.planner import (
     extract_json_object,
     parse_turn_plan,
 )
+from qq_ai_bot.planner.models import PlannerSpeechContext
 from qq_ai_bot.planner.prompt import build_planner_messages
 from qq_ai_bot.planner.service import PlannerService
+from qq_ai_bot.services.prompt_composer import PromptComposer
+from qq_ai_bot.speech.models import SpeechLanguageHint, VoiceMode, VoiceReplyPlan
 
 
 def _runtime() -> RuntimeConfigSnapshot:
@@ -440,6 +443,100 @@ def test_planner_applies_hot_natural_multi_target_without_affecting_structure() 
     assert structured.desired_messages == 7
     assert explicit.delivery_mode is DeliveryMode.NATURAL_MULTI
     assert explicit.desired_messages == 4
+
+
+def test_planner_voice_language_is_bounded_by_the_active_profile() -> None:
+    runtime = replace(_runtime(), speech=replace(_runtime().speech, enabled=True))
+    planner_input = _planner_input().model_copy(
+        update={
+            "speech": PlannerSpeechContext(
+                enabled=True,
+                available=True,
+                default_profile="roxy",
+                available_styles=("neutral", "gentle"),
+                available_languages=("zh", "jp"),
+            )
+        }
+    )
+    japanese = PlannerService._constrain_business_rules(
+        TurnPlan(
+            **_valid_plan_payload(
+                voice=VoiceReplyPlan(
+                    mode=VoiceMode.OPTIONAL,
+                    style_hint="gentle",
+                    language=SpeechLanguageHint.JP,
+                )
+            )
+        ),
+        planner_input,
+        runtime,
+        administrator_request=False,
+    )
+    unavailable = PlannerService._constrain_business_rules(
+        TurnPlan(
+            **_valid_plan_payload(
+                voice=VoiceReplyPlan(
+                    mode=VoiceMode.OPTIONAL,
+                    style_hint="unknown",
+                    language=SpeechLanguageHint.JP,
+                )
+            )
+        ),
+        planner_input.model_copy(
+            update={
+                "speech": planner_input.speech.model_copy(update={"available_languages": ("zh",)})
+            }
+        ),
+        runtime,
+        administrator_request=False,
+    )
+
+    assert japanese.voice.language.value == "jp"
+    assert japanese.voice.style_hint == "gentle"
+    assert unavailable.voice.language.value == "auto"
+    assert unavailable.voice.style_hint == ""
+
+
+def test_explicit_voice_and_runtime_default_are_enforced_by_backend() -> None:
+    runtime = replace(
+        _runtime(),
+        speech=replace(_runtime().speech, enabled=True, default_mode="optional"),
+    )
+    speech = PlannerSpeechContext(
+        enabled=True,
+        available=True,
+        default_profile="roxy",
+        available_styles=("neutral", "gentle"),
+        available_languages=("zh", "jp"),
+    )
+
+    def constrained(text: str) -> TurnPlan:
+        planner_input = _planner_input(text=text).model_copy(update={"speech": speech})
+        return PlannerService._constrain_business_rules(
+            TurnPlan(
+                **_valid_plan_payload(
+                    voice=VoiceReplyPlan(mode=VoiceMode.TEXT, reason="模型选择文字")
+                )
+            ),
+            planner_input,
+            runtime,
+            administrator_request=False,
+        )
+
+    assert constrained("请用语音说晚安").voice.mode is VoiceMode.VOICE
+    assert constrained("今天有点累").voice.mode is VoiceMode.OPTIONAL
+    assert constrained("帮我解释 Docker 端口").voice.mode is VoiceMode.TEXT
+    assert constrained("不要语音，只要文字").voice.mode is VoiceMode.TEXT
+
+
+def test_agent_speech_runtime_policy_explains_that_tts_has_no_port() -> None:
+    runtime = replace(_runtime(), speech=replace(_runtime().speech, enabled=True))
+
+    policy = PromptComposer._speech_runtime_policy(runtime)
+
+    assert "不提供 HTTP 或 TCP 端口" in policy
+    assert "/run/yuki-speech/genie.sock" in policy
+    assert "8080" in policy and "6099" in policy
 
 
 @pytest.mark.parametrize(

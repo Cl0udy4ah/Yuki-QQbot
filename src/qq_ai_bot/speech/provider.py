@@ -19,6 +19,7 @@ class SpeechSynthesisRequest:
     conversation_key: str
     trigger_event_id: int | None
     turn_token: TurnToken | None
+    language_hint: str = "auto"
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +27,7 @@ class SynthesizedSpeech:
     generation_id: int
     profile_id: str
     reference_key: str
+    target_language: str
     relative_path: str
     format: str
     sample_rate: int

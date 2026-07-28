@@ -125,6 +125,7 @@ class GenieWorkerClient:
         request_id: str,
         profile: VoiceProfile,
         reference: VoiceReference,
+        target_language: str,
         text: str,
         split_sentence: bool,
         output_relative_path: str,
@@ -138,7 +139,7 @@ class GenieWorkerClient:
                     "profile_id": profile.profile_id,
                     "model_relative_path": profile.model_relative_path,
                     "engine_model_version": profile.engine_model_version.value,
-                    "language": profile.language,
+                    "language": target_language,
                     "reference": {
                         "reference_key": reference.reference_key,
                         "audio_relative_path": reference.audio_relative_path,

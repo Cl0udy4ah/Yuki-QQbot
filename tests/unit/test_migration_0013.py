@@ -88,7 +88,7 @@ def test_0013_non_destructively_upgrades_0012(
         person = connection.execute(
             "SELECT nickname FROM people WHERE user_id = '10001'"
         ).fetchone()
-    assert revision == ("0015",)
+    assert revision == ("0016",)
     assert person == ("保留用户",)
     assert _NEW_TABLES <= _tables(path)
     assert _EMOJI_TABLES <= _tables(path)

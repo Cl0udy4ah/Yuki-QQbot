@@ -25,6 +25,18 @@ class VoiceMode(StrEnum):
     OPTIONAL = "optional"
 
 
+class SpeechLanguage(StrEnum):
+    ZH = "zh"
+    JP = "jp"
+    EN = "en"
+
+
+class SpeechLanguageHint(StrEnum):
+    AUTO = "auto"
+    ZH = "zh"
+    JP = "jp"
+
+
 class SpeechGenerationStatus(StrEnum):
     QUEUED = "queued"
     GENERATING = "generating"
@@ -49,6 +61,12 @@ class VoiceManifestReference(_FrozenModel):
     enabled: bool = True
     priority: int = 0
 
+    @model_validator(mode="after")
+    def _validate_language(self) -> VoiceManifestReference:
+        if self.language not in {item.value for item in SpeechLanguage}:
+            raise ValueError("unsupported reference language")
+        return self
+
 
 class VoiceProfileManifest(_FrozenModel):
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]*$")
@@ -56,6 +74,7 @@ class VoiceProfileManifest(_FrozenModel):
     provider: Literal["genie"] = "genie"
     engine_model_version: SpeechEngineModelVersion
     language: str = Field(min_length=1)
+    supported_languages: tuple[str, ...] = ()
     default_style: str = Field(min_length=1)
     enabled: bool = True
     source: str = Field(min_length=1)
@@ -66,6 +85,17 @@ class VoiceProfileManifest(_FrozenModel):
 
     @model_validator(mode="after")
     def _validate_references(self) -> VoiceProfileManifest:
+        try:
+            default_language = SpeechLanguage(self.language).value
+            supported = tuple(
+                dict.fromkeys(SpeechLanguage(item).value for item in self.supported_languages)
+            )
+        except ValueError as exc:
+            raise ValueError("unsupported speech language") from exc
+        if not supported:
+            supported = (default_language,)
+        if default_language not in supported:
+            raise ValueError("default language must be supported")
         keys = [item.id for item in self.references]
         if len(keys) != len(set(keys)):
             raise ValueError("reference ids must be unique")
@@ -74,7 +104,7 @@ class VoiceProfileManifest(_FrozenModel):
         ]
         if len(defaults) != 1:
             raise ValueError("default_style must identify exactly one enabled reference")
-        return self
+        return self.model_copy(update={"supported_languages": supported})
 
 
 class VoiceReference(_FrozenModel):
@@ -99,6 +129,7 @@ class VoiceProfile(_FrozenModel):
     provider: Literal["genie"]
     engine_model_version: SpeechEngineModelVersion
     language: str
+    supported_languages: tuple[str, ...]
     model_relative_path: str
     model_checksum: str = Field(pattern=r"^[0-9a-f]{64}$")
     default_style: str
@@ -121,6 +152,7 @@ class SpeechGeneration(_FrozenModel):
     profile_id: str
     reference_id: int | None
     engine_version: str
+    target_language: str
     text_hash: str
     normalized_text_hash: str
     character_count: int = Field(gt=0)
@@ -139,6 +171,7 @@ class SpeechGeneration(_FrozenModel):
 class VoiceReplyPlan(_FrozenModel):
     mode: VoiceMode = VoiceMode.TEXT
     style_hint: str = Field(default="", max_length=128)
+    language: SpeechLanguageHint = SpeechLanguageHint.AUTO
     reason: str = Field(default="", max_length=300)
 
     @model_validator(mode="after")

@@ -54,6 +54,7 @@ class FakeSpeech:
             generation_id=12,
             profile_id=request.profile_id or "yuki",
             reference_key="neutral",
+            target_language="zh",
             relative_path="cache/plugin.wav",
             format="wav",
             sample_rate=32_000,

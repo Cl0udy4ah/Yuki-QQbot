@@ -19,6 +19,7 @@ from qq_ai_bot.speech.genie_client import (
     GenieWorkerFailure,
     GenieWorkerUnavailable,
 )
+from qq_ai_bot.speech.language import resolve_target_language
 from qq_ai_bot.speech.models import VoiceProfile
 from qq_ai_bot.speech.paths import SpeechPathPolicy
 from qq_ai_bot.speech.provider import (
@@ -76,12 +77,14 @@ class GenieTTSProvider(TTSProvider):
         cancellation: asyncio.Event | None = None,
     ) -> SynthesizedSpeech:
         profile = await self._profile(request.profile_id)
+        target_language = resolve_target_language(profile, request.text, request.language_hint)
         reference = self._styles.resolve(profile, request.style_hint)
         key = speech_cache_key(
             profile=profile,
             reference=reference,
             normalized_text=request.text,
             split_sentence=request.split_sentence,
+            target_language=target_language,
         )
         generation = await self._generations.create(
             request_id=request.request_id,
@@ -90,6 +93,7 @@ class GenieTTSProvider(TTSProvider):
             profile_id=profile.profile_id,
             reference_id=reference.id,
             engine_version=GENIE_TTS_VERSION,
+            target_language=target_language,
             text_hash=_hash(request.text),
             normalized_text_hash=_hash(request.text),
             character_count=len(request.text),
@@ -115,6 +119,7 @@ class GenieTTSProvider(TTSProvider):
                 complete.id,
                 profile.profile_id,
                 reference.reference_key,
+                target_language,
                 complete.output_relative_path,
                 complete.output_format,
                 cached.sample_rate,
@@ -129,6 +134,7 @@ class GenieTTSProvider(TTSProvider):
                 request_id=request.request_id,
                 profile=profile,
                 reference=reference,
+                target_language=target_language,
                 text=request.text,
                 split_sentence=request.split_sentence,
                 output_relative_path=output,
@@ -163,6 +169,7 @@ class GenieTTSProvider(TTSProvider):
             complete.id,
             profile.profile_id,
             reference.reference_key,
+            target_language,
             complete.output_relative_path,
             complete.output_format,
             response.sample_rate,
@@ -246,6 +253,7 @@ class SpeechService:
             conversation_key=request.conversation_key,
             trigger_event_id=request.trigger_event_id,
             turn_token=request.turn_token,
+            language_hint=request.language_hint,
         )
         await publish_notification(
             self._event_publisher,
@@ -342,6 +350,7 @@ class SpeechService:
                 if profile is not None
                 else ()
             ),
+            available_languages=profile.supported_languages if profile is not None else (),
         )
 
     async def cleanup(self, *, runtime: SpeechRuntimeConfig) -> tuple[int, int]:

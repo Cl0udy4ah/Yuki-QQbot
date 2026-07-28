@@ -101,6 +101,15 @@ class VoiceProfileService:
         await self._load(profile, reload=True)
         return profile
 
+    async def sync_profile_metadata(self, profile_id: str) -> VoiceProfile:
+        """Refresh persisted manifest metadata without warming the synthesis model."""
+
+        directory = self._paths.profile_root(profile_id, must_exist=True)
+        manifest = self.validate_profile(directory)
+        if manifest.id != profile_id:
+            raise ValueError("profile id does not match its directory")
+        return await self._persist_manifest(manifest, directory)
+
     async def activate_profile(self, profile_id: str) -> VoiceProfile:
         profile = await self._repository.activate(profile_id)
         await self._load(profile)
@@ -236,6 +245,7 @@ class VoiceProfileService:
             provider=manifest.provider,
             engine_model_version=manifest.engine_model_version.value,
             language=manifest.language,
+            supported_languages=manifest.supported_languages,
             model_relative_path=self._paths.relative(model),
             model_checksum=self._directory_checksum(model),
             default_style=manifest.default_style,
@@ -311,6 +321,9 @@ def _manifest_toml(manifest: VoiceProfileManifest) -> str:
         f"provider = {_toml_quote(manifest.provider)}",
         f"engine_model_version = {_toml_quote(manifest.engine_model_version.value)}",
         f"language = {_toml_quote(manifest.language)}",
+        "supported_languages = ["
+        + ", ".join(_toml_quote(item) for item in manifest.supported_languages)
+        + "]",
         f"default_style = {_toml_quote(manifest.default_style)}",
         f"enabled = {str(manifest.enabled).lower()}",
         f"source = {_toml_quote(manifest.source)}",

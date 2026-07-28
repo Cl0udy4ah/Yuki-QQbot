@@ -89,7 +89,8 @@ class SpeechAdminService:
                 f"声线：{profile.profile_id} / {profile.display_name}\n"
                 f"Provider：{profile.provider}\n"
                 f"引擎模型：{profile.engine_model_version.value}\n"
-                f"语言：{profile.language}\n"
+                f"默认语言：{profile.language}\n"
+                f"可用语言：{'、'.join(profile.supported_languages)}\n"
                 f"默认风格：{profile.default_style}\n"
                 f"状态：{'启用' if profile.enabled else '停用'}\n"
                 f"来源：{profile.source}\n"
@@ -247,6 +248,7 @@ class SpeechAdminService:
                 "generation_id": result.generation_id,
                 "profile_id": result.profile_id,
                 "reference_key": result.reference_key,
+                "target_language": result.target_language,
                 "duration_milliseconds": result.duration_milliseconds,
                 "queued_reply_effect": False,
             }
@@ -264,6 +266,7 @@ class SpeechAdminService:
             "provider": profile.provider,
             "engine_model_version": profile.engine_model_version.value,
             "language": profile.language,
+            "supported_languages": profile.supported_languages,
             "default_style": profile.default_style,
             "enabled": profile.enabled,
             "is_default": profile.is_default,

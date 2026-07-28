@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 1.8.1 - 2026-07-29
+
+### Roxy 中日双语、语音调用与内存优化
+
+- 声线 Manifest 新增 `supported_languages`，Planner 语音计划新增受后端约束的 `language`（`auto`、`zh`、`jp`）；Yuki 可以根据语境自行切换中文或日文，最终文本脚本会作为安全校验，防止错误语言前端。
+- 区分参考音频语言与目标合成语言：日语参考音频可为中文或日文目标文本提供音色，Worker 在同一声线切换语言时会正确重载角色前端。
+- 语音缓存键和生成记录新增目标语言，避免中日文缓存串用；新增非破坏性 Alembic `0016`，保留现有声线和生成历史。
+- 模型转换工具新增 `--languages` 与 `--reference-language`，支持一次生成多语言档案；部署文档补充双语 Manifest、转换、Planner 与参考音频规则。
+- Agent 的可信运行时说明明确标注本地 TTS 不提供 HTTP/TCP 端口，只通过配置的 Unix Socket 通信，避免把 Bot 8080 或 NapCat WebUI 6099 误报为 TTS 端口。
+- 修复 `speech.default_mode` 未进入 Planner 后端约束的问题；明确“用语音说/念/读”会确定性强制语音，明确拒绝语音和技术型长内容保持文字，日常短聊天会实际采用配置的默认语音模式。
+- Agent 新增路径隔离的 `send_voice` 回复效果工具，可在当前轮自主排队 `voice`、`text_and_voice` 或 `optional`，但不能指定模型、profile、参考音频或文件路径。
+- Worker 在模型切换、合成、参考缓存清理和卸载后主动执行 GC，并在 Linux/glibc 上调用 `malloc_trim`，把 ONNX 转换与推理产生的空闲堆页归还给 Docker/Windows，降低长时间运行和中日切换后的常驻内存与峰值。
+- Bot 启动时只校验并同步默认声线元数据，不再预热完整 ONNX 模型；首次真正合成时按需加载，避免仅保持 QQ 在线也占用数 GiB 内存。
+- 新增 `SPEECH_WORKER_IDLE_RECYCLE_SECONDS`（默认 300 秒）：语音空闲后 Worker 正常退出并由 Compose 自动拉起为空载进程，释放 Genie 持有的全局 ONNX Session；本机可缩短该值，在内存与首次生成延迟间取舍。
+
 ## 1.8.0 - 2026-07-29
 
 ### 完全本地 Genie-TTS QQ 语音

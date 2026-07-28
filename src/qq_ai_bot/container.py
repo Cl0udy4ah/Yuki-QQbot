@@ -961,7 +961,7 @@ class ApplicationContainer:
                             {"ready": speech_health.ready},
                         )
                     if speech_health.ready and self.settings.speech_default_profile:
-                        await self.voice_profile_service.reload_profile(
+                        await self.voice_profile_service.sync_profile_metadata(
                             self.settings.speech_default_profile
                         )
             except (

@@ -20,7 +20,7 @@ class PluginContractReport(StrictModel):
 async def run_plugin_contract_tests(
     plugin_path: Path,
     *,
-    yuki_version: str = "1.8.0",
+    yuki_version: str = "1.8.1",
 ) -> PluginContractReport:
     """Load, register, start, and stop one trusted local plugin without core services."""
 
