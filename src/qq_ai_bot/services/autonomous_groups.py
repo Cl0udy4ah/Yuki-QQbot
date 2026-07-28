@@ -201,6 +201,14 @@ class AutonomousGroupService:
             return max(0.0, min(1.0, float(value)))
         return 0.0
 
+    async def wait_until_idle(self, group_id: str) -> None:
+        """Wait for the currently scheduled group batch to finish."""
+
+        state = self._states.get(group_id)
+        if state is None or state.task is None:
+            return
+        await asyncio.shield(state.task)
+
     async def close(self) -> None:
         tasks = [
             state.task
