@@ -483,6 +483,7 @@ async def test_autonomous_group_chat_uses_threshold_and_cooldown_without_admin_t
         concurrency=harness.concurrency,
         memories=MemoryRepository(database),
         chat=harness.processor._chat,
+        clock=lambda: 100.0,
     )
     harness.processor._autonomous = service
     sender = ToolGatewaySender()

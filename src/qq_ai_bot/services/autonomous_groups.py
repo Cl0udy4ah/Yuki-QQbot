@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,7 +32,7 @@ class _GroupState:
     senders: deque[OutboundSender] = field(default_factory=lambda: deque(maxlen=20))
     human_version: int = 0
     last_response_human_version: int = -1
-    last_response_at: float = 0.0
+    last_response_at: float | None = None
     hourly_responses: deque[float] = field(default_factory=deque)
     task: asyncio.Task[None] | None = None
 
@@ -48,12 +49,14 @@ class AutonomousGroupService:
         memories: MemoryRepository,
         chat: ChatService,
         runtime_config: RuntimeConfigService | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._settings = settings
         self._provider = provider
         self._concurrency = concurrency
         self._memories = memories
         self._chat = chat
+        self._clock = clock
         self._runtime_config = runtime_config or RuntimeConfigService(
             settings=settings,
             database=memories._database,
@@ -92,12 +95,15 @@ class AutonomousGroupService:
             state = self._states.get(group_id)
             if state is None or not state.messages:
                 return
-            now = time.monotonic()
+            now = self._clock()
             while state.hourly_responses and now - state.hourly_responses[0] >= 3600:
                 state.hourly_responses.popleft()
             if state.human_version <= state.last_response_human_version:
                 return
-            if now - state.last_response_at < runtime.autonomous.cooldown_seconds:
+            if (
+                state.last_response_at is not None
+                and now - state.last_response_at < runtime.autonomous.cooldown_seconds
+            ):
                 return
             if len(state.hourly_responses) >= runtime.autonomous.max_per_hour:
                 return
@@ -128,7 +134,7 @@ class AutonomousGroupService:
                 ),
             )
             if sent:
-                finished = time.monotonic()
+                finished = self._clock()
                 state.last_response_at = finished
                 state.hourly_responses.append(finished)
                 state.last_response_human_version = state.human_version
