@@ -17,6 +17,7 @@ from qq_ai_bot.services.admin import (
     RelationshipAdminService,
 )
 from qq_ai_bot.services.admin.common import require_real_superuser
+from qq_ai_bot.speech.admin import SpeechAdminService
 
 _NUMERIC_ID = re.compile(r"[1-9][0-9]{4,19}")
 
@@ -200,6 +201,43 @@ class ActionRegistry:
                 "emoji.cleanup", "清理表情候选", "清理超过保留期且未采用的候选。", "emoji", True
             ),
             ActionSpec("emoji.doctor", "检查表情存储", "检查原图、预览和缺失状态。", "emoji", True),
+            ActionSpec(
+                "speech.status", "查看语音状态", "读取本地语音与 Worker 状态。", "speech", False
+            ),
+            ActionSpec("speech.profile.list", "列出声线", "列出已安装声线档案。", "speech", False),
+            ActionSpec(
+                "speech.profile.show", "查看声线", "读取指定声线安全元数据。", "speech", False
+            ),
+            ActionSpec(
+                "speech.profile.activate", "切换默认声线", "激活指定默认声线。", "speech", True
+            ),
+            ActionSpec("speech.profile.enable", "启用声线", "启用指定声线。", "speech", True),
+            ActionSpec("speech.profile.disable", "停用声线", "停用指定声线。", "speech", True),
+            ActionSpec(
+                "speech.profile.reload", "重载声线", "重新验证并加载指定声线。", "speech", True
+            ),
+            ActionSpec(
+                "speech.reference.list",
+                "列出语音风格",
+                "列出指定声线参考风格。",
+                "speech",
+                False,
+            ),
+            ActionSpec("speech.test", "测试语音", "使用已安装声线生成测试语音。", "speech", True),
+            ActionSpec(
+                "speech.cache.cleanup",
+                "清理语音缓存",
+                "按当前保留策略清理语音缓存。",
+                "speech",
+                True,
+            ),
+            ActionSpec(
+                "speech.worker.restart",
+                "重启语音 Worker",
+                "请求本地 Worker 重启。",
+                "speech",
+                True,
+            ),
         )
         self._specs = {spec.name: spec for spec in specs}
 
@@ -335,6 +373,7 @@ class AdminActionService:
         groups: GroupAdminService,
         private_access: PrivateAccessAdminService,
         emoji: EmojiAdminService | None = None,
+        speech: SpeechAdminService | None = None,
         registry: ActionRegistry | None = None,
     ) -> None:
         self._settings = settings
@@ -344,6 +383,7 @@ class AdminActionService:
         self._groups = groups
         self._private_access = private_access
         self._emoji = emoji
+        self._speech = speech
         self.registry = registry or ActionRegistry()
 
     async def execute(
@@ -360,6 +400,10 @@ class AdminActionService:
             if self._emoji is None:
                 raise RuntimeError("表情系统当前不可用")
             return await self._emoji.execute_action(action, arguments, actor)
+        if spec.target_kind == "speech":
+            if self._speech is None:
+                raise RuntimeError("本地语音系统当前不可用")
+            return await self._speech.execute_action(action, arguments, actor)
         target = (
             TargetResolver.user(arguments, actor)
             if spec.target_kind == "user"

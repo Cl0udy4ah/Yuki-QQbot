@@ -17,7 +17,8 @@ PLANNER_SYSTEM_PROMPT = """你是 Yuki 的会话 Planner，只负责生成本轮
 用户纠正、求助和追问都必须回复。不要生成最终回复正文，只描述回复意图。
 只输出一个严格 JSON 对象，不要输出 Markdown 或解释。字段必须且只能是：schema_version、
 decision、intent、target_user_ids、delivery_mode、desired_messages、reply_to_message_id、tool_mode、
-wait_seconds、confidence、reason_code、planner_note、emoji。schema_version 固定为 1；decision 为
+wait_seconds、confidence、reason_code、planner_note、emoji、voice。
+schema_version 固定为 1；decision 为
 reply/silent/wait；
 delivery_mode 为 single/natural_multi/structured/concise/detailed；desired_messages 为 1..20；
 wait_seconds 为 0..300；confidence 为 0..1；reason_code 必须使用后端给出的固定枚举值。
@@ -29,6 +30,12 @@ emoji 必须是 {"mode":"none|optional|preferred|emoji_only","placement":
 绝不能包含 emoji_id、文件路径、URL、Base64 或状态。普通工作或代码任务通常用 none；轻松反应、
 情绪表达或一句话难以自然传达语气时可用 optional/preferred；emoji_only 只适合无需文字也能明确
 表达的简短社交反应。表情系统是否启用、候选检索和实际发送全部由后端决定。
+voice 必须是 {"mode":"text|voice|text_and_voice|optional","style_hint":"简短风格",
+"reason":"简短原因"}。用户明确要求语音时优先考虑 voice；日常闲聊、安慰和亲密交流可以
+自然选择语音，但不要每轮都使用。代码、公式、网址、配置结果和结构化技术内容通常使用 text。
+voice 只发语音；text_and_voice 先发文字再发同内容语音；optional 在语音可用时尝试，失败只发文字。
+style_hint 只能从后端给出的 available_styles 中选择或留空，不得包含 profile_id、模型名、路径或 URL。
+语音计划不能改变工具权限和事实标准。speech.available=false 时必须使用 text。
 """
 
 

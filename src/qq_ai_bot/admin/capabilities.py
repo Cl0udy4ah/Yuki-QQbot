@@ -131,6 +131,8 @@ class CapabilityRegistry:
                     "表情 action 使用 emoji_id（可为唯一前缀）；emoji.list 可选 status；"
                     "emoji.adopt/unadopt 可选 scope_type=global|group 和 scope_id=current_group；"
                     "emoji.pin 还需 enabled。其余人物/群 action 只需 target。"
+                    "speech profile/reference action 使用 profile_id；speech.test 使用 text，"
+                    "可选 profile_id 与 style_hint。"
                     "缺少必需信息时先用自然语言简短追问，下一条结合正常聊天上下文继续。"
                 ),
                 parameters=_object_schema(
@@ -185,6 +187,9 @@ class CapabilityRegistry:
                                 },
                                 "scope_id": {"type": "string"},
                                 "enabled": {"type": "boolean"},
+                                "profile_id": {"type": "string"},
+                                "style_hint": {"type": "string"},
+                                "text": {"type": "string"},
                             },
                         ),
                     },

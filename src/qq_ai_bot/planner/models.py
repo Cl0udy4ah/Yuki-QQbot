@@ -12,6 +12,7 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.relationships import RelationshipStage
 from qq_ai_bot.emoji.models import EmojiReplyPlan
+from qq_ai_bot.speech.models import VoiceReplyPlan
 
 
 class _StrictPlannerModel(BaseModel):
@@ -85,6 +86,15 @@ class PlannerSignal(_StrictPlannerModel):
     expires_at: datetime | None = None
 
 
+class PlannerSpeechContext(_StrictPlannerModel):
+    """Trusted speech availability without filesystem or model internals."""
+
+    enabled: bool = False
+    available: bool = False
+    default_profile: str = ""
+    available_styles: tuple[str, ...] = ()
+
+
 class ReplyNecessitySnapshot(_StrictPlannerModel):
     """Deterministic gate result captured before a Planner request."""
 
@@ -126,6 +136,7 @@ class PlannerInput(_StrictPlannerModel):
     necessity: ReplyNecessitySnapshot
     available_tool_categories: tuple[str, ...] = ()
     plugin_signals: tuple[PlannerSignal, ...] = ()
+    speech: PlannerSpeechContext = PlannerSpeechContext()
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -174,6 +185,7 @@ class TurnPlan(_StrictPlannerModel):
     reason_code: PlannerReasonCode
     planner_note: str = ""
     emoji: EmojiReplyPlan = EmojiReplyPlan()
+    voice: VoiceReplyPlan = VoiceReplyPlan()
 
 
 class PlannedTurn(_StrictPlannerModel):

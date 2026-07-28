@@ -31,6 +31,7 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.planner.models import ToolMode
 from qq_ai_bot.services.turn_coordinator import TurnToken
+from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import (
     WebSearchRequest,
@@ -76,7 +77,7 @@ class ToolRuntime:
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
     tool_mode: ToolMode = ToolMode.INHERIT
     turn_token: TurnToken | None = None
-    reply_effects: list[PendingReplyEffect] | None = None
+    reply_effects: list[PendingReplyEffect | PendingVoiceReplyEffect] | None = None
 
 
 def _object_schema(

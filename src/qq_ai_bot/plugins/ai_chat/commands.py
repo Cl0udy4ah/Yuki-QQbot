@@ -20,4 +20,5 @@ COMMAND_DESCRIPTIONS: dict[CommandName, str] = {
     CommandName.CAPABILITIES: "按当前真实 QQ 查看完整权限、可改参数数量与接口范围",
     CommandName.CONFIG: "超级管理员读取、修改、清除或回滚运行时配置",
     CommandName.AUTOMATION: "查看、暂停、恢复、取消或立即运行自己的自动化任务",
+    CommandName.VOICE: "查看、测试和管理本地语音声线",
 }

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
+from pathlib import Path
 from typing import Any
 
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
@@ -43,10 +45,19 @@ class OneBotSender:
             if message.text:
                 payload += MessageSegment.text(message.text)
             for media in message.media:
-                if media.kind is not AttachmentKind.IMAGE:
+                if media.kind is AttachmentKind.IMAGE:
+                    content = media.content
+                    encoded = base64.b64encode(content).decode("ascii")
+                    payload += MessageSegment.image(file=f"base64://{encoded}")
+                elif media.kind is AttachmentKind.AUDIO:
+                    if media.local_path is None:
+                        raise ValueError("audio media is missing its local file")
+                    content = await asyncio.to_thread(Path(media.local_path).read_bytes)
+                    encoded = base64.b64encode(content).decode("ascii")
+                    payload += MessageSegment.record(file=f"base64://{encoded}")
+                    del content, encoded
+                else:
                     raise ValueError("unsupported outbound media kind")
-                encoded = base64.b64encode(media.content).decode("ascii")
-                payload += MessageSegment.image(file=f"base64://{encoded}")
             if not payload:
                 raise ValueError("outbound message is empty")
             return await self._bot.send(event=self._event, message=payload)

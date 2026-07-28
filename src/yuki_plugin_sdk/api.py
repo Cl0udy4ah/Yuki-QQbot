@@ -16,6 +16,8 @@ DEFAULT_FEATURES: frozenset[str] = frozenset(
         "plugin.agent_session.v1",
         "emoji.facade.v1",
         "emoji.selection_signals.v1",
+        "speech.facade.v1",
+        "speech.tts_provider.v1",
     }
 )
 

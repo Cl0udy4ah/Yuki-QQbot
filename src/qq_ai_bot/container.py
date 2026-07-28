@@ -135,6 +135,14 @@ from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.services.user_profiles import UserProfileService
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
 from qq_ai_bot.services.vision_service import VISION_PROMPT_VERSION, VisionService
+from qq_ai_bot.speech.admin import SpeechAdminService
+from qq_ai_bot.speech.cache import SpeechCache
+from qq_ai_bot.speech.genie_client import GenieWorkerClient
+from qq_ai_bot.speech.paths import SpeechPathPolicy
+from qq_ai_bot.speech.profiles import VoiceProfileService
+from qq_ai_bot.speech.reply_effect import VoiceReplyEffectService
+from qq_ai_bot.speech.repository import SpeechGenerationRepository, VoiceProfileRepository
+from qq_ai_bot.speech.service import GenieTTSProvider, SpeechService
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.base import VisionProvider
 from qq_ai_bot.vision.fake import FakeVisionProvider
@@ -198,6 +206,24 @@ class ApplicationContainer:
         self.emoji_descriptions = EmojiDescriptionRepository(self.database)
         self.emoji_repository = EmojiRepository(self.database)
         self.planner_runs = PlannerRepository(self.database)
+        self.voice_profiles = VoiceProfileRepository(self.database)
+        self.speech_generations = SpeechGenerationRepository(self.database)
+        self.speech_paths = SpeechPathPolicy(settings.speech_root)
+        self.speech_cache = SpeechCache(
+            repository=self.speech_generations,
+            paths=self.speech_paths,
+        )
+        self.genie_worker = GenieWorkerClient(
+            settings.speech_socket_path,
+            request_timeout_seconds=settings.speech_worker_request_timeout_seconds,
+        )
+        self.speech_provider = GenieTTSProvider(
+            client=self.genie_worker,
+            profiles=self.voice_profiles,
+            generations=self.speech_generations,
+            cache=self.speech_cache,
+            paths=self.speech_paths,
+        )
         self.time_context = TimeContextService(
             self.database,
             default_timezone=settings.default_timezone,
@@ -300,6 +326,26 @@ class ApplicationContainer:
                 settings.planner_interrupt_autonomous_on_new_message
             ),
         )
+        self.speech = SpeechService(
+            provider=self.speech_provider,
+            generations=self.speech_generations,
+            cache=self.speech_cache,
+            paths=self.speech_paths,
+            profiles=self.voice_profiles,
+            turns=self.turn_coordinator,
+        )
+        self.voice_profile_service = VoiceProfileService(
+            repository=self.voice_profiles,
+            paths=self.speech_paths,
+            loader=self.genie_worker if settings.speech_enabled else None,
+        )
+        self.speech_effects = VoiceReplyEffectService(self.speech)
+        self.speech_admin = SpeechAdminService(
+            speech=self.speech,
+            profiles=self.voice_profile_service,
+            runtime_config=self.runtime_config,
+            worker=self.genie_worker,
+        )
         self.prompt_registry = PromptRegistry(
             max_fragment_characters=settings.plugin_max_prompt_fragment_characters,
             max_characters_per_plugin=settings.plugin_max_prompt_characters_per_plugin,
@@ -325,6 +371,7 @@ class ApplicationContainer:
         self.planner_context = PlannerContextBuilder(
             ledger=self.ledger,
             relationships=self.relationships,
+            speech=self.speech,
         )
         self.reply_sequence = ReplySequenceManager(self.turn_coordinator)
         self.relationship_evaluator: RelationshipEvaluator
@@ -374,6 +421,7 @@ class ApplicationContainer:
             turn_coordinator=self.turn_coordinator,
             reply_sequence=self.reply_sequence,
             emoji_effects=self.emoji_effects,
+            speech_effects=self.speech_effects,
         )
         self.memory_worker = MemoryWorker(
             settings=settings,
@@ -435,6 +483,7 @@ class ApplicationContainer:
             groups=self.group_admin,
             private_access=self.private_access_admin,
             emoji=self.emoji_admin,
+            speech=self.speech_admin,
             registry=self.admin_action_registry,
         )
         self.admin_capabilities = AdminCapabilityService(
@@ -468,6 +517,7 @@ class ApplicationContainer:
             emoji_repository=self.emoji_repository,
             emoji_selector=self.emoji_selector,
             emoji_storage=self.emoji_storage,
+            speech=self.speech,
         )
         self.automation_registry = build_capability_registry(self._automation_handlers.mapping())
         self._automation_handlers.bind_registry(self.automation_registry)
@@ -517,6 +567,9 @@ class ApplicationContainer:
         self.emoji_lifecycle.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_event_publisher(self.plugin_events)
         self.emoji_effects.set_event_publisher(self.plugin_events)
+        self.speech.set_event_publisher(self.plugin_events)
+        self.speech_effects.set_event_publisher(self.plugin_events)
+        self.voice_profile_service.set_event_publisher(self.plugin_events)
         self.plugin_extensions = ExtensionRegistry()
         self.plugin_emoji_signals = PluginEmojiSelectionSignalAdapter(
             self.plugin_extensions,
@@ -608,6 +661,7 @@ class ApplicationContainer:
             planner_repository=self.planner_runs,
             plugin_commands=self.plugin_commands,
             emoji_admin=self.emoji_admin,
+            speech_admin=self.speech_admin,
         )
         self.processor = MessageProcessor(
             settings=settings,
@@ -724,6 +778,8 @@ class ApplicationContainer:
                 emoji_collector=self.emoji_collector,
                 emoji_selector=self.emoji_selector,
                 emoji_lifecycle=self.emoji_lifecycle,
+                speech=self.speech,
+                voice_profiles=self.voice_profile_service,
                 automation=self.automation,
                 storage=BoundStorageFacade(
                     repository=self.plugin_state,
@@ -894,6 +950,33 @@ class ApplicationContainer:
             EventName.APPLICATION_STARTED,
             {"version": __version__},
         )
+        if self.settings.speech_enabled:
+            try:
+                async with asyncio.timeout(
+                    self.settings.speech_worker_start_timeout_seconds
+                ):
+                    speech_health = await self.speech.health()
+                    if speech_health.connected:
+                        await publish_notification(
+                            self.plugin_events,
+                            EventName.SPEECH_WORKER_STARTED,
+                            {"ready": speech_health.ready},
+                        )
+                    if speech_health.ready and self.settings.speech_default_profile:
+                        await self.voice_profile_service.reload_profile(
+                            self.settings.speech_default_profile
+                        )
+            except (
+                TimeoutError,
+                OSError,
+                RuntimeError,
+                ValueError,
+                LookupError,
+            ) as exc:
+                logger.error(
+                    "speech_startup_degraded error_category=%s",
+                    type(exc).__name__,
+                )
         self._cleanup_task = asyncio.create_task(
             self._cleanup_loop(), name="processed-event-cleanup"
         )
@@ -936,6 +1019,13 @@ class ApplicationContainer:
                         "plugin_sessions_expired count=%d",
                         plugin_sessions_expired,
                     )
+                speech_expired, speech_files = await self.speech.cleanup(runtime=runtime.speech)
+                if speech_expired:
+                    logger.info(
+                        "speech_cache_cleaned rows=%d files=%d",
+                        speech_expired,
+                        speech_files,
+                    )
             except (SQLAlchemyError, OSError, RuntimeError) as exc:
                 logger.error("processed_event_cleanup_failed", exc_info=exc)
             try:
@@ -958,6 +1048,12 @@ class ApplicationContainer:
             EventName.APPLICATION_STOPPING,
             {"version": __version__},
         )
+        if self.settings.speech_enabled:
+            await publish_notification(
+                self.plugin_events,
+                EventName.SPEECH_WORKER_STOPPED,
+                {"reason": "application_stopping"},
+            )
         await self.plugin_manager.stop()
         await self.automation_worker.close()
         await self.emoji_collector.close()
@@ -973,6 +1069,7 @@ class ApplicationContainer:
             await self.media_resolver.close()
         await self.plugin_http.close()
         await self.plugin_session_repository.delete_ephemeral()
+        await self.speech.close()
         await self.provider.close()
         await self.database.close()
 

@@ -210,11 +210,9 @@ class CapabilityReport:
         for descriptor in self.capabilities:
             kind = descriptor.kind.value
             group = groups.setdefault(descriptor.category, {})
-            item: dict[str, object] = {
-                "id": descriptor.id,
-                "name": descriptor.display_name,
-                "mutating": descriptor.mutating,
-            }
+            item: dict[str, object] = {"id": descriptor.id}
+            if descriptor.mutating:
+                item["mutating"] = True
             if descriptor.target_scopes:
                 item["scopes"] = list(descriptor.target_scopes)
             if descriptor.apply_mode is not None:
@@ -286,6 +284,7 @@ class CapabilityReport:
         if mode == "summary":
             return base
         if mode == "full":
+            base.pop("categories", None)
             grouped_ids: dict[str, dict[str, list[str]]] = {}
             for descriptor in self.capabilities:
                 grouped_ids.setdefault(descriptor.category, {}).setdefault(

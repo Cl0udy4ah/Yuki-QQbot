@@ -97,11 +97,17 @@ class OutboundMedia:
     """Ephemeral outbound media bytes with ledger-safe descriptive metadata."""
 
     kind: AttachmentKind
-    content: bytes = field(repr=False)
+    content: bytes = field(default=b"", repr=False)
     mime_type: str = "application/octet-stream"
     summary: str = ""
     emoji_id: str | None = None
     animated: bool = False
+    local_path: str | None = field(default=None, repr=False)
+    spoken_text: str = field(default="", repr=False)
+    generation_id: int | None = None
+    voice_profile_id: str | None = None
+    voice_reference_key: str | None = None
+    duration_milliseconds: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

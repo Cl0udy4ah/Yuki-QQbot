@@ -9,6 +9,7 @@ authority from a Host-created :class:`PluginInvocation` stored in a ContextVar.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import re
 import uuid
@@ -61,6 +62,11 @@ from qq_ai_bot.services.agent_runner import (
 )
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.vision_service import VisionProcessingError, VisionService
+from qq_ai_bot.speech.models import VoiceMode, VoiceProfile
+from qq_ai_bot.speech.profiles import VoiceProfileService
+from qq_ai_bot.speech.provider import SpeechSynthesisRequest, SynthesizedSpeech
+from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
+from qq_ai_bot.speech.service import SpeechService
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.vision.models import VisualObservation
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
@@ -84,6 +90,7 @@ from yuki_plugin_sdk.context import (
     RelationshipFacade,
     SchedulerFacade,
     SecretsFacade,
+    SpeechFacade,
     StorageFacade,
     VisionFacade,
     WebFacade,
@@ -91,7 +98,7 @@ from yuki_plugin_sdk.context import (
 from yuki_plugin_sdk.errors import FeatureUnavailableError, PluginPermissionError
 from yuki_plugin_sdk.events import EventEnvelope
 from yuki_plugin_sdk.features import FeatureRegistry
-from yuki_plugin_sdk.models import CurrentMessage, JsonValue
+from yuki_plugin_sdk.models import CurrentMessage, GeneratedSpeechHandle, JsonValue
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.results import PluginResult
 from yuki_plugin_sdk.sessions import (
@@ -178,7 +185,9 @@ class PluginInvocation:
     source_event_id: int | None = None
     visual_observation: VisualObservation | None = field(default=None, repr=False)
     web_was_used: bool = False
-    reply_effects: list[PendingReplyEffect] | None = field(default=None, repr=False)
+    reply_effects: list[PendingReplyEffect | PendingVoiceReplyEffect] | None = field(
+        default=None, repr=False
+    )
 
     def __post_init__(self) -> None:
         if not self.plugin_id or not self.actor_user_id or not self.bot_user_id:
@@ -233,6 +242,8 @@ class PluginFacadeServices:
     emoji_collector: EmojiCollector | None = None
     emoji_selector: EmojiSelector | None = None
     emoji_lifecycle: EmojiLifecycleService | None = None
+    speech: SpeechService | None = None
+    voice_profiles: VoiceProfileService | None = None
     automation: AutomationService | None = None
     automation_templates: Mapping[str, AutomationTemplate] = field(default_factory=dict)
     storage: BoundStorageFacade | None = None
@@ -319,6 +330,7 @@ class HostPluginContext:
         "_scheduler",
         "_secrets",
         "_services",
+        "_speech",
         "_storage",
         "_superuser_ids",
         "_vision",
@@ -358,6 +370,7 @@ class HostPluginContext:
         self._vision = _VisionFacade(self)
         self._media = _MediaFacade(self)
         self._emoji = _EmojiFacade(self)
+        self._speech = _SpeechFacade(self)
         self._automation = _AutomationFacade(self)
         self._config = _ConfigFacade(self)
         self._secrets = _SecretsFacade(self)
@@ -438,6 +451,10 @@ class HostPluginContext:
         return self._emoji
 
     @property
+    def speech(self) -> SpeechFacade:
+        return self._speech
+
+    @property
     def automation(self) -> AutomationFacade:
         return self._automation
 
@@ -508,7 +525,7 @@ class HostPluginContext:
             ),
             web_was_used=web_was_used,
             reply_effects=cast(
-                list[PendingReplyEffect] | None,
+                list[PendingReplyEffect | PendingVoiceReplyEffect] | None,
                 getattr(runtime, "reply_effects", None),
             ),
         )
@@ -1755,6 +1772,182 @@ class _EmojiFacade:
         return PluginResult(data=_emoji_view(updated))
 
 
+class _SpeechFacade:
+    """Permission-checked, path-free access to the local speech subsystem."""
+
+    def __init__(self, host: HostPluginContext) -> None:
+        self._host = host
+        self._handles: dict[str, SynthesizedSpeech] = {}
+
+    async def status(self) -> Mapping[str, JsonValue]:
+        invocation = self._host._require(PluginPermission.SPEECH_PROFILE_READ)
+        assert invocation is not None
+        runtime = await _runtime_snapshot(self._host, invocation)
+        speech = _require_service(self._host._services.speech, "speech")
+        health = await speech.health()
+        return {
+            "enabled": runtime.speech.enabled,
+            "plugin_enabled": runtime.speech.plugin_enabled,
+            "available": health.available,
+            "connected": health.connected,
+            "ready": health.ready,
+            "busy": health.busy,
+            "loaded_profile_id": health.loaded_profile_id,
+        }
+
+    async def list_profiles(self) -> tuple[Mapping[str, JsonValue], ...]:
+        invocation = self._host._require(PluginPermission.SPEECH_PROFILE_READ)
+        assert invocation is not None
+        profiles = _require_service(self._host._services.voice_profiles, "voice profiles")
+        return tuple(_voice_profile_view(item) for item in await profiles.list_profiles())
+
+    async def get_profile(self, profile_id: str) -> Mapping[str, JsonValue] | None:
+        invocation = self._host._require(PluginPermission.SPEECH_PROFILE_READ)
+        assert invocation is not None
+        profiles = _require_service(self._host._services.voice_profiles, "voice profiles")
+        profile = await profiles.get_profile(profile_id)
+        return _voice_profile_view(profile) if profile is not None else None
+
+    async def list_styles(self, profile_id: str) -> tuple[str, ...]:
+        invocation = self._host._require(PluginPermission.SPEECH_PROFILE_READ)
+        assert invocation is not None
+        profiles = _require_service(self._host._services.voice_profiles, "voice profiles")
+        return await profiles.list_styles(profile_id)
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        profile_id: str = "",
+        style_hint: str = "",
+    ) -> GeneratedSpeechHandle:
+        invocation = self._host._require(PluginPermission.SPEECH_GENERATE)
+        assert invocation is not None
+        runtime = await _runtime_snapshot(self._host, invocation)
+        if not runtime.speech.plugin_enabled:
+            raise FeatureUnavailableError("plugin speech access is disabled")
+        speech = _require_service(self._host._services.speech, "speech")
+        generated = await speech.synthesize(
+            SpeechSynthesisRequest(
+                request_id=str(uuid.uuid4()),
+                profile_id=profile_id,
+                style_hint=style_hint,
+                text=text,
+                split_sentence=runtime.speech.split_sentence,
+                conversation_key=invocation.conversation_key,
+                trigger_event_id=invocation.source_event_id,
+                turn_token=None,
+            ),
+            runtime=runtime.speech,
+        )
+        handle_id = uuid.uuid4().hex
+        self._handles[handle_id] = generated
+        return GeneratedSpeechHandle(
+            handle_id=handle_id,
+            generation_id=generated.generation_id,
+            profile_id=generated.profile_id,
+            duration_milliseconds=generated.duration_milliseconds,
+            expires_at=None,
+        )
+
+    async def queue_reply_voice(
+        self,
+        *,
+        profile_id: str = "",
+        style_hint: str = "",
+        mode: str = "optional",
+    ) -> PluginResult:
+        invocation = self._host._require(PluginPermission.SPEECH_REPLY_EFFECT)
+        assert invocation is not None
+        runtime = await _runtime_snapshot(self._host, invocation)
+        if not runtime.speech.plugin_enabled:
+            return _unavailable("plugin speech access is disabled")
+        if invocation.reply_effects is None:
+            return _unavailable("current invocation has no reply-effect queue")
+        if profile_id:
+            profiles = _require_service(self._host._services.voice_profiles, "voice profiles")
+            profile = await profiles.get_profile(profile_id)
+            if profile is None or not profile.enabled:
+                return _unavailable("voice profile is unavailable")
+        invocation.reply_effects.append(
+            PendingVoiceReplyEffect(
+                profile_id=profile_id,
+                style_hint=style_hint,
+                mode=VoiceMode(mode),
+                source="plugin",
+            )
+        )
+        return PluginResult(data={"queued": True})
+
+    async def send_private(
+        self,
+        user_id: str,
+        handle: GeneratedSpeechHandle,
+    ) -> PluginResult:
+        return await self._send("private", user_id, handle)
+
+    async def send_group(
+        self,
+        group_id: str,
+        handle: GeneratedSpeechHandle,
+    ) -> PluginResult:
+        return await self._send("group", group_id, handle)
+
+    async def _send(
+        self,
+        target_type: str,
+        target_id: str,
+        handle: GeneratedSpeechHandle,
+    ) -> PluginResult:
+        invocation = self._host._invocation()
+        assert invocation is not None
+
+        async def send() -> PluginResult:
+            checked = self._host._require(PluginPermission.SPEECH_SEND, send=True)
+            assert checked is not None
+            generated = self._handles.get(handle.handle_id)
+            if generated is None or generated.generation_id != handle.generation_id:
+                raise PluginPermissionError("speech handle is not owned by this plugin")
+            if target_type == "private":
+                target = self._host._require_user_scope(checked, target_id)
+                action = "send_private_msg"
+                target_key = "user_id"
+                outbound = _private_voice_outbound(target, generated)
+            else:
+                target = self._host._require_group_scope(checked, target_id)
+                action = "send_group_msg"
+                target_key = "group_id"
+                outbound = _group_voice_outbound(target, generated)
+            speech = _require_service(self._host._services.speech, "speech")
+            audio = await asyncio.to_thread(speech.audio_path(generated).read_bytes)
+            result = await _send_onebot(
+                self._host,
+                checked,
+                action,
+                {
+                    target_key: target,
+                    "message": [
+                        {
+                            "type": "record",
+                            "data": {"file": "base64://" + base64.b64encode(audio).decode("ascii")},
+                        }
+                    ],
+                },
+                outbound=outbound,
+            )
+            if result.ok:
+                await speech.mark_sent(generated.generation_id)
+                self._handles.pop(handle.handle_id, None)
+            return result
+
+        return await self._host._run_audited(
+            invocation,
+            operation=f"speech.send_{target_type}",
+            permission=PluginPermission.SPEECH_SEND,
+            runner=send,
+        )
+
+
 class _AutomationFacade:
     def __init__(self, host: HostPluginContext) -> None:
         self._host = host
@@ -2251,6 +2444,58 @@ def _group_outbound(
         content=content,
         segments=_outbound_segments(content, image=image),
     )
+
+
+def _private_voice_outbound(
+    user_id: str,
+    speech: SynthesizedSpeech,
+) -> _OutboundLedgerMessage:
+    return _OutboundLedgerMessage(
+        scope_type=ScopeType.PRIVATE,
+        private_peer_user_id=user_id,
+        content="",
+        segments=_voice_segments(speech),
+    )
+
+
+def _group_voice_outbound(
+    group_id: str,
+    speech: SynthesizedSpeech,
+) -> _OutboundLedgerMessage:
+    return _OutboundLedgerMessage(
+        scope_type=ScopeType.GROUP,
+        group_id=group_id,
+        content="",
+        segments=_voice_segments(speech),
+    )
+
+
+def _voice_segments(speech: SynthesizedSpeech) -> tuple[dict[str, Any], ...]:
+    return (
+        {
+            "type": "record",
+            "data": {
+                "profile_id": speech.profile_id,
+                "reference_key": speech.reference_key,
+                "duration_milliseconds": speech.duration_milliseconds,
+                "generation_id": speech.generation_id,
+            },
+        },
+    )
+
+
+def _voice_profile_view(profile: VoiceProfile) -> Mapping[str, JsonValue]:
+    return {
+        "profile_id": profile.profile_id,
+        "display_name": profile.display_name,
+        "provider": profile.provider,
+        "engine_model_version": profile.engine_model_version.value,
+        "language": profile.language,
+        "default_style": profile.default_style,
+        "enabled": profile.enabled,
+        "is_default": profile.is_default,
+        "styles": list(dict.fromkeys(item.style for item in profile.references if item.enabled)),
+    }
 
 
 def _outbound_segments(content: str, *, image: bool) -> tuple[dict[str, Any], ...]:

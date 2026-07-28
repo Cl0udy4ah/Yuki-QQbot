@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**1.7.1 不包含数据库迁移，会保留现有人物、聊天、记忆、关系、表情、视觉、联网、Planner、插件与自动化数据。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
+> **升级提示：**1.8.0 会执行非破坏性 Alembic `0015`，新增本地声线和语音生成表，保留现有人物、聊天、记忆、关系、表情、视觉、联网、Planner、插件与自动化数据。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -18,6 +18,12 @@ docker compose logs -f bot napcat
 docker compose up -d
 ```
 
+语音功能默认关闭，不影响原有纯文字启动。准备好本地 GenieData 和声线后，使用：
+
+```bash
+docker compose --profile speech up -d --build
+```
+
 停止服务：
 
 ```bash
@@ -28,7 +34,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.7.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.8.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -50,6 +56,7 @@ Yuki-QQbot 1.7.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 提供 Plugin API v1、独立 `yuki_plugin_sdk`、Manifest/批准/权限/事件/Prompt/PlannerSignal 扩展点和无网络测试 SDK；插件系统默认关闭。
 - 插件可以创建与主聊天账本、人物记忆分离的持久或临时 AI 会话，适合骰子跑团等连续任务；插件拿不到模型隐藏推理，也不能伪造超级管理员。
 - 内置持久化表情系统会按配置观察图片、保存原图与静态预览、复用 Qwen 视觉分类、自动采用合格表情，并由 Planner 或 Agent 在正常回复序列中选择发送。
+- 可选启用完全本地的 Genie-TTS 2.0.2 Worker，使用部署者自行准备的 GPT-SoVITS V2/V2ProPlus ONNX 声线和多参考风格发送 QQ `record`，不调用云端 TTS。
 
 ### 当前架构约束
 
@@ -63,7 +70,7 @@ Yuki-QQbot 1.7.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - SQLite 使用 WAL 和有限等待支持多个后台 Worker；部署仍定位于单 Bot、小型服务器，未来需要多进程横向扩展时再迁移 PostgreSQL。
 - GitHub Actions 会在推送和 PR 时执行 Ruff、严格 mypy、pytest、Echo 示例插件契约测试、Alembic 全新安装和 Docker 构建。
 
-本版本不处理视频、语音、PDF 和普通文件，也不会主动回溯群历史中的任意旧图片。已启用群里未触发 Yuki 的图片可以按 `EMOJI_COLLECTION_MODE` 进入独立后台表情候选流程；这不会触发聊天回复、人物记忆、关系评价或管理员操作。普通聊天视觉理解仍只处理当前真实消息或回复中的图片。
+本版本不识别用户发来的语音，也不处理视频、PDF 和普通文件，不实现 ASR、实时语音通话、VAD 或 WebRTC。已启用群里未触发 Yuki 的图片可以按 `EMOJI_COLLECTION_MODE` 进入独立后台表情候选流程；这不会触发聊天回复、人物记忆、关系评价或管理员操作。普通聊天视觉理解仍只处理当前真实消息或回复中的图片。
 
 ## 持久化表情系统
 
@@ -86,7 +93,27 @@ Yuki-QQbot 1.7.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 /ai emoji stats|cleanup|doctor
 ```
 
-自动化注册 `emoji.send` 和 `emoji.send_by_id`。普通用户只能委托发送给本人私聊或任务创建时的当前群；固定 ID 必须在创建任务时明确提供。插件 API 新增 `EmojiFacade`、`emoji.*` 权限、通知事件和 `emoji.selection_signals.v1`；插件只能调整核心候选分数，不能构造候选外 ID。完整设计见 [表情系统文档](docs/emoji-system/architecture.md)。本版本明确不包含语音、ASR、TTS、实时语音或 WebRTC。
+自动化注册 `emoji.send` 和 `emoji.send_by_id`。普通用户只能委托发送给本人私聊或任务创建时的当前群；固定 ID 必须在创建任务时明确提供。插件 API 新增 `EmojiFacade`、`emoji.*` 权限、通知事件和 `emoji.selection_signals.v1`；插件只能调整核心候选分数，不能构造候选外 ID。完整设计见 [表情系统文档](docs/emoji-system/architecture.md)。
+
+## 完全本地 QQ 语音
+
+1.8.0 的语音是独立可选服务：主 Bot 通过 Unix Domain Socket 调用无网络、无 HTTP 端口的 Genie Worker；Worker 只加载本地 GenieData、GPT-SoVITS V2/V2ProPlus ONNX 模型和参考音频，输出 32 kHz 单声道 16 位 WAV。主进程在 OneBot Adapter 边界把 WAV 编为 Base64 `record`，NapCat 不需要访问本地路径。
+
+仓库不会下载或附带任何角色模型、Galgame/动漫声线或原始语音，生产 Worker 也不安装 PyTorch。部署者必须确认模型权重和参考音频授权。准备流程、Manifest、转换、Planner、插件、自动化与排障见 [语音文档](docs/speech/architecture.md)。
+
+常用命令：
+
+```text
+/ai voice status
+/ai voice profiles
+/ai voice show <profile_id>
+/ai voice styles [profile_id]
+/ai voice test <文本>
+/ai voice use|reload <profile_id>        # 超级管理员
+/ai voice cache cleanup                 # 超级管理员
+```
+
+CLI 覆盖 `speech status`、`genie doctor`、profile 导入/检查/启停/设默认、reference 添加/停用、测试、缓存清理和 Worker 重启。模型转换工具位于 `tools/genie_model_converter/`，与生产运行环境完全分离。
 
 ## 首次配置
 
@@ -286,6 +313,9 @@ uv run qq-ai-bot-cli plugin test plugins/com.example.echo
 | `plugin_audit_events` | 插件操作的脱敏审计元数据 |
 | `plugin_agent_sessions` | 插件独立 AI 会话的模型、指令、上下文策略、批准能力和生命周期 |
 | `plugin_agent_messages` | 独立插件 AI 会话的可见正文；不保存隐藏推理，也不混入主聊天账本 |
+| `speech_voice_profiles` | `0015` 新增的本地声线档案、校验和、启用和默认状态 |
+| `speech_voice_references` | 每个档案的多风格参考元数据与相对路径，不保存音频正文 |
+| `speech_generations` | 语音队列、缓存、取消、发送和失败类别；正文只保存哈希 |
 
 消息到达后的顺序是：
 
@@ -591,6 +621,7 @@ Planner-first 自主参与规则：
 | `/ai status` | 显示连接、模型、上下文和版本 |
 | `/ai stop` | 取消当前用户/场景的模型请求 |
 | `/ai ping` | 连通性检查 |
+| `/ai voice status|profiles|show|styles|test` | 查看或使用当前本地声线；管理操作仅超级管理员 |
 | `/ai whoami` | 显示 QQ、昵称、本群名片、别名与记忆统计 |
 | `/ai forgetme` | 彻底删除当前 QQ 的可归属数据 |
 | `/ai memory list` | 查看本人的人物记忆 |

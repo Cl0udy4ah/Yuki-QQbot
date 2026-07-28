@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock
 
@@ -9,7 +11,7 @@ import pytest
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
 
 from qq_ai_bot.adapters.onebot.sender import OneBotSender
-from qq_ai_bot.domain.messages import OutboundMessage
+from qq_ai_bot.domain.messages import AttachmentKind, OutboundMedia, OutboundMessage
 
 
 @pytest.mark.asyncio
@@ -43,3 +45,30 @@ async def test_sender_can_quote_one_validated_message() -> None:
         ("reply", {"id": "12345"}),
         ("text", {"text": "这条回答指向你。"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_sender_encodes_local_audio_only_at_onebot_boundary(tmp_path: Path) -> None:
+    audio = b"RIFF-local-wave"
+    path = tmp_path / "voice.wav"
+    path.write_bytes(audio)
+    bot = AsyncMock()
+    event = object()
+    sender = OneBotSender(cast(Bot, bot), cast(MessageEvent, event))
+
+    await sender.send(
+        OutboundMessage(
+            media=(
+                OutboundMedia(
+                    kind=AttachmentKind.AUDIO,
+                    mime_type="audio/wav",
+                    local_path=str(path),
+                ),
+            )
+        )
+    )
+
+    payload = bot.send.await_args.kwargs["message"]
+    assert isinstance(payload, Message)
+    assert [segment.type for segment in payload] == ["record"]
+    assert payload[0].data["file"] == "base64://" + base64.b64encode(audio).decode("ascii")

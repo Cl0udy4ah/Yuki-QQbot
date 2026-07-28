@@ -73,6 +73,9 @@ def upgrade() -> None:
             "emoji_scope_states",
             "emoji_jobs",
             "emoji_usage_events",
+            "speech_voice_profiles",
+            "speech_voice_references",
+            "speech_generations",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Protocol
 
 from nonebot import get_bots
@@ -42,6 +44,19 @@ class ProactiveGateway(Protocol):
         mime_type: str,
         emoji_id: str,
         summary: str,
+    ) -> object: ...
+
+    async def send_voice(
+        self,
+        *,
+        user_id: str | None,
+        group_id: str | None,
+        local_path: str,
+        spoken_text: str,
+        generation_id: int,
+        profile_id: str,
+        reference_key: str,
+        duration_milliseconds: int,
     ) -> object: ...
 
     async def call_api(self, action: str, params: dict[str, object]) -> object: ...
@@ -139,6 +154,40 @@ class OneBotProactiveGateway:
             emoji_id=emoji_id,
             mime_type=mime_type,
             summary=summary,
+        )
+        return result
+
+    async def send_voice(
+        self,
+        *,
+        user_id: str | None,
+        group_id: str | None,
+        local_path: str,
+        spoken_text: str,
+        generation_id: int,
+        profile_id: str,
+        reference_key: str,
+        duration_milliseconds: int,
+    ) -> object:
+        if (user_id is None) == (group_id is None):
+            raise ProactiveGatewayError("invalid_speech_target")
+        content = await asyncio.to_thread(Path(local_path).read_bytes)
+        encoded = base64.b64encode(content).decode("ascii")
+        message = [{"type": "record", "data": {"file": f"base64://{encoded}"}}]
+        del content, encoded
+        action = "send_group_msg" if group_id is not None else "send_private_msg"
+        target_key = "group_id" if group_id is not None else "user_id"
+        target_value = group_id if group_id is not None else user_id
+        result = await self._invoke(action, {target_key: str(target_value), "message": message})
+        await self._record_voice_message(
+            result,
+            user_id=user_id,
+            group_id=group_id,
+            spoken_text=spoken_text,
+            generation_id=generation_id,
+            profile_id=profile_id,
+            reference_key=reference_key,
+            duration_milliseconds=duration_milliseconds,
         )
         return result
 
@@ -244,6 +293,49 @@ class OneBotProactiveGateway:
             automation_run_id=self._automation_run_id,
         )
 
+    async def _record_voice_message(
+        self,
+        result: object,
+        *,
+        user_id: str | None,
+        group_id: str | None,
+        spoken_text: str,
+        generation_id: int,
+        profile_id: str,
+        reference_key: str,
+        duration_milliseconds: int,
+    ) -> None:
+        message_id: object | None = None
+        if isinstance(result, str | int):
+            message_id = result
+        elif isinstance(result, dict):
+            message_id = result.get("message_id") or result.get("id")
+        await self._ledger.append(
+            bot_user_id=self._bot_user_id,
+            platform_message_id=str(message_id or f"automation-{uuid.uuid4()}")[:128],
+            scope_type=ScopeType.GROUP if group_id is not None else ScopeType.PRIVATE,
+            sender_user_id=self._bot_user_id,
+            direction="outbound",
+            content=spoken_text,
+            segments=(
+                {
+                    "type": "record",
+                    "data": {
+                        "generation_id": generation_id,
+                        "profile_id": profile_id,
+                        "reference_key": reference_key,
+                        "duration_milliseconds": duration_milliseconds,
+                    },
+                },
+            ),
+            group_id=group_id,
+            private_peer_user_id=user_id,
+            sender_is_bot=True,
+            origin="scheduled_automation",
+            automation_id=self._automation_id,
+            automation_run_id=self._automation_run_id,
+        )
+
 
 class FakeOneBotProactiveGateway:
     """Network-free test gateway with deterministic sent-message capture."""
@@ -254,6 +346,7 @@ class FakeOneBotProactiveGateway:
         self.group_messages: list[tuple[str, str]] = []
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.emojis: list[tuple[str, str, str]] = []
+        self.voices: list[tuple[str, str, str]] = []
 
     @property
     def connected(self) -> bool:
@@ -293,3 +386,22 @@ class FakeOneBotProactiveGateway:
         target = group_id if group_id is not None else user_id
         self.emojis.append((scope, str(target), emoji_id))
         return {"message_id": len(self.emojis)}
+
+    async def send_voice(
+        self,
+        *,
+        user_id: str | None,
+        group_id: str | None,
+        local_path: str,
+        spoken_text: str,
+        generation_id: int,
+        profile_id: str,
+        reference_key: str,
+        duration_milliseconds: int,
+    ) -> object:
+        if not self._connected:
+            raise ProactiveGatewayError("bot_unavailable")
+        scope = "group" if group_id is not None else "private"
+        target = group_id if group_id is not None else user_id
+        self.voices.append((scope, str(target), profile_id))
+        return {"message_id": len(self.voices)}

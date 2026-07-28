@@ -126,6 +126,14 @@ class BackgroundServiceRegistration:
     runner: BackgroundRunner
 
 
+@dataclass(frozen=True, slots=True)
+class TTSProviderRegistration:
+    """Reserved extension point for a Host-compatible local TTS provider."""
+
+    name: str
+    provider: object
+
+
 class PluginRegistrar(Protocol):
     """Registration-only surface; it deliberately exposes no runtime service."""
 
@@ -148,3 +156,5 @@ class PluginRegistrar(Protocol):
     def register_config_schema(self, schema: type[BaseModel]) -> None: ...
 
     def register_background_service(self, registration: BackgroundServiceRegistration) -> None: ...
+
+    def register_tts_provider(self, registration: TTSProviderRegistration) -> None: ...

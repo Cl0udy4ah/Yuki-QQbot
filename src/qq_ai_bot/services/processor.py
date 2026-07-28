@@ -924,12 +924,18 @@ class MessageProcessor:
                 else None
             ),
         )
-        sent = await self._send_text(
-            message,
-            sender,
-            execution.text,
-            record=execution.record_reply,
+        sent = (
+            await self._send_outbound(message, sender, execution.outbound)
+            if execution.outbound is not None
+            else await self._send_text(
+                message,
+                sender,
+                execution.text,
+                record=execution.record_reply,
+            )
         )
+        if sent and execution.outbound is not None:
+            await self._commands.mark_media_sent(execution.outbound)
         if execution.reset_after_reply and sent:
             await self._conversations.clear(identity)
         self._log_result(
@@ -999,6 +1005,20 @@ class MessageProcessor:
             return True
         except (OSError, RuntimeError) as exc:
             logger.error("outbound_send_failed", exc_info=exc)
+            return False
+
+    async def _send_outbound(
+        self,
+        inbound: InboundMessage,
+        sender: OutboundSender,
+        outbound: OutboundMessage,
+    ) -> bool:
+        try:
+            result = await sender.send(outbound)
+            await self._chat.record_confirmed_outbound(inbound, outbound, result)
+            return True
+        except (OSError, RuntimeError) as exc:
+            logger.error("outbound_media_send_failed", exc_info=exc)
             return False
 
     @staticmethod

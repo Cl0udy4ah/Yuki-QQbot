@@ -40,6 +40,16 @@ class SendGroupArguments(CapabilityArguments):
     text: str = Field(min_length=1, max_length=12000)
 
 
+class SpeechSendPrivateArguments(SendPrivateArguments):
+    style_hint: str = Field(default="", max_length=128)
+    profile_id: str = Field(default="", max_length=64)
+
+
+class SpeechSendGroupArguments(SendGroupArguments):
+    style_hint: str = Field(default="", max_length=128)
+    profile_id: str = Field(default="", max_length=64)
+
+
 class EmojiSendArguments(CapabilityArguments):
     emotion: str = Field(default="", max_length=100)
     intended_tone: str = Field(default="", max_length=300)
@@ -256,6 +266,22 @@ def build_capability_registry(
             "onebot.send_group_message",
             "主动发送一条普通群消息。",
             SendGroupArguments,
+            PermissionLevel.USER,
+            RiskClass.SEND,
+            RetryPolicy.NONE,
+        ),
+        (
+            "speech.send_private",
+            "生成本地语音并发送给任务所有者本人。",
+            SpeechSendPrivateArguments,
+            PermissionLevel.USER,
+            RiskClass.SEND,
+            RetryPolicy.NONE,
+        ),
+        (
+            "speech.send_group",
+            "生成本地语音并发送到任务创建时的当前群。",
+            SpeechSendGroupArguments,
             PermissionLevel.USER,
             RiskClass.SEND,
             RetryPolicy.NONE,

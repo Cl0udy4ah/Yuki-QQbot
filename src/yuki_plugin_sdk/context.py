@@ -8,7 +8,7 @@ from typing import Protocol
 
 from yuki_plugin_sdk.events import EventEnvelope
 from yuki_plugin_sdk.features import FeatureRegistry
-from yuki_plugin_sdk.models import CurrentMessage, JsonValue
+from yuki_plugin_sdk.models import CurrentMessage, GeneratedSpeechHandle, JsonValue
 from yuki_plugin_sdk.results import PluginResult
 from yuki_plugin_sdk.sessions import AgentSessionFacade
 
@@ -204,6 +204,36 @@ class EmojiFacade(Protocol):
     async def ban(self, emoji_id: str) -> PluginResult: ...
 
 
+class SpeechFacade(Protocol):
+    async def status(self) -> Mapping[str, JsonValue]: ...
+
+    async def list_profiles(self) -> tuple[Mapping[str, JsonValue], ...]: ...
+
+    async def get_profile(self, profile_id: str) -> Mapping[str, JsonValue] | None: ...
+
+    async def list_styles(self, profile_id: str) -> tuple[str, ...]: ...
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        profile_id: str = "",
+        style_hint: str = "",
+    ) -> GeneratedSpeechHandle: ...
+
+    async def queue_reply_voice(
+        self,
+        *,
+        profile_id: str = "",
+        style_hint: str = "",
+        mode: str = "optional",
+    ) -> PluginResult: ...
+
+    async def send_private(self, user_id: str, handle: GeneratedSpeechHandle) -> PluginResult: ...
+
+    async def send_group(self, group_id: str, handle: GeneratedSpeechHandle) -> PluginResult: ...
+
+
 class AutomationFacade(Protocol):
     async def list_current_owner(self) -> tuple[Mapping[str, JsonValue], ...]: ...
 
@@ -339,6 +369,9 @@ class PluginContext(Protocol):
 
     @property
     def emoji(self) -> EmojiFacade: ...
+
+    @property
+    def speech(self) -> SpeechFacade: ...
 
     @property
     def automation(self) -> AutomationFacade: ...

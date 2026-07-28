@@ -21,6 +21,8 @@ services:
       - "8080"
     volumes:
       - ./data:/app/data
+      - ./data/speech:/data/speech
+      - speech-runtime:/run/yuki-speech
       - ./napcat-config:/app/napcat-config
       - ./config:/app/config:ro
       - ./plugins:/app/plugins:ro
@@ -37,6 +39,39 @@ services:
       retries: 5
       start_period: 15s
     stop_grace_period: 20s
+
+  genie-tts-worker:
+    profiles: ["speech"]
+    build:
+      context: services/genie_tts_worker
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    network_mode: none
+    environment:
+      GENIE_DATA_DIR: /data/speech/genie_data
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    command:
+      - --socket
+      - /run/yuki-speech/genie.sock
+      - --data-dir
+      - /data/speech/genie_data
+      - --speech-root
+      - /data/speech
+    volumes:
+      - ./data/speech/genie_data:/data/speech/genie_data:ro
+      - ./data/speech/voices:/data/speech/voices:ro
+      - ./data/speech/cache:/data/speech/cache
+      - speech-runtime:/run/yuki-speech
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; raise SystemExit(not os.path.exists('/run/yuki-speech/genie.sock'))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 30s
 
   napcat:
     image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
@@ -64,3 +99,6 @@ networks:
   qq-ai-bot-network:
     name: qq-ai-bot-network
     driver: bridge
+
+volumes:
+  speech-runtime:

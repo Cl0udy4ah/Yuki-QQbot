@@ -77,6 +77,44 @@ def test_ordinary_user_cannot_target_another_qq() -> None:
         )
 
 
+def test_speech_automation_is_owner_scoped_and_profile_is_fixed_at_creation() -> None:
+    payload = _script().model_dump(mode="json")
+    payload["steps"][0] = {
+        "id": "speak",
+        "call": "speech.send_private",
+        "arguments": {
+            "user_id": "$creator_user_id",
+            "text": "该喝水了",
+            "style_hint": "gentle",
+            "profile_id": "",
+        },
+    }
+    script = AutomationScript.model_validate(payload)
+    validated = _validator().validate(
+        script,
+        _provenance(),
+        now_utc=datetime(2026, 7, 27, tzinfo=UTC),
+    )
+    assert validated.required_capabilities == ("speech.send_private",)
+
+    payload["steps"][0]["arguments"]["user_id"] = "1808058482"
+    with pytest.raises(PermissionError, match="本人"):
+        _validator().validate(
+            AutomationScript.model_validate(payload),
+            _provenance(text="提醒 1808058482"),
+            now_utc=datetime(2026, 7, 27, tzinfo=UTC),
+        )
+
+    payload["steps"][0]["arguments"]["user_id"] = "$creator_user_id"
+    payload["steps"][0]["arguments"]["profile_id"] = "yuki"
+    with pytest.raises(PermissionError, match="默认声线"):
+        _validator().validate(
+            AutomationScript.model_validate(payload),
+            _provenance(text="用 yuki 声线提醒我"),
+            now_utc=datetime(2026, 7, 27, tzinfo=UTC),
+        )
+
+
 def test_superuser_can_use_explicit_target_from_real_text() -> None:
     result = _validator().validate(
         _script(target="1808058482"),

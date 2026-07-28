@@ -31,6 +31,12 @@ class HealthPayload(TypedDict):
     emoji_worker_running: bool
     emoji_asset_count: int
     emoji_pending_jobs: int
+    speech_enabled: bool
+    speech_worker_connected: bool
+    speech_worker_ready: bool
+    speech_default_profile_loaded: bool
+    speech_can_send_record: bool
+    speech_queue_depth: int
     uptime_seconds: int
 
 
@@ -42,6 +48,8 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     plugin_manager = getattr(container, "plugin_manager", None)
     plugin_running_count = int(getattr(plugin_manager, "running_count", 0))
     emoji_counts = await container.emoji_repository.counts()
+    speech_health = await container.speech.health()
+    speech_metrics = await container.speech.metrics()
     return HealthPayload(
         status="ok" if database_ok else "degraded",
         version=__version__,
@@ -66,5 +74,14 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
             value for key, value in emoji_counts.items() if key != "jobs_pending"
         ),
         emoji_pending_jobs=emoji_counts.get("jobs_pending", 0),
+        speech_enabled=container.settings.speech_enabled,
+        speech_worker_connected=speech_health.connected,
+        speech_worker_ready=speech_health.ready,
+        speech_default_profile_loaded=(
+            bool(container.settings.speech_default_profile)
+            and speech_health.loaded_profile_id == container.settings.speech_default_profile
+        ),
+        speech_can_send_record=container.onebot_connected(),
+        speech_queue_depth=speech_metrics.queue_depth,
         uptime_seconds=max(0, int(time.monotonic() - container.started_at)),
     )

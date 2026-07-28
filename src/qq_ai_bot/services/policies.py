@@ -32,6 +32,7 @@ class CommandName(StrEnum):
     AUTOMATION = "automation"
     PLUGIN = "plugin"
     EMOJI = "emoji"
+    VOICE = "voice"
 
 
 @dataclass(frozen=True, slots=True)

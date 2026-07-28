@@ -29,6 +29,7 @@ _SENSITIVE_KEYS = frozenset(
         "scope_id",
         "automation_id",
         "emoji_id",
+        "profile_id",
         "target",
     }
 )
@@ -39,6 +40,8 @@ _MESSAGE_CAPABILITIES = frozenset(
         "onebot.send_group_message",
         "emoji.send",
         "emoji.send_by_id",
+        "speech.send_private",
+        "speech.send_group",
     }
 )
 
@@ -167,6 +170,8 @@ class AutomationValidator:
             "yuki.agent",
             "onebot.send_private_message",
             "onebot.send_group_message",
+            "speech.send_private",
+            "speech.send_group",
         }
         return tuple(name for name in self._registry.names_for(permission) if name not in excluded)
 
@@ -216,6 +221,19 @@ class AutomationValidator:
             cls._validate_user_target(arguments.get("user_id"), provenance)
         elif call == "onebot.send_group_message":
             cls._validate_group_target(arguments.get("group_id"), provenance)
+        elif call in {"speech.send_private", "speech.send_group"}:
+            if call == "speech.send_private":
+                cls._validate_user_target(arguments.get("user_id"), provenance)
+            else:
+                cls._validate_group_target(arguments.get("group_id"), provenance)
+            profile_id = arguments.get("profile_id")
+            if profile_id:
+                if provenance.permission is not PermissionLevel.SUPERUSER:
+                    raise PermissionError("普通用户自动化只能使用默认声线")
+                if not isinstance(profile_id, str) or "${" in profile_id:
+                    raise ValueError("profile_id 必须在创建任务时明确提供")
+                if profile_id not in provenance.original_text:
+                    raise ValueError("profile_id 必须明确出现在当前真实消息中")
         elif call in {"emoji.send", "emoji.send_by_id"}:
             if arguments.get("user_id"):
                 cls._validate_user_target(arguments["user_id"], provenance)

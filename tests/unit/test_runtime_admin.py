@@ -474,6 +474,11 @@ async def test_vision_restart_overrides_map_to_startup_settings(database: Databa
         "vision_media_download_timeout_seconds": 75.0,
         "vision_timeout_seconds": 45.0,
         "vision_max_output_tokens": 16384,
+        "speech_enabled": settings.speech_enabled,
+        "speech_provider": settings.speech_provider,
+        "speech_socket_path": settings.speech_socket_path,
+        "speech_root": settings.speech_root,
+        "genie_data_dir": settings.genie_data_dir,
         "automation_enabled": settings.automation_enabled,
         "automation_poll_seconds": settings.automation_poll_seconds,
         "automation_lease_seconds": settings.automation_lease_seconds,
@@ -1739,11 +1744,11 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
             )
         )
         assert payload["data"]["transient_internal_reference"] is True
-        assert payload["data"]["counts"]["mutable_configurations"] == 120
-        assert payload["data"]["counts"]["business_actions"] == 33
+        assert payload["data"]["counts"]["mutable_configurations"] == 137
+        assert payload["data"]["counts"]["business_actions"] == 44
         assert payload["data"]["counts"]["onebot_api_gateways"] == 1
         return ChatResponse(
-            content="你有 120 项可改配置、33 项应用业务接口，以及全部公开 OneBot action 权限。",
+            content="你有 137 项可改配置、44 项应用业务接口，以及全部公开 OneBot action 权限。",
             latency_seconds=0,
         )
 
@@ -1758,7 +1763,7 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
     assert result.tool_calls == 1
     assert calls == 2
     assert result.text == (
-        "你有 120 项可改配置、33 项应用业务接口，以及全部公开 OneBot action 权限。"
+        "你有 137 项可改配置、44 项应用业务接口，以及全部公开 OneBot action 权限。"
     )
     assert "transient_internal_reference" not in result.text
 

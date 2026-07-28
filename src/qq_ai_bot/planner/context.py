@@ -5,13 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import pairwise
+from typing import Protocol
 
-from qq_ai_bot.admin.models import RuntimeConfigSnapshot
+from qq_ai_bot.admin.models import RuntimeConfigSnapshot, SpeechRuntimeConfig
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.persistence.repositories import EventLedgerRepository, RelationshipRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.planner.models import PlannerInput, PlannerMessage, PlannerSignal
+from qq_ai_bot.planner.models import (
+    PlannerInput,
+    PlannerMessage,
+    PlannerSignal,
+    PlannerSpeechContext,
+)
 from qq_ai_bot.planner.necessity import ReplyNecessityFeatures, ReplyNecessityScorer
 
 
@@ -25,6 +31,12 @@ class _ConversationMetrics:
     last_was_bot: bool
 
 
+class SpeechPlannerContextProvider(Protocol):
+    async def planner_context(
+        self, *, runtime: SpeechRuntimeConfig
+    ) -> PlannerSpeechContext: ...
+
+
 class PlannerContextBuilder:
     """Keep repository reads out of PlannerService and the model provider."""
 
@@ -33,9 +45,11 @@ class PlannerContextBuilder:
         *,
         ledger: EventLedgerRepository,
         relationships: RelationshipRepository,
+        speech: SpeechPlannerContextProvider | None = None,
     ) -> None:
         self._ledger = ledger
         self._relationships = relationships
+        self._speech = speech
 
     async def build(
         self,
@@ -48,6 +62,7 @@ class PlannerContextBuilder:
         visual_input_present: bool = False,
         available_tool_categories: tuple[str, ...] = (),
         plugin_signals: tuple[PlannerSignal, ...] = (),
+        speech: PlannerSpeechContext | None = None,
         now: datetime | None = None,
     ) -> PlannerInput:
         current_time = now or datetime.now(UTC)
@@ -99,6 +114,11 @@ class PlannerContextBuilder:
             sender_is_bot=False,
             sent_at=inbound.received_at,
         )
+        speech_context = (
+            await self._speech.planner_context(runtime=runtime.speech)
+            if self._speech is not None
+            else speech
+        )
         return PlannerInput(
             conversation_key=conversation_key,
             scope_type=inbound.scope_type,
@@ -121,6 +141,7 @@ class PlannerContextBuilder:
             necessity=necessity,
             available_tool_categories=available_tool_categories,
             plugin_signals=plugin_signals,
+            speech=speech_context or PlannerSpeechContext(),
         )
 
     @staticmethod

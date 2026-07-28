@@ -16,9 +16,11 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import (
+    AttachmentKind,
     ChatMessage,
     ChatTool,
     InboundMessage,
+    OutboundMedia,
     OutboundMessage,
     ToolCall,
 )
@@ -56,6 +58,11 @@ from qq_ai_bot.services.reply_sequence import ReplySequenceManager
 from qq_ai_bot.services.source_policy import SourceDisplayPolicy
 from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator, TurnToken
+from qq_ai_bot.speech.reply_effect import (
+    PendingVoiceReplyEffect,
+    PreparedVoiceReply,
+    VoiceReplyEffectService,
+)
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
 from yuki_plugin_sdk.events import EventName
@@ -404,6 +411,7 @@ class ChatService:
         turn_coordinator: ConversationTurnCoordinator | None = None,
         reply_sequence: ReplySequenceManager | None = None,
         emoji_effects: EmojiReplyEffectService | None = None,
+        speech_effects: VoiceReplyEffectService | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
     ) -> None:
         self._settings = settings
@@ -440,6 +448,7 @@ class ChatService:
         )
         self._reply_sequence = reply_sequence or ReplySequenceManager(self._turn_coordinator)
         self._emoji_effects = emoji_effects
+        self._speech_effects = speech_effects
         self._event_publisher = event_publisher
 
     def set_admin_tools(self, service: AdminToolService) -> None:
@@ -563,12 +572,17 @@ class ChatService:
                 max_characters=self._settings.max_output_characters,
             )
             effects = runtime.reply_effects or []
+            emoji_effects = [effect for effect in effects if isinstance(effect, PendingReplyEffect)]
+            queued_voice = next(
+                (effect for effect in effects if isinstance(effect, PendingVoiceReplyEffect)),
+                None,
+            )
             if (
                 planned_turn is not None
                 and planned_turn.plan.emoji.mode is not EmojiReplyMode.NONE
-                and not effects
+                and not emoji_effects
             ):
-                effects.append(
+                emoji_effects.append(
                     PendingReplyEffect(
                         mode=planned_turn.plan.emoji.mode,
                         placement=planned_turn.plan.emoji.placement,
@@ -579,7 +593,7 @@ class ChatService:
                 )
             prepared_effects: list[tuple[PendingReplyEffect, OutboundMessage]] = []
             if self._emoji_effects is not None:
-                for effect in effects[: runtime_config.emoji.max_effects_per_reply]:
+                for effect in emoji_effects[: runtime_config.emoji.max_effects_per_reply]:
                     prepared = await self._emoji_effects.prepare(
                         effect,
                         inbound=inbound,
@@ -588,6 +602,29 @@ class ChatService:
                     )
                     if prepared is not None:
                         prepared_effects.append((effect, prepared))
+            prepared_voice: PreparedVoiceReply | None = None
+            if (
+                planned_turn is not None
+                and turn_token is not None
+                and self._speech_effects is not None
+            ):
+                prepared_voice = await self._speech_effects.prepare(
+                    inbound=inbound,
+                    response_text=rendered,
+                    runtime=runtime_config,
+                    token=turn_token,
+                    mode=(
+                        queued_voice.mode
+                        if queued_voice is not None
+                        else planned_turn.plan.voice.mode
+                    ),
+                    style_hint=(
+                        queued_voice.style_hint
+                        if queued_voice is not None
+                        else planned_turn.plan.voice.style_hint
+                    ),
+                    profile_id=queued_voice.profile_id if queued_voice is not None else "",
+                )
             if planned_turn is not None and turn_token is not None:
                 if source_display_requested:
                     source_text = self._source_renderer.render(
@@ -608,6 +645,8 @@ class ChatService:
                             inbound=inbound,
                             source="reply_effect",
                         )
+                    if message.media and self._speech_effects is not None:
+                        await self._speech_effects.record_success(message)
 
                 async def record_failure(message: OutboundMessage, _error: Exception) -> None:
                     if message.media and self._emoji_effects is not None:
@@ -615,6 +654,8 @@ class ChatService:
                             message,
                             source="reply_effect",
                         )
+                    if message.media and self._speech_effects is not None:
+                        await self._speech_effects.record_failure(message)
 
                 before = tuple(
                     message
@@ -626,11 +667,15 @@ class ChatService:
                     for effect, message in prepared_effects
                     if effect.placement is not EmojiPlacement.BEFORE_TEXT
                 )
+                if prepared_voice is not None:
+                    after = (*after, prepared_voice.message)
                 suppress_text = bool(prepared_effects) and any(
                     effect.mode is EmojiReplyMode.EMOJI_ONLY
                     or effect.placement is EmojiPlacement.ONLY
                     for effect, _message in prepared_effects
                 )
+                if prepared_voice is not None:
+                    suppress_text = suppress_text or prepared_voice.suppress_text
 
                 sequence = await self._reply_sequence.send(
                     text=rendered,
@@ -865,20 +910,15 @@ class ChatService:
             if raw_id is not None:
                 message_id = str(raw_id)
         platform_message_id = message_id or f"out-{uuid.uuid4()}"
-        media_segments = tuple(
-            {
-                "type": "image",
-                "data": {
-                    "emoji_id": media.emoji_id or "",
-                    "summary": media.summary[:2000],
-                    "mime_type": media.mime_type,
-                    "animated": media.animated,
-                },
-            }
+        media_segments = tuple(self._ledger_media_segment(media) for media in message.media)
+        spoken_text = next((media.spoken_text for media in message.media if media.spoken_text), "")
+        content = message.text or spoken_text or " ".join(
+            (
+                f"[语音：{media.summary or 'Yuki发送了一条语音'}]"
+                if media.kind is AttachmentKind.AUDIO
+                else f"[表情：{media.summary or '图片表情'}]"
+            )
             for media in message.media
-        )
-        content = message.text or " ".join(
-            f"[表情：{media.summary or '图片表情'}]" for media in message.media
         )
         await self._ledger.append(
             bot_user_id=inbound.bot_user_id or "unknown-bot",
@@ -914,3 +954,37 @@ class ChatService:
                 "recorded": True,
             },
         )
+
+    async def record_confirmed_outbound(
+        self,
+        inbound: InboundMessage,
+        message: OutboundMessage,
+        send_result: Any,
+    ) -> None:
+        """Share the same ledger boundary with deterministic media commands."""
+
+        await self._record_outbound_message(inbound, message, send_result)
+
+    @staticmethod
+    def _ledger_media_segment(media: OutboundMedia) -> dict[str, object]:
+        if media.kind is AttachmentKind.AUDIO:
+            return {
+                "type": "record",
+                "data": {
+                    "summary": media.summary[:2000],
+                    "mime_type": media.mime_type,
+                    "duration_milliseconds": media.duration_milliseconds,
+                    "profile_id": media.voice_profile_id or "",
+                    "reference_key": media.voice_reference_key or "",
+                    "generation_id": media.generation_id,
+                },
+            }
+        return {
+            "type": "image",
+            "data": {
+                "emoji_id": media.emoji_id or "",
+                "summary": media.summary[:2000],
+                "mime_type": media.mime_type,
+                "animated": media.animated,
+            },
+        }

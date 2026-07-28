@@ -214,6 +214,28 @@ class Settings(BaseSettings):
     emoji_storage_root: Path = Path("data/emoji")
     emoji_preview_max_dimension: int = 512
 
+    # Local speech uses a separate, network-isolated Genie-TTS worker.  Optional
+    # limits deliberately use None to mean "no speech-specific limit".
+    speech_enabled: bool = False
+    speech_provider: str = "genie"
+    speech_socket_path: Path = Path("/run/yuki-speech/genie.sock")
+    speech_root: Path = Path("/data/speech")
+    genie_data_dir: Path = Path("/data/speech/genie_data")
+    speech_default_profile: str = ""
+    speech_worker_start_timeout_seconds: float = 30.0
+    speech_worker_request_timeout_seconds: float = 120.0
+    speech_planner_enabled: bool = True
+    speech_default_mode: str = "optional"
+    speech_split_sentence: bool = True
+    speech_max_synthesis_characters: int | None = None
+    speech_queue_max_pending: int | None = None
+    speech_cache_retention_hours: int | None = None
+    speech_private_enabled: bool = True
+    speech_group_enabled: bool = True
+    speech_automation_enabled: bool = True
+    speech_plugin_enabled: bool = True
+    speech_text_fallback_enabled: bool = True
+
     automation_enabled: bool = False
     default_timezone: str = "Asia/Shanghai"
     automation_poll_seconds: float = 2.0
@@ -337,6 +359,8 @@ class Settings(BaseSettings):
         "plugin_start_timeout_seconds",
         "plugin_stop_timeout_seconds",
         "plugin_http_timeout_seconds",
+        "speech_worker_start_timeout_seconds",
+        "speech_worker_request_timeout_seconds",
     )
     @classmethod
     def _positive_timeout(cls, value: float) -> float:
@@ -453,6 +477,41 @@ class Settings(BaseSettings):
         if value is not None and value <= 0:
             raise ValueError("EMOJI_POOL_CAPACITY must be positive when configured")
         return value
+
+    @field_validator(
+        "speech_max_synthesis_characters",
+        "speech_queue_max_pending",
+        "speech_cache_retention_hours",
+        mode="before",
+    )
+    @classmethod
+    def _optional_positive_speech_limit(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if isinstance(value, bool):
+            raise ValueError("speech limit must be a positive integer or empty")
+        converted = int(value) if isinstance(value, str) else value
+        if not isinstance(converted, int) or converted <= 0:
+            raise ValueError("speech limit must be a positive integer or empty")
+        return converted
+
+    @field_validator("speech_provider")
+    @classmethod
+    def _speech_provider(cls, value: str) -> str:
+        normalized = value.strip().casefold()
+        if normalized != "genie":
+            raise ValueError("SPEECH_PROVIDER must be genie")
+        return normalized
+
+    @field_validator("speech_default_mode")
+    @classmethod
+    def _speech_default_mode(cls, value: str) -> str:
+        normalized = value.strip().casefold()
+        if normalized not in {"text", "voice", "text_and_voice", "optional"}:
+            raise ValueError(
+                "SPEECH_DEFAULT_MODE must be text, voice, text_and_voice, or optional"
+            )
+        return normalized
 
     @field_validator("default_timezone")
     @classmethod

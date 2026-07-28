@@ -20,6 +20,7 @@ from qq_ai_bot.admin.models import (
     RelationshipRuntimeConfig,
     ReplyRuntimeConfig,
     RuntimeConfigSnapshot,
+    SpeechRuntimeConfig,
     VisionRuntimeConfig,
     WebRuntimeConfig,
 )
@@ -156,6 +157,25 @@ def _runtime() -> RuntimeConfigSnapshot:
             worker_max_attempts=3,
             worker_retry_delay_seconds=30,
             analysis_version="emoji-v1",
+        ),
+        speech=SpeechRuntimeConfig(
+            enabled=False,
+            provider="genie",
+            socket_path="/run/yuki-speech/genie.sock",
+            root="/data/speech",
+            genie_data_dir="/data/speech/genie_data",
+            default_profile="",
+            planner_enabled=True,
+            default_mode="optional",
+            split_sentence=True,
+            max_synthesis_characters=None,
+            queue_max_pending=None,
+            cache_retention_hours=None,
+            private_enabled=True,
+            group_enabled=True,
+            automation_enabled=True,
+            plugin_enabled=True,
+            text_fallback_enabled=True,
         ),
     )
 

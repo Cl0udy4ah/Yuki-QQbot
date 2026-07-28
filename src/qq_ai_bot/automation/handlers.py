@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import partial
 from typing import Any, cast
+from uuid import uuid4
 
 from qq_ai_bot.admin.action_service import AdminActionService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -43,6 +44,13 @@ from qq_ai_bot.services.agent_runner import (
     AgentToolBackend,
 )
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.speech.genie_client import GenieWorkerFailure, GenieWorkerUnavailable
+from qq_ai_bot.speech.provider import SpeechSynthesisRequest
+from qq_ai_bot.speech.service import (
+    SpeechQueueFullError,
+    SpeechService,
+    SpeechUnavailableError,
+)
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import WebSearchRequest
@@ -70,6 +78,7 @@ class AutomationCapabilityHandlers:
         emoji_repository: EmojiRepository | None = None,
         emoji_selector: EmojiSelector | None = None,
         emoji_storage: EmojiStorage | None = None,
+        speech: SpeechService | None = None,
     ) -> None:
         self._settings = settings
         self._provider = provider
@@ -85,6 +94,7 @@ class AutomationCapabilityHandlers:
         self._emoji_repository = emoji_repository
         self._emoji_selector = emoji_selector
         self._emoji_storage = emoji_storage
+        self._speech = speech
         self._agent_runner = AgentRunner(provider, concurrency)
         self._registry: AutomationCapabilityRegistry | None = None
 
@@ -97,6 +107,8 @@ class AutomationCapabilityHandlers:
             "yuki.agent": self.agent,
             "onebot.send_private_message": self.send_private,
             "onebot.send_group_message": self.send_group,
+            "speech.send_private": self.send_speech,
+            "speech.send_group": self.send_speech,
             "emoji.send": self.send_emoji,
             "emoji.send_by_id": self.send_emoji,
             "onebot.call_api": self.call_onebot,
@@ -188,6 +200,74 @@ class AutomationCapabilityHandlers:
         await gateway.send_group(str(arguments["group_id"]), str(arguments["text"]))
         return CapabilityResult(
             data={"sent": True, "group_id": str(arguments["group_id"])}, messages_sent=1
+        )
+
+    async def send_speech(
+        self, arguments: dict[str, Any], context: CapabilityExecutionContext
+    ) -> CapabilityResult:
+        if self._speech is None:
+            raise AutomationExecutionError("speech_system_unavailable")
+        user_id = str(arguments["user_id"]) if arguments.get("user_id") else None
+        group_id = str(arguments["group_id"]) if arguments.get("group_id") else None
+        if (user_id is None) == (group_id is None):
+            raise AutomationExecutionError("speech_target_invalid")
+        if not context.authority.actor_is_superuser:
+            if user_id is not None and user_id != context.creator_user_id:
+                raise AutomationExecutionError("person_scope_denied")
+            if group_id is not None and group_id != context.current_group_id:
+                raise AutomationExecutionError("group_scope_denied")
+            if arguments.get("profile_id"):
+                raise AutomationExecutionError("speech_profile_scope_denied")
+        snapshot = await self._runtime_config.snapshot(
+            user_id=context.creator_user_id,
+            group_id=group_id,
+        )
+        if not snapshot.speech.automation_enabled:
+            raise AutomationExecutionError("speech_automation_disabled")
+        try:
+            generated = await self._speech.synthesize(
+                SpeechSynthesisRequest(
+                    request_id=str(uuid4()),
+                    profile_id=str(arguments.get("profile_id") or ""),
+                    style_hint=str(arguments.get("style_hint") or ""),
+                    text=str(arguments["text"]),
+                    split_sentence=snapshot.speech.split_sentence,
+                    conversation_key=context.conversation_key,
+                    trigger_event_id=None,
+                    turn_token=None,
+                ),
+                runtime=snapshot.speech,
+            )
+        except (
+            ValueError,
+            LookupError,
+            SpeechUnavailableError,
+            SpeechQueueFullError,
+            GenieWorkerUnavailable,
+            GenieWorkerFailure,
+            OSError,
+        ) as exc:
+            raise AutomationExecutionError("speech_generation_failed") from exc
+        await self._gateway_factory(context).send_voice(
+            user_id=user_id,
+            group_id=group_id,
+            local_path=str(self._speech.audio_path(generated)),
+            spoken_text=str(arguments["text"]),
+            generation_id=generated.generation_id,
+            profile_id=generated.profile_id,
+            reference_key=generated.reference_key,
+            duration_milliseconds=generated.duration_milliseconds,
+        )
+        await self._speech.mark_sent(generated.generation_id)
+        return CapabilityResult(
+            data={
+                "sent": True,
+                "generation_id": generated.generation_id,
+                "profile_id": generated.profile_id,
+                "reference_key": generated.reference_key,
+                "duration_milliseconds": generated.duration_milliseconds,
+            },
+            messages_sent=1,
         )
 
     async def send_emoji(

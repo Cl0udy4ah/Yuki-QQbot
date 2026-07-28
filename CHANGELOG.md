@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 1.8.0 - 2026-07-29
+
+### 完全本地 Genie-TTS QQ 语音
+
+- 新增可选的独立 `genie-tts-worker`：固定 Genie-TTS 2.0.2，通过 Unix Domain Socket 接收严格版本化 IPC，使用部署者自行准备的 GPT-SoVITS V2/V2ProPlus ONNX 模型离线生成 32 kHz 单声道 16 位 WAV；Worker 不开放 HTTP/TCP、禁用网络和自动下载，生产环境不安装 PyTorch。
+- 新增 `SpeechService`、通用 `TTSProvider`、Genie Client、严格 `SpeechPathPolicy`、文本朗读规范化、模型/参考校验和缓存键、缓存清理、取消和队列生命周期；主 Bot、Planner、插件与自动化不直接依赖 Genie 客户端。
+- 新增非破坏性 Alembic `0015`：`speech_voice_profiles`、`speech_voice_references`、`speech_generations` 保存声线、多风格参考与生成状态，只保存 `data/speech/` 内相对路径和文本哈希，保留全部现有数据。
+- 新增严格 `profile.toml` 声线档案、原子目录导入、启停/默认/重载、参考音频 sidecar 导入、style/alias 确定性匹配；未知字段、路径逃逸、缺模型/参考和无效默认风格会明确失败。
+- Planner `TurnPlan` 新增受后端约束的 `voice` 计划，支持 `text`、`voice`、`text_and_voice`、`optional` 与语义 `style_hint`；模型不能指定 profile/reference/path，Worker 或档案不可用时保持文字回复，新消息会取消尚未发送的过期语音。
+- 复用现有 OutboundMedia、ReplySequence 和事件账本；OneBot Adapter 在最终发送边界把本地 WAV 编码为 Base64 `record`，NapCat 不需要看到本地路径，Base64 不进入普通日志或数据库。voice-only 保存实际朗读文本，text-and-voice 不重复正文。
+- 新增 `/ai voice`、完整 `qq-ai-bot-cli speech`、自然语言管理员 `speech.*` action、`speech.send_private/group` 自动化；普通用户只能使用当前默认声线并发送到本人或任务创建时当前群，切换/重载/清理和任意声线测试仅超级管理员。
+- Plugin API v1 新增 `SpeechFacade`、六项 `speech.*` 权限、Opaque `GeneratedSpeechHandle`、11 个生命周期事件和 `speech.tts_provider.v1` 预留扩展点；插件无法取得本地路径、模型、参考音频或伪造其他插件 Handle。
+- 新增 `tools/genie_model_converter/`，把需要 PyTorch 的官方 GPT-SoVITS → Genie ONNX 转换与生产环境彻底分离；新增 12 篇 `docs/speech/` 文档、`.env.example`、README、健康状态、Docker speech profile 和 CI Worker 测试/镜像构建。
+- 语音功能默认关闭，未准备模型时原有文字聊天行为不变。仓库不附带或下载任何 Galgame、动漫角色模型或原始语音，相关权利由部署者负责确认。
+
 ## 1.7.1 - 2026-07-29
 
 ### 群聊高参与度与明确触发可靠性

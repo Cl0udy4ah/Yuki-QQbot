@@ -24,6 +24,7 @@ from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
     publish_notification,
 )
+from qq_ai_bot.speech.models import VoiceMode, VoiceReplyPlan
 from yuki_plugin_sdk.events import EventName
 
 _MULTI_MESSAGE_REQUESTS = (
@@ -192,6 +193,23 @@ class PlannerService:
             ),
             "wait_seconds": min(plan.wait_seconds, runtime.planner.max_wait_seconds),
         }
+        speech_allowed = (
+            runtime.speech.enabled
+            and runtime.speech.planner_enabled
+            and planner_input.speech.available
+            and (
+                runtime.speech.private_enabled
+                if planner_input.scope_type is ScopeType.PRIVATE
+                else runtime.speech.group_enabled
+            )
+        )
+        if not speech_allowed:
+            updates["voice"] = VoiceReplyPlan(mode=VoiceMode.TEXT)
+        elif (
+            plan.voice.style_hint
+            and plan.voice.style_hint not in planner_input.speech.available_styles
+        ):
+            updates["voice"] = plan.voice.model_copy(update={"style_hint": ""})
         explicit = (
             planner_input.scope_type is ScopeType.PRIVATE
             or planner_input.mentions_bot

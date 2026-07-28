@@ -8,16 +8,25 @@ import json
 import os
 from dataclasses import asdict
 from pathlib import Path
+from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
 
 from qq_ai_bot import __version__
+from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
 from qq_ai_bot.plugin_host.manifest import load_manifest
 from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
+from qq_ai_bot.speech.cache import SpeechCache
+from qq_ai_bot.speech.genie_client import GenieWorkerClient
+from qq_ai_bot.speech.paths import SpeechPathPolicy
+from qq_ai_bot.speech.profiles import VoiceProfileService
+from qq_ai_bot.speech.provider import SpeechSynthesisRequest
+from qq_ai_bot.speech.repository import SpeechGenerationRepository, VoiceProfileRepository
+from qq_ai_bot.speech.service import GenieTTSProvider, SpeechService
 from yuki_plugin_sdk.testing.contract import run_plugin_contract_tests
 
 
@@ -76,6 +85,230 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     docs.add_argument("path", type=Path)
     test = commands.add_parser("test")
     test.add_argument("path", type=Path)
+
+
+def _add_speech_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    speech = subparsers.add_parser("speech", help="管理本地 Genie-TTS 语音")
+    commands = speech.add_subparsers(dest="speech_command", required=True)
+    commands.add_parser("status")
+    genie = commands.add_parser("genie")
+    genie.add_subparsers(dest="genie_command", required=True).add_parser("doctor")
+    profile = commands.add_parser("profile")
+    profiles = profile.add_subparsers(dest="profile_command", required=True)
+    profiles.add_parser("list")
+    for action in ("inspect", "reload", "enable", "disable", "set-default"):
+        item = profiles.add_parser(action)
+        item.add_argument("profile_id")
+    imported = profiles.add_parser("import")
+    imported.add_argument("source_directory", type=Path)
+    reference = commands.add_parser("reference")
+    references = reference.add_subparsers(dest="reference_command", required=True)
+    listed = references.add_parser("list")
+    listed.add_argument("profile_id")
+    disabled = references.add_parser("disable")
+    disabled.add_argument("profile_id")
+    disabled.add_argument("reference_key")
+    added = references.add_parser("add")
+    added.add_argument("profile_id")
+    added.add_argument("source", type=Path)
+    test = commands.add_parser("test")
+    test.add_argument("profile_id")
+    test.add_argument("text")
+    cache = commands.add_parser("cache")
+    cache.add_subparsers(dest="cache_command", required=True).add_parser("cleanup")
+    worker = commands.add_parser("worker")
+    worker.add_subparsers(dest="worker_command", required=True).add_parser("restart")
+
+
+async def _speech_command(settings: Settings, args: argparse.Namespace) -> int:
+    paths = SpeechPathPolicy(settings.speech_root)
+    database = Database(settings.database_url)
+    profiles = VoiceProfileRepository(database)
+    generations = SpeechGenerationRepository(database)
+    cache = SpeechCache(repository=generations, paths=paths)
+    client = GenieWorkerClient(
+        settings.speech_socket_path,
+        request_timeout_seconds=settings.speech_worker_request_timeout_seconds,
+    )
+    provider = GenieTTSProvider(
+        client=client,
+        profiles=profiles,
+        generations=generations,
+        cache=cache,
+        paths=paths,
+    )
+    service = SpeechService(
+        provider=provider,
+        generations=generations,
+        cache=cache,
+        paths=paths,
+        profiles=profiles,
+    )
+    profile_service = VoiceProfileService(repository=profiles, paths=paths, loader=client)
+    try:
+        action = str(args.speech_command)
+        if action == "status":
+            health = await service.health()
+            print(
+                json.dumps(
+                    {
+                        "enabled": settings.speech_enabled,
+                        "worker_connected": health.connected,
+                        "worker_ready": health.ready,
+                        "worker_busy": health.busy,
+                        "loaded_profile": health.loaded_profile_id,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0 if health.available else 1
+        if action == "genie":
+            print(json.dumps(await profile_service.doctor(), ensure_ascii=False, indent=2))
+            return 0
+        if action == "profile":
+            operation = str(args.profile_command)
+            if operation == "list":
+                rows = await profile_service.list_profiles()
+                print(
+                    json.dumps(
+                        [
+                            {
+                                "profile_id": row.profile_id,
+                                "display_name": row.display_name,
+                                "enabled": row.enabled,
+                                "default": row.is_default,
+                            }
+                            for row in rows
+                        ],
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+            if operation == "import":
+                profile_row = await profile_service.import_profile(Path(args.source_directory))
+            elif operation == "reload":
+                profile_row = await profile_service.reload_profile(str(args.profile_id))
+            elif operation == "enable":
+                profile_row = await profile_service.enable_profile(str(args.profile_id))
+            elif operation == "disable":
+                profile_row = await profile_service.disable_profile(str(args.profile_id))
+            elif operation == "set-default":
+                profile_row = await profile_service.activate_profile(str(args.profile_id))
+            else:
+                selected_profile = await profile_service.get_profile(str(args.profile_id))
+                if selected_profile is None:
+                    print("profile not found")
+                    return 1
+                profile_row = selected_profile
+            print(
+                json.dumps(
+                    {
+                        "profile_id": profile_row.profile_id,
+                        "display_name": profile_row.display_name,
+                        "provider": profile_row.provider,
+                        "model_version": profile_row.engine_model_version.value,
+                        "language": profile_row.language,
+                        "default_style": profile_row.default_style,
+                        "enabled": profile_row.enabled,
+                        "default": profile_row.is_default,
+                        "source": profile_row.source,
+                        "references": len(profile_row.references),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if action == "reference":
+            operation = str(args.reference_command)
+            if operation == "add":
+                reference_row = await profile_service.add_reference(
+                    str(args.profile_id), Path(args.source)
+                )
+                print(f"added: {reference_row.reference_key}")
+                return 0
+            profile_id = str(args.profile_id)
+            if operation == "disable":
+                reference_row = await profile_service.disable_reference(
+                    profile_id, str(args.reference_key)
+                )
+                print(f"disabled: {reference_row.reference_key}")
+                return 0
+            selected_profile = await profile_service.get_profile(profile_id)
+            if selected_profile is None:
+                print("profile not found")
+                return 1
+            print(
+                json.dumps(
+                    [
+                        {
+                            "reference_key": ref.reference_key,
+                            "style": ref.style,
+                            "aliases": ref.aliases,
+                            "language": ref.language,
+                            "enabled": ref.enabled,
+                            "priority": ref.priority,
+                        }
+                        for ref in selected_profile.references
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if action == "test":
+            runtime = (await _runtime_snapshot(settings, database)).speech
+            result = await service.synthesize(
+                SpeechSynthesisRequest(
+                    request_id=str(uuid4()),
+                    profile_id=str(args.profile_id),
+                    style_hint="",
+                    text=str(args.text),
+                    split_sentence=runtime.split_sentence,
+                    conversation_key="cli:speech-test",
+                    trigger_event_id=None,
+                    turn_token=None,
+                ),
+                runtime=runtime,
+            )
+            print(
+                json.dumps(
+                    {
+                        "generation_id": result.generation_id,
+                        "profile_id": result.profile_id,
+                        "reference_key": result.reference_key,
+                        "duration_milliseconds": result.duration_milliseconds,
+                        "cache_hit": result.cache_hit,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if action == "cache":
+            runtime = (await _runtime_snapshot(settings, database)).speech
+            print(await service.cleanup(runtime=runtime))
+            return 0
+        if action == "worker":
+            await client.shutdown()
+            print("worker restart requested")
+            return 0
+        return 1
+    finally:
+        await service.close()
+        await database.close()
+
+
+async def _runtime_snapshot(
+    settings: Settings, database: Database
+) -> RuntimeConfigSnapshot:
+    from qq_ai_bot.admin.config_service import RuntimeConfigService
+
+    runtime = RuntimeConfigService(settings=settings, database=database)
+    await runtime.initialize()
+    return await runtime.snapshot()
 
 
 async def _plugin_command(settings: Settings, args: argparse.Namespace) -> int:
@@ -198,6 +431,7 @@ def main() -> None:
     render = subparsers.add_parser("render-napcat-config", help="生成 NapCat OneBot 配置")
     render.add_argument("--output", type=Path, required=True)
     _add_plugin_parser(subparsers)
+    _add_speech_parser(subparsers)
     args = parser.parse_args()
     settings = Settings()
     if args.command == "init-db":
@@ -206,6 +440,8 @@ def main() -> None:
         _render_napcat_config(settings, args.output)
     elif args.command == "plugin":
         raise SystemExit(asyncio.run(_plugin_command(settings, args)))
+    elif args.command == "speech":
+        raise SystemExit(asyncio.run(_speech_command(settings, args)))
 
 
 if __name__ == "__main__":
