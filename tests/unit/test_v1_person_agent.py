@@ -303,12 +303,13 @@ async def test_agent_can_queue_a_path_free_voice_reply(database: Database) -> No
         False,
         runtime_config=await config.snapshot(user_id="1001"),
         reply_effects=effects,
+        voice_tool_authorized=True,
     )
 
     assert "send_voice" in {tool.name for tool in tools.definitions(runtime)}
     result = await tools.execute(
         "send_voice",
-        '{"style_hint":"gentle","language":"jp","mode":"voice"}',
+        '{"style_hint":"gentle","language":"jp"}',
         runtime,
     )
 
@@ -317,10 +318,35 @@ async def test_agent_can_queue_a_path_free_voice_reply(database: Database) -> No
         PendingVoiceReplyEffect(
             style_hint="gentle",
             language_hint="jp",
-            mode=VoiceMode.VOICE,
-            source="agent",
+            mode=VoiceMode.OPTIONAL,
+            source="agent_explicit_request",
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_agent_voice_tool_is_hidden_without_planner_authorization(database: Database) -> None:
+    settings = make_settings(database.url, speech_enabled=True, speech_default_profile="roxy")
+    config = RuntimeConfigService(settings=settings, database=database)
+    await config.initialize()
+    tools = AgentToolService(
+        settings=settings,
+        ledger=EventLedgerRepository(database),
+        memories=MemoryRepository(database),
+        actions=AgentActionRepository(database),
+        runtime_config=config,
+    )
+    runtime = ToolRuntime(
+        inbound("普通聊天", message_id="voice-neutral"),
+        None,
+        False,
+        runtime_config=await config.snapshot(user_id="1001"),
+        reply_effects=[],
+    )
+
+    assert "send_voice" not in {tool.name for tool in tools.definitions(runtime)}
+    result = await tools.execute("send_voice", "{}", runtime)
+    assert '"error": "voice_not_authorized"' in result
 
 
 @pytest.mark.asyncio

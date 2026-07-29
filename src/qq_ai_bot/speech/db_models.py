@@ -123,3 +123,24 @@ class SpeechGenerationModel(Base):
     error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PersonSpeechPreferenceModel(Base):
+    """One enforceable person-level speech preference selected through Planner."""
+
+    __tablename__ = "person_speech_preferences"
+    __table_args__ = (
+        CheckConstraint(
+            "mode IN ('text_only', 'auto', 'prefer_voice')",
+            name="ck_person_speech_preferences_mode",
+        ),
+        Index("ix_person_speech_preferences_updated", "updated_at"),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_message_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

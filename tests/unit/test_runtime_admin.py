@@ -1744,7 +1744,7 @@ async def test_admin_capability_question_uses_complete_event_bound_report(
             )
         )
         assert payload["data"]["transient_internal_reference"] is True
-        assert payload["data"]["counts"]["mutable_configurations"] == 137
+        assert payload["data"]["counts"]["mutable_configurations"] == 138
         assert payload["data"]["counts"]["business_actions"] == 44
         assert payload["data"]["counts"]["onebot_api_gateways"] == 1
         return ChatResponse(

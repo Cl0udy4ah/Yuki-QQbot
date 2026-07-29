@@ -1206,6 +1206,9 @@ class RuntimeConfigService:
                 automation_enabled=bool(value("speech.automation_enabled")),
                 plugin_enabled=bool(value("speech.plugin_enabled")),
                 text_fallback_enabled=bool(value("speech.text_fallback_enabled")),
+                spontaneous_frequency=float(
+                    cast(float | int, value("speech.spontaneous_frequency"))
+                ),
             ),
         )
 

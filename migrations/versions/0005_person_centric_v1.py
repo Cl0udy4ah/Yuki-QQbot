@@ -76,6 +76,7 @@ def upgrade() -> None:
             "speech_voice_profiles",
             "speech_voice_references",
             "speech_generations",
+            "person_speech_preferences",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

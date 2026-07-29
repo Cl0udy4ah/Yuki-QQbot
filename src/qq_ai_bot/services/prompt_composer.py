@@ -231,6 +231,8 @@ class PromptComposer:
             "confidence": plan.confidence,
             "reason_code": plan.reason_code.value,
             "voice_mode": plan.voice.mode.value,
+            "voice_intent": plan.voice.intent.value,
+            "voice_agent_tool": plan.voice.agent_tool.value,
             "voice_style": plan.voice.style_hint,
             "voice_language": plan.voice.language.value,
         }
@@ -264,9 +266,10 @@ class PromptComposer:
             "主 Bot 只通过 Unix Domain Socket 与它通信；当前 Socket 路径为 "
             f"{runtime.speech.socket_path}。Bot 内部 8080 和 NapCat WebUI 6099 都不是 TTS "
             "端口。用户询问 TTS 端口时，应明确回答‘没有端口’，并可说明上述 Socket 路径；"
-            "不要猜测或编造端口号。工具列表提供 send_voice 时，可以把本轮最终正文排队为语音；"
-            "用户明确要求用语音说、念或读给他听时必须使用，日常闲聊、安慰和亲密交流也可以"
-            "按自己的表达意愿自然使用，不要错误声称自己没有语音能力。"
+            "不要猜测或编造端口号。send_voice 仅在 Planner 已经从本轮语义确认用户明确索要"
+            "语音时才会出现在工具列表；此时应调用它选择合适的语气和语言。是否发送文字、"
+            "语音或二者完全服从 TurnPlan，工具不得覆盖。用户没有明确索要语音时不要自行调用"
+            "该工具；日常聊天是否偶尔发语音已经由 Planner 按持久偏好和频率配置决定。"
         )
 
     @staticmethod

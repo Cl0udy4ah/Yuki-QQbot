@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**1.8.1 会执行非破坏性 Alembic `0016`，增加声线支持语言与每次生成的目标语言；1.8.0 的 `0015` 本地声线和语音生成表及其他现有数据均会保留。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
+> **升级提示：**1.8.2 会执行非破坏性 Alembic `0017`，增加人物语音偏好和 Planner 语音决策观测字段，并清理旧版误写入普通正文的内部 TTS 描述；结构化语音元数据、`0015`/`0016` 的本地声线、生成记录和其他现有数据均会保留。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -34,7 +34,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.8.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.8.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -101,7 +101,11 @@ Yuki-QQbot 1.8.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 
 同一声线可声明多种目标语言。Planner 可以按当前语境在中文和日文间自然选择，Agent 会生成对应语言的正文；后端还会根据最终文本中的中文汉字或日语假名再次校验，避免语言提示与实际文本不一致。参考音频的语言独立保存，因此日语参考音频也可以用于合成中文目标文本。
 
-用户明确要求“用语音说/念/读”时，后端会确定性启用语音；Agent 也拥有不接触模型路径的 `send_voice` 回复效果工具，可以在日常聊天中自主使用。CPU ONNX 模型可能占用数 GiB，Bot 启动时只同步声线元数据、首次合成时才按需加载模型；Worker 会主动归还空闲堆内存，并在 `SPEECH_WORKER_IDLE_RECYCLE_SECONDS`（默认 300 秒）后由 Compose 自动回收重启；设为 `0` 可关闭空闲回收。
+语音意图由 Planner 理解自然语言和当前上下文，不再由后端匹配“语音/文字”等固定短语。用户本轮明确索要语音时，Planner 授权 Agent 使用 `send_voice` 选择语气与语言；工具不能改变 Planner 决定的纯语音、文字加语音或纯文字模式。用户没有明确索要语音时，Agent 看不到该工具，普通聊天是否偶尔发语音完全由 Planner 按人物偏好和 `SPEECH_SPONTANEOUS_FREQUENCY`（默认 0.15）决定。
+
+语音账本只把实际朗读正文交给聊天模型；声线、参考风格、目标语言和生成 ID 仅保存在结构化 `record` 消息段，不会以 `[语音：Yuki 发送了一条语音，声线：…]` 的形式混入 Yuki 的上下文或下一次语音。包含语音的回复中，系统提示词要求自称使用 `ゆき`，避免日语 TTS 把 `Yuki` 读成英文字母；纯文字回复仍可使用 `Yuki`。
+
+每个 QQ 可持久保存 `text_only`、`auto` 或 `prefer_voice` 模式。只有“以后都用文字”“以后可以偶尔发语音”等明确持续语义会更新偏好；“这次用语音说”只影响当前轮。`SPEECH_DEFAULT_MODE` 是尚未保存人物偏好时的全局基线：`text` 对应文字模式，`optional` 对应自动决定，`voice`/`text_and_voice` 对应偏好语音。CPU ONNX 模型可能占用数 GiB，Bot 启动时只同步声线元数据、首次合成时才按需加载模型；Worker 会主动归还空闲堆内存，并在 `SPEECH_WORKER_IDLE_RECYCLE_SECONDS`（默认 300 秒）后由 Compose 自动回收重启；设为 `0` 可关闭空闲回收。
 
 仓库不会下载或附带任何角色模型、Galgame/动漫声线或原始语音，生产 Worker 也不安装 PyTorch。部署者必须确认模型权重和参考音频授权。准备流程、Manifest、转换、Planner、插件、自动化与排障见 [语音文档](docs/speech/architecture.md)。
 
@@ -212,7 +216,7 @@ docker compose up -d --build --no-deps bot
 
 ### Planner-first 会话
 
-1.6.0 默认启用 Planner。Planner 使用当前主 LLM（`PLANNER_MODEL` 留空）或单独模型，关闭思考、不提供工具，只输出严格结构化计划。它只能缩小本轮工具和回复计划，不能修改配置、记忆、关系、权限或直接发送消息。
+1.6.0 默认启用 Planner。Planner 使用当前主 LLM（`PLANNER_MODEL` 留空）或单独模型，关闭思考、不提供工具，只输出严格结构化计划。DeepSeek 部署可设置 `PLANNER_MODEL=deepseek-v4-flash`，在不改变主聊天模型的情况下缩短计划延迟。Planner 只能缩小本轮工具和回复计划，不能修改配置、记忆、关系、权限或直接发送消息。
 
 ```dotenv
 PLANNER_ENABLED=true
@@ -223,6 +227,7 @@ PLANNER_PREFERRED_MESSAGES=3
 PLANNER_REPLY_NECESSITY_THRESHOLD=0
 PLANNER_CONFIDENCE_THRESHOLD=0.2
 PLANNER_MAX_PENDING_MESSAGES=8
+SPEECH_SPONTANEOUS_FREQUENCY=0.15
 REPLY_SEQUENCE_CANCEL_ON_NEW_MESSAGE=true
 REPLY_PLAN_HARD_MAX_MESSAGES=10
 ```
@@ -253,6 +258,11 @@ Planner 开启时，已启用群由 `planner.group_enabled` 控制是否进入�
 Planner 还可在多人聊天中为指向关系非常明确的回答选择引用消息发送；默认仍是普通发送。
 引用目标必须来自当前受限 Planner 上下文中的真实消息 ID，多条回复只在第一条携带引用，避免
 连续引用气泡刷屏。
+
+Planner 同时是聊天语音的唯一决策边界：它从语义识别本轮明确索要/拒绝语音、持续人物偏好和
+中性的日常表达。Agent 的 `send_voice` 只在明确索要语音的轮次临时出现，并且只能补充风格与
+语言；日常主动语音按 `speech.spontaneous_frequency` 和最近 Planner 记录形成频率预算。超级
+管理员可直接说“把日常主动语音频率改成 0.25”，以 global/group/user 作用域热更新。
 
 ### 可选：启用本地插件
 
@@ -320,6 +330,7 @@ uv run qq-ai-bot-cli plugin test plugins/com.example.echo
 | `speech_voice_profiles` | `0015` 新增的本地声线档案、校验和、启用和默认状态 |
 | `speech_voice_references` | 每个档案的多风格参考元数据与相对路径，不保存音频正文 |
 | `speech_generations` | 语音队列、缓存、取消、发送和失败类别；正文只保存哈希 |
+| `person_speech_preferences` | `0017` 新增的每个 QQ 的持久语音模式与最后一次明确修改来源 |
 
 消息到达后的顺序是：
 
@@ -925,4 +936,4 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 6. 依次人工验证：私聊明确请求、群聊 @、低必要性群消息静默、新消息中断剩余分句、管理员自然语言工具、自动化、视觉、联网、关系和旧命令。
 7. 需要插件时再复制已审阅目录，通过 CLI 发现、查看权限、批准并启用；不要直接启用未知第三方 Python 代码。
 
-`0014` 是非破坏性迁移，只新增持久化表情资产、作用域、后台任务和使用事件表；回退 `0014 → 0013` 会删除这些表情元数据，因此应先备份 `data/`。`0013` 新增 Planner 与插件运行时表。两次迁移都不会删除聊天正文、人物、记忆、联网来源、关系、既有视觉缓存或自动化数据。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。
+`0017` 是非破坏性迁移，只新增人物语音偏好和 Planner 语音决策字段；回退会删除这些新增偏好与观测字段，因此应先备份 `data/`。`0014`～`0016` 分别新增持久化表情、本地语音及双语元数据。它们都不会删除聊天正文、人物、记忆、联网来源、关系、既有视觉缓存或自动化数据。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。

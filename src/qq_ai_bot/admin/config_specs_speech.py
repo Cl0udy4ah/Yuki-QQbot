@@ -91,6 +91,20 @@ def speech_config_specs() -> tuple[ConfigSpec, ...]:
             settings_fields=("speech_default_profile",),
             category="speech",
         ),
+        _spec(
+            "speech.spontaneous_frequency",
+            "日常自主语音频率",
+            "Planner 在用户未主动询问语音时选择语音的目标频率，范围 0..1。",
+            aliases=("主动语音频率", "语音频率"),
+            value_type="number",
+            minimum=0,
+            maximum=1,
+            scopes=_GGU,
+            env_alias="SPEECH_SPONTANEOUS_FREQUENCY",
+            getter=_field("speech_spontaneous_frequency"),
+            settings_fields=("speech_spontaneous_frequency",),
+            category="speech",
+        ),
         *(
             _spec(
                 key,
@@ -130,8 +144,9 @@ def speech_config_specs() -> tuple[ConfigSpec, ...]:
                 ),
                 (
                     "speech.default_mode",
-                    "默认语音模式",
-                    "Planner 未指定时的文字与语音模式。",
+                    "全局语音偏好基线",
+                    "未保存人物语音偏好时使用：text 禁止日常主动语音，optional 自动决定，"
+                    "voice/text_and_voice 偏好语音；本轮最终模式仍由 Planner 决定。",
                     (),
                     "enum",
                     None,

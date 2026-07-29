@@ -139,6 +139,8 @@ from qq_ai_bot.speech.admin import SpeechAdminService
 from qq_ai_bot.speech.cache import SpeechCache
 from qq_ai_bot.speech.genie_client import GenieWorkerClient
 from qq_ai_bot.speech.paths import SpeechPathPolicy
+from qq_ai_bot.speech.preference_repository import VoicePreferenceRepository
+from qq_ai_bot.speech.preference_service import VoicePreferenceService
 from qq_ai_bot.speech.profiles import VoiceProfileService
 from qq_ai_bot.speech.reply_effect import VoiceReplyEffectService
 from qq_ai_bot.speech.repository import SpeechGenerationRepository, VoiceProfileRepository
@@ -206,6 +208,8 @@ class ApplicationContainer:
         self.emoji_descriptions = EmojiDescriptionRepository(self.database)
         self.emoji_repository = EmojiRepository(self.database)
         self.planner_runs = PlannerRepository(self.database)
+        self.voice_preferences = VoicePreferenceRepository(self.database)
+        self.voice_preference_service = VoicePreferenceService(self.voice_preferences)
         self.voice_profiles = VoiceProfileRepository(self.database)
         self.speech_generations = SpeechGenerationRepository(self.database)
         self.speech_paths = SpeechPathPolicy(settings.speech_root)
@@ -372,6 +376,8 @@ class ApplicationContainer:
             ledger=self.ledger,
             relationships=self.relationships,
             speech=self.speech,
+            voice_preferences=self.voice_preferences,
+            planner_runs=self.planner_runs,
         )
         self.reply_sequence = ReplySequenceManager(self.turn_coordinator)
         self.relationship_evaluator: RelationshipEvaluator
@@ -701,6 +707,7 @@ class ApplicationContainer:
             event_publisher=self.plugin_events,
             emoji_collector=self.emoji_collector,
             emoji_worker=self.emoji_worker,
+            voice_preferences=self.voice_preference_service,
         )
         self._cleanup_stop = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None

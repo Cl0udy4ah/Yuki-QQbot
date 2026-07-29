@@ -121,6 +121,10 @@ class EmojiSelectionResult(_FrozenModel):
 class EmojiReplyPlan(_FrozenModel):
     """Planner-owned behavioural intent; it never contains an asset identifier."""
 
+    # Planner emits JSON strings for enum values. Other persisted/runtime emoji
+    # models remain strict; only this LLM boundary model accepts JSON enums.
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
+
     mode: EmojiReplyMode = EmojiReplyMode.NONE
     placement: EmojiPlacement = EmojiPlacement.AFTER_TEXT
     goal: str = Field(default="", max_length=300)

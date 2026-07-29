@@ -3,7 +3,12 @@
 from qq_ai_bot.speech.models import (
     SpeechGeneration,
     SpeechGenerationStatus,
+    VoiceAgentToolPolicy,
+    VoiceIntent,
     VoiceMode,
+    VoicePreferenceChange,
+    VoicePreferenceDuration,
+    VoicePreferenceMode,
     VoiceProfile,
     VoiceReference,
 )
@@ -11,7 +16,12 @@ from qq_ai_bot.speech.models import (
 __all__ = [
     "SpeechGeneration",
     "SpeechGenerationStatus",
+    "VoiceAgentToolPolicy",
+    "VoiceIntent",
     "VoiceMode",
+    "VoicePreferenceChange",
+    "VoicePreferenceDuration",
+    "VoicePreferenceMode",
     "VoiceProfile",
     "VoiceReference",
 ]

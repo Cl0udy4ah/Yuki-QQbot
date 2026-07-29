@@ -371,14 +371,17 @@ class ContextAssembler:
         for row in reversed(recent):
             if row.platform_message_id == inbound.message_id:
                 continue
+            rendered_content = cls._history_message_content(
+                row,
+                current_message_id=inbound.message_id,
+                current_content=content,
+                local_timezone=local_timezone,
+            )
+            if not rendered_content.strip():
+                continue
             message = ChatMessage(
                 role="assistant" if row.direction == "outbound" else "user",
-                content=cls._history_message_content(
-                    row,
-                    current_message_id=inbound.message_id,
-                    current_content=content,
-                    local_timezone=local_timezone,
-                ),
+                content=rendered_content,
             )
             size = len(message.content or "")
             if used + size > character_budget:
@@ -418,6 +421,14 @@ class ContextAssembler:
     ) -> str:
         if row.platform_message_id == current_message_id:
             return current_content
+        if row.direction == "outbound" and row.content.startswith(
+            "[语音：Yuki 发送了一条语音，声线："
+        ):
+            # Before 1.8.2, text-and-voice delivery stored TTS profile/style
+            # metadata as if it were assistant prose. Some later model turns
+            # repeated that contaminated line as ordinary text, so recognize
+            # the exact generated prefix independently of the segment type.
+            return ""
         if not row.visual_summary:
             return row.content
         base = row.content.strip()

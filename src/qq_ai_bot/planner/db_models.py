@@ -36,6 +36,15 @@ class PlannerRunModel(Base):
             "desired_messages IS NULL OR desired_messages >= 0",
             name="ck_planner_runs_desired_messages",
         ),
+        CheckConstraint(
+            "spontaneous_frequency IS NULL OR "
+            "(spontaneous_frequency >= 0 AND spontaneous_frequency <= 1)",
+            name="ck_planner_runs_spontaneous_frequency",
+        ),
+        CheckConstraint(
+            "recent_voice_ratio IS NULL OR (recent_voice_ratio >= 0 AND recent_voice_ratio <= 1)",
+            name="ck_planner_runs_recent_voice_ratio",
+        ),
         CheckConstraint("messages_planned >= 0", name="ck_planner_runs_messages_planned"),
         CheckConstraint("messages_sent >= 0", name="ck_planner_runs_messages_sent"),
         CheckConstraint("latency_seconds >= 0", name="ck_planner_runs_latency"),
@@ -65,6 +74,13 @@ class PlannerRunModel(Base):
     delivery_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     desired_messages: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tool_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    voice_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    voice_intent: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    voice_tool_policy: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    voice_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    voice_preference_change: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    spontaneous_frequency: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recent_voice_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     latency_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     interrupted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

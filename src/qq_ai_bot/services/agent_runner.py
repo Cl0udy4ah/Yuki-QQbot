@@ -123,7 +123,25 @@ class AgentRunner:
                     and tools.has_visible_effects()  # type: ignore[attr-defined]
                 )
                 if not content.strip() and not has_visible_effects:
-                    raise LLMEmptyResponseError("model returned no final answer")
+                    if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
+                        raise LLMEmptyResponseError("model returned no final answer")
+                    empty_retries += 1
+                    logger.warning(
+                        "agent_empty_final_retry retry=%d tool_calls_used=%d",
+                        empty_retries,
+                        calls_used,
+                    )
+                    messages.append(
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "你已经完成了本轮所需的工具调用，但最终回复正文为空。"
+                                "请根据已有工具结果生成实际要发送给用户的简短正文；"
+                                "不要重复已经成功的工具调用，也不要只描述发送模式。"
+                            ),
+                        )
+                    )
+                    continue
                 return AgentRunResult(
                     text=content,
                     tool_calls_used=calls_used,

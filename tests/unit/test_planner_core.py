@@ -50,7 +50,16 @@ from qq_ai_bot.planner.models import PlannerSpeechContext
 from qq_ai_bot.planner.prompt import build_planner_messages
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.prompt_composer import PromptComposer
-from qq_ai_bot.speech.models import SpeechLanguageHint, VoiceMode, VoiceReplyPlan
+from qq_ai_bot.speech.models import (
+    SpeechLanguageHint,
+    VoiceAgentToolPolicy,
+    VoiceIntent,
+    VoiceMode,
+    VoicePreferenceChange,
+    VoicePreferenceDuration,
+    VoicePreferenceMode,
+    VoiceReplyPlan,
+)
 
 
 def _runtime() -> RuntimeConfigSnapshot:
@@ -497,7 +506,7 @@ def test_planner_voice_language_is_bounded_by_the_active_profile() -> None:
     assert unavailable.voice.style_hint == ""
 
 
-def test_explicit_voice_and_runtime_default_are_enforced_by_backend() -> None:
+def test_planner_semantic_voice_intent_is_enforced_without_keyword_matching() -> None:
     runtime = replace(
         _runtime(),
         speech=replace(_runtime().speech, enabled=True, default_mode="optional"),
@@ -510,23 +519,79 @@ def test_explicit_voice_and_runtime_default_are_enforced_by_backend() -> None:
         available_languages=("zh", "jp"),
     )
 
-    def constrained(text: str) -> TurnPlan:
-        planner_input = _planner_input(text=text).model_copy(update={"speech": speech})
+    def constrained(voice: VoiceReplyPlan, *, spontaneous_allowed: bool = True) -> TurnPlan:
+        planner_input = _planner_input(text="任意自然语言，不由后端匹配关键词").model_copy(
+            update={
+                "speech": speech.model_copy(update={"spontaneous_allowed": spontaneous_allowed})
+            }
+        )
         return PlannerService._constrain_business_rules(
-            TurnPlan(
-                **_valid_plan_payload(
-                    voice=VoiceReplyPlan(mode=VoiceMode.TEXT, reason="模型选择文字")
-                )
-            ),
+            TurnPlan(**_valid_plan_payload(voice=voice)),
             planner_input,
             runtime,
             administrator_request=False,
         )
 
-    assert constrained("请用语音说晚安").voice.mode is VoiceMode.VOICE
-    assert constrained("今天有点累").voice.mode is VoiceMode.OPTIONAL
-    assert constrained("帮我解释 Docker 端口").voice.mode is VoiceMode.TEXT
-    assert constrained("不要语音，只要文字").voice.mode is VoiceMode.TEXT
+    explicit = constrained(
+        VoiceReplyPlan(
+            mode=VoiceMode.TEXT,
+            intent=VoiceIntent.EXPLICIT_REQUEST,
+            agent_tool=VoiceAgentToolPolicy.REQUIRED,
+        )
+    )
+    opt_out = constrained(
+        VoiceReplyPlan(
+            mode=VoiceMode.TEXT_AND_VOICE,
+            intent=VoiceIntent.EXPLICIT_OPT_OUT,
+            preference_change=VoicePreferenceChange(
+                mode=VoicePreferenceMode.TEXT_ONLY,
+                duration=VoicePreferenceDuration.PERSISTENT,
+            ),
+        )
+    )
+    neutral = constrained(VoiceReplyPlan(mode=VoiceMode.OPTIONAL))
+    cadence_blocked = constrained(
+        VoiceReplyPlan(mode=VoiceMode.VOICE),
+        spontaneous_allowed=False,
+    )
+
+    assert explicit.voice.mode is VoiceMode.VOICE
+    assert explicit.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
+    assert opt_out.voice.mode is VoiceMode.TEXT
+    assert opt_out.voice.preference_change is not None
+    assert neutral.voice.mode is VoiceMode.VOICE
+    assert neutral.voice.agent_tool is VoiceAgentToolPolicy.FORBIDDEN
+    assert cadence_blocked.voice.mode is VoiceMode.TEXT
+
+
+def test_unavailable_speech_cannot_smuggle_a_neutral_persistent_preference() -> None:
+    planner_input = _planner_input().model_copy(
+        update={
+            "speech": PlannerSpeechContext(enabled=False, available=False),
+        }
+    )
+    model_plan = TurnPlan(
+        **_valid_plan_payload(
+            voice=VoiceReplyPlan(
+                mode=VoiceMode.VOICE,
+                preference_change=VoicePreferenceChange(
+                    mode=VoicePreferenceMode.PREFER_VOICE,
+                    duration=VoicePreferenceDuration.PERSISTENT,
+                ),
+            )
+        )
+    )
+
+    constrained = PlannerService._constrain_business_rules(
+        model_plan,
+        planner_input,
+        _runtime(),
+        administrator_request=False,
+    )
+
+    assert constrained.voice.mode is VoiceMode.TEXT
+    assert constrained.voice.agent_tool is VoiceAgentToolPolicy.FORBIDDEN
+    assert constrained.voice.preference_change is None
 
 
 def test_agent_speech_runtime_policy_explains_that_tts_has_no_port() -> None:
@@ -605,6 +670,42 @@ def test_plan_parser_discards_unknown_reply_target() -> None:
     )
 
     assert plan.reply_to_message_id is None
+
+
+def test_plan_parser_normalizes_free_form_reason_without_discarding_voice_intent() -> None:
+    plan = parse_turn_plan(
+        json.dumps(
+            _valid_plan_payload(
+                reason_code="explicit_voice_request",
+                emoji={
+                    "mode": "none",
+                    "placement": "before_text",
+                    "goal": "",
+                    "emotion": "",
+                },
+                voice={
+                    "mode": "voice",
+                    "intent": "explicit_request",
+                    "agent_tool": "required",
+                    "style_hint": "gentle",
+                    "language": "zh",
+                    "reason": "用户明确索要语音",
+                    "preference_change": {
+                        "mode": "prefer_voice",
+                        "duration": "persistent",
+                    },
+                },
+            )
+        ),
+        _planner_input(scope=ScopeType.PRIVATE, text="发条语音吧"),
+    )
+
+    assert plan.reason_code is PlannerReasonCode.DIRECT_REQUEST
+    assert plan.voice.mode is VoiceMode.VOICE
+    assert plan.voice.intent is VoiceIntent.EXPLICIT_REQUEST
+    assert plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
+    assert plan.voice.preference_change is not None
+    assert plan.voice.preference_change.mode is VoicePreferenceMode.PREFER_VOICE
 
 
 def test_plan_parser_rejects_unknown_fields_and_permission_modes() -> None:

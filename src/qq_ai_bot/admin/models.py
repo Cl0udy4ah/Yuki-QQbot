@@ -288,6 +288,7 @@ class SpeechRuntimeConfig:
     automation_enabled: bool
     plugin_enabled: bool
     text_fallback_enabled: bool
+    spontaneous_frequency: float = 0.15
 
 
 @dataclass(frozen=True, slots=True)

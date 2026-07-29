@@ -95,6 +95,12 @@ def constrain_turn_plan(
     if not 0 <= max_wait_seconds <= 300:
         raise ValueError("max_wait_seconds must be between 0 and 300")
     constrained = dict(payload)
+    reason_code = constrained.get("reason_code")
+    if reason_code not in {item.value for item in PlannerReasonCode}:
+        constrained["reason_code"] = _normalized_reason_code(
+            constrained.get("decision"),
+            planner_input,
+        ).value
     desired = constrained.get("desired_messages")
     if isinstance(desired, int) and not isinstance(desired, bool):
         constrained["desired_messages"] = max(1, min(hard_max_messages, desired))
@@ -125,6 +131,25 @@ def constrain_turn_plan(
     if planner_input.visual_input_present and plan.tool_mode is ToolMode.INHERIT:
         updates["tool_mode"] = ToolMode.READ_ONLY
     return plan.model_copy(update=updates) if updates else plan
+
+
+def _normalized_reason_code(
+    decision: object,
+    planner_input: PlannerInput,
+) -> PlannerReasonCode:
+    """Map free-form model labels to one stable observability category."""
+
+    if decision == PlannerDecision.WAIT.value:
+        return PlannerReasonCode.WAIT_FOR_MORE_CONTEXT
+    if decision == PlannerDecision.SILENT.value:
+        return PlannerReasonCode.LOW_RELEVANCE
+    if planner_input.mentions_bot:
+        return PlannerReasonCode.DIRECT_MENTION
+    if planner_input.reply_target_is_bot:
+        return PlannerReasonCode.CONTINUATION
+    if planner_input.scope_type is ScopeType.PRIVATE:
+        return PlannerReasonCode.DIRECT_REQUEST
+    return PlannerReasonCode.USEFUL_CONTRIBUTION
 
 
 def parse_turn_plan(

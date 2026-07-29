@@ -25,6 +25,36 @@ class VoiceMode(StrEnum):
     OPTIONAL = "optional"
 
 
+class VoiceIntent(StrEnum):
+    """Semantic voice intent selected only by Planner."""
+
+    NEUTRAL = "neutral"
+    EXPLICIT_REQUEST = "explicit_request"
+    EXPLICIT_OPT_OUT = "explicit_opt_out"
+
+
+class VoiceAgentToolPolicy(StrEnum):
+    """Whether the Agent may customize an already-authorized voice reply."""
+
+    FORBIDDEN = "forbidden"
+    REQUIRED = "required"
+
+
+class VoicePreferenceMode(StrEnum):
+    """Persistent person-level preference, distinct from one-turn delivery."""
+
+    TEXT_ONLY = "text_only"
+    AUTO = "auto"
+    PREFER_VOICE = "prefer_voice"
+
+
+class VoicePreferenceDuration(StrEnum):
+    """Whether a semantic preference applies only now or to future turns."""
+
+    TURN = "turn"
+    PERSISTENT = "persistent"
+
+
 class SpeechLanguage(StrEnum):
     ZH = "zh"
     JP = "jp"
@@ -168,15 +198,37 @@ class SpeechGeneration(_FrozenModel):
     expires_at: datetime | None
 
 
+class VoicePreferenceChange(_FrozenModel):
+    # This model is parsed from JSON emitted by Planner, where enum members are
+    # necessarily represented by strings. Keep extra/frozen guarantees without
+    # inheriting the internal Python-only strict enum requirement.
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
+
+    mode: VoicePreferenceMode
+    duration: VoicePreferenceDuration = VoicePreferenceDuration.TURN
+
+
 class VoiceReplyPlan(_FrozenModel):
+    # Same trust boundary as VoicePreferenceChange: JSON strings must validate
+    # into enums before backend constraints are applied.
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
+
     mode: VoiceMode = VoiceMode.TEXT
+    intent: VoiceIntent = VoiceIntent.NEUTRAL
+    agent_tool: VoiceAgentToolPolicy = VoiceAgentToolPolicy.FORBIDDEN
     style_hint: str = Field(default="", max_length=128)
     language: SpeechLanguageHint = SpeechLanguageHint.AUTO
     reason: str = Field(default="", max_length=300)
+    preference_change: VoicePreferenceChange | None = None
 
     @model_validator(mode="after")
     def _reject_paths_and_profiles(self) -> VoiceReplyPlan:
         hint = self.style_hint
         if any(token in hint for token in ("/", "\\", "://")):
             raise ValueError("style_hint cannot contain a path")
+        if (
+            self.agent_tool is VoiceAgentToolPolicy.REQUIRED
+            and self.intent is not VoiceIntent.EXPLICIT_REQUEST
+        ):
+            raise ValueError("send_voice can only be authorized for an explicit request")
         return self

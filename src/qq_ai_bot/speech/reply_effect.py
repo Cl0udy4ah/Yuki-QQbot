@@ -128,15 +128,13 @@ class VoiceReplyEffectService:
                     OutboundMedia(
                         kind=AttachmentKind.AUDIO,
                         mime_type="audio/wav",
-                        summary=(
-                            f"Yuki 发送了一条语音，声线：{generated.profile_id}，"
-                            f"风格：{generated.reference_key}，语言：{generated.target_language}"
-                        ),
+                        summary="语音消息",
                         local_path=str(path),
                         spoken_text=response_text if voice_only else "",
                         generation_id=generated.generation_id,
                         voice_profile_id=generated.profile_id,
                         voice_reference_key=generated.reference_key,
+                        voice_language=generated.target_language,
                         duration_milliseconds=generated.duration_milliseconds,
                     ),
                 )

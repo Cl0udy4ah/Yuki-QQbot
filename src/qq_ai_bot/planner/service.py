@@ -24,7 +24,14 @@ from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
     publish_notification,
 )
-from qq_ai_bot.speech.models import SpeechLanguageHint, VoiceMode, VoiceReplyPlan
+from qq_ai_bot.speech.models import (
+    SpeechLanguageHint,
+    VoiceAgentToolPolicy,
+    VoiceIntent,
+    VoiceMode,
+    VoicePreferenceDuration,
+    VoicePreferenceMode,
+)
 from yuki_plugin_sdk.events import EventName
 
 _MULTI_MESSAGE_REQUESTS = (
@@ -35,42 +42,6 @@ _MULTI_MESSAGE_REQUESTS = (
     "拆成几条",
     "分开发",
     "一句一条",
-)
-
-_VOICE_REQUESTS = (
-    "用语音说",
-    "语音说",
-    "发条语音",
-    "发一条语音",
-    "发个语音",
-    "发语音",
-    "念给我听",
-    "念一下",
-    "读给我听",
-    "用声音说",
-)
-_VOICE_OPT_OUTS = (
-    "不要语音",
-    "别发语音",
-    "不用语音",
-    "只要文字",
-    "文字回复",
-    "用文字说",
-)
-_TECHNICAL_VOICE_MARKERS = (
-    "代码",
-    "报错",
-    "日志",
-    "配置",
-    "命令",
-    "参数",
-    "数据库",
-    "接口",
-    "端口",
-    "docker",
-    "github",
-    "http",
-    "tts",
 )
 
 
@@ -164,7 +135,7 @@ class PlannerService:
             fallback_used=fallback_used,
             turn_version=turn_version,
         )
-        await self._finish_run(run_id, planned)
+        await self._finish_run(run_id, planned, planner_input)
         await publish_notification(
             self._event_publisher,
             EventName.PLANNER_PLANNED,
@@ -177,6 +148,9 @@ class PlannerService:
                 "delivery_mode": plan.delivery_mode.value,
                 "desired_messages": plan.desired_messages,
                 "tool_mode": plan.tool_mode.value,
+                "voice_mode": plan.voice.mode.value,
+                "voice_intent": plan.voice.intent.value,
+                "voice_tool_policy": plan.voice.agent_tool.value,
                 "confidence": plan.confidence,
                 "planner_used": should_call,
                 "fallback_used": fallback_used,
@@ -239,38 +213,48 @@ class PlannerService:
                 else runtime.speech.group_enabled
             )
         )
+        voice_plan = plan.voice
         if not speech_allowed:
-            updates["voice"] = VoiceReplyPlan(mode=VoiceMode.TEXT)
-        else:
-            voice_plan = plan.voice
-            normalized_text = planner_input.current_message.text.casefold()
-            explicit_text = any(token in normalized_text for token in _VOICE_OPT_OUTS)
-            explicit_voice = not explicit_text and any(
-                token in normalized_text for token in _VOICE_REQUESTS
+            voice_plan = voice_plan.model_copy(
+                update={
+                    "mode": VoiceMode.TEXT,
+                    "agent_tool": VoiceAgentToolPolicy.FORBIDDEN,
+                    "style_hint": "",
+                    "language": SpeechLanguageHint.AUTO,
+                }
             )
-            if explicit_text:
-                voice_plan = VoiceReplyPlan(
-                    mode=VoiceMode.TEXT,
-                    reason="用户明确要求文字回复",
-                )
-            elif explicit_voice:
+        else:
+            if voice_plan.intent is VoiceIntent.EXPLICIT_OPT_OUT:
                 voice_plan = voice_plan.model_copy(
                     update={
-                        "mode": VoiceMode.VOICE,
-                        "reason": "用户明确要求语音回复",
+                        "mode": VoiceMode.TEXT,
+                        "agent_tool": VoiceAgentToolPolicy.FORBIDDEN,
                     }
                 )
-            elif (
-                voice_plan.mode is VoiceMode.TEXT
-                and runtime.speech.default_mode != VoiceMode.TEXT.value
-                and PlannerService._default_voice_suits_turn(plan, normalized_text)
-            ):
+            elif voice_plan.intent is VoiceIntent.EXPLICIT_REQUEST:
                 voice_plan = voice_plan.model_copy(
                     update={
-                        "mode": VoiceMode(runtime.speech.default_mode),
-                        "reason": voice_plan.reason or "日常聊天采用默认语音模式",
+                        "mode": (
+                            VoiceMode.VOICE
+                            if voice_plan.mode in {VoiceMode.TEXT, VoiceMode.OPTIONAL}
+                            else voice_plan.mode
+                        ),
+                        "agent_tool": VoiceAgentToolPolicy.REQUIRED,
                     }
                 )
+            else:
+                neutral_updates: dict[str, object] = {
+                    "agent_tool": VoiceAgentToolPolicy.FORBIDDEN,
+                    "preference_change": None,
+                }
+                if (
+                    planner_input.speech.preference_mode is VoicePreferenceMode.TEXT_ONLY
+                    or not planner_input.speech.spontaneous_allowed
+                ):
+                    neutral_updates["mode"] = VoiceMode.TEXT
+                elif voice_plan.mode is VoiceMode.OPTIONAL:
+                    neutral_updates["mode"] = VoiceMode.VOICE
+                voice_plan = voice_plan.model_copy(update=neutral_updates)
             voice_updates: dict[str, object] = {}
             if (
                 voice_plan.style_hint
@@ -284,7 +268,17 @@ class PlannerService:
                 voice_updates["language"] = SpeechLanguageHint.AUTO
             if voice_updates:
                 voice_plan = voice_plan.model_copy(update=voice_updates)
-            updates["voice"] = voice_plan
+        change = voice_plan.preference_change
+        if change is not None and (
+            planner_input.origin is TurnOrigin.AUTONOMOUS_GROUP
+            or voice_plan.intent is VoiceIntent.NEUTRAL
+        ):
+            voice_plan = voice_plan.model_copy(update={"preference_change": None})
+        elif change is not None and change.duration is VoicePreferenceDuration.TURN:
+            # Turn-only semantics are already represented by mode and intent;
+            # only persistent transitions are stored after planning.
+            voice_plan = voice_plan.model_copy(update={"preference_change": None})
+        updates["voice"] = voice_plan
         explicit = (
             planner_input.scope_type is ScopeType.PRIVATE
             or planner_input.mentions_bot
@@ -319,14 +313,6 @@ class PlannerService:
                 updates["decision"] = PlannerDecision.SILENT
         return plan.model_copy(update=updates)
 
-    @staticmethod
-    def _default_voice_suits_turn(plan: TurnPlan, normalized_text: str) -> bool:
-        if plan.delivery_mode in {DeliveryMode.STRUCTURED, DeliveryMode.DETAILED}:
-            return False
-        if len(normalized_text) > 200:
-            return False
-        return not any(marker in normalized_text for marker in _TECHNICAL_VOICE_MARKERS)
-
     async def _begin_run(
         self,
         planner_input: PlannerInput,
@@ -351,7 +337,12 @@ class PlannerService:
         )
         return row.id
 
-    async def _finish_run(self, run_id: int | None, planned: PlannedTurn) -> None:
+    async def _finish_run(
+        self,
+        run_id: int | None,
+        planned: PlannedTurn,
+        planner_input: PlannerInput,
+    ) -> None:
         if self._repository is None or run_id is None:
             return
         plan = planned.plan
@@ -362,6 +353,17 @@ class PlannerService:
             delivery_mode=plan.delivery_mode.value,
             desired_messages=plan.desired_messages,
             tool_mode=plan.tool_mode.value,
+            voice_mode=plan.voice.mode.value,
+            voice_intent=plan.voice.intent.value,
+            voice_tool_policy=plan.voice.agent_tool.value,
+            voice_reason=plan.voice.reason,
+            voice_preference_change=(
+                plan.voice.preference_change.mode.value
+                if plan.voice.preference_change is not None
+                else None
+            ),
+            spontaneous_frequency=planner_input.speech.spontaneous_frequency,
+            recent_voice_ratio=planner_input.speech.recent_spontaneous_voice_ratio,
             confidence=plan.confidence,
             latency_seconds=planned.planner_latency_seconds,
             fallback_used=planned.fallback_used,

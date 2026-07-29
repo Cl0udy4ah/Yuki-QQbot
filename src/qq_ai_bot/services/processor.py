@@ -91,6 +91,7 @@ from qq_ai_bot.services.vision_service import (
     VisionService,
     compact_visual_summary,
 )
+from qq_ai_bot.speech.preference_service import VoicePreferenceService
 from qq_ai_bot.vision.models import VisualObservation
 from yuki_plugin_sdk.events import EventName
 
@@ -238,6 +239,7 @@ class MessageProcessor:
         event_publisher: LifecycleEventPublisher | None = None,
         emoji_collector: EmojiCollector | None = None,
         emoji_worker: EmojiWorker | None = None,
+        voice_preferences: VoicePreferenceService | None = None,
     ) -> None:
         database = conversations._database
         self._settings = settings
@@ -296,6 +298,7 @@ class MessageProcessor:
             observability=PlannerObservability(),
         )
         self._planner_signals = planner_signals
+        self._voice_preferences = voice_preferences
         audit = AdminAuditService(database)
         self._relationship_admin = relationship_admin or RelationshipAdminService(
             settings=settings,
@@ -647,6 +650,19 @@ class MessageProcessor:
                 planned_turn = planner_outcome.planned_turn
                 if planned_turn.plan.decision is PlannerDecision.SILENT:
                     return ProcessResult(True, reason="planner_silent")
+                if self._voice_preferences is not None:
+                    try:
+                        await self._voice_preferences.apply(
+                            planned_turn.plan.voice,
+                            user_id=message.sender.user_id,
+                            source_message_id=message.message_id,
+                            origin=TurnOrigin.USER_MESSAGE,
+                        )
+                    except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
+                        logger.warning(
+                            "voice_preference_update_failed exception_category=%s",
+                            type(exc).__name__,
+                        )
             sent_count = await self._chat.respond(
                 message,
                 identity,

@@ -12,7 +12,7 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.relationships import RelationshipStage
 from qq_ai_bot.emoji.models import EmojiReplyPlan
-from qq_ai_bot.speech.models import VoiceReplyPlan
+from qq_ai_bot.speech.models import VoicePreferenceMode, VoiceReplyPlan
 
 
 class _StrictPlannerModel(BaseModel):
@@ -94,6 +94,12 @@ class PlannerSpeechContext(_StrictPlannerModel):
     default_profile: str = ""
     available_styles: tuple[str, ...] = ()
     available_languages: tuple[str, ...] = ()
+    preference_mode: VoicePreferenceMode = VoicePreferenceMode.AUTO
+    spontaneous_frequency: float = Field(default=0.15, ge=0, le=1, strict=True)
+    recent_spontaneous_turns: int = Field(default=0, ge=0, strict=True)
+    recent_spontaneous_voice_turns: int = Field(default=0, ge=0, strict=True)
+    recent_spontaneous_voice_ratio: float = Field(default=0, ge=0, le=1, strict=True)
+    spontaneous_allowed: bool = True
 
 
 class ReplyNecessitySnapshot(_StrictPlannerModel):

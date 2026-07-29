@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import pairwise
+from math import ceil
 from typing import Protocol
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot, SpeechRuntimeConfig
@@ -19,6 +20,9 @@ from qq_ai_bot.planner.models import (
     PlannerSpeechContext,
 )
 from qq_ai_bot.planner.necessity import ReplyNecessityFeatures, ReplyNecessityScorer
+from qq_ai_bot.planner.repository import PlannerRepository, PlannerVoiceCadence
+from qq_ai_bot.speech.models import VoicePreferenceMode
+from qq_ai_bot.speech.preference_repository import VoicePreferenceRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,10 +48,14 @@ class PlannerContextBuilder:
         ledger: EventLedgerRepository,
         relationships: RelationshipRepository,
         speech: SpeechPlannerContextProvider | None = None,
+        voice_preferences: VoicePreferenceRepository | None = None,
+        planner_runs: PlannerRepository | None = None,
     ) -> None:
         self._ledger = ledger
         self._relationships = relationships
         self._speech = speech
+        self._voice_preferences = voice_preferences
+        self._planner_runs = planner_runs
 
     async def build(
         self,
@@ -117,6 +125,37 @@ class PlannerContextBuilder:
             if self._speech is not None
             else speech
         )
+        saved_preference = (
+            await self._voice_preferences.get(inbound.sender.user_id)
+            if self._voice_preferences is not None
+            else None
+        )
+        preference_mode = (
+            saved_preference.mode
+            if saved_preference is not None
+            else self._default_preference_mode(runtime.speech.default_mode)
+        )
+        cadence = (
+            await self._planner_runs.voice_cadence(conversation_key)
+            if self._planner_runs is not None
+            else PlannerVoiceCadence(0, 0)
+        )
+        spontaneous_allowed = self._spontaneous_allowed(
+            cadence,
+            frequency=runtime.speech.spontaneous_frequency,
+            preference_mode=preference_mode,
+        )
+        base_speech = speech_context or PlannerSpeechContext()
+        speech_context = base_speech.model_copy(
+            update={
+                "preference_mode": preference_mode,
+                "spontaneous_frequency": runtime.speech.spontaneous_frequency,
+                "recent_spontaneous_turns": cadence.spontaneous_turns,
+                "recent_spontaneous_voice_turns": cadence.spontaneous_voice_turns,
+                "recent_spontaneous_voice_ratio": cadence.ratio,
+                "spontaneous_allowed": spontaneous_allowed,
+            }
+        )
         return PlannerInput(
             conversation_key=conversation_key,
             scope_type=inbound.scope_type,
@@ -141,6 +180,26 @@ class PlannerContextBuilder:
             plugin_signals=plugin_signals,
             speech=speech_context or PlannerSpeechContext(),
         )
+
+    @staticmethod
+    def _spontaneous_allowed(
+        cadence: PlannerVoiceCadence,
+        *,
+        frequency: float,
+        preference_mode: VoicePreferenceMode,
+    ) -> bool:
+        if preference_mode is VoicePreferenceMode.TEXT_ONLY or frequency <= 0:
+            return False
+        budget = ceil((cadence.spontaneous_turns + 1) * min(1.0, frequency))
+        return cadence.spontaneous_voice_turns < budget
+
+    @staticmethod
+    def _default_preference_mode(default_mode: str) -> VoicePreferenceMode:
+        if default_mode == "text":
+            return VoicePreferenceMode.TEXT_ONLY
+        if default_mode in {"voice", "text_and_voice"}:
+            return VoicePreferenceMode.PREFER_VOICE
+        return VoicePreferenceMode.AUTO
 
     @staticmethod
     def _planner_message(row: EventRecord) -> PlannerMessage:

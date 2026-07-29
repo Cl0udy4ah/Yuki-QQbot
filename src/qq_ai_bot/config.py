@@ -235,6 +235,7 @@ class Settings(BaseSettings):
     speech_automation_enabled: bool = True
     speech_plugin_enabled: bool = True
     speech_text_fallback_enabled: bool = True
+    speech_spontaneous_frequency: float = Field(default=0.15, ge=0, le=1)
 
     automation_enabled: bool = False
     default_timezone: str = "Asia/Shanghai"

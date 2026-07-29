@@ -39,6 +39,13 @@ class PlannerRunRecord:
     delivery_mode: str | None
     desired_messages: int | None
     tool_mode: str | None
+    voice_mode: str | None
+    voice_intent: str | None
+    voice_tool_policy: str | None
+    voice_reason: str | None
+    voice_preference_change: str | None
+    spontaneous_frequency: float | None
+    recent_voice_ratio: float | None
     confidence: float | None
     latency_seconds: float
     interrupted: bool
@@ -48,6 +55,18 @@ class PlannerRunRecord:
     created_at: datetime
     finished_at: datetime | None
     error_category: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PlannerVoiceCadence:
+    spontaneous_turns: int
+    spontaneous_voice_turns: int
+
+    @property
+    def ratio(self) -> float:
+        if self.spontaneous_turns <= 0:
+            return 0.0
+        return self.spontaneous_voice_turns / self.spontaneous_turns
 
 
 def hash_planner_identifier(value: str, *, kind: str) -> str:
@@ -102,6 +121,13 @@ class PlannerRepository:
             delivery_mode=None,
             desired_messages=None,
             tool_mode=None,
+            voice_mode=None,
+            voice_intent=None,
+            voice_tool_policy=None,
+            voice_reason=None,
+            voice_preference_change=None,
+            spontaneous_frequency=None,
+            recent_voice_ratio=None,
             confidence=None,
             latency_seconds=0.0,
             interrupted=False,
@@ -126,6 +152,13 @@ class PlannerRepository:
         delivery_mode: str | None,
         desired_messages: int | None,
         tool_mode: str | None,
+        voice_mode: str | None = None,
+        voice_intent: str | None = None,
+        voice_tool_policy: str | None = None,
+        voice_reason: str | None = None,
+        voice_preference_change: str | None = None,
+        spontaneous_frequency: float | None = None,
+        recent_voice_ratio: float | None = None,
         confidence: float | None,
         latency_seconds: float,
         interrupted: bool = False,
@@ -143,6 +176,21 @@ class PlannerRepository:
             "delivery_mode": _optional_text(delivery_mode, 32),
             "desired_messages": max(0, desired_messages) if desired_messages is not None else None,
             "tool_mode": _optional_text(tool_mode, 32),
+            "voice_mode": _optional_text(voice_mode, 32),
+            "voice_intent": _optional_text(voice_intent, 32),
+            "voice_tool_policy": _optional_text(voice_tool_policy, 32),
+            "voice_reason": _safe_summary(voice_reason, 300),
+            "voice_preference_change": _optional_text(voice_preference_change, 32),
+            "spontaneous_frequency": (
+                _bounded(spontaneous_frequency, minimum=0.0, maximum=1.0)
+                if spontaneous_frequency is not None
+                else None
+            ),
+            "recent_voice_ratio": (
+                _bounded(recent_voice_ratio, minimum=0.0, maximum=1.0)
+                if recent_voice_ratio is not None
+                else None
+            ),
             "confidence": (
                 _bounded(confidence, minimum=0.0, maximum=1.0) if confidence is not None else None
             ),
@@ -205,6 +253,36 @@ class PlannerRepository:
             )
             return int(value or 0)
 
+    async def voice_cadence(
+        self,
+        conversation_key: str,
+        *,
+        limit: int = 20,
+    ) -> PlannerVoiceCadence:
+        """Summarize recent neutral Planner turns without reading chat text."""
+
+        conversation_hash = hash_planner_identifier(conversation_key, kind="conversation")
+        async with self._database.sessions() as session:
+            rows = tuple(
+                (
+                    await session.scalars(
+                        select(PlannerRunModel)
+                        .where(
+                            PlannerRunModel.conversation_key_hash == conversation_hash,
+                            PlannerRunModel.planner_decision == "reply",
+                            PlannerRunModel.voice_intent == "neutral",
+                        )
+                        .order_by(PlannerRunModel.created_at.desc(), PlannerRunModel.id.desc())
+                        .limit(max(1, min(limit, 100)))
+                    )
+                ).all()
+            )
+        voice_modes = {"voice", "text_and_voice", "optional"}
+        return PlannerVoiceCadence(
+            spontaneous_turns=len(rows),
+            spontaneous_voice_turns=sum(1 for row in rows if row.voice_mode in voice_modes),
+        )
+
 
 def _record(row: PlannerRunModel) -> PlannerRunRecord:
     return PlannerRunRecord(
@@ -225,6 +303,13 @@ def _record(row: PlannerRunModel) -> PlannerRunRecord:
         delivery_mode=row.delivery_mode,
         desired_messages=row.desired_messages,
         tool_mode=row.tool_mode,
+        voice_mode=row.voice_mode,
+        voice_intent=row.voice_intent,
+        voice_tool_policy=row.voice_tool_policy,
+        voice_reason=row.voice_reason,
+        voice_preference_change=row.voice_preference_change,
+        spontaneous_frequency=row.spontaneous_frequency,
+        recent_voice_ratio=row.recent_voice_ratio,
         confidence=row.confidence,
         latency_seconds=row.latency_seconds,
         interrupted=row.interrupted,
@@ -273,6 +358,14 @@ def _safe_reason_metadata(value: object, *, key: str = "") -> object:
 
 def _optional_text(value: str | None, limit: int) -> str | None:
     return value[:limit] if value else None
+
+
+def _safe_summary(value: str | None, limit: int) -> str | None:
+    if not value:
+        return None
+    normalized = " ".join(value.split())
+    redacted = _IDENTIFIER_LIKE.sub("[REDACTED_IDENTIFIER]", normalized)
+    return redacted[:limit] or None
 
 
 def _bounded(value: float, *, minimum: float, maximum: float) -> float:

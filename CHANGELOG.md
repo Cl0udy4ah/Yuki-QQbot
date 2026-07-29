@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## 1.8.2 - 2026-07-29
+
+### Planner 统一语音治理
+
+- 修复文字加语音模式把 `[语音：Yuki 发送了一条语音，声线：…]` 等内部 TTS 元数据写成普通
+  对话正文的问题。实际说话文本与媒体元数据现在严格分离；声线、风格、语言仍保留在结构化
+  消息段，旧格式记录会从模型上下文中隐藏，并在 `0017` 升级时清理其正文副本。
+- 系统提示词新增语音朗读规范：包含语音的轮次中，自称 `Yuki` 写作 `ゆき`，避免日语 TTS
+  按 `Y U K I` 逐字母朗读；纯文字回复不受影响。
+- 文档补充 `PLANNER_MODEL=deepseek-v4-flash` 的独立低延迟配置方式；当前部署已切换到该模型，
+  主聊天模型仍保持独立，不因 Planner 配置而改变。
+- 修复 Agent 成功排队 `send_voice` 或普通可选表情后，模型最终正文为空时整轮静默的问题：
+  语音与普通表情不再被误判为可独立发送的内容，Agent 会在同一轮补生成正文；只有明确的
+  “纯表情回复”允许没有文字。媒体选择或合成最终未产出时，发送层仍会退回文字，保证 Planner
+  已决定回复的轮次不会无声结束。
+- 修复 Planner 的真实 JSON 响应被内部 Python 严格枚举模型误拒绝的问题；仅对
+  `EmojiReplyPlan`、`VoiceReplyPlan` 和语音偏好变更这三个 LLM 边界 DTO 接受 JSON 字符串枚举，
+  其他持久化与运行时模型继续严格校验。未知的模型自定义 `reason_code` 现在只会归一化为稳定
+  观测类别，不再丢弃其余完全合法的回复、表情和语音计划。
+- 删除聊天后端的语音请求/拒绝固定短语表，改由 Planner 根据自然语言和对话上下文输出
+  `explicit_request`、`explicit_opt_out` 或 `neutral` 语义意图；明确触发、持续偏好和普通闲聊
+  使用同一条 Planner → Agent → ReplySequence 链路，不新增语音路由。
+- `send_voice` 只在 Planner 确认当前用户本轮明确索要语音时向 Agent 开放；Agent 仅能选择
+  `style_hint` 和目标语言，不能覆盖 Planner 决定的 `text`、`voice` 或 `text_and_voice`。
+- 日常主动语音完全归 Planner 决定，并新增可热更新的
+  `speech.spontaneous_frequency` / `SPEECH_SPONTANEOUS_FREQUENCY`（默认 `0.15`）；后端按当前
+  会话最近的中性 Planner 轮次计算频率预算，不读取或匹配聊天正文。
+- 新增人物级 `text_only`、`auto`、`prefer_voice` 持久语音偏好。只有用户本人明确表达未来/默认
+  模式时才写入，单轮要求不落库；人物删除时偏好级联删除。
+- 新增非破坏性 Alembic `0017`：创建 `person_speech_preferences`，并为 `planner_runs` 增加脱敏的
+  语音意图、工具授权、模式、原因和频率观测字段；聊天正文、人物、声线和生成历史全部保留。
+- Planner/Agent/迁移/仓储测试覆盖语义意图、未授权工具隐藏、持久偏好、人物级联、频率预算和
+  中性轮次统计。
+
 ## 1.8.1 - 2026-07-29
 
 ### Roxy 中日双语、语音调用与内存优化

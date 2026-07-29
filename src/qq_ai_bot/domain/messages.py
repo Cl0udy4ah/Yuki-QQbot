@@ -107,6 +107,7 @@ class OutboundMedia:
     generation_id: int | None = None
     voice_profile_id: str | None = None
     voice_reference_key: str | None = None
+    voice_language: str | None = None
     duration_milliseconds: int | None = None
 
 

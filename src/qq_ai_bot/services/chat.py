@@ -58,6 +58,7 @@ from qq_ai_bot.services.reply_sequence import ReplySequenceManager
 from qq_ai_bot.services.source_policy import SourceDisplayPolicy
 from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator, TurnToken
+from qq_ai_bot.speech.models import VoiceAgentToolPolicy
 from qq_ai_bot.speech.reply_effect import (
     PendingVoiceReplyEffect,
     PreparedVoiceReply,
@@ -370,9 +371,21 @@ class _ChatAgentBackend(AgentToolBackend):
         return content
 
     def has_visible_effects(self) -> bool:
-        """Tell AgentRunner that an empty final text can still yield a real reply."""
+        """Return whether queued effects can produce a reply without model text."""
 
-        return bool(self._runtime.reply_effects)
+        effects = self._runtime.reply_effects or ()
+        if any(isinstance(effect, PendingVoiceReplyEffect) for effect in effects):
+            # Voice synthesis needs the final model text as its spoken content.
+            # Treating the queued voice request itself as visible content can make
+            # a successful tool call end in a completely silent turn.
+            return False
+        return any(
+            isinstance(effect, PendingReplyEffect)
+            and (
+                effect.mode is EmojiReplyMode.EMOJI_ONLY or effect.placement is EmojiPlacement.ONLY
+            )
+            for effect in effects
+        )
 
     def exhausted(self, runtime: AgentRuntime) -> str:
         if self._admin_terminal_failure is not None:
@@ -554,6 +567,10 @@ class ChatService:
                 ),
                 turn_token=turn_token,
                 reply_effects=[],
+                voice_tool_authorized=(
+                    planned_turn is not None
+                    and planned_turn.plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
+                ),
             )
             if turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
@@ -613,11 +630,7 @@ class ChatService:
                     response_text=rendered,
                     runtime=runtime_config,
                     token=turn_token,
-                    mode=(
-                        queued_voice.mode
-                        if queued_voice is not None
-                        else planned_turn.plan.voice.mode
-                    ),
+                    mode=planned_turn.plan.voice.mode,
                     style_hint=(
                         queued_voice.style_hint
                         if queued_voice is not None
@@ -630,6 +643,11 @@ class ChatService:
                     ),
                     profile_id=queued_voice.profile_id if queued_voice is not None else "",
                 )
+            if not rendered and not prepared_effects and prepared_voice is None:
+                # A failed optional media effect must never turn a planned reply
+                # into silence. AgentRunner normally prevents this, while this
+                # guard also covers selectors/synthesizers that decline an effect.
+                rendered = "我在，刚才没有生成可用的回复。"
             if planned_turn is not None and turn_token is not None:
                 if source_display_requested:
                     source_text = self._source_renderer.render(
@@ -916,19 +934,7 @@ class ChatService:
                 message_id = str(raw_id)
         platform_message_id = message_id or f"out-{uuid.uuid4()}"
         media_segments = tuple(self._ledger_media_segment(media) for media in message.media)
-        spoken_text = next((media.spoken_text for media in message.media if media.spoken_text), "")
-        content = (
-            message.text
-            or spoken_text
-            or " ".join(
-                (
-                    f"[语音：{media.summary or 'Yuki发送了一条语音'}]"
-                    if media.kind is AttachmentKind.AUDIO
-                    else f"[表情：{media.summary or '图片表情'}]"
-                )
-                for media in message.media
-            )
-        )
+        content = self._ledger_content(message)
         await self._ledger.append(
             bot_user_id=inbound.bot_user_id or "unknown-bot",
             platform_message_id=platform_message_id,
@@ -975,6 +981,18 @@ class ChatService:
         await self._record_outbound_message(inbound, message, send_result)
 
     @staticmethod
+    def _ledger_content(message: OutboundMessage) -> str:
+        """Return only user-visible or spoken content, never internal voice metadata."""
+
+        spoken_text = next((media.spoken_text for media in message.media if media.spoken_text), "")
+        visual_descriptions = " ".join(
+            f"[表情：{media.summary or '图片表情'}]"
+            for media in message.media
+            if media.kind is not AttachmentKind.AUDIO
+        )
+        return message.text or spoken_text or visual_descriptions
+
+    @staticmethod
     def _ledger_media_segment(media: OutboundMedia) -> dict[str, object]:
         if media.kind is AttachmentKind.AUDIO:
             return {
@@ -985,6 +1003,7 @@ class ChatService:
                     "duration_milliseconds": media.duration_milliseconds,
                     "profile_id": media.voice_profile_id or "",
                     "reference_key": media.voice_reference_key or "",
+                    "target_language": media.voice_language or "",
                     "generation_id": media.generation_id,
                 },
             }
