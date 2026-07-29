@@ -116,9 +116,7 @@ class VoiceReplyEffectService:
             TurnSupersededError,
             OSError,
         ) as exc:
-            error_code = (
-                exc.code.value if isinstance(exc, GenieWorkerFailure) else ""
-            )
+            error_code = exc.code.value if isinstance(exc, GenieWorkerFailure) else ""
             logger.warning(
                 "voice_reply_prepare_failed error_category=%s error_code=%s",
                 type(exc).__name__,

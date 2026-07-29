@@ -435,9 +435,7 @@ class ContextAssembler:
         if row.platform_message_id == current_message_id:
             return current_content
         segment_types = {
-            str(segment.get("type", ""))
-            for segment in row.segments
-            if isinstance(segment, dict)
+            str(segment.get("type", "")) for segment in row.segments if isinstance(segment, dict)
         }
         if row.direction == "outbound" and "image" in segment_types:
             # An image description belongs to the durable media ledger, not to
@@ -447,8 +445,7 @@ class ContextAssembler:
                 (
                     str(segment.get("data", {}).get("text", ""))
                     for segment in row.segments
-                    if segment.get("type") == "text"
-                    and isinstance(segment.get("data"), dict)
+                    if segment.get("type") == "text" and isinstance(segment.get("data"), dict)
                 ),
                 "",
             )

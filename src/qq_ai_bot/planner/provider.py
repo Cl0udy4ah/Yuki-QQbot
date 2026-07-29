@@ -98,9 +98,7 @@ def validate_turn_plan(
     return plan.model_copy(
         update={
             "target_user_ids": tuple(
-                dict.fromkeys(
-                    target for target in plan.target_user_ids if target in known_targets
-                )
+                dict.fromkeys(target for target in plan.target_user_ids if target in known_targets)
             ),
             "reply_to_message_id": (
                 plan.reply_to_message_id

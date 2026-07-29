@@ -230,9 +230,7 @@ def test_model_history_omits_transport_annotations_and_media_only_events() -> No
         id=3,
         platform_message_id="copied-placeholder",
         content="[21:10] [表情：不应作为台词]",
-        segments=(
-            {"type": "text", "data": {"text": "[21:10] [表情：不应作为台词]"}},
-        ),
+        segments=({"type": "text", "data": {"text": "[21:10] [表情：不应作为台词]"}},),
     )
 
     assert ContextAssembler._history_event_content(image, "current", "当前消息") == ""
