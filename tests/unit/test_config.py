@@ -44,7 +44,7 @@ def test_system_prompt_file_must_not_be_empty(tmp_path: Path) -> None:
 def test_daily_chat_delay_range_must_be_ordered() -> None:
     with pytest.raises(
         ValidationError,
-        match="DAILY_CHAT_MESSAGE_DELAY_MIN_SECONDS must not exceed",
+        match="daily chat minimum delay must not exceed",
     ):
         Settings.model_validate(
             {
@@ -54,7 +54,7 @@ def test_daily_chat_delay_range_must_be_ordered() -> None:
         )
 
 
-def test_planner_and_plugin_defaults_are_bounded() -> None:
+def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps() -> None:
     settings = Settings()
     assert settings.planner_enabled
     assert settings.planner_group_debounce_seconds == 3
@@ -67,22 +67,16 @@ def test_planner_and_plugin_defaults_are_bounded() -> None:
     assert settings.plugin_api_version == "1.0"
     assert settings.plugin_ai_session_max_history_messages == 200
 
-    with pytest.raises(ValidationError, match="PLANNER_REPLY_NECESSITY_THRESHOLD"):
-        Settings.model_validate({"planner_reply_necessity_threshold": 101})
-    with pytest.raises(ValidationError, match="must not be negative"):
+    assert Settings.model_validate({"planner_reply_necessity_threshold": 101})
+    with pytest.raises(ValidationError, match="greater than or equal to 0"):
         Settings.model_validate({"planner_reply_necessity_threshold": -1})
     assert Settings.model_validate({"planner_group_debounce_seconds": 0})
-    with pytest.raises(ValidationError, match="PLANNER_GROUP_DEBOUNCE_SECONDS"):
-        Settings.model_validate({"planner_group_debounce_seconds": 61})
-    assert Settings.model_validate({"planner_preferred_messages": 20})
-    with pytest.raises(ValidationError, match="PLANNER_PREFERRED_MESSAGES"):
-        Settings.model_validate({"planner_preferred_messages": 21})
-    assert Settings.model_validate({"reply_plan_hard_max_messages": 20})
-    with pytest.raises(ValidationError, match="REPLY_PLAN_HARD_MAX_MESSAGES"):
-        Settings.model_validate({"reply_plan_hard_max_messages": 21})
+    assert Settings.model_validate({"planner_group_debounce_seconds": 61})
+    assert Settings.model_validate({"planner_preferred_messages": 21})
+    assert Settings.model_validate({"reply_plan_hard_max_messages": 21})
     with pytest.raises(ValidationError, match="PLUGIN_API_VERSION"):
         Settings.model_validate({"plugin_api_version": "v1"})
-    with pytest.raises(ValidationError, match="PLUGIN_MAX_TOTAL_PROMPT_CHARACTERS"):
+    with pytest.raises(ValidationError, match="total plugin prompt budget"):
         Settings.model_validate(
             {
                 "plugin_max_prompt_fragment_characters": 2000,
@@ -91,10 +85,11 @@ def test_planner_and_plugin_defaults_are_bounded() -> None:
         )
 
 
-def test_v1_memory_limits_accept_group_hundred_and_reject_member_over_fifty() -> None:
+def test_memory_limits_are_configurable_positive_values() -> None:
     assert Settings.model_validate({"group_memory_max_entries": 100})
-    with pytest.raises(ValidationError, match="PERSON_GROUP_MEMORY_MAX_ENTRIES"):
-        Settings.model_validate({"person_group_memory_max_entries": 51})
+    assert Settings.model_validate({"person_group_memory_max_entries": 500})
+    with pytest.raises(ValidationError, match="greater than 0"):
+        Settings.model_validate({"person_group_memory_max_entries": 0})
 
 
 def test_web_enabled_requires_tavily_key_and_hides_it_from_repr() -> None:
@@ -111,11 +106,9 @@ def test_web_enabled_requires_tavily_key_and_hides_it_from_repr() -> None:
     assert "tvly-sensitive-test-value" not in repr(settings)
 
 
-def test_web_limits_are_bounded() -> None:
-    with pytest.raises(ValidationError, match="WEB_EXTRACT_MAX_RESULTS"):
-        Settings.model_validate({"web_extract_max_results": 4})
-    with pytest.raises(ValidationError, match="WEB_MAX_CALLS_PER_TURN"):
-        Settings.model_validate({"web_max_calls_per_turn": 4})
+def test_web_limits_are_configurable_and_search_depth_is_validated() -> None:
+    assert Settings.model_validate({"web_extract_max_results": 4})
+    assert Settings.model_validate({"web_max_calls_per_turn": 4})
     with pytest.raises(ValidationError, match="WEB_SEARCH_DEPTH"):
         Settings.model_validate({"web_search_depth": "unbounded"})
 
@@ -133,11 +126,9 @@ def test_relationship_defaults_have_no_daily_caps_and_keep_single_turn_bounds() 
 
 
 def test_relationship_configuration_is_validated() -> None:
-    with pytest.raises(ValidationError, match="AFFECTION_MAX_AUTO_DELTA"):
-        Settings.model_validate({"affection_max_auto_delta": 3})
-    with pytest.raises(ValidationError, match="RELATIONSHIP_BATCH_MAX_TURNS"):
-        Settings.model_validate({"relationship_batch_max_turns": 11})
-    with pytest.raises(ValidationError, match="between zero and one"):
+    assert Settings.model_validate({"affection_max_auto_delta": 3})
+    assert Settings.model_validate({"relationship_batch_max_turns": 11})
+    with pytest.raises(ValidationError, match="less than or equal to 1"):
         Settings.model_validate({"relationship_confidence_threshold": 1.1})
 
 
@@ -197,23 +188,32 @@ def test_vision_enabled_requires_complete_provider_configuration() -> None:
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "message"),
+    ("field", "value"),
     [
-        ("vision_max_images_per_turn", 6, "VISION_MAX_IMAGES_PER_TURN"),
-        ("vision_gif_max_frames", 9, "VISION_GIF_MAX_FRAMES"),
-        ("vision_max_frames_per_turn", 17, "VISION_MAX_FRAMES_PER_TURN"),
-        ("vision_max_download_bytes", 20 * 1024 * 1024 + 1, "VISION_MAX_DOWNLOAD_BYTES"),
-        ("vision_max_prepared_bytes", 0, "greater than zero"),
-        ("vision_timeout_seconds", 0, "greater than zero"),
-        ("vision_queue_max_pending", 0, "greater than zero"),
-        ("vision_queue_timeout_seconds", 0, "greater than zero"),
-        ("vision_media_download_timeout_seconds", 0, "greater than zero"),
-        ("vision_max_retries", 0, "greater than zero"),
-        ("vision_max_retries", 2, "VISION_MAX_RETRIES"),
-        ("vision_thinking_budget", 32769, "VISION_THINKING_BUDGET"),
-        ("vision_low_confidence_retry_threshold", 1.1, "between zero and one"),
+        ("vision_max_prepared_bytes", 0),
+        ("vision_timeout_seconds", 0),
+        ("vision_queue_max_pending", 0),
+        ("vision_queue_timeout_seconds", 0),
+        ("vision_media_download_timeout_seconds", 0),
+        ("vision_max_retries", 0),
+        ("vision_low_confidence_retry_threshold", 1.1),
     ],
 )
-def test_vision_numeric_limits_are_validated(field: str, value: int | float, message: str) -> None:
-    with pytest.raises(ValidationError, match=message):
+def test_vision_numeric_domain_constraints_are_validated(field: str, value: int | float) -> None:
+    with pytest.raises(ValidationError):
         Settings.model_validate({field: value})
+
+
+def test_vision_operational_limits_have_no_hidden_upper_clamp() -> None:
+    settings = Settings.model_validate(
+        {
+            "vision_max_images_per_turn": 25,
+            "vision_gif_max_frames": 40,
+            "vision_max_frames_per_turn": 50,
+            "vision_max_download_bytes": 128 * 1024 * 1024,
+            "vision_max_retries": 4,
+            "vision_thinking_budget": 65536,
+        }
+    )
+    assert settings.vision_max_images_per_turn == 25
+    assert settings.vision_thinking_budget == 65536

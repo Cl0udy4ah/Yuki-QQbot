@@ -43,15 +43,15 @@ class OpenAICompatibleProvider(LLMProvider):
         self._api_key = api_key
         self._max_retries = max_retries
         self._owns_client = client is None
-        timeout = httpx.Timeout(
-            connect=min(timeout_seconds, 10.0),
+        self._timeout = httpx.Timeout(
+            connect=timeout_seconds,
             read=timeout_seconds,
             write=timeout_seconds,
-            pool=min(timeout_seconds, 10.0),
+            pool=timeout_seconds,
         )
         self._client = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
-            timeout=timeout,
+            timeout=self._timeout,
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
         )
 
@@ -78,13 +78,26 @@ class OpenAICompatibleProvider(LLMProvider):
 
         latency = time.perf_counter() - started
         logger.info("llm_request_complete latency_seconds=%.3f success=true", latency)
-        content, request_id, tool_calls, reasoning_content = self._parse_response(response)
+        (
+            content,
+            request_id,
+            tool_calls,
+            reasoning_content,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_prompt_tokens,
+        ) = self._parse_response(response)
         return ChatResponse(
             content=content,
             latency_seconds=latency,
             provider_request_id=request_id,
             tool_calls=tool_calls,
             reasoning_content=reasoning_content,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cached_prompt_tokens=cached_prompt_tokens,
         )
 
     async def _post(self, request: ChatRequest) -> httpx.Response:
@@ -130,10 +143,13 @@ class OpenAICompatibleProvider(LLMProvider):
             payload["tool_choice"] = request.tool_choice or "auto"
         if request.thinking_enabled is not None:
             payload["thinking"] = {"type": "enabled" if request.thinking_enabled else "disabled"}
+        if request.response_format is not None:
+            payload["response_format"] = request.response_format
         response = await self._client.post(
             "/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key}"},
             json=payload,
+            timeout=self._timeout,
         )
         if response.status_code >= 500:
             raise RetryableProviderError("provider returned a server error")
@@ -144,7 +160,16 @@ class OpenAICompatibleProvider(LLMProvider):
     @staticmethod
     def _parse_response(
         response: httpx.Response,
-    ) -> tuple[str, str | None, tuple[ToolCall, ...], str | None]:
+    ) -> tuple[
+        str,
+        str | None,
+        tuple[ToolCall, ...],
+        str | None,
+        int | None,
+        int | None,
+        int | None,
+        int | None,
+    ]:
         try:
             payload: dict[str, Any] = response.json()
             choices = payload.get("choices")
@@ -188,11 +213,32 @@ class OpenAICompatibleProvider(LLMProvider):
             request_id = payload.get("id")
             raw_reasoning = message.get("reasoning_content")
             reasoning = raw_reasoning if isinstance(raw_reasoning, str) else None
+            usage = payload.get("usage")
+            prompt_tokens: int | None = None
+            completion_tokens: int | None = None
+            total_tokens: int | None = None
+            cached_prompt_tokens: int | None = None
+            if isinstance(usage, dict):
+                raw_prompt = usage.get("prompt_tokens")
+                raw_completion = usage.get("completion_tokens")
+                raw_total = usage.get("total_tokens")
+                prompt_tokens = raw_prompt if isinstance(raw_prompt, int) else None
+                completion_tokens = raw_completion if isinstance(raw_completion, int) else None
+                total_tokens = raw_total if isinstance(raw_total, int) else None
+                raw_cached = usage.get("prompt_cache_hit_tokens")
+                details = usage.get("prompt_tokens_details")
+                if isinstance(details, dict):
+                    raw_cached = details.get("cached_tokens", raw_cached)
+                cached_prompt_tokens = raw_cached if isinstance(raw_cached, int) else None
             return (
                 content,
                 request_id if isinstance(request_id, str) else None,
                 tuple(tool_calls),
                 reasoning,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cached_prompt_tokens,
             )
         except ValueError as exc:
             raise LLMError("provider returned invalid JSON") from exc

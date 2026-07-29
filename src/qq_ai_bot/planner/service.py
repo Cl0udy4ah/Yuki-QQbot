@@ -15,6 +15,7 @@ from qq_ai_bot.planner.models import (
     PlannerInput,
     PlannerReasonCode,
     ToolMode,
+    ToolSelection,
     TurnPlan,
 )
 from qq_ai_bot.planner.observability import PlannerObservability
@@ -167,7 +168,7 @@ class PlannerService:
             intent="回复必要性不足，本轮不打扰群聊",
             delivery_mode=DeliveryMode.CONCISE,
             desired_messages=1,
-            tool_mode=ToolMode.NONE,
+            tool_selection=ToolSelection(mode=ToolMode.NONE),
             confidence=1.0,
             reason_code=PlannerReasonCode.LOW_RELEVANCE,
         )

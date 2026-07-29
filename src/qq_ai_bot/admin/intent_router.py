@@ -14,7 +14,8 @@ from qq_ai_bot.admin.capabilities import AdminCapabilityService
 from qq_ai_bot.admin.permission_catalog import contains_internal_capability_payload
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage, ToolCall
-from qq_ai_bot.llm.base import LLMProvider
+from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 
@@ -198,8 +199,12 @@ class PendingAdminRequestStore:
     """Bounded in-memory continuations; never stores capability payloads or chat history."""
 
     def __init__(self, *, ttl_seconds: float = 180, max_entries: int = 128) -> None:
-        self._ttl_seconds = max(30.0, min(float(ttl_seconds), 600.0))
-        self._max_entries = max(1, min(int(max_entries), 1024))
+        if ttl_seconds <= 0:
+            raise ValueError("intent resolution TTL must be positive")
+        if max_entries <= 0:
+            raise ValueError("intent resolution capacity must be positive")
+        self._ttl_seconds = float(ttl_seconds)
+        self._max_entries = int(max_entries)
         self._items: dict[tuple[str, str, str], PendingAdminRequest] = {}
 
     def get(
@@ -274,7 +279,8 @@ class AdminIntentRouter:
         self,
         *,
         settings: Settings,
-        provider: LLMProvider,
+        provider: ModelCompleter | None = None,
+        model_executor: ModelExecutor | None = None,
         concurrency: ConcurrencyManager,
         capabilities: AdminCapabilityService,
         max_tool_calls: int = 5,
@@ -282,11 +288,17 @@ class AdminIntentRouter:
         pending_requests: PendingAdminRequestStore | None = None,
     ) -> None:
         self._settings = settings
-        self._provider = provider
+        self._models = require_model_executor(
+            model_executor,
+            provider=provider,
+            model=settings.llm_model or "fake",
+        )
         self._concurrency = concurrency
         self._capabilities = capabilities
-        self._max_tool_calls = max(1, min(max_tool_calls, 5))
-        self._max_model_requests = max(2, min(max_model_requests, 6))
+        if max_tool_calls <= 0 or max_model_requests <= 0:
+            raise ValueError("intent router request budgets must be positive")
+        self._max_tool_calls = max_tool_calls
+        self._max_model_requests = max_model_requests
         self._pending_requests = pending_requests or PendingAdminRequestStore()
 
     async def route(
@@ -382,14 +394,14 @@ class AdminIntentRouter:
                 messages=tuple(messages),
                 model=self._settings.llm_model or "fake",
                 temperature=0,
-                max_output_tokens=min(self._settings.llm_max_output_tokens, 1024),
+                max_output_tokens=None,
                 thinking_enabled=False,
                 tools=definitions,
                 tool_choice="auto" if definitions else None,
             )
             response = await self._concurrency.run_llm(
                 f"admin-router:{conversation_key}",
-                partial(self._provider.complete, request),
+                partial(self._models.execute, ModelTask.UTILITY_STRUCTURED, request),
             )
             if not response.tool_calls:
                 if not handled:

@@ -33,6 +33,7 @@ class WorkerErrorCode(StrEnum):
     OUTPUT_INVALID = "output_invalid"
     CANCELLED = "cancelled"
     WORKER_BUSY = "worker_busy"
+    JAPANESE_FRONTEND_UNAVAILABLE = "japanese_frontend_unavailable"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -126,6 +127,12 @@ class SuccessResponse(_StrictModel):
     loaded_profile_id: str | None = None
     ready: bool | None = None
     busy: bool | None = None
+    japanese_frontend_available: bool | None = None
+    japanese_frontend_version: str | None = None
+    japanese_frontend_signature: str | None = None
+    spoken_text_hash: str | None = None
+    frontend_version: str | None = None
+    transformed_token_count: int | None = None
 
 
 class FailureResponse(_StrictModel):

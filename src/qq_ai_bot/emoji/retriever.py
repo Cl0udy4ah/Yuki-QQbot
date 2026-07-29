@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from qq_ai_bot.admin.models import EmojiRuntimeConfig
-from qq_ai_bot.emoji.models import EmojiAsset, EmojiSelectionRequest
+from qq_ai_bot.emoji.models import EmojiAsset, EmojiReplyMode, EmojiSelectionRequest
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.storage import EmojiStorage
 
@@ -32,8 +32,10 @@ class EmojiRetriever:
         runtime: EmojiRuntimeConfig,
     ) -> tuple[RankedEmoji, ...]:
         cooldown_after = datetime.now(UTC) - timedelta(seconds=runtime.same_emoji_cooldown_seconds)
-        scope_cooldown_after = datetime.now(UTC) - timedelta(
-            seconds=runtime.scope_repeat_cooldown_seconds
+        scope_cooldown_after = (
+            None
+            if request.mode in {EmojiReplyMode.PREFERRED, EmojiReplyMode.EMOJI_ONLY}
+            else datetime.now(UTC) - timedelta(seconds=runtime.scope_repeat_cooldown_seconds)
         )
         rows = await self._repository.selectable(
             actor_user_id=request.actor_user_id,

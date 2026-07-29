@@ -11,7 +11,7 @@ _MARKDOWN_LINK = re.compile(r"\[([^\]]+)]\(((?:https?://|mailto:)[^)]+)\)")
 _HEADING = re.compile(r"(?m)^\s{0,3}#{1,6}\s+")
 _HORIZONTAL_RULE = re.compile(r"(?m)^\s*[-*_]{3,}\s*$")
 _INTERNAL_HISTORY_MARKER = re.compile(
-    r"\[(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]) "
+    r"\[(?:(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]) )?"
     r"(?:[01]\d|2[0-3]):[0-5]\d(?: QQ [1-9]\d{4,19})?\]\s*"
 )
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")

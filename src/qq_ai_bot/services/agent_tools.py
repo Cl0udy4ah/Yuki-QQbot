@@ -16,6 +16,7 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import CapabilityReport, PermissionCatalogService
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage
 from qq_ai_bot.emoji.models import (
@@ -29,7 +30,7 @@ from qq_ai_bot.persistence.repositories import (
     MemoryRepository,
     WebSearchSourceRepository,
 )
-from qq_ai_bot.planner.models import ToolMode
+from qq_ai_bot.planner.models import ToolGroup, ToolMode
 from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
@@ -76,8 +77,9 @@ class ToolRuntime:
     runtime_config: RuntimeConfigSnapshot | None = None
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
     tool_mode: ToolMode = ToolMode.INHERIT
+    tool_groups: frozenset[str] = frozenset(group.value for group in ToolGroup)
     turn_token: TurnToken | None = None
-    reply_effects: list[PendingReplyEffect | PendingVoiceReplyEffect] | None = None
+    reply_effects: list[ReplyEffect] | None = None
     voice_tool_authorized: bool = False
 
 
@@ -271,8 +273,9 @@ class AgentToolService:
                     name="send_emoji",
                     description=(
                         "为本轮最终回复排队一个表情效果，不会立即发送，也不能指定表情 ID、"
-                        "文件或 URL。仅在表情比纯文字更自然时调用；goal 和 emotion 描述想表达"
-                        "的语义，placement 决定文字前后，mode 可为 optional/preferred/emoji_only。"
+                        "文件或 URL。用户明确要求发送表情时必须调用，不要查询或猜测表情库存；"
+                        "goal 和 emotion 描述想表达的语义，placement 决定文字前后，mode 可为 "
+                        "optional/preferred/emoji_only。工具成功只表示已排队，不要在正文声称已经发送。"
                     ),
                     parameters=_object_schema(
                         {
@@ -297,7 +300,8 @@ class AgentToolService:
                     name="send_voice",
                     description=(
                         "Planner 已确认当前用户在本轮明确索要语音。调用此工具为本轮最终回复"
-                        "选择可选的语气和语言；是否发送文字、语音或二者由 Planner 决定，"
+                        "选择可选的语气和语言，因此本轮必须调用一次；是否发送文字、语音"
+                        "或二者由 Planner 决定，"
                         "本工具不能覆盖。不能指定 profile、模型、参考音频、文件或路径。"
                     ),
                     parameters=_object_schema(

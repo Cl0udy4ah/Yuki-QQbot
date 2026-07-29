@@ -2,7 +2,7 @@
 
 ## 启动项目
 
-> **升级提示：**1.8.2 会执行非破坏性 Alembic `0017`，增加人物语音偏好和 Planner 语音决策观测字段，并清理旧版误写入普通正文的内部 TTS 描述；结构化语音元数据、`0015`/`0016` 的本地声线、生成记录和其他现有数据均会保留。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
+> **升级提示：**1.9.0 会执行非破坏性 Alembic `0018`，只新增不含消息正文的 `model_invocations` 模型调用统计表；人物、事件、记忆、关系、插件、自动化、表情和语音数据全部保留。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -34,7 +34,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.8.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 1.9.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -60,6 +60,12 @@ Yuki-QQbot 1.8.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 
 ### 当前架构约束
 
+- 所有主模型调用都以 `ModelTask → ModelRoute → ModelProfile → ModelClientPool` 执行；聊天、自动化 Agent 和插件 Agent 会话默认走 Pro，Planner、记忆提取、关系评价、表情替换和辅助结构化任务默认走 Flash。路由缺失或能力不兼容会在启动时明确失败，不会静默回退到 Pro。
+- Planner、记忆提取、关系评价与表情替换共用 `StructuredTaskRunner`，输出结构直接来自 Pydantic Schema；不再解析 Markdown JSON fence 或从自由文本中猜测第一个花括号对象。
+- Prompt 由不可变 `PromptContribution` 经 `PromptCompiler` 组成一个稳定静态前缀和一个紧凑动态 Envelope；人物、群、关系、记忆和插件资料由通用 `ContextContribution` 预算器按 required、priority、relevance 和 cost 选择。
+- 工具访问由 `CapabilityDescriptor` 的 effect、risk、trust source、origin 和权限元数据决定；Planner 的 `ToolSelection` 只会缩小工具组，图片、网页和插件资料不能扩大权限。本地表情和语音统一作为 `ReplyEffect` 进入既有回复序列。
+- 组合根通过不可变 Bundle 装配 Persistence、ModelRuntime、Web、Media、Emoji、Speech、Conversation、Admin 和 Automation Module；`LifecycleRegistry` 负责按注册顺序启动、反序关闭、失败回滚及模块健康检查。
+- 根 `Settings` 保留 1.x 的扁平 `.env` 名称作为兼容入口，同时组合不可变的 App、OneBot、ModelRuntime、Conversation、Planner、Plugin、Memory、Relationship、Web、Vision、Emoji、Speech 和 Automation 领域设置。
 - 正常聊天、管理员自然语言操作、联网和自动化创建继续使用同一个聊天 Agent；Planner 只规划，不能执行工具或产生权限。插件独立 AI 会话只服务插件任务，不是第二套管理员人格或主聊天路由。
 - `ContextAssembler` 统一装配人物、群、关系和近期事件，并用 `MAX_CONTEXT_CHARACTERS` 限制动态上下文总量；当前消息优先保留，低优先级旧资料先裁剪。
 - `PromptComposer` 集中生成后端可信的时间、权限、关系、视觉和联网规则，业务服务不再各自拼接一套运行说明。
@@ -69,6 +75,7 @@ Yuki-QQbot 1.8.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 相关人物按批次读取，避免群聊中按 QQ 串行查询多组资料；群名片仍严格按当前群号隔离。
 - SQLite 使用 WAL 和有限等待支持多个后台 Worker；部署仍定位于单 Bot、小型服务器，未来需要多进程横向扩展时再迁移 PostgreSQL。
 - GitHub Actions 会在推送和 PR 时执行 Ruff、严格 mypy、pytest、Echo 示例插件契约测试、Alembic 全新安装和 Docker 构建。
+- GitHub Actions 还会单独验证 Prompt benchmark、模型路由和无真实模型下载的 Genie Worker 日语前端测试。
 
 本版本不识别用户发来的语音，也不处理视频、PDF 和普通文件，不实现 ASR、实时语音通话、VAD 或 WebRTC。已启用群里未触发 Yuki 的图片可以按 `EMOJI_COLLECTION_MODE` 进入独立后台表情候选流程；这不会触发聊天回复、人物记忆、关系评价或管理员操作。普通聊天视觉理解仍只处理当前真实消息或回复中的图片。
 
@@ -98,6 +105,25 @@ Yuki-QQbot 1.8.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 ## 完全本地 QQ 语音
 
 1.8.0 的语音是独立可选服务：主 Bot 通过 Unix Domain Socket 调用无网络、无 HTTP 端口的 Genie Worker；Worker 只加载本地 GenieData、GPT-SoVITS V2/V2ProPlus ONNX 模型和参考音频，输出 32 kHz 单声道 16 位 WAV。主进程在 OneBot Adapter 边界把 WAV 编为 Base64 `record`，NapCat 不需要访问本地路径。
+
+1.9.0 为日语合成增加完全离线的 e2k 前处理。部署者需要从固定的 `e2k==0.6.2` 安装包或其发布资产中手工取得 `model-c2k.npz` 和 `ngram.json.zip`，放入：
+
+```text
+data/speech/japanese_frontend/models/model-c2k.npz
+data/speech/japanese_frontend/models/ngram.json.zip
+```
+
+仓库不会自动下载。项目词典位于 `data/speech/japanese_frontend/lexicon.toml`，格式为：
+
+```toml
+[words]
+Yuki = "ユキ"
+OpenAI = "オープンエーアイ"
+ChatGPT = "チャットジーピーティー"
+API = "エーピーアイ"
+```
+
+词典匹配不区分大小写；普通英文词优先走 C2K，缩写和不常见词优先走 NGram，最后按日语字母名确定性拼读。日语 Worker 输入若仍含拉丁字母会明确拒绝合成，不会静默发送原文；中文和英文合成路径不变。`/healthz` 与 `speech status` 会显示 `japanese_frontend_available`、版本和不含正文的缓存签名。可用 `SPEECH_JP_KATAKANA_ENABLED=false` 显式关闭。
 
 同一声线可声明多种目标语言。Planner 可以按当前语境在中文和日文间自然选择，Agent 会生成对应语言的正文；后端还会根据最终文本中的中文汉字或日语假名再次校验，避免语言提示与实际文本不一致。参考音频的语言独立保存，因此日语参考音频也可以用于合成中文目标文本。
 
@@ -171,6 +197,38 @@ SYSTEM_PROMPT_FILE=config/system_prompt.md
 docker compose up -d --no-deps --force-recreate bot
 ```
 
+### Pro / Flash 模型任务路由
+
+不配置 `config/model_profiles.toml` 时，1.9.0 会把现有 `LLM_*` 规范化为 `main` 档案并把全部任务显式指向它，同时记录一次弃用提示，行为与 1.8.2 一致。要启用 Pro / Flash 分工：
+
+```powershell
+Copy-Item config/model_profiles.example.toml config/model_profiles.toml
+```
+
+```dotenv
+MODEL_PROFILES_FILE=config/model_profiles.toml
+LLM_BASE_URL=https://api.deepseek.com
+LLM_API_KEY=你的Pro密钥
+LLM_MODEL=你的Pro模型名
+LLM_FLASH_BASE_URL=https://api.deepseek.com
+LLM_FLASH_API_KEY=你的Flash密钥
+LLM_FLASH_MODEL=你的Flash模型名
+```
+
+TOML 只保存环境变量名称，不保存密钥。默认路由为：`chat_agent`、`automation_agent`、`plugin_agent_session` 使用 `pro`；`planner`、`memory_extraction`、`relationship_evaluation`、`emoji_replacement`、`automation_text_generation`、`utility_structured` 使用 `flash`。同一 endpoint 会共享 HTTP 连接池，但每个档案仍保留自己的超时、重试、思考和输出默认值。
+
+可用诊断：
+
+```bash
+qq-ai-bot-cli model profiles
+qq-ai-bot-cli model routes
+qq-ai-bot-cli model stats
+qq-ai-bot-cli prompt inspect direct-text
+qq-ai-bot-cli prompt compare
+```
+
+聊天内超级管理员可用 `/ai model stats` 查看按任务和档案统计的调用次数、Token、缓存命中、平均延迟和最近错误；错误显示数由 `MODEL_STATS_RECENT_ERROR_LIMIT` 配置。统计表不保存 Prompt、用户正文、工具结果、隐藏推理或密钥。
+
 ### 可选：启用图片理解
 
 图片理解默认关闭。使用阿里云百炼 OpenAI-compatible Chat Completions 接口时，在 `.env` 中填写：
@@ -216,7 +274,7 @@ docker compose up -d --build --no-deps bot
 
 ### Planner-first 会话
 
-1.6.0 默认启用 Planner。Planner 使用当前主 LLM（`PLANNER_MODEL` 留空）或单独模型，关闭思考、不提供工具，只输出严格结构化计划。DeepSeek 部署可设置 `PLANNER_MODEL=deepseek-v4-flash`，在不改变主聊天模型的情况下缩短计划延迟。Planner 只能缩小本轮工具和回复计划，不能修改配置、记忆、关系、权限或直接发送消息。
+Planner 默认启用。1.9.0 中它通过 `ModelTask.PLANNER` 读取模型路由，不再读取 `PLANNER_MODEL`；旧变量只为兼容配置文件保留并会提示弃用。Planner 关闭思考、不提供工具，只通过 `StructuredTaskRunner` 提交严格的 `TurnPlan`。Planner 只能缩小本轮工具和回复计划，不能修改配置、记忆、关系、权限或直接发送消息。
 
 ```dotenv
 PLANNER_ENABLED=true

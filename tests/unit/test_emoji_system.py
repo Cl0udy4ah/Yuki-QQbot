@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,12 +26,13 @@ from qq_ai_bot.emoji.models import (
     EmojiAnalysis,
     EmojiCollectionMode,
     EmojiLifecycleStatus,
+    EmojiReplyMode,
     EmojiReplyPlan,
     EmojiSelectionRequest,
 )
 from qq_ai_bot.emoji.replacement import EmojiReplacementService
 from qq_ai_bot.emoji.repository import EmojiRepository
-from qq_ai_bot.emoji.retriever import RankedEmoji
+from qq_ai_bot.emoji.retriever import EmojiRetriever, RankedEmoji
 from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
@@ -232,6 +234,48 @@ async def test_lifecycle_classifies_and_auto_adopts_without_review(
 
 
 @pytest.mark.asyncio
+async def test_explicit_emoji_request_bypasses_scope_repeat_cooldown(
+    database: Database, tmp_path: Path
+) -> None:
+    storage = EmojiStorage(tmp_path / "emoji")
+    content = _image_bytes()
+    media = storage.inspect(content, near_duplicate_enabled=False)
+    storage.persist(content, media)
+    repository = EmojiRepository(database)
+    asset, _ = await repository.record_candidate(
+        media,
+        source_event_id=None,
+        user_id=None,
+        group_id=None,
+        source_sub_type="emoji",
+        source_emoji_id="",
+        source_package_id="",
+    )
+    await repository.adopt_scope(asset.id, scope_type="global")
+    await repository.mark_used(
+        asset.id,
+        actor_user_id="10001",
+        group_id=None,
+        trigger_message_id="first",
+        source="test",
+    )
+    retriever = EmojiRetriever(repository, storage)
+    runtime = _runtime(scope_repeat_cooldown_seconds=60)
+
+    optional = await retriever.retrieve(
+        EmojiSelectionRequest(actor_user_id="10001", mode=EmojiReplyMode.OPTIONAL),
+        runtime=runtime,
+    )
+    explicit = await retriever.retrieve(
+        EmojiSelectionRequest(actor_user_id="10001", mode=EmojiReplyMode.PREFERRED),
+        runtime=runtime,
+    )
+
+    assert optional == ()
+    assert [item.asset.id for item in explicit] == [asset.id]
+
+
+@pytest.mark.asyncio
 async def test_photo_rejected_and_illegal_transition_is_explicit(
     database: Database, tmp_path: Path
 ) -> None:
@@ -409,7 +453,7 @@ async def test_llm_replacement_selects_only_an_existing_candidate(
         )
         assets.append(asset)
 
-    provider = FakeLLMProvider(lambda _request: assets[1].id)
+    provider = FakeLLMProvider(lambda _request: json.dumps({"emoji_id": assets[1].id}))
     replacement = EmojiReplacementService(
         provider,
         model="fake",

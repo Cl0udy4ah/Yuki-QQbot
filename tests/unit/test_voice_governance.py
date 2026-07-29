@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -160,9 +161,19 @@ def test_voice_ledger_separates_spoken_text_from_internal_metadata() -> None:
             ),
         )
     )
+    emoji = OutboundMessage(
+        media=(
+            OutboundMedia(
+                kind=AttachmentKind.IMAGE,
+                summary="一个开心的表情",
+                emoji_id="emoji-1",
+            ),
+        )
+    )
 
     assert ChatService._ledger_content(media_only) == ""
     assert ChatService._ledger_content(spoken) == "ゆきだよ。"
+    assert ChatService._ledger_content(emoji) == ""
     segment = ChatService._ledger_media_segment(spoken.media[0])
     assert segment["data"]["target_language"] == "jp"  # type: ignore[index]
     assert technical_summary not in ChatService._ledger_content(media_only)
@@ -190,3 +201,52 @@ def test_legacy_voice_metadata_is_hidden_from_model_history() -> None:
     )
 
     assert ContextAssembler._history_event_content(legacy, "current", "当前消息") == ""
+
+
+def test_model_history_omits_transport_annotations_and_media_only_events() -> None:
+    now = datetime.now(UTC)
+    image = EventRecord(
+        id=1,
+        bot_user_id="8000",
+        platform_message_id="image",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="8000",
+        direction="outbound",
+        content="[表情：一个开心的表情]",
+        visual_summary="",
+        segments=({"type": "image", "data": {"summary": "一个开心的表情"}},),
+        occurred_at=now,
+        private_peer_user_id="1001",
+    )
+    contaminated_text = replace(
+        image,
+        id=2,
+        platform_message_id="text",
+        content="[21:10] 我会正常说话。",
+        segments=({"type": "text", "data": {"text": "[21:10] 我会正常说话。"}},),
+    )
+    copied_media_description = replace(
+        image,
+        id=3,
+        platform_message_id="copied-placeholder",
+        content="[21:10] [表情：不应作为台词]",
+        segments=({"type": "text", "data": {"text": "[21:10] [表情：不应作为台词]"}},),
+    )
+
+    assert ContextAssembler._history_event_content(image, "current", "当前消息") == ""
+    assert (
+        ContextAssembler._history_message_content(
+            contaminated_text,
+            current_message_id="current",
+            current_content="当前消息",
+        )
+        == "我会正常说话。"
+    )
+    assert (
+        ContextAssembler._history_event_content(
+            copied_media_description,
+            "current",
+            "当前消息",
+        )
+        == ""
+    )

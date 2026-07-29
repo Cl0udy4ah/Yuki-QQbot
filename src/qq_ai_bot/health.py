@@ -34,6 +34,7 @@ class HealthPayload(TypedDict):
     speech_enabled: bool
     speech_worker_connected: bool
     speech_worker_ready: bool
+    speech_japanese_frontend_available: bool | None
     speech_default_profile_loaded: bool
     speech_can_send_record: bool
     speech_queue_depth: int
@@ -77,6 +78,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         speech_enabled=container.settings.speech_enabled,
         speech_worker_connected=speech_health.connected,
         speech_worker_ready=speech_health.ready,
+        speech_japanese_frontend_available=speech_health.japanese_frontend_available,
         speech_default_profile_loaded=(
             bool(container.settings.speech_default_profile)
             and speech_health.loaded_profile_id == container.settings.speech_default_profile

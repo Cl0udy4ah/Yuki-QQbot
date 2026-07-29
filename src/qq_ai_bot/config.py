@@ -11,6 +11,22 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from qq_ai_bot.settings_domains import (
+    AppSettings,
+    AutomationSettings,
+    ConversationSettings,
+    EmojiSettings,
+    MemorySettings,
+    ModelRuntimeSettings,
+    OneBotSettings,
+    PlannerSettings,
+    PluginSettings,
+    RelationshipSettings,
+    SpeechSettings,
+    VisionSettings,
+    WebSettings,
+)
+
 
 def _csv_set(value: str) -> frozenset[str]:
     return frozenset(item.strip() for item in value.split(",") if item.strip())
@@ -48,6 +64,11 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
     llm_max_output_tokens: int = 8192
     llm_thinking_enabled: bool | None = None
+    llm_flash_base_url: str = ""
+    llm_flash_api_key: str = Field(default="", repr=False)
+    llm_flash_model: str = ""
+    model_profiles_file: Path = Path("config/model_profiles.toml")
+    model_stats_recent_error_limit: int = 5
     system_prompt: str = (
         "你是一个运行在 QQ 中的 AI 助手。请只输出给用户的最终回答，不要输出隐藏的推理过程。"
         "不要声称执行了未实际成功的工具、代码、命令或文件访问。"
@@ -59,6 +80,7 @@ class Settings(BaseSettings):
     processed_event_ttl_seconds: int = 86400
     processed_event_cleanup_seconds: int = 3600
     max_context_characters: int = 12000
+    context_metadata_budget_ratio: float = Field(default=0.55, gt=0, lt=1)
 
     global_llm_concurrency: int = 4
     per_user_requests_per_minute: int = 10
@@ -236,6 +258,7 @@ class Settings(BaseSettings):
     speech_plugin_enabled: bool = True
     speech_text_fallback_enabled: bool = True
     speech_spontaneous_frequency: float = Field(default=0.15, ge=0, le=1)
+    speech_jp_katakana_enabled: bool = True
 
     automation_enabled: bool = False
     default_timezone: str = "Asia/Shanghai"
@@ -252,194 +275,6 @@ class Settings(BaseSettings):
     automation_default_misfire_grace_seconds: int = 1800
     automation_max_consecutive_failures: int = 3
     automation_run_retention_days: int = 30
-
-    @field_validator(
-        "app_port",
-        "llm_max_output_tokens",
-        "processed_event_ttl_seconds",
-        "processed_event_cleanup_seconds",
-        "max_context_characters",
-        "global_llm_concurrency",
-        "per_user_requests_per_minute",
-        "per_group_requests_per_minute",
-        "max_input_characters",
-        "max_output_characters",
-        "max_qq_message_chars",
-        "daily_chat_split_max_characters",
-        "daily_chat_split_max_messages",
-        "group_memory_max_entries",
-        "autonomous_cooldown_seconds",
-        "autonomous_max_per_hour",
-        "recent_history_tool_limit",
-        "local_context_event_limit",
-        "related_people_limit",
-        "person_memory_max_entries",
-        "person_group_memory_max_entries",
-        "preference_max_entries",
-        "memory_batch_trigger_count",
-        "memory_batch_max_events",
-        "agent_max_tool_calls",
-        "agent_max_model_requests",
-        "agent_tool_result_max_characters",
-        "planner_preferred_messages",
-        "planner_max_output_tokens",
-        "planner_max_pending_messages",
-        "planner_recent_presence_window_seconds",
-        "planner_max_wait_seconds",
-        "reply_plan_hard_max_messages",
-        "plugin_max_prompt_fragment_characters",
-        "plugin_max_prompt_characters_per_plugin",
-        "plugin_max_total_prompt_characters",
-        "plugin_background_task_limit",
-        "plugin_failure_disable_threshold",
-        "plugin_http_max_response_bytes",
-        "plugin_ai_session_max_history_messages",
-        "relationship_batch_trigger_count",
-        "relationship_batch_max_turns",
-        "relationship_max_attempts",
-        "affection_max_auto_delta",
-        "trust_max_auto_delta",
-        "web_search_max_results",
-        "web_extract_max_results",
-        "web_global_concurrency",
-        "web_max_calls_per_turn",
-        "web_tool_result_max_characters",
-        "web_source_retention_days",
-        "web_source_max_runs_per_conversation",
-        "vision_max_retries",
-        "vision_global_concurrency",
-        "vision_queue_max_pending",
-        "vision_max_output_tokens",
-        "vision_thinking_budget",
-        "vision_max_images_per_turn",
-        "vision_max_frames_per_turn",
-        "vision_gif_max_frames",
-        "vision_max_download_bytes",
-        "vision_max_prepared_bytes",
-        "vision_max_dimension",
-        "vision_max_pixels",
-        "vision_per_user_requests_per_minute",
-        "vision_per_group_requests_per_minute",
-        "vision_analysis_retention_days",
-        "emoji_selector_candidate_count",
-        "emoji_max_effects_per_reply",
-        "emoji_cache_retention_days",
-        "emoji_worker_batch_size",
-        "emoji_worker_lease_seconds",
-        "emoji_worker_max_attempts",
-        "emoji_preview_max_dimension",
-        "automation_lease_seconds",
-        "automation_max_active_per_superuser",
-        "automation_max_active_per_user",
-        "automation_max_steps",
-        "automation_max_llm_calls_per_run",
-        "automation_max_tool_calls_per_run",
-        "automation_max_messages_per_run",
-        "automation_max_runtime_seconds",
-        "automation_min_interval_seconds",
-        "automation_default_misfire_grace_seconds",
-        "automation_max_consecutive_failures",
-        "automation_run_retention_days",
-    )
-    @classmethod
-    def _positive_integer(cls, value: int) -> int:
-        if value <= 0:
-            raise ValueError("must be greater than zero")
-        return value
-
-    @field_validator(
-        "llm_timeout_seconds",
-        "web_timeout_seconds",
-        "vision_timeout_seconds",
-        "vision_queue_timeout_seconds",
-        "vision_media_download_timeout_seconds",
-        "emoji_worker_poll_seconds",
-        "automation_poll_seconds",
-        "planner_timeout_seconds",
-        "plugin_hook_timeout_seconds",
-        "plugin_start_timeout_seconds",
-        "plugin_stop_timeout_seconds",
-        "plugin_http_timeout_seconds",
-        "speech_worker_start_timeout_seconds",
-        "speech_worker_request_timeout_seconds",
-    )
-    @classmethod
-    def _positive_timeout(cls, value: float) -> float:
-        if value <= 0:
-            raise ValueError("must be greater than zero")
-        return value
-
-    @field_validator(
-        "emoji_same_emoji_cooldown_seconds",
-        "emoji_scope_repeat_cooldown_seconds",
-        "emoji_worker_retry_delay_seconds",
-    )
-    @classmethod
-    def _non_negative_emoji_delay(cls, value: float) -> float:
-        if value < 0:
-            raise ValueError("must not be negative")
-        return value
-
-    @field_validator("llm_max_retries", "web_max_retries")
-    @classmethod
-    def _non_negative_retries(cls, value: int) -> int:
-        if value < 0:
-            raise ValueError("must not be negative")
-        return value
-
-    @field_validator("planner_reply_necessity_threshold")
-    @classmethod
-    def _non_negative_planner_necessity(cls, value: int) -> int:
-        if value < 0:
-            raise ValueError("must not be negative")
-        return value
-
-    @field_validator(
-        "relationship_daily_positive_cap",
-        "relationship_daily_negative_cap",
-    )
-    @classmethod
-    def _non_negative_relationship_cap(cls, value: int) -> int:
-        if value < 0 or value > 100:
-            raise ValueError("must be between zero and 100")
-        return value
-
-    @field_validator(
-        "daily_chat_message_delay_min_seconds",
-        "daily_chat_message_delay_max_seconds",
-        "autonomous_silence_seconds",
-        "planner_group_debounce_seconds",
-        "memory_batch_seconds",
-        "relationship_batch_seconds",
-    )
-    @classmethod
-    def _non_negative_delay(cls, value: float) -> float:
-        if value < 0:
-            raise ValueError("must not be negative")
-        return value
-
-    @model_validator(mode="after")
-    def _validate_daily_chat_delay_range(self) -> Self:
-        if self.daily_chat_message_delay_min_seconds > self.daily_chat_message_delay_max_seconds:
-            raise ValueError(
-                "DAILY_CHAT_MESSAGE_DELAY_MIN_SECONDS must not exceed "
-                "DAILY_CHAT_MESSAGE_DELAY_MAX_SECONDS"
-            )
-        return self
-
-    @field_validator(
-        "autonomous_confidence_threshold",
-        "planner_temperature",
-        "planner_confidence_threshold",
-        "relationship_confidence_threshold",
-        "vision_low_confidence_retry_threshold",
-        "emoji_auto_adopt_min_confidence",
-    )
-    @classmethod
-    def _probability(cls, value: float) -> float:
-        if not 0 <= value <= 1:
-            raise ValueError("must be between zero and one")
-        return value
 
     @field_validator("web_search_depth")
     @classmethod
@@ -464,20 +299,6 @@ class Settings(BaseSettings):
         if normalized not in {"off", "score", "llm", "hybrid"}:
             raise ValueError("EMOJI_REPLACEMENT_MODE must be off, score, llm, or hybrid")
         return normalized
-
-    @field_validator("emoji_near_duplicate_distance")
-    @classmethod
-    def _emoji_near_duplicate_distance(cls, value: int) -> int:
-        if not 0 <= value <= 64:
-            raise ValueError("EMOJI_NEAR_DUPLICATE_DISTANCE must be between zero and 64")
-        return value
-
-    @field_validator("emoji_pool_capacity")
-    @classmethod
-    def _emoji_pool_capacity(cls, value: int | None) -> int | None:
-        if value is not None and value <= 0:
-            raise ValueError("EMOJI_POOL_CAPACITY must be positive when configured")
-        return value
 
     @field_validator(
         "speech_max_synthesis_characters",
@@ -522,101 +343,6 @@ class Settings(BaseSettings):
             raise ValueError("DEFAULT_TIMEZONE must be a valid IANA timezone") from exc
         return normalized
 
-    @field_validator(
-        "relationship_initial_affection",
-        "relationship_initial_trust",
-        "trust_affection_cap_offset",
-        "conflict_preference_min_gap",
-    )
-    @classmethod
-    def _relationship_score_or_gap(cls, value: int) -> int:
-        if not 0 <= value <= 100:
-            raise ValueError("must be between zero and 100")
-        return value
-
-    @model_validator(mode="after")
-    def _validate_memory_limits(self) -> Self:
-        if self.person_memory_max_entries > 100:
-            raise ValueError("PERSON_MEMORY_MAX_ENTRIES must not exceed 100")
-        if self.group_memory_max_entries > 100:
-            raise ValueError("GROUP_MEMORY_MAX_ENTRIES must not exceed 100")
-        if self.related_people_limit > 5:
-            raise ValueError("RELATED_PEOPLE_LIMIT must not exceed 5")
-        if self.person_group_memory_max_entries > 50:
-            raise ValueError("PERSON_GROUP_MEMORY_MAX_ENTRIES must not exceed 50")
-        if self.preference_max_entries > 30:
-            raise ValueError("PREFERENCE_MAX_ENTRIES must not exceed 30")
-        if self.memory_batch_max_events > 20:
-            raise ValueError("MEMORY_BATCH_MAX_EVENTS must not exceed 20")
-        if self.agent_max_tool_calls > 16:
-            raise ValueError("AGENT_MAX_TOOL_CALLS must not exceed 16")
-        if self.relationship_batch_max_turns > 10:
-            raise ValueError("RELATIONSHIP_BATCH_MAX_TURNS must not exceed 10")
-        if self.affection_max_auto_delta > 2:
-            raise ValueError("AFFECTION_MAX_AUTO_DELTA must not exceed 2")
-        if self.trust_max_auto_delta > 2:
-            raise ValueError("TRUST_MAX_AUTO_DELTA must not exceed 2")
-        if self.web_search_max_results > 5:
-            raise ValueError("WEB_SEARCH_MAX_RESULTS must not exceed 5")
-        if self.web_extract_max_results > 3:
-            raise ValueError("WEB_EXTRACT_MAX_RESULTS must not exceed 3")
-        if self.web_max_retries > 1:
-            raise ValueError("WEB_MAX_RETRIES must not exceed 1")
-        if self.web_max_calls_per_turn > 3:
-            raise ValueError("WEB_MAX_CALLS_PER_TURN must not exceed 3")
-        if self.web_tool_result_max_characters > 16000:
-            raise ValueError("WEB_TOOL_RESULT_MAX_CHARACTERS must not exceed 16000")
-        if self.web_source_max_runs_per_conversation > 10:
-            raise ValueError("WEB_SOURCE_MAX_RUNS_PER_CONVERSATION must not exceed 10")
-        if self.vision_max_images_per_turn > 5:
-            raise ValueError("VISION_MAX_IMAGES_PER_TURN must not exceed 5")
-        if self.vision_gif_max_frames > 8:
-            raise ValueError("VISION_GIF_MAX_FRAMES must not exceed 8")
-        if self.vision_max_frames_per_turn > 16:
-            raise ValueError("VISION_MAX_FRAMES_PER_TURN must not exceed 16")
-        if self.vision_max_download_bytes > 20 * 1024 * 1024:
-            raise ValueError("VISION_MAX_DOWNLOAD_BYTES must not exceed 20 MB")
-        if self.vision_max_retries > 1:
-            raise ValueError("VISION_MAX_RETRIES must not exceed 1")
-        if self.vision_thinking_budget > 32768:
-            raise ValueError("VISION_THINKING_BUDGET must not exceed 32768")
-        if self.automation_max_steps > 16:
-            raise ValueError("AUTOMATION_MAX_STEPS must not exceed 16")
-        if self.automation_max_llm_calls_per_run > 5:
-            raise ValueError("AUTOMATION_MAX_LLM_CALLS_PER_RUN must not exceed 5")
-        if self.automation_max_tool_calls_per_run > 16:
-            raise ValueError("AUTOMATION_MAX_TOOL_CALLS_PER_RUN must not exceed 16")
-        if self.automation_max_messages_per_run > 10:
-            raise ValueError("AUTOMATION_MAX_MESSAGES_PER_RUN must not exceed 10")
-        if self.automation_min_interval_seconds < 60:
-            raise ValueError("AUTOMATION_MIN_INTERVAL_SECONDS must be at least 60")
-        if self.planner_reply_necessity_threshold > 100:
-            raise ValueError("PLANNER_REPLY_NECESSITY_THRESHOLD must not exceed 100")
-        if self.planner_group_debounce_seconds > 60:
-            raise ValueError("PLANNER_GROUP_DEBOUNCE_SECONDS must not exceed 60")
-        if self.planner_preferred_messages > 20:
-            raise ValueError("PLANNER_PREFERRED_MESSAGES must not exceed 20")
-        if self.planner_max_pending_messages > 100:
-            raise ValueError("PLANNER_MAX_PENDING_MESSAGES must not exceed 100")
-        if self.planner_max_wait_seconds > 300:
-            raise ValueError("PLANNER_MAX_WAIT_SECONDS must not exceed 300")
-        if self.reply_plan_hard_max_messages > 20:
-            raise ValueError("REPLY_PLAN_HARD_MAX_MESSAGES must not exceed 20")
-        if self.plugin_max_total_prompt_characters <= self.plugin_max_prompt_fragment_characters:
-            raise ValueError(
-                "PLUGIN_MAX_TOTAL_PROMPT_CHARACTERS must exceed "
-                "PLUGIN_MAX_PROMPT_FRAGMENT_CHARACTERS"
-            )
-        if (
-            self.plugin_max_prompt_characters_per_plugin
-            < self.plugin_max_prompt_fragment_characters
-        ):
-            raise ValueError(
-                "PLUGIN_MAX_PROMPT_CHARACTERS_PER_PLUGIN must be at least "
-                "PLUGIN_MAX_PROMPT_FRAGMENT_CHARACTERS"
-            )
-        return self
-
     @field_validator("plugin_api_version")
     @classmethod
     def _valid_plugin_api_version(cls, value: str) -> str:
@@ -639,28 +365,6 @@ class Settings(BaseSettings):
         return path
 
     @model_validator(mode="after")
-    def _validate_web_configuration(self) -> Self:
-        if self.web_enabled and not self.tavily_api_key:
-            raise ValueError("TAVILY_API_KEY is required when WEB_ENABLED=true")
-        return self
-
-    @model_validator(mode="after")
-    def _validate_vision_configuration(self) -> Self:
-        if self.vision_enabled:
-            missing = [
-                name
-                for name, value in (
-                    ("VISION_BASE_URL", self.vision_base_url),
-                    ("VISION_API_KEY", self.vision_api_key),
-                    ("VISION_MODEL", self.vision_model),
-                )
-                if not value.strip()
-            ]
-            if missing:
-                raise ValueError(f"{', '.join(missing)} required when VISION_ENABLED=true")
-        return self
-
-    @model_validator(mode="after")
     def _load_system_prompt_file(self) -> Self:
         """Load a UTF-8 prompt file when explicitly configured."""
 
@@ -674,6 +378,79 @@ class Settings(BaseSettings):
             raise ValueError("SYSTEM_PROMPT_FILE must not be empty")
         self.system_prompt = prompt
         return self
+
+    @model_validator(mode="after")
+    def _compose_domain_settings(self) -> Self:
+        """Validate every environment value at its owning domain boundary."""
+
+        _ = (
+            self.app,
+            self.onebot,
+            self.model_runtime,
+            self.conversation,
+            self.planner,
+            self.plugins,
+            self.memory,
+            self.relationship,
+            self.web,
+            self.vision,
+            self.emoji,
+            self.speech,
+            self.automation,
+        )
+        return self
+
+    @cached_property
+    def app(self) -> AppSettings:
+        return AppSettings.model_validate(self)
+
+    @cached_property
+    def onebot(self) -> OneBotSettings:
+        return OneBotSettings.model_validate(self)
+
+    @cached_property
+    def model_runtime(self) -> ModelRuntimeSettings:
+        return ModelRuntimeSettings.model_validate(self)
+
+    @cached_property
+    def conversation(self) -> ConversationSettings:
+        return ConversationSettings.model_validate(self)
+
+    @cached_property
+    def planner(self) -> PlannerSettings:
+        return PlannerSettings.model_validate(self)
+
+    @cached_property
+    def plugins(self) -> PluginSettings:
+        return PluginSettings.model_validate(self)
+
+    @cached_property
+    def memory(self) -> MemorySettings:
+        return MemorySettings.model_validate(self)
+
+    @cached_property
+    def relationship(self) -> RelationshipSettings:
+        return RelationshipSettings.model_validate(self)
+
+    @cached_property
+    def web(self) -> WebSettings:
+        return WebSettings.model_validate(self)
+
+    @cached_property
+    def vision(self) -> VisionSettings:
+        return VisionSettings.model_validate(self)
+
+    @cached_property
+    def emoji(self) -> EmojiSettings:
+        return EmojiSettings.model_validate(self)
+
+    @cached_property
+    def speech(self) -> SpeechSettings:
+        return SpeechSettings.model_validate(self)
+
+    @cached_property
+    def automation(self) -> AutomationSettings:
+        return AutomationSettings.model_validate(self)
 
     @cached_property
     def superusers(self) -> frozenset[str]:

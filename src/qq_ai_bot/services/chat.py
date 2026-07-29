@@ -13,6 +13,15 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import contains_internal_capability_payload
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.capabilities import (
+    AuthorityContext,
+    CapabilityPolicyContext,
+    CapabilityPolicyEngine,
+    CapabilityRegistry,
+    CapabilityRisk,
+    CapabilityTrustSource,
+    ChatToolCapabilityProvider,
+)
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import (
@@ -27,7 +36,7 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.emoji.models import EmojiPlacement, EmojiReplyMode, PendingReplyEffect
-from qq_ai_bot.llm.base import LLMProvider
+from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     MemoryRepository,
@@ -35,7 +44,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
     WebSearchSourceRepository,
 )
-from qq_ai_bot.planner.models import PlannedTurn, ToolMode
+from qq_ai_bot.planner.models import PlannedTurn, ToolGroup, ToolMode, ToolSelection
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRuntime,
@@ -68,26 +77,6 @@ from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
 from yuki_plugin_sdk.events import EventName
 
-_WEB_TOOL_NAMES = frozenset({"web_search", "read_webpage"})
-_ADMIN_CAPABILITY_TOOL_NAMES = frozenset({"get_my_capabilities", "admin_list_capabilities"})
-_ADMIN_MUTATING_TOOL_NAMES = frozenset(
-    {
-        "admin_set_config",
-        "admin_delete_config_override",
-        "admin_rollback_change",
-    }
-)
-_AUTOMATION_MUTATING_TOOL_NAMES = frozenset(
-    {
-        "automation_create",
-        "automation_update",
-        "automation_pause",
-        "automation_resume",
-        "automation_cancel",
-        "automation_run_now",
-        "time_set_timezone",
-    }
-)
 _ADMIN_RETRYABLE_ERRORS = frozenset(
     {
         "invalid_json",
@@ -95,25 +84,6 @@ _ADMIN_RETRYABLE_ERRORS = frozenset(
         "validation_error",
         "unknown_capability",
         "ValueError",
-    }
-)
-_READ_ONLY_TOOL_NAMES = frozenset(
-    {
-        "get_my_capabilities",
-        "get_recent_chat_history",
-        "search_chat_history",
-        "get_person_memories",
-        "get_group_memories",
-        "web_search",
-        "read_webpage",
-        "admin_list_capabilities",
-        "admin_get_config",
-        "admin_get_history",
-        "automation_list",
-        "automation_list_history",
-        "automation_get",
-        "time_get_current",
-        "time_get_timezone",
     }
 )
 
@@ -193,40 +163,89 @@ class _ChatAgentBackend(AgentToolBackend):
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
         self._batch: list[ToolCall] = []
+        self._capabilities = CapabilityRegistry()
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         self._web_was_used = self._web_was_used or web_was_used
         if self._tools_closed:
             return ()
         request_runtime = self._request_runtime()
-        definitions = self._service._tools.definitions(request_runtime)
+        core_definitions = self._service._tools.definitions(request_runtime)
+        definitions = core_definitions
+        providers = [
+            ChatToolCapabilityProvider(
+                core_definitions,
+                source=CapabilityTrustSource.CORE,
+            )
+        ]
         automation = self._service._automation_tools
         if request_runtime.allow_automation and automation is not None:
-            definitions += automation.definitions()
+            automation_definitions = automation.definitions()
+            definitions += automation_definitions
+            providers.append(
+                ChatToolCapabilityProvider(
+                    automation_definitions,
+                    source=CapabilityTrustSource.AUTOMATION,
+                )
+            )
         admin = self._service._admin_tools
         if request_runtime.allow_admin_actions and admin is not None:
+            admin_definitions = admin.definitions()
             definitions = (
                 tuple(tool for tool in definitions if tool.name != "get_my_capabilities")
-                + admin.definitions()
+                + admin_definitions
+            )
+            providers.append(
+                ChatToolCapabilityProvider(
+                    admin_definitions,
+                    source=CapabilityTrustSource.ADMIN,
+                )
             )
         plugin = self._service._plugin_tools
         if plugin is not None:
-            definitions += plugin.definitions(
+            plugin_definitions = plugin.definitions(
                 request_runtime,
                 web_was_used=self._web_was_used,
             )
+            definitions += plugin_definitions
+            providers.append(
+                ChatToolCapabilityProvider(
+                    plugin_definitions,
+                    source=CapabilityTrustSource.PLUGIN,
+                    plugin_read_only=plugin.is_read_only,
+                )
+            )
+        descriptors = tuple(
+            descriptor
+            for provider in providers
+            for descriptor in provider.descriptors()
+            if any(tool.name == descriptor.model_name for tool in definitions)
+        )
+        self._capabilities = CapabilityRegistry(descriptors)
+        selection = ToolSelection(
+            mode=self._runtime.tool_mode,
+            groups=tuple(ToolGroup(group) for group in sorted(self._runtime.tool_groups)),
+        )
+        visible = CapabilityPolicyEngine().visible(
+            self._capabilities.all(),
+            CapabilityPolicyContext(
+                authority=AuthorityContext(
+                    actor_user_id=self._runtime.actor_user_id,
+                    is_superuser=self._runtime.actor_is_superuser,
+                ),
+                origin=self._runtime.origin,
+                tool_selection=selection,
+                contains_images=bool(
+                    self._runtime.inbound.attachments or self._runtime.inbound.reply_attachments
+                ),
+                web_was_used=self._web_was_used,
+            ),
+        )
+        visible_names = {descriptor.model_name for descriptor in visible}
+        definitions = tuple(tool for tool in definitions if tool.name in visible_names)
         if self._admin_retry_constraint is not None:
             definitions = tuple(
                 tool for tool in definitions if tool.name == self._admin_retry_constraint[0]
-            )
-        if self._runtime.tool_mode is ToolMode.NONE:
-            return ()
-        if self._runtime.tool_mode is ToolMode.READ_ONLY:
-            definitions = tuple(
-                tool
-                for tool in definitions
-                if tool.name in _READ_ONLY_TOOL_NAMES
-                or (plugin is not None and plugin.is_read_only(tool.name))
             )
         return definitions
 
@@ -243,8 +262,11 @@ class _ChatAgentBackend(AgentToolBackend):
             return json.dumps(
                 {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
             )
-        is_web_tool = name in _WEB_TOOL_NAMES
-        is_admin_tool = name.startswith("admin_")
+        descriptor = self._capabilities.get(name)
+        if descriptor is None:
+            return json.dumps({"ok": False, "error": "unknown_capability"})
+        is_web_tool = descriptor.group == ToolGroup.WEB.value
+        is_admin_tool = descriptor.trust_source is CapabilityTrustSource.ADMIN
         automation = self._service._automation_tools
         is_automation_tool = bool(automation is not None and automation.owns(name))
         plugin = self._service._plugin_tools
@@ -252,9 +274,7 @@ class _ChatAgentBackend(AgentToolBackend):
         config = self._runtime.runtime_config
         assert config is not None
         mutation_identity = (
-            (call.function.name, call.function.arguments)
-            if self._service._is_mutating_tool_call(call)
-            else None
+            (call.function.name, call.function.arguments) if self._is_mutating_call(call) else None
         )
         if mutation_identity is not None and mutation_identity in self._completed_admin_mutations:
             result = json.dumps(
@@ -277,7 +297,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 },
                 ensure_ascii=False,
             )
-        elif name == "call_onebot_api" and self._web_was_used:
+        elif descriptor.group == ToolGroup.ONEBOT.value and self._web_was_used:
             result = json.dumps(
                 {
                     "ok": False,
@@ -286,7 +306,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 },
                 ensure_ascii=False,
             )
-        elif self._admin_retry_constraint is not None and not self._service._matches_admin_retry(
+        elif self._admin_retry_constraint is not None and not self._matches_retry(
             call,
             self._admin_retry_constraint,
         ):
@@ -341,13 +361,13 @@ class _ChatAgentBackend(AgentToolBackend):
                     arguments_json,
                     execution_runtime,
                 )
-            if name in _ADMIN_CAPABILITY_TOOL_NAMES:
+            if contains_internal_capability_payload(result):
                 self._capability_was_used = True
             if is_web_tool:
                 self._web_calls_used += 1
                 self._web_was_used = True
         decoded = self._service._decode_tool_result(result)
-        if self._service._is_mutating_tool_call(call):
+        if self._is_mutating_call(call):
             if bool(decoded.get("ok")):
                 self._admin_retry_constraint = None
                 self._admin_terminal_failure = None
@@ -355,7 +375,7 @@ class _ChatAgentBackend(AgentToolBackend):
                     self._completed_admin_mutations.add(mutation_identity)
             elif decoded.get("error") in _ADMIN_RETRYABLE_ERRORS:
                 self._admin_terminal_failure = decoded
-                self._admin_retry_constraint = self._service._admin_retry_identity(call)
+                self._admin_retry_constraint = self._retry_identity(call)
                 if self._admin_retry_constraint is None:
                     self._tools_closed = True
             else:
@@ -392,6 +412,34 @@ class _ChatAgentBackend(AgentToolBackend):
             return self._service._admin_failure_text(self._admin_terminal_failure)
         return "这次操作的工具调用次数过多，已停止继续执行。请把请求拆小后再试。"
 
+    def _is_mutating_call(self, call: ToolCall) -> bool:
+        descriptor = self._capabilities.get(call.function.name)
+        return bool(descriptor is not None and descriptor.risk is not CapabilityRisk.READ)
+
+    def _retry_identity(self, call: ToolCall) -> tuple[str, str] | None:
+        if not self._is_mutating_call(call):
+            return None
+        try:
+            arguments = json.loads(call.function.arguments)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(arguments, dict):
+            return None
+        operation = next(
+            (
+                arguments[key]
+                for key in ("action", "key", "change_id", "automation_id", "id", "name")
+                if key in arguments
+            ),
+            call.function.name,
+        )
+        if not isinstance(operation, (str, int)) or isinstance(operation, bool):
+            return None
+        return call.function.name, str(operation)
+
+    def _matches_retry(self, call: ToolCall, expected: tuple[str, str]) -> bool:
+        return self._retry_identity(call) == expected
+
     def _request_runtime(self) -> ToolRuntime:
         return replace(
             self._runtime,
@@ -407,7 +455,8 @@ class ChatService:
         self,
         *,
         settings: Settings,
-        provider: LLMProvider,
+        provider: ModelCompleter | None = None,
+        model_executor: ModelExecutor | None = None,
         concurrency: ConcurrencyManager,
         ledger: EventLedgerRepository,
         people: PeopleRepository,
@@ -428,7 +477,12 @@ class ChatService:
         event_publisher: LifecycleEventPublisher | None = None,
     ) -> None:
         self._settings = settings
-        self._provider = provider
+        models = require_model_executor(
+            model_executor,
+            provider=provider,
+            model=settings.llm_model or "fake",
+        )
+        self._models = models
         self._concurrency = concurrency
         self._ledger = ledger
         self._people = people
@@ -439,7 +493,7 @@ class ChatService:
         self._source_policy = source_policy or SourceDisplayPolicy()
         self._source_renderer = source_renderer or SourceRenderer()
         self._runtime_config = runtime_config
-        self._agent_runner = AgentRunner(provider, concurrency)
+        self._agent_runner = AgentRunner(models, concurrency)
         self._admin_tools: AdminToolService | None = None
         self._automation_tools: AutomationToolProvider | None = None
         self._plugin_tools: PluginToolProvider | None = None
@@ -564,6 +618,11 @@ class ChatService:
                 origin=(TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE),
                 tool_mode=(
                     planned_turn.plan.tool_mode if planned_turn is not None else ToolMode.INHERIT
+                ),
+                tool_groups=(
+                    frozenset(group.value for group in planned_turn.plan.tool_selection.groups)
+                    if planned_turn is not None
+                    else frozenset(group.value for group in ToolGroup)
                 ),
                 turn_token=turn_token,
                 reply_effects=[],
@@ -842,46 +901,6 @@ class ChatService:
         detail = str(result.get("detail") or result.get("error") or "未知错误")
         return f"操作未完成：{detail}"
 
-    def _is_mutating_tool_call(self, call: ToolCall) -> bool:
-        name = call.function.name
-        if self._plugin_tools is not None and self._plugin_tools.is_mutating(name):
-            return True
-        if name in _ADMIN_MUTATING_TOOL_NAMES or name in _AUTOMATION_MUTATING_TOOL_NAMES:
-            return True
-        if name != "admin_execute_action" or self._admin_tools is None:
-            return False
-        return self._admin_tools.is_mutating_call(name, call.function.arguments)
-
-    @staticmethod
-    def _admin_retry_identity(call: ToolCall) -> tuple[str, str] | None:
-        try:
-            arguments = json.loads(call.function.arguments)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(arguments, dict):
-            return None
-        if call.function.name == "admin_execute_action":
-            operation = arguments.get("action")
-        elif call.function.name in _AUTOMATION_MUTATING_TOOL_NAMES:
-            operation = call.function.name
-        elif call.function.name in {"admin_set_config", "admin_delete_config_override"}:
-            operation = arguments.get("key")
-        elif call.function.name == "admin_rollback_change":
-            operation = arguments.get("change_id")
-        else:
-            return None
-        if not isinstance(operation, (str, int)) or isinstance(operation, bool):
-            return None
-        return call.function.name, str(operation)
-
-    @classmethod
-    def _matches_admin_retry(
-        cls,
-        call: ToolCall,
-        expected: tuple[str, str],
-    ) -> bool:
-        return cls._admin_retry_identity(call) == expected
-
     def _render_chunks(
         self,
         rendered: str,
@@ -985,12 +1004,7 @@ class ChatService:
         """Return only user-visible or spoken content, never internal voice metadata."""
 
         spoken_text = next((media.spoken_text for media in message.media if media.spoken_text), "")
-        visual_descriptions = " ".join(
-            f"[表情：{media.summary or '图片表情'}]"
-            for media in message.media
-            if media.kind is not AttachmentKind.AUDIO
-        )
-        return message.text or spoken_text or visual_descriptions
+        return message.text or spoken_text
 
     @staticmethod
     def _ledger_media_segment(media: OutboundMedia) -> dict[str, object]:

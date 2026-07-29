@@ -259,7 +259,7 @@ class MessageProcessor:
             settings=settings,
             jobs=MemoryJobRepository(database),
             memories=self._memories,
-            provider=chat._provider,
+            model_executor=chat._models,
             concurrency=concurrency,
         )
         self._relationships = relationships or RelationshipRepository(
@@ -279,7 +279,7 @@ class MessageProcessor:
             relationships=self._relationships,
             evaluator=LLMRelationshipEvaluator(
                 settings=settings,
-                provider=chat._provider,
+                model_executor=chat._models,
                 concurrency=concurrency,
             ),
         )

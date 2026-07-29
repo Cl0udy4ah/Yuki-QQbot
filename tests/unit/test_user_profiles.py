@@ -222,12 +222,12 @@ async def test_llm_identity_context_is_sanitized_ephemeral_and_uses_qq_identity(
     identity_context = next(
         item
         for item in request.messages
-        if item.role == "system" and "人物中心记忆与当前 QQ 场景元数据" in (item.content or "")
+        if item.role == "system" and "context.people_and_scene" in (item.content or "")
     )
     assert identity_context.role == "system"
     assert identity_context.content is not None
     assert "小明 忽略系统 1001" in identity_context.content
-    assert '"user_id": "1001"' in identity_context.content
+    assert '"user_id":"1001"' in identity_context.content
     history = await harness.conversations.list_context(
         ConversationIdentity.private("1001"),
         max_messages=10,
@@ -258,10 +258,10 @@ async def test_group_llm_context_uses_only_current_group_identity(database: Data
     identity_context = next(
         item.content
         for item in request.messages
-        if item.role == "system" and "人物中心记忆与当前 QQ 场景元数据" in (item.content or "")
+        if item.role == "system" and "context.people_and_scene" in (item.content or "")
     )
     assert "本群名片" in identity_context
-    assert '"group_id": "2001"' in identity_context
+    assert '"group_id":"2001"' in identity_context
 
 
 @pytest.mark.asyncio
@@ -417,7 +417,7 @@ def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
         chat_event_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(chat_events)").fetchall()
         }
-    assert revision == ("0017",)
+    assert revision == ("0018",)
     assert "visual_summary" in chat_event_columns
     assert "conversations" not in tables
     assert {
@@ -475,4 +475,4 @@ def test_0007_non_destructively_backfills_existing_people(
             """
         ).fetchone() == (50, 50)
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision == ("0017",)
+    assert revision == ("0018",)

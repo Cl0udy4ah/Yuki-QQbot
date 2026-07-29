@@ -213,9 +213,21 @@ class VoiceReplyPlan(_FrozenModel):
     # into enums before backend constraints are applied.
     model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
 
-    mode: VoiceMode = VoiceMode.TEXT
-    intent: VoiceIntent = VoiceIntent.NEUTRAL
-    agent_tool: VoiceAgentToolPolicy = VoiceAgentToolPolicy.FORBIDDEN
+    mode: VoiceMode = Field(
+        default=VoiceMode.TEXT,
+        description="本轮最终发送载体；明确索要语音时使用 voice 或 text_and_voice。",
+    )
+    intent: VoiceIntent = Field(
+        default=VoiceIntent.NEUTRAL,
+        description=(
+            "只分类用户对发送载体的意图：明确索要语音为 explicit_request，明确不要语音为 "
+            "explicit_opt_out，未表达载体偏好才是 neutral。"
+        ),
+    )
+    agent_tool: VoiceAgentToolPolicy = Field(
+        default=VoiceAgentToolPolicy.FORBIDDEN,
+        description="intent 为 explicit_request 时必须为 required，否则为 forbidden。",
+    )
     style_hint: str = Field(default="", max_length=128)
     language: SpeechLanguageHint = SpeechLanguageHint.AUTO
     reason: str = Field(default="", max_length=300)

@@ -7,7 +7,7 @@ import json
 import struct
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -32,6 +32,7 @@ class GenieWorkerErrorCode(StrEnum):
     OUTPUT_INVALID = "output_invalid"
     CANCELLED = "cancelled"
     WORKER_BUSY = "worker_busy"
+    JAPANESE_FRONTEND_UNAVAILABLE = "japanese_frontend_unavailable"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -63,6 +64,12 @@ class _Success(_WireModel):
     loaded_profile_id: str | None = None
     ready: bool | None = None
     busy: bool | None = None
+    japanese_frontend_available: bool | None = None
+    japanese_frontend_version: str | None = None
+    japanese_frontend_signature: str | None = None
+    spoken_text_hash: str | None = None
+    frontend_version: str | None = None
+    transformed_token_count: int | None = None
 
 
 class _Failure(_WireModel):
@@ -97,7 +104,19 @@ class GenieWorkerClient:
             ready=bool(result.ready),
             busy=bool(result.busy),
             loaded_profile_id=result.loaded_profile_id,
+            japanese_frontend_available=result.japanese_frontend_available,
+            japanese_frontend_version=result.japanese_frontend_version,
+            japanese_frontend_signature=result.japanese_frontend_signature,
         )
+
+    async def japanese_frontend_signature(self) -> str:
+        result = await self._call({"operation": "health"})
+        if not result.japanese_frontend_available or not result.japanese_frontend_signature:
+            raise GenieWorkerFailure(
+                GenieWorkerErrorCode.JAPANESE_FRONTEND_UNAVAILABLE,
+                "Japanese speech frontend is unavailable",
+            )
+        return result.japanese_frontend_signature
 
     async def load_profile(self, profile: VoiceProfile, *, reload: bool = False) -> None:
         await self._call(
@@ -199,7 +218,8 @@ class GenieWorkerClient:
         raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         try:
             async with asyncio.timeout(self._timeout):
-                reader, writer = await asyncio.open_unix_connection(self._socket_path)
+                open_unix_connection = cast(Any, asyncio).open_unix_connection
+                reader, writer = await open_unix_connection(self._socket_path)
                 try:
                     writer.write(_LENGTH.pack(len(raw)) + raw)
                     await writer.drain()

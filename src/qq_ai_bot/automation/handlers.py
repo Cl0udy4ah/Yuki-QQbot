@@ -32,7 +32,9 @@ from qq_ai_bot.emoji.models import (
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.emoji.storage import EmojiStorage
-from qq_ai_bot.llm.base import LLMError, LLMProvider
+from qq_ai_bot.llm.base import LLMError
+from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     MemoryRepository,
@@ -65,7 +67,8 @@ class AutomationCapabilityHandlers:
         self,
         *,
         settings: Settings,
-        provider: LLMProvider,
+        provider: ModelCompleter | None = None,
+        model_executor: ModelExecutor | None = None,
         concurrency: ConcurrencyManager,
         runtime_config: RuntimeConfigService,
         time_service: TimeContextService,
@@ -81,7 +84,11 @@ class AutomationCapabilityHandlers:
         speech: SpeechService | None = None,
     ) -> None:
         self._settings = settings
-        self._provider = provider
+        self._models = require_model_executor(
+            model_executor,
+            provider=provider,
+            model=settings.llm_model or "fake",
+        )
         self._concurrency = concurrency
         self._runtime_config = runtime_config
         self._time = time_service
@@ -95,7 +102,11 @@ class AutomationCapabilityHandlers:
         self._emoji_selector = emoji_selector
         self._emoji_storage = emoji_storage
         self._speech = speech
-        self._agent_runner = AgentRunner(provider, concurrency)
+        self._agent_runner = AgentRunner(
+            self._models,
+            concurrency,
+            task=ModelTask.AUTOMATION_AGENT,
+        )
         self._registry: AutomationCapabilityRegistry | None = None
 
     def bind_registry(self, registry: AutomationCapabilityRegistry) -> None:
@@ -134,7 +145,8 @@ class AutomationCapabilityHandlers:
             response = await self._concurrency.run_llm(
                 context.conversation_key,
                 partial(
-                    self._provider.complete,
+                    self._models.execute,
+                    ModelTask.AUTOMATION_TEXT_GENERATION,
                     _chat_request(messages, snapshot, tools=()),
                 ),
             )

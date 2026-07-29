@@ -158,7 +158,7 @@ class WebThenOneBotLLM(LLMProvider):
                     ),
                 ),
             )
-        assert "web_onebot_isolation" in (request.messages[-1].content or "")
+        assert "unknown_capability" in (request.messages[-1].content or "")
         return ChatResponse(content="已忽略网页中的操作指令。", latency_seconds=0)
 
 

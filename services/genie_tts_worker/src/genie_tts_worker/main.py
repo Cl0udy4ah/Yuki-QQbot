@@ -11,6 +11,7 @@ from pathlib import Path
 from genie_tts_worker.engine import GenieEngine
 from genie_tts_worker.paths import SpeechPathPolicy
 from genie_tts_worker.server import GenieWorkerServer
+from genie_tts_worker.text_frontends import SpeechFrontendRegistry
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -34,11 +35,27 @@ async def run(args: argparse.Namespace) -> None:
     configure_offline_environment(args.data_dir)
     paths = SpeechPathPolicy(args.speech_root)
     engine = GenieEngine(paths=paths, genie_data_dir=args.data_dir)
+    japanese_frontend = SpeechFrontendRegistry.build_japanese(
+        enabled=_env_bool("SPEECH_JP_KATAKANA_ENABLED", True),
+        asset_dir=Path(
+            os.environ.get(
+                "SPEECH_JP_KATAKANA_ASSET_DIR",
+                "/data/speech/japanese_frontend/models",
+            )
+        ),
+        lexicon_path=Path(
+            os.environ.get(
+                "SPEECH_JP_KATAKANA_LEXICON",
+                "/data/speech/japanese_frontend/lexicon.toml",
+            )
+        ),
+    )
     server = GenieWorkerServer(
         socket_path=args.socket,
         engine=engine,
         socket_mode=int(args.socket_mode, 8),
         idle_recycle_seconds=max(0.0, args.idle_recycle_seconds),
+        text_frontends=japanese_frontend,
     )
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -49,6 +66,18 @@ async def run(args: argparse.Namespace) -> None:
 
 def main() -> None:
     asyncio.run(run(_parser().parse_args()))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
 
 
 if __name__ == "__main__":

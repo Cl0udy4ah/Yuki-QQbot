@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.llm.base import LLMProvider
+from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.plugin_host.session_repository import (
     PluginAgentMessageRecord,
     PluginAgentSessionRecord,
@@ -59,7 +60,8 @@ class PluginAgentSessionService:
     def __init__(
         self,
         *,
-        provider: LLMProvider,
+        provider: ModelCompleter | None = None,
+        model_executor: ModelExecutor | None = None,
         concurrency: ConcurrencyManager,
         runtime_config: RuntimeConfigService,
         repository: PluginAgentSessionRepository,
@@ -69,7 +71,16 @@ class PluginAgentSessionService:
         self._concurrency = concurrency
         self._runtime_config = runtime_config
         self._repository = repository
-        self._runner = AgentRunner(provider, concurrency)
+        models = require_model_executor(
+            model_executor,
+            provider=provider,
+            model="fake",
+        )
+        self._runner = AgentRunner(
+            models,
+            concurrency,
+            task=ModelTask.PLUGIN_AGENT_SESSION,
+        )
         self._bot_user_id = bot_user_id
         self._max_history_messages = max(1, min(max_history_messages, 500))
         self._ephemeral_session_ids: set[str] = set()

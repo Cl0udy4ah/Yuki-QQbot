@@ -25,6 +25,7 @@ from qq_ai_bot.admin.models import AdminActor, RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import AutomationRecord, TurnOrigin
 from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.emoji.collector import EmojiCollector
@@ -185,9 +186,7 @@ class PluginInvocation:
     source_event_id: int | None = None
     visual_observation: VisualObservation | None = field(default=None, repr=False)
     web_was_used: bool = False
-    reply_effects: list[PendingReplyEffect | PendingVoiceReplyEffect] | None = field(
-        default=None, repr=False
-    )
+    reply_effects: list[ReplyEffect] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not self.plugin_id or not self.actor_user_id or not self.bot_user_id:
@@ -525,7 +524,7 @@ class HostPluginContext:
             ),
             web_was_used=web_was_used,
             reply_effects=cast(
-                list[PendingReplyEffect | PendingVoiceReplyEffect] | None,
+                list[ReplyEffect] | None,
                 getattr(runtime, "reply_effects", None),
             ),
         )

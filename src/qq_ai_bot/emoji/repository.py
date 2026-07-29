@@ -352,7 +352,7 @@ class EmojiRepository:
         actor_user_id: str,
         group_id: str | None,
         cooldown_after: datetime,
-        scope_cooldown_after: datetime,
+        scope_cooldown_after: datetime | None,
         limit: int,
     ) -> tuple[tuple[EmojiAsset, float], ...]:
         if limit <= 0:
@@ -364,18 +364,20 @@ class EmojiRepository:
                 (EmojiScopeStateModel.scope_type == "group")
                 & (EmojiScopeStateModel.scope_id == group_id),
             )
-        recent_scope = (
-            select(func.count())
-            .select_from(EmojiUsageEventModel)
-            .where(EmojiUsageEventModel.created_at > scope_cooldown_after)
-        )
-        if group_id is not None:
-            recent_scope = recent_scope.where(EmojiUsageEventModel.group_id == group_id)
-        else:
-            recent_scope = recent_scope.where(
-                EmojiUsageEventModel.group_id.is_(None),
-                EmojiUsageEventModel.actor_user_id == actor_user_id,
+        recent_scope = None
+        if scope_cooldown_after is not None:
+            recent_scope = (
+                select(func.count())
+                .select_from(EmojiUsageEventModel)
+                .where(EmojiUsageEventModel.created_at > scope_cooldown_after)
             )
+            if group_id is not None:
+                recent_scope = recent_scope.where(EmojiUsageEventModel.group_id == group_id)
+            else:
+                recent_scope = recent_scope.where(
+                    EmojiUsageEventModel.group_id.is_(None),
+                    EmojiUsageEventModel.actor_user_id == actor_user_id,
+                )
         statement = (
             select(EmojiAssetModel, func.max(EmojiScopeStateModel.weight))
             .join(EmojiScopeStateModel, EmojiScopeStateModel.emoji_id == EmojiAssetModel.id)
@@ -405,7 +407,7 @@ class EmojiRepository:
             )
             statement = statement.where(~disabled_override)
         async with self._database.sessions() as session:
-            if await session.scalar(recent_scope):
+            if recent_scope is not None and await session.scalar(recent_scope):
                 return ()
             rows = (await session.execute(statement)).all()
             return tuple((self._asset(row), float(weight or 0)) for row, weight in rows)

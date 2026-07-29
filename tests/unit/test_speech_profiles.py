@@ -7,7 +7,7 @@ import pytest
 
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.speech.cache import speech_cache_key
-from qq_ai_bot.speech.language import resolve_target_language
+from qq_ai_bot.speech.language import prepare_text_for_language, resolve_target_language
 from qq_ai_bot.speech.models import VoiceProfile, VoiceProfileManifest
 from qq_ai_bot.speech.paths import SpeechPathError, SpeechPathPolicy
 from qq_ai_bot.speech.profiles import VoiceProfileService
@@ -275,6 +275,11 @@ async def test_target_language_uses_actual_script_before_planner_hint(
     assert resolve_target_language(profile, "晚安，明天见。", "jp") == "zh"
     assert resolve_target_language(profile, "おやすみ、また明日。", "zh") == "jp"
     assert resolve_target_language(profile, "……", "jp") == "jp"
+
+
+def test_chinese_g2p_compatibility_preserves_intent_without_touching_japanese() -> None:
+    assert prepare_text_for_language("嗯…啊…", "zh") == "恩…啊…"
+    assert prepare_text_for_language("んっ…はぁ…", "jp") == "んっ…はぁ…"
 
 
 def test_speech_text_normalizer_omits_code_and_full_urls() -> None:

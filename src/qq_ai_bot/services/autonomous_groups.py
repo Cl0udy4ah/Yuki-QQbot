@@ -3,21 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage
+from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.llm.base import LLMError, LLMProvider
+from qq_ai_bot.llm.base import LLMError
+from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
 from qq_ai_bot.persistence.repositories import MemoryRepository
 from qq_ai_bot.planner.context import PlannerContextBuilder
 from qq_ai_bot.planner.models import PlannerDecision
@@ -34,6 +38,13 @@ from qq_ai_bot.services.turn_coordinator import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _LegacyParticipation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    confidence: float = Field(ge=0, le=1)
+    reason: str = ""
 
 
 @dataclass(slots=True)
@@ -64,7 +75,8 @@ class AutonomousGroupService:
         planner_signals: PluginPlannerSignalAdapter | None = None,
         # Kept as compatibility-only constructor inputs for tests/extensions built
         # against 1.5.  The 1.6 flow no longer owns a second confidence LLM.
-        provider: LLMProvider | None = None,
+        provider: ModelCompleter | None = None,
+        model_executor: ModelExecutor | None = None,
         concurrency: ConcurrencyManager | None = None,
         memories: MemoryRepository | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -76,7 +88,18 @@ class AutonomousGroupService:
         self._planner = planner
         self._coordinator = turn_coordinator or chat._turn_coordinator
         self._planner_signals = planner_signals
-        self._legacy_provider = provider
+        self._legacy_models = (
+            require_model_executor(
+                model_executor,
+                provider=provider,
+                model=settings.llm_model or "fake",
+            )
+            if model_executor is not None or provider is not None
+            else None
+        )
+        self._legacy_structured = (
+            StructuredTaskRunner(self._legacy_models) if self._legacy_models is not None else None
+        )
         self._legacy_concurrency = concurrency
         self._legacy_memories = memories
         self._clock = clock
@@ -264,9 +287,10 @@ class AutonomousGroupService:
     ) -> None:
         """Preserve 1.5.2 only when Planner is explicitly disabled."""
 
-        provider = self._legacy_provider
+        models = self._legacy_models
+        structured = self._legacy_structured
         concurrency = self._legacy_concurrency
-        if provider is None or concurrency is None:
+        if models is None or structured is None or concurrency is None:
             return
         config = runtime
         now = self._clock()
@@ -286,41 +310,24 @@ class AutonomousGroupService:
             return
         transcript = [
             {"user_id": item.sender.user_id, "content": item.text}
-            for item in tuple(state.messages)[-20:]
+            for item in tuple(state.messages)[-config.context.local_event_limit :]
         ]
-        response = await concurrency.run_llm(
+        result = await concurrency.run_llm(
             f"autonomous-decision:{group_id}",
-            lambda: provider.complete(
-                ChatRequest(
-                    model=config.llm.model or "fake",
-                    temperature=0,
-                    max_output_tokens=128,
-                    thinking_enabled=False,
-                    messages=(
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "判断一个像真实群友的机器人此时是否应主动插话。"
-                                "只有能自然帮助对话且不会打扰时才参与。"
-                                '只输出 JSON：{"confidence":0到1,"reason":"短原因"}。'
-                            ),
-                        ),
-                        ChatMessage(
-                            role="user",
-                            content=json.dumps(transcript, ensure_ascii=False),
-                        ),
-                    ),
-                )
+            lambda: structured.run(
+                task=ModelTask.UTILITY_STRUCTURED,
+                instruction=(
+                    "判断一个像真实群友的机器人此时是否应主动插话。"
+                    "只有能自然帮助对话且不会打扰时才参与。"
+                ),
+                structured_input={"transcript": transcript},
+                output_model=_LegacyParticipation,
+                temperature=0,
+                max_output_tokens=None,
+                allow_text_json=True,
             ),
         )
-        raw = response.content.strip().strip("`")
-        if raw.startswith("json"):
-            raw = raw[4:].lstrip()
-        payload = json.loads(raw)
-        confidence = payload.get("confidence") if isinstance(payload, dict) else None
-        if not isinstance(confidence, int | float) or isinstance(confidence, bool):
-            return
-        if float(confidence) < config.autonomous.confidence_threshold:
+        if result.confidence < config.autonomous.confidence_threshold:
             return
         batch = "\n".join(f"[QQ {item.sender.user_id}] {item.text}" for item in state.messages)
         identity = ConversationIdentity.group(

@@ -1,6 +1,6 @@
 [project]
 name = "qq-ai-bot"
-version = "1.8.2"
+version = "1.9.0"
 description = "基于 NoneBot2、OneBot v11 与 NapCatQQ 的个人 QQ AI 聊天机器人"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -15,6 +15,7 @@ dependencies = [
     "pydantic-settings>=2.7,<3",
     "sqlalchemy>=2.0.36,<3",
     "tenacity>=9,<10",
+    "tzdata>=2025.2",
 ]
 
 [project.optional-dependencies]

@@ -38,7 +38,7 @@ def test_plugin_prompt_is_untrusted_budgeted_and_cannot_use_core_stage() -> None
     )
     rendered = registry.render((fragment,))
     assert len(rendered) == 1
-    assert "外部不可信上下文" in rendered[0]
+    assert "外部不可信" in rendered[0]
     assert "weather context" in rendered[0]
 
     with pytest.raises(ValueError, match="plugin prompt stages"):

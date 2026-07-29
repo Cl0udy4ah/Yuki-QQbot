@@ -19,6 +19,7 @@ from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.admin import EmojiAdminService
+from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.persistence.repositories import (
     ConversationRepository,
     MemoryRepository,
@@ -86,6 +87,7 @@ class CommandService:
         plugin_commands: PluginCommandAdapter | None = None,
         emoji_admin: EmojiAdminService | None = None,
         speech_admin: SpeechAdminService | None = None,
+        model_invocations: ModelInvocationRepository | None = None,
     ) -> None:
         self._settings = settings
         self._conversations = conversations
@@ -104,6 +106,7 @@ class CommandService:
         self._plugin_commands = plugin_commands
         self._emoji_admin = emoji_admin
         self._speech_admin = speech_admin
+        self._model_invocations = model_invocations
         self._profile_commands = ProfileCommandHandler(
             people=people,
             memories=memories,
@@ -405,6 +408,45 @@ class CommandService:
                         reset_after_reply=reset_after_reply,
                         outbound=speech_result.outbound,
                     )
+        elif command is CommandName.MODEL:
+            if argument.strip().casefold() != "stats":
+                text = "格式错误，请使用 /ai model stats。"
+            elif self._model_invocations is None:
+                text = "模型调用统计尚未初始化。"
+            else:
+                stats = await self._model_invocations.stats()
+                by_task = await self._model_invocations.stats_by_task()
+                by_profile = await self._model_invocations.stats_by_profile()
+                recent_errors = await self._model_invocations.recent_errors(
+                    limit=self._settings.model_stats_recent_error_limit
+                )
+                lines = [
+                    f"模型调用：{stats.invocations} 次（成功 {stats.successes}，失败 "
+                    f"{stats.failures}）",
+                    f"Token：输入 {stats.prompt_tokens}，输出 {stats.completion_tokens}，"
+                    f"缓存命中 {stats.cached_prompt_tokens}，合计 {stats.total_tokens}；"
+                    f"缺少 usage {stats.unknown_usage} 次",
+                    f"平均延迟：{stats.average_latency_seconds:.3f} 秒",
+                    "按任务：",
+                ]
+                lines.extend(
+                    f"- {task.value}: {item.invocations} 次 / {item.total_tokens} Token"
+                    for task, item in sorted(by_task.items(), key=lambda pair: pair[0].value)
+                )
+                lines.append("按档案：")
+                lines.extend(
+                    f"- {profile_id}: {item.invocations} 次 / {item.total_tokens} Token"
+                    for profile_id, item in sorted(by_profile.items())
+                )
+                lines.append("最近错误：")
+                lines.extend(
+                    f"- {item.created_at.isoformat()} {item.task.value}/{item.profile_id}: "
+                    f"{item.error_category}"
+                    for item in recent_errors
+                )
+                if not recent_errors:
+                    lines.append("- 无")
+                text = "\n".join(lines)
         else:
             text = "未知命令，请使用 /ai help 查看帮助。"
 
@@ -430,6 +472,7 @@ class CommandService:
             "/ai emoji list|show|adopt|unadopt|reject|ban|pin|reanalyze\n"
             "/ai emoji stats|cleanup|doctor|import\n"
             "/ai voice status|profiles|show|use|styles|test|reload|cache cleanup\n"
+            "/ai model stats（超级管理员）\n"
             "/ai on|off（超级管理员，当前群）\n"
             "/ai group <群号> on|off（超级管理员）\n"
             "/ai private <QQ号> on|off（超级管理员；阻止/恢复私聊）\n"

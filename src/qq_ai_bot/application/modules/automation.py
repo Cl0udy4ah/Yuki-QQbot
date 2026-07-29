@@ -1,0 +1,151 @@
+"""Automation application module."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+
+from qq_ai_bot.admin.action_service import AdminActionService
+from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.application.lifecycle import LifecycleRegistry
+from qq_ai_bot.automation.executor import AutomationExecutor
+from qq_ai_bot.automation.gateway import OneBotProactiveGateway
+from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers
+from qq_ai_bot.automation.registry import AutomationCapabilityRegistry, build_capability_registry
+from qq_ai_bot.automation.repository import AutomationRepository
+from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.automation.tools import AutomationToolService
+from qq_ai_bot.automation.worker import AutomationWorker
+from qq_ai_bot.config import Settings
+from qq_ai_bot.emoji.repository import EmojiRepository
+from qq_ai_bot.emoji.selector import EmojiSelector
+from qq_ai_bot.emoji.storage import EmojiStorage
+from qq_ai_bot.model_runtime.executor import ModelExecutor
+from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.repositories import (
+    AgentActionRepository,
+    EventLedgerRepository,
+    MemoryRepository,
+    RelationshipRepository,
+)
+from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.speech.service import SpeechService
+from qq_ai_bot.time.service import TimeContextService
+from qq_ai_bot.web.base import WebSearchProvider
+
+
+@dataclass(frozen=True, slots=True)
+class AutomationBundle:
+    repository: AutomationRepository
+    handlers: AutomationCapabilityHandlers
+    registry: AutomationCapabilityRegistry
+    service: AutomationService
+    tools: AutomationToolService
+    executor: AutomationExecutor
+    worker: AutomationWorker
+
+
+class AutomationModule:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        database: Database,
+        models: ModelExecutor,
+        concurrency: ConcurrencyManager,
+        runtime_config: RuntimeConfigService,
+        time_service: TimeContextService,
+        ledger: EventLedgerRepository,
+        memories: MemoryRepository,
+        relationships: RelationshipRepository,
+        admin_actions: AdminActionService,
+        admin_audit: AdminAuditService,
+        agent_actions: AgentActionRepository,
+        web_provider: WebSearchProvider | None,
+        emoji_repository: EmojiRepository,
+        emoji_selector: EmojiSelector,
+        emoji_storage: EmojiStorage,
+        speech: SpeechService,
+        bot_connected: Callable[[str], bool],
+    ) -> None:
+        self._settings = settings
+        self._database = database
+        self._models = models
+        self._concurrency = concurrency
+        self._runtime_config = runtime_config
+        self._time_service = time_service
+        self._ledger = ledger
+        self._memories = memories
+        self._relationships = relationships
+        self._admin_actions = admin_actions
+        self._admin_audit = admin_audit
+        self._agent_actions = agent_actions
+        self._web_provider = web_provider
+        self._emoji_repository = emoji_repository
+        self._emoji_selector = emoji_selector
+        self._emoji_storage = emoji_storage
+        self._speech = speech
+        self._bot_connected = bot_connected
+
+    def build(self) -> AutomationBundle:
+        repository = AutomationRepository(self._database)
+        handlers = AutomationCapabilityHandlers(
+            settings=self._settings,
+            model_executor=self._models,
+            concurrency=self._concurrency,
+            runtime_config=self._runtime_config,
+            time_service=self._time_service,
+            ledger=self._ledger,
+            memories=self._memories,
+            relationships=self._relationships,
+            admin_actions=self._admin_actions,
+            web_provider=self._web_provider,
+            gateway_factory=lambda context: OneBotProactiveGateway(
+                bot_user_id=context.bot_user_id,
+                creator_user_id=context.creator_user_id,
+                automation_id=context.automation_id,
+                automation_run_id=context.automation_run_id,
+                ledger=self._ledger,
+                actions=self._agent_actions,
+            ),
+            emoji_repository=self._emoji_repository,
+            emoji_selector=self._emoji_selector,
+            emoji_storage=self._emoji_storage,
+            speech=self._speech,
+        )
+        registry = build_capability_registry(handlers.mapping())
+        handlers.bind_registry(registry)
+        service = AutomationService(
+            settings=self._settings,
+            repository=repository,
+            registry=registry,
+            time_service=self._time_service,
+            audit=self._admin_audit,
+        )
+        tools = AutomationToolService(service)
+        executor = AutomationExecutor(
+            settings=self._settings,
+            registry=registry,
+            repository=repository,
+            time_service=self._time_service,
+        )
+        worker = AutomationWorker(
+            settings=self._settings,
+            repository=repository,
+            executor=executor,
+            time_service=self._time_service,
+            bot_connected=self._bot_connected,
+        )
+        return AutomationBundle(repository, handlers, registry, service, tools, executor, worker)
+
+    @staticmethod
+    def register_lifecycle(
+        bundle: AutomationBundle,
+        lifecycle: LifecycleRegistry,
+    ) -> None:
+        lifecycle.register(
+            "automation_worker",
+            start=bundle.worker.start,
+            close=bundle.worker.close,
+        )

@@ -21,6 +21,7 @@ def speech_cache_key(
     normalized_text: str,
     split_sentence: bool,
     target_language: str,
+    frontend_signature: str = "",
 ) -> str:
     payload = {
         "engine": GENIE_TTS_VERSION,
@@ -31,6 +32,7 @@ def speech_cache_key(
         "text": normalized_text,
         "split_sentence": split_sentence,
         "normalizer": NORMALIZER_VERSION,
+        "frontend_signature": frontend_signature,
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

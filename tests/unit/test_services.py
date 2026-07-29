@@ -124,7 +124,7 @@ def test_markdown_cleanup_and_control_character_sanitization() -> None:
 
 def test_model_output_never_exposes_internal_history_timestamps() -> None:
     text = (
-        "先确认一下。[07-27 03:14] 五分钟后提醒你。\n"
+        "[21:10] 先确认一下。[07-27 03:14] 五分钟后提醒你。\n"
         "[07-27 03:13 QQ 2186567848] 这也是内部历史标记。"
     )
 
