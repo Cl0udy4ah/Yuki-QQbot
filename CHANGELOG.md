@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 1.9.0 - 2026-07-29
+
+### Rising Sea 架构重构
+
+- 新增 `ModelTask`、`ModelProfile`、`ModelRoute`、`ModelRouter`、共享连接池和 `TaskModelExecutor`。默认显式路由把主聊天、自动化 Agent、插件 Agent 会话交给 Pro，把 Planner、记忆、关系、表情替换、自动化文本和辅助结构化任务交给 Flash；缺失路由、能力不兼容或密钥缺失会在启动时失败，不会隐式改用 Pro。
+- 新增 `config/model_profiles.example.toml` 与 `MODEL_PROFILES_FILE`；TOML 只引用环境变量名。未提供文件时把旧 `LLM_*` 规范化为 `main` 档案并记录弃用提示，保持 1.8.2 行为。
+- `ChatResponse` 新增 prompt、completion、total 和 cached prompt Token；Alembic `0018` 新增不含正文的 `model_invocations`。新增 CLI `model profiles|routes|stats` 和超级管理员 `/ai model stats`，最近错误显示数通过 `MODEL_STATS_RECENT_ERROR_LIMIT` 配置。
+- 新增泛用 `StructuredTaskRunner`，Planner、MemoryWorker、RelationshipEvaluator、EmojiReplacement 和兼容自主参与判断直接使用 Pydantic 输出 Schema；删除这些路径的 fenced JSON、平衡花括号和重复字段解析。
+- Planner 固定提示词改为短决策契约，`TurnPlan` Schema 成为结构权威；`ToolSelection` 使用 `inherit|none|read_only` 与后端工具组子集，Planner 只能缩小能力。
+- 新增 `PromptContribution`、`PromptProgram`、`PromptCompiler`、`ContextContribution` 和通用预算器。常规请求现在只有一个稳定静态前缀和一个紧凑动态 Envelope；插件上下文合并为一次不可信包装，当前消息始终保留。
+- 系统提示词精简为五段人格与文本风格规则：Yuki 不主动输出 Unicode Emoji、颜文字或 ASCII 表情；引用、解释或转换用户明确指定的符号时仍可原样输出，不在最终回复上使用粗暴删除正则。
+- 新增 `CapabilityDescriptor` 与元数据策略引擎，统一 effect、risk、trust source、origin、权限、外部数据和幂等性；图片/网页隔离、只读筛选与 ReplyEffect 通过元数据执行。表情图片和语音请求共同实现 `ReplyEffect` 契约。
+- 根配置保留全部 1.x `.env` 名称，同时组合 13 个不可变领域设置模型；移除跨数百字段的统一 validator 和多项任意硬上限，不合法值在所属 Pydantic 领域边界明确失败。
+- 新增 `ApplicationModule`、不可变 Bundle 与 `LifecycleRegistry`，拆出 Persistence、ModelRuntime、Web、Media、Emoji、Speech、Conversation、Admin、Automation 和 Plugin 模块；生命周期支持有序启动、反序关闭、启动失败回滚、关闭错误聚合和独立健康结果。`ApplicationContainer` 从基线 1,097 行降至 710 行。
+
+### 离线日语语音前端
+
+- Genie Worker 固定加入 `e2k==0.6.2`，新增 `JapaneseSpeechFrontend`。日语目标文本中的英文和拉丁字母片段按本地词典、C2K、NGram 和确定性字母拼读转换为片假名；进入 Genie 前保证不残留 ASCII 拉丁字母。
+- 新增 `data/speech/japanese_frontend/lexicon.toml`，内置 Yuki、OpenAI、ChatGPT、API 等常用读音，匹配不区分大小写；词典可直接编辑并通过只读目录挂载给 Worker。
+- `model-c2k.npz` 与 `ngram.json.zip` 必须由部署者手工放入 `data/speech/japanese_frontend/models/`，项目不会下载模型。资产缺失或损坏时日语请求明确失败，中文和英文合成保持不变。
+- IPC 和健康状态新增可选的 frontend version、spoken text hash、transformed token count、availability 和 signature；语音缓存键包含前端签名，资产或词典变化会自然失效旧缓存，数据库和日志不保存转换后全文。
+
+### 质量与诊断
+
+- 新增 `qq-ai-bot-cli prompt inspect|compare`，输出静态/动态/历史/工具 Schema 字符、估算 Token、贡献 ID、模型路由、usage 可用性和稳定前缀 hash；基线与结果报告位于 `docs/refactor/`。
+- GitHub Actions 增加 Prompt benchmark 和模型路由专项测试；主项目继续执行 Ruff、严格 mypy、pytest、Alembic 空库升级、Plugin 契约和 Docker 构建，Genie Worker 继续独立执行 Ruff、mypy、pytest 与 speech profile 构建。
+
 ## 1.8.2 - 2026-07-29
 
 ### Planner 统一语音治理

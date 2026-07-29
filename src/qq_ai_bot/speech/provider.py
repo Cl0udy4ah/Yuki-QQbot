@@ -44,6 +44,9 @@ class SpeechProviderHealth:
     busy: bool
     loaded_profile_id: str | None = None
     detail: str = ""
+    japanese_frontend_available: bool | None = None
+    japanese_frontend_version: str | None = None
+    japanese_frontend_signature: str | None = None
 
 
 class TTSProvider(Protocol):

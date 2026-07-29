@@ -114,11 +114,8 @@ async def test_private_pure_image_flows_vision_text_into_deepseek(database) -> N
         visual = next(
             message.content or ""
             for message in request.messages
-            if message.role == "system" and "独立视觉服务" in (message.content or "")
+            if message.role == "system" and '"id":"modality.visual"' in (message.content or "")
         )
-        assert "本轮视觉识别已经成功" in visual
-        assert "必须使用" in visual
-        assert "不得声称没有收到图片" in visual
         assert "测试视觉观察" in visual
         assert "data:image" not in visual
         assert "base64://" not in visual
@@ -321,7 +318,8 @@ async def test_visual_failure_falls_back_to_text_but_pure_image_is_deterministic
     assert text_result.reason == "chat"
     assert text_sender.messages[-1].text == "仍然可以回答你的文字。"
     assert any(
-        "视觉服务本轮未能取得可靠观察" in (message.content or "")
+        '"id":"modality.visual_failure"' in (message.content or "")
+        and '"visual_status":"unavailable"' in (message.content or "")
         for message in llm.requests[-1].messages
     )
     assert pure_result.reason == "vision_provider_unavailable"

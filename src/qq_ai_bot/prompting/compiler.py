@@ -1,0 +1,95 @@
+"""Compile stable and dynamic prompt contributions once."""
+
+from __future__ import annotations
+
+import hashlib
+import math
+
+from qq_ai_bot.domain.messages import ChatMessage
+from qq_ai_bot.prompting.models import (
+    CompiledPrompt,
+    PromptContribution,
+    PromptMetrics,
+    PromptProgram,
+    PromptStability,
+)
+from qq_ai_bot.prompting.serializer import serialize_dynamic, serialized_characters
+
+
+class PromptCompiler:
+    """Deduplicate, budget, order, and serialize a prompt program."""
+
+    def compile(
+        self,
+        program: PromptProgram,
+        *,
+        history: tuple[ChatMessage, ...] = (),
+        dynamic_character_budget: int | None = None,
+    ) -> CompiledPrompt:
+        by_id: dict[str, PromptContribution] = {}
+        for contribution in program.contributions:
+            if contribution.id in by_id:
+                raise ValueError(f"duplicate prompt contribution: {contribution.id}")
+            by_id[contribution.id] = contribution
+        ordered = tuple(
+            sorted(
+                by_id.values(),
+                key=lambda item: (
+                    item.stability is not PromptStability.STATIC,
+                    -item.priority,
+                    item.id,
+                ),
+            )
+        )
+        static = tuple(item for item in ordered if item.stability is PromptStability.STATIC)
+        dynamic = tuple(item for item in ordered if item.stability is not PromptStability.STATIC)
+        selected_dynamic = self._select(dynamic, dynamic_character_budget)
+        stable_text = "\n\n".join(item.content or "" for item in static)
+        dynamic_text = serialize_dynamic(selected_dynamic)
+        messages: list[ChatMessage] = []
+        if stable_text:
+            messages.append(ChatMessage(role="system", content=stable_text))
+        if dynamic_text:
+            messages.append(ChatMessage(role="system", content=dynamic_text))
+        messages.extend(history)
+        stable_hash = hashlib.sha256(stable_text.encode("utf-8")).hexdigest()
+        history_characters = sum(len(item.content or "") for item in history)
+        total_characters = len(stable_text) + len(dynamic_text) + history_characters
+        return CompiledPrompt(
+            messages=tuple(messages),
+            selected=static + selected_dynamic,
+            metrics=PromptMetrics(
+                static_characters=len(stable_text),
+                dynamic_characters=len(dynamic_text),
+                history_characters=history_characters,
+                total_characters=total_characters,
+                estimated_tokens=math.ceil(total_characters / 4),
+                contribution_count=len(static) + len(selected_dynamic),
+                message_count=len(messages),
+                stable_prefix_hash=stable_hash,
+            ),
+        )
+
+    @staticmethod
+    def _select(
+        contributions: tuple[PromptContribution, ...],
+        budget: int | None,
+    ) -> tuple[PromptContribution, ...]:
+        if budget is None:
+            return contributions
+        if budget < 0:
+            raise ValueError("dynamic prompt budget must not be negative")
+        required = tuple(item for item in contributions if item.required)
+        used = sum(serialized_characters(item) for item in required)
+        if used > budget:
+            raise ValueError("required dynamic prompt contributions exceed configured budget")
+        selected = list(required)
+        for item in contributions:
+            if item.required:
+                continue
+            cost = serialized_characters(item)
+            if used + cost <= budget:
+                selected.append(item)
+                used += cost
+        selected_ids = {item.id for item in selected}
+        return tuple(item for item in contributions if item.id in selected_ids)

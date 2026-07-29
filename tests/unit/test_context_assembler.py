@@ -56,11 +56,14 @@ async def test_context_assembler_enforces_one_dynamic_character_budget(
     metadata_index = next(
         index
         for index, item in enumerate(request.messages)
-        if item.role == "system" and "人物中心记忆与当前 QQ 场景元数据" in (item.content or "")
+        if item.role == "system" and '"id":"context.people_and_scene"' in (item.content or "")
     )
-    metadata = request.messages[metadata_index].content or ""
-    payload_text = metadata.split("\n", 1)[1]
-    payload = json.loads(payload_text)
+    envelope = request.messages[metadata_index].content or ""
+    envelope_items = json.loads(envelope[envelope.index("[") :])
+    context_item = next(item for item in envelope_items if item["id"] == "context.people_and_scene")
+    payload = context_item["data"]
+    payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    payload_items = {item["id"]: item["data"] for item in payload["items"]}
     history_characters = sum(
         len(item.content or "") for item in request.messages[metadata_index + 1 :]
     )
@@ -68,9 +71,9 @@ async def test_context_assembler_enforces_one_dynamic_character_budget(
     assert len(payload_text) <= settings.max_context_characters * 55 // 100
     assert len(payload_text) + history_characters <= settings.max_context_characters
     assert request.messages[-1].content == "[QQ 1001] 请根据已有信息简短回答"
-    assert payload["current_person"]["user_id"] == "1001"
-    assert len(payload["current_person"]["memories"]) < 30
-    assert len(payload["group_memories"]) < 30
+    assert payload_items["current_person"]["user_id"] == "1001"
+    assert len(payload_items["current_person"].get("memories", [])) < 30
+    assert len(payload_items.get("group_memories", [])) < 30
 
 
 @pytest.mark.asyncio

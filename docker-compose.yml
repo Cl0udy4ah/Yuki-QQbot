@@ -53,6 +53,9 @@ services:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       HF_HUB_DISABLE_TELEMETRY: "1"
+      SPEECH_JP_KATAKANA_ENABLED: ${SPEECH_JP_KATAKANA_ENABLED:-true}
+      SPEECH_JP_KATAKANA_ASSET_DIR: /data/speech/japanese_frontend/models
+      SPEECH_JP_KATAKANA_LEXICON: /data/speech/japanese_frontend/lexicon.toml
     command:
       - --socket
       - /run/yuki-speech/genie.sock
@@ -66,6 +69,7 @@ services:
       - ./data/speech/genie_data:/data/speech/genie_data:ro
       - ./data/speech/voices:/data/speech/voices:ro
       - ./data/speech/cache:/data/speech/cache
+      - ./data/speech/japanese_frontend:/data/speech/japanese_frontend:ro
       - speech-runtime:/run/yuki-speech
     healthcheck:
       test: ["CMD", "python", "-c", "import os; raise SystemExit(not os.path.exists('/run/yuki-speech/genie.sock'))"]

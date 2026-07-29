@@ -319,15 +319,17 @@ class CapturingRelationshipProvider(LLMProvider):
         self.request = request
         return ChatResponse(
             content=json.dumps(
-                [
-                    {
-                        "job_id": self.job_id,
-                        "affection_delta": 1,
-                        "trust_delta": 1,
-                        "reason_code": "respectful_interaction",
-                        "confidence": self.confidence,
-                    }
-                ]
+                {
+                    "evaluations": [
+                        {
+                            "job_id": self.job_id,
+                            "affection_delta": 1,
+                            "trust_delta": 1,
+                            "reason_code": "respectful_interaction",
+                            "confidence": self.confidence,
+                        }
+                    ]
+                }
             ),
             latency_seconds=0,
         )
@@ -648,11 +650,13 @@ async def test_bonded_non_superuser_keeps_normal_tools_without_admin_tool(
     relationship_prompt = next(
         message.content or ""
         for message in provider.request.messages
-        if message.role == "system" and "当前人物的关系阶段" in (message.content or "")
+        if message.role == "system" and '"id":"context.relationship"' in (message.content or "")
     )
     assert "bonded" in relationship_prompt
     assert "成人亲密角色聊天" in relationship_prompt
-    assert "不改变任何工具权限" in relationship_prompt
+    assert any(
+        "权限只来自后端真实事件" in (message.content or "") for message in provider.request.messages
+    )
 
 
 @pytest.mark.asyncio
@@ -683,8 +687,8 @@ async def test_relationship_context_contains_current_and_related_people_without_
     context = next(
         item.content or ""
         for item in provider.request.messages
-        if item.role == "system" and "人物中心记忆与当前 QQ 场景元数据" in (item.content or "")
+        if item.role == "system" and '"id":"context.people_and_scene"' in (item.content or "")
     )
-    assert '"stage": "friendly"' in context
-    assert '"stage": "distant"' in context
+    assert '"stage":"friendly"' in context
+    assert '"stage":"distant"' in context
     assert "好感度" not in sender.messages[0].text

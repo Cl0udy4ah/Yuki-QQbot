@@ -16,6 +16,7 @@ from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import CapabilityReport, PermissionCatalogService
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage
 from qq_ai_bot.emoji.models import (
@@ -29,7 +30,7 @@ from qq_ai_bot.persistence.repositories import (
     MemoryRepository,
     WebSearchSourceRepository,
 )
-from qq_ai_bot.planner.models import ToolMode
+from qq_ai_bot.planner.models import ToolGroup, ToolMode
 from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
@@ -76,8 +77,9 @@ class ToolRuntime:
     runtime_config: RuntimeConfigSnapshot | None = None
     origin: TurnOrigin = TurnOrigin.USER_MESSAGE
     tool_mode: ToolMode = ToolMode.INHERIT
+    tool_groups: frozenset[str] = frozenset(group.value for group in ToolGroup)
     turn_token: TurnToken | None = None
-    reply_effects: list[PendingReplyEffect | PendingVoiceReplyEffect] | None = None
+    reply_effects: list[ReplyEffect] | None = None
     voice_tool_authorized: bool = False
 
 

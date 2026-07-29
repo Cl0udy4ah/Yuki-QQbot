@@ -79,12 +79,18 @@ class GenieTTSProvider(TTSProvider):
         profile = await self._profile(request.profile_id)
         target_language = resolve_target_language(profile, request.text, request.language_hint)
         reference = self._styles.resolve(profile, request.style_hint)
+        frontend_signature = (
+            await self._client.japanese_frontend_signature()
+            if target_language.casefold() in {"ja", "jp", "japanese"}
+            else ""
+        )
         key = speech_cache_key(
             profile=profile,
             reference=reference,
             normalized_text=request.text,
             split_sentence=request.split_sentence,
             target_language=target_language,
+            frontend_signature=frontend_signature,
         )
         generation = await self._generations.create(
             request_id=request.request_id,

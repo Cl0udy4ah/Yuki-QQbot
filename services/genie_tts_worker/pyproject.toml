@@ -1,10 +1,11 @@
 [project]
 name = "genie-tts-worker"
-version = "1.8.2"
+version = "1.9.0"
 description = "Offline Unix-socket Genie-TTS worker for Yuki-QQbot"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "e2k==0.6.2",
     "genie-tts==2.0.2",
     "pydantic>=2.10,<3",
 ]

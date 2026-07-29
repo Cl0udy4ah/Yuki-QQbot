@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 import time
 from collections.abc import Awaitable
 from typing import Any, Protocol
@@ -14,23 +12,23 @@ from pydantic import ValidationError
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
-from qq_ai_bot.llm.base import LLMProvider
+from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.models import ModelTask
+from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from qq_ai_bot.planner.models import (
     DeliveryMode,
     PlannerDecision,
     PlannerInput,
     PlannerReasonCode,
     ToolMode,
+    ToolSelection,
     TurnPlan,
 )
 from qq_ai_bot.planner.observability import PlannerObservability
-from qq_ai_bot.planner.prompt import build_planner_messages
+from qq_ai_bot.planner.prompt import PLANNER_SYSTEM_PROMPT, planner_payload
 from qq_ai_bot.services.prompt_registry import PromptRegistry, PromptTarget
 
 logger = logging.getLogger(__name__)
-
-_JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
 
 
 class PlannerProviderError(RuntimeError):
@@ -61,26 +59,6 @@ class PlannerProvider(Protocol):
     ) -> TurnPlan: ...
 
 
-def extract_json_object(content: str) -> dict[str, Any]:
-    """Extract one JSON object from raw text or a fenced JSON block."""
-
-    candidates = [content.strip()]
-    candidates.extend(match.strip() for match in _JSON_FENCE.findall(content))
-    balanced = _first_balanced_object(content)
-    if balanced is not None:
-        candidates.append(balanced)
-    for candidate in candidates:
-        if not candidate:
-            continue
-        try:
-            value = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            return value
-    raise PlannerResponseError("planner returned no valid JSON object")
-
-
 def constrain_turn_plan(
     payload: dict[str, Any],
     planner_input: PlannerInput,
@@ -88,88 +66,51 @@ def constrain_turn_plan(
     hard_max_messages: int = 10,
     max_wait_seconds: float = 60,
 ) -> TurnPlan:
-    """Apply monotonic backend clipping before strict Pydantic validation."""
+    """Validate task-specific constraints without silently rewriting model output."""
 
     if not 1 <= hard_max_messages <= 20:
         raise ValueError("hard_max_messages must be between 1 and 20")
     if not 0 <= max_wait_seconds <= 300:
         raise ValueError("max_wait_seconds must be between 0 and 300")
-    constrained = dict(payload)
-    reason_code = constrained.get("reason_code")
-    if reason_code not in {item.value for item in PlannerReasonCode}:
-        constrained["reason_code"] = _normalized_reason_code(
-            constrained.get("decision"),
-            planner_input,
-        ).value
-    desired = constrained.get("desired_messages")
-    if isinstance(desired, int) and not isinstance(desired, bool):
-        constrained["desired_messages"] = max(1, min(hard_max_messages, desired))
-    wait = constrained.get("wait_seconds")
-    if isinstance(wait, int | float) and not isinstance(wait, bool):
-        constrained["wait_seconds"] = max(0.0, min(max_wait_seconds, float(wait)))
-    targets = constrained.get("target_user_ids")
-    if isinstance(targets, list | tuple):
-        known = set(planner_input.known_target_user_ids)
-        filtered: list[str] = []
-        for target in targets:
-            if isinstance(target, str) and target in known and target not in filtered:
-                filtered.append(target)
-            if len(filtered) >= 5:
-                break
-        constrained["target_user_ids"] = filtered
-    reply_to_message_id = constrained.get("reply_to_message_id")
-    if reply_to_message_id is not None and (
-        not isinstance(reply_to_message_id, str)
-        or not reply_to_message_id.isdigit()
-        or reply_to_message_id not in planner_input.known_message_ids
-    ):
-        constrained["reply_to_message_id"] = None
-    plan = TurnPlan.model_validate(constrained)
-    updates: dict[str, object] = {}
-    if plan.decision is not PlannerDecision.WAIT and plan.wait_seconds:
-        updates["wait_seconds"] = 0.0
-    if planner_input.visual_input_present and plan.tool_mode is ToolMode.INHERIT:
-        updates["tool_mode"] = ToolMode.READ_ONLY
-    return plan.model_copy(update=updates) if updates else plan
-
-
-def _normalized_reason_code(
-    decision: object,
-    planner_input: PlannerInput,
-) -> PlannerReasonCode:
-    """Map free-form model labels to one stable observability category."""
-
-    if decision == PlannerDecision.WAIT.value:
-        return PlannerReasonCode.WAIT_FOR_MORE_CONTEXT
-    if decision == PlannerDecision.SILENT.value:
-        return PlannerReasonCode.LOW_RELEVANCE
-    if planner_input.mentions_bot:
-        return PlannerReasonCode.DIRECT_MENTION
-    if planner_input.reply_target_is_bot:
-        return PlannerReasonCode.CONTINUATION
-    if planner_input.scope_type is ScopeType.PRIVATE:
-        return PlannerReasonCode.DIRECT_REQUEST
-    return PlannerReasonCode.USEFUL_CONTRIBUTION
-
-
-def parse_turn_plan(
-    content: str,
-    planner_input: PlannerInput,
-    *,
-    hard_max_messages: int = 10,
-    max_wait_seconds: float = 60,
-) -> TurnPlan:
-    """Extract, clip, and strictly validate a model response exactly once."""
-
     try:
-        return constrain_turn_plan(
-            extract_json_object(content),
-            planner_input,
-            hard_max_messages=hard_max_messages,
-            max_wait_seconds=max_wait_seconds,
-        )
+        plan = TurnPlan.model_validate(payload)
     except ValidationError as exc:
         raise PlannerResponseError("planner returned an invalid TurnPlan") from exc
+    return validate_turn_plan(
+        plan,
+        planner_input,
+        hard_max_messages=hard_max_messages,
+        max_wait_seconds=max_wait_seconds,
+    )
+
+
+def validate_turn_plan(
+    plan: TurnPlan,
+    planner_input: PlannerInput,
+    *,
+    hard_max_messages: int,
+    max_wait_seconds: float,
+) -> TurnPlan:
+    """Validate event-bound fields after the schema has validated the shape."""
+
+    if plan.desired_messages > hard_max_messages:
+        raise PlannerResponseError("planner desired_messages exceeds configured maximum")
+    if plan.wait_seconds > max_wait_seconds:
+        raise PlannerResponseError("planner wait_seconds exceeds configured maximum")
+    if plan.decision is not PlannerDecision.WAIT and plan.wait_seconds:
+        raise PlannerResponseError("non-wait planner decision contains wait_seconds")
+    known_targets = set(planner_input.known_target_user_ids)
+    if any(target not in known_targets for target in plan.target_user_ids):
+        raise PlannerResponseError("planner selected an unknown target user")
+    if (
+        plan.reply_to_message_id is not None
+        and plan.reply_to_message_id not in planner_input.known_message_ids
+    ):
+        raise PlannerResponseError("planner selected an unknown reply message")
+    available_groups = set(planner_input.available_tool_categories)
+    if any(group.value not in available_groups for group in plan.tool_selection.groups):
+        raise PlannerResponseError("planner selected an unavailable tool group")
+    return plan
 
 
 def deterministic_fallback_plan(planner_input: PlannerInput) -> TurnPlan:
@@ -196,7 +137,9 @@ def deterministic_fallback_plan(planner_input: PlannerInput) -> TurnPlan:
         target_user_ids=(planner_input.current_sender_user_id,) if should_reply else (),
         delivery_mode=DeliveryMode.SINGLE,
         desired_messages=1,
-        tool_mode=(ToolMode.READ_ONLY if planner_input.visual_input_present else ToolMode.INHERIT),
+        tool_selection=ToolSelection(
+            mode=(ToolMode.READ_ONLY if planner_input.visual_input_present else ToolMode.INHERIT),
+        ),
         wait_seconds=0.0,
         confidence=0.0,
         reason_code=PlannerReasonCode.PLANNER_FALLBACK,
@@ -209,8 +152,9 @@ class LLMPlannerProvider:
 
     def __init__(
         self,
-        provider: LLMProvider,
+        provider: ModelCompleter | None = None,
         *,
+        model_executor: ModelExecutor | None = None,
         model: str | None = None,
         temperature: float | None = None,
         max_output_tokens: int | None = None,
@@ -231,7 +175,11 @@ class LLMPlannerProvider:
             raise ValueError("hard_max_messages must be between 1 and 20")
         if max_wait_seconds is not None and not 0 <= max_wait_seconds <= 300:
             raise ValueError("max_wait_seconds must be between 0 and 300")
-        self._provider = provider
+        self._models = require_model_executor(
+            model_executor,
+            provider=provider,
+            model=model or "fake",
+        )
         self._model = model
         self._temperature = temperature
         self._max_output_tokens = max_output_tokens
@@ -241,6 +189,7 @@ class LLMPlannerProvider:
         self._fallback_on_error = fallback_on_error
         self._observability = observability
         self._prompt_registry = prompt_registry
+        self._structured = StructuredTaskRunner(self._models)
 
     async def plan(
         self,
@@ -273,38 +222,31 @@ class LLMPlannerProvider:
                 if planner_runtime.max_wait_seconds is not None
                 else (self._max_wait_seconds or 60.0)
             )
-            planner_messages = list(
-                build_planner_messages(
-                    planner_input,
-                    preferred_messages=planner_runtime.preferred_messages,
-                    hard_max_messages=hard_max_messages,
-                )
-            )
+            structured_input: dict[str, object] = planner_payload(planner_input)
+            structured_input["delivery_preferences"] = {
+                "preferred_messages": planner_runtime.preferred_messages,
+                "maximum_messages": hard_max_messages,
+            }
             if self._prompt_registry is not None:
                 plugin_messages = self._prompt_registry.render(target=PromptTarget.PLANNER)
-                planner_messages[1:1] = [
-                    ChatMessage(role="system", content=content) for content in plugin_messages
-                ]
-            response = await _await_with_cancellation(
-                self._provider.complete(
-                    ChatRequest(
-                        messages=tuple(planner_messages),
-                        model=planner_runtime.model or self._model or runtime.llm.model or "fake",
-                        temperature=planner_runtime.temperature,
-                        max_output_tokens=planner_runtime.max_output_tokens,
-                        thinking_enabled=False,
-                        tools=(),
-                        tool_choice=None,
-                    )
+                if plugin_messages:
+                    structured_input["plugin_context"] = list(plugin_messages)
+            plan = await _await_with_cancellation(
+                self._structured.run(
+                    task=ModelTask.PLANNER,
+                    instruction=PLANNER_SYSTEM_PROMPT,
+                    structured_input=structured_input,
+                    output_model=TurnPlan,
+                    temperature=planner_runtime.temperature,
+                    max_output_tokens=planner_runtime.max_output_tokens,
+                    allow_text_json=True,
                 ),
                 cancellation=cancellation,
                 timeout_seconds=timeout_seconds,
             )
             self._raise_if_cancelled(cancellation)
-            if response.tool_calls:
-                raise PlannerResponseError("planner attempted a tool call")
-            plan = parse_turn_plan(
-                response.content,
+            plan = validate_turn_plan(
+                plan,
                 planner_input,
                 hard_max_messages=hard_max_messages,
                 max_wait_seconds=max_wait_seconds,
@@ -323,7 +265,7 @@ class LLMPlannerProvider:
                     latency_seconds=time.perf_counter() - started,
                 )
             raise
-        except Exception as exc:
+        except (PlannerProviderError, StructuredTaskError, TimeoutError, ValueError) as exc:
             if not self._fallback_on_error:
                 if self._observability is not None and token is not None:
                     self._observability.request_failed(
@@ -393,31 +335,3 @@ async def _await_with_cancellation[T](
         )
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
-
-
-def _first_balanced_object(content: str) -> str | None:
-    start = content.find("{")
-    while start >= 0:
-        depth = 0
-        in_string = False
-        escaped = False
-        for index in range(start, len(content)):
-            character = content[index]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif character == "\\":
-                    escaped = True
-                elif character == '"':
-                    in_string = False
-                continue
-            if character == '"':
-                in_string = True
-            elif character == "{":
-                depth += 1
-            elif character == "}":
-                depth -= 1
-                if depth == 0:
-                    return content[start : index + 1]
-        start = content.find("{", start + 1)
-    return None

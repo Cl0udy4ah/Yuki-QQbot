@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Literal
 from uuid import uuid4
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -35,6 +36,7 @@ class VoiceReplyEffect:
 class PendingVoiceReplyEffect:
     """A path-free voice request queued by an Agent tool or plugin."""
 
+    kind: Literal["voice"] = "voice"
     profile_id: str = ""
     style_hint: str = ""
     language_hint: str = "auto"

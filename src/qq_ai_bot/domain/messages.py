@@ -162,12 +162,13 @@ class ChatRequest:
     """Provider-independent chat request."""
 
     messages: tuple[ChatMessage, ...]
-    model: str
-    temperature: float
-    max_output_tokens: int
+    model: str = ""
+    temperature: float | None = None
+    max_output_tokens: int | None = None
     thinking_enabled: bool | None = None
     tools: tuple[ChatTool, ...] = ()
     tool_choice: str | None = None
+    response_format: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,3 +180,7 @@ class ChatResponse:
     provider_request_id: str | None = None
     tool_calls: tuple[ToolCall, ...] = ()
     reasoning_content: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    cached_prompt_tokens: int | None = None

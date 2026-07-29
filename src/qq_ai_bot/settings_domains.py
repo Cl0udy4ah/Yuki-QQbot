@@ -1,0 +1,287 @@
+"""Immutable domain projections of the backward-compatible flat environment."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class DomainSettings(BaseModel):
+    """Base for explicit, constructor-friendly configuration slices."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, from_attributes=True)
+
+
+class AppSettings(DomainSettings):
+    app_host: str
+    app_port: int = Field(gt=0)
+    log_level: str
+    log_message_content: bool
+    database_url: str
+
+
+class OneBotSettings(DomainSettings):
+    onebot_access_token: str
+    superusers_csv: str
+    allowed_private_users_csv: str
+    enabled_groups_csv: str
+    ignored_bot_users_csv: str
+    ai_prefix: str
+
+
+class ModelRuntimeSettings(DomainSettings):
+    llm_provider: str
+    llm_base_url: str
+    llm_api_key: str
+    llm_model: str
+    llm_timeout_seconds: float = Field(gt=0)
+    llm_max_retries: int = Field(ge=0)
+    llm_temperature: float = Field(ge=0, le=2)
+    llm_max_output_tokens: int = Field(gt=0)
+    llm_thinking_enabled: bool | None
+    llm_flash_base_url: str
+    llm_flash_api_key: str
+    llm_flash_model: str
+    model_profiles_file: Path
+    global_llm_concurrency: int = Field(gt=0)
+    model_stats_recent_error_limit: int = Field(gt=0)
+
+
+class ConversationSettings(DomainSettings):
+    processed_event_ttl_seconds: int = Field(gt=0)
+    processed_event_cleanup_seconds: int = Field(gt=0)
+    max_context_characters: int = Field(gt=0)
+    context_metadata_budget_ratio: float = Field(gt=0, lt=1)
+    per_user_requests_per_minute: int = Field(gt=0)
+    per_group_requests_per_minute: int = Field(gt=0)
+    max_input_characters: int = Field(gt=0)
+    max_output_characters: int = Field(gt=0)
+    max_qq_message_chars: int = Field(gt=0)
+    split_daily_chat_sentences: bool
+    daily_chat_split_max_characters: int = Field(gt=0)
+    daily_chat_split_max_messages: int = Field(gt=0)
+    daily_chat_message_delay_min_seconds: float = Field(ge=0)
+    daily_chat_message_delay_max_seconds: float = Field(ge=0)
+    observe_enabled_groups: bool
+    autonomous_group_chat_enabled: bool
+    autonomous_silence_seconds: float = Field(ge=0)
+    autonomous_confidence_threshold: float = Field(ge=0, le=1)
+    autonomous_cooldown_seconds: int = Field(gt=0)
+    autonomous_max_per_hour: int = Field(gt=0)
+    recent_history_tool_limit: int = Field(gt=0)
+    local_context_event_limit: int = Field(gt=0)
+    related_people_limit: int = Field(gt=0)
+    agent_max_tool_calls: int = Field(gt=0)
+    agent_max_model_requests: int = Field(gt=0)
+    agent_tool_result_max_characters: int = Field(gt=0)
+    reply_sequence_cancel_on_new_message: bool
+    reply_plan_hard_max_messages: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _delay_order(self) -> ConversationSettings:
+        if self.daily_chat_message_delay_min_seconds > self.daily_chat_message_delay_max_seconds:
+            raise ValueError("daily chat minimum delay must not exceed maximum delay")
+        return self
+
+
+class PlannerSettings(DomainSettings):
+    planner_enabled: bool
+    planner_model: str
+    planner_direct_enabled: bool
+    planner_group_enabled: bool
+    planner_group_debounce_seconds: float = Field(ge=0)
+    planner_preferred_messages: int = Field(gt=0)
+    planner_temperature: float = Field(ge=0, le=2)
+    planner_max_output_tokens: int = Field(gt=0)
+    planner_timeout_seconds: float = Field(gt=0)
+    planner_confidence_threshold: float = Field(ge=0, le=1)
+    planner_reply_necessity_threshold: int = Field(ge=0)
+    planner_max_pending_messages: int = Field(gt=0)
+    planner_recent_presence_window_seconds: int = Field(gt=0)
+    planner_max_wait_seconds: int = Field(gt=0)
+    planner_interrupt_autonomous_on_new_message: bool
+    planner_record_runs: bool
+
+
+class PluginSettings(DomainSettings):
+    plugin_system_enabled: bool
+    plugin_directory: Path
+    plugin_api_version: str
+    plugin_hook_timeout_seconds: float = Field(gt=0)
+    plugin_start_timeout_seconds: float = Field(gt=0)
+    plugin_stop_timeout_seconds: float = Field(gt=0)
+    plugin_max_prompt_fragment_characters: int = Field(gt=0)
+    plugin_max_prompt_characters_per_plugin: int = Field(gt=0)
+    plugin_max_total_prompt_characters: int = Field(gt=0)
+    plugin_background_task_limit: int = Field(gt=0)
+    plugin_failure_disable_threshold: int = Field(gt=0)
+    plugin_http_max_response_bytes: int = Field(gt=0)
+    plugin_http_timeout_seconds: float = Field(gt=0)
+    plugin_ai_session_max_history_messages: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _prompt_budgets(self) -> PluginSettings:
+        if self.plugin_max_total_prompt_characters <= self.plugin_max_prompt_fragment_characters:
+            raise ValueError("total plugin prompt budget must exceed one fragment budget")
+        if (
+            self.plugin_max_prompt_characters_per_plugin
+            < self.plugin_max_prompt_fragment_characters
+        ):
+            raise ValueError("per-plugin prompt budget must cover one fragment")
+        return self
+
+
+class MemorySettings(DomainSettings):
+    group_memory_max_entries: int = Field(gt=0)
+    person_memory_max_entries: int = Field(gt=0)
+    person_group_memory_max_entries: int = Field(gt=0)
+    preference_max_entries: int = Field(gt=0)
+    memory_batch_seconds: float = Field(ge=0)
+    memory_batch_trigger_count: int = Field(gt=0)
+    memory_batch_max_events: int = Field(gt=0)
+
+
+class RelationshipSettings(DomainSettings):
+    relationship_enabled: bool
+    relationship_initial_affection: int = Field(ge=0, le=100)
+    relationship_initial_trust: int = Field(ge=0, le=100)
+    relationship_batch_seconds: float = Field(ge=0)
+    relationship_batch_trigger_count: int = Field(gt=0)
+    relationship_batch_max_turns: int = Field(gt=0)
+    relationship_max_attempts: int = Field(gt=0)
+    relationship_confidence_threshold: float = Field(ge=0, le=1)
+    affection_max_auto_delta: int = Field(gt=0)
+    trust_max_auto_delta: int = Field(gt=0)
+    relationship_daily_positive_cap: int = Field(ge=0)
+    relationship_daily_negative_cap: int = Field(ge=0)
+    trust_affection_cap_offset: int = Field(ge=0, le=100)
+    conflict_preference_min_gap: int = Field(ge=0, le=100)
+
+
+class WebSettings(DomainSettings):
+    web_enabled: bool
+    tavily_api_key: str
+    web_search_depth: str
+    web_search_max_results: int = Field(gt=0)
+    web_extract_max_results: int = Field(gt=0)
+    web_timeout_seconds: float = Field(gt=0)
+    web_max_retries: int = Field(ge=0)
+    web_global_concurrency: int = Field(gt=0)
+    web_max_calls_per_turn: int = Field(gt=0)
+    web_tool_result_max_characters: int = Field(gt=0)
+    web_source_retention_days: int = Field(gt=0)
+    web_source_max_runs_per_conversation: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _credentials(self) -> WebSettings:
+        if self.web_enabled and not self.tavily_api_key:
+            raise ValueError("TAVILY_API_KEY is required when WEB_ENABLED=true")
+        return self
+
+
+class VisionSettings(DomainSettings):
+    vision_enabled: bool
+    vision_provider: str
+    vision_base_url: str
+    vision_api_key: str
+    vision_model: str
+    vision_timeout_seconds: float = Field(gt=0)
+    vision_max_retries: int = Field(gt=0)
+    vision_global_concurrency: int = Field(gt=0)
+    vision_queue_max_pending: int = Field(gt=0)
+    vision_queue_timeout_seconds: float = Field(gt=0)
+    vision_media_download_timeout_seconds: float = Field(gt=0)
+    vision_allow_private_urls: bool
+    vision_max_output_tokens: int = Field(gt=0)
+    vision_thinking_enabled: bool
+    vision_thinking_budget: int = Field(gt=0)
+    vision_low_confidence_retry_threshold: float = Field(ge=0, le=1)
+    vision_max_images_per_turn: int = Field(gt=0)
+    vision_max_frames_per_turn: int = Field(gt=0)
+    vision_gif_max_frames: int = Field(gt=0)
+    vision_max_download_bytes: int = Field(gt=0)
+    vision_max_prepared_bytes: int = Field(gt=0)
+    vision_max_dimension: int = Field(gt=0)
+    vision_max_pixels: int = Field(gt=0)
+    vision_per_user_requests_per_minute: int = Field(gt=0)
+    vision_per_group_requests_per_minute: int = Field(gt=0)
+    vision_analysis_retention_days: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _credentials(self) -> VisionSettings:
+        if self.vision_enabled and not all(
+            (self.vision_base_url.strip(), self.vision_api_key.strip(), self.vision_model.strip())
+        ):
+            raise ValueError("VISION_BASE_URL, VISION_API_KEY and VISION_MODEL are required")
+        return self
+
+
+class EmojiSettings(DomainSettings):
+    emoji_enabled: bool
+    emoji_collection_enabled: bool
+    emoji_collection_mode: str
+    emoji_collect_private: bool
+    emoji_collect_group: bool
+    emoji_auto_adopt_enabled: bool
+    emoji_auto_adopt_min_confidence: float = Field(ge=0, le=1)
+    emoji_pool_capacity: int | None = Field(default=None, gt=0)
+    emoji_replacement_mode: str
+    emoji_selector_enabled: bool
+    emoji_selector_candidate_count: int = Field(gt=0)
+    emoji_max_effects_per_reply: int = Field(gt=0)
+    emoji_near_duplicate_enabled: bool
+    emoji_near_duplicate_distance: int = Field(ge=0, le=64)
+    emoji_same_emoji_cooldown_seconds: int = Field(ge=0)
+    emoji_scope_repeat_cooldown_seconds: int = Field(ge=0)
+    emoji_cache_retention_days: int = Field(gt=0)
+    emoji_worker_batch_size: int = Field(gt=0)
+    emoji_worker_poll_seconds: float = Field(gt=0)
+    emoji_worker_lease_seconds: int = Field(gt=0)
+    emoji_worker_max_attempts: int = Field(gt=0)
+    emoji_worker_retry_delay_seconds: float = Field(ge=0)
+    emoji_analysis_version: str
+    emoji_storage_root: Path
+    emoji_preview_max_dimension: int = Field(gt=0)
+
+
+class SpeechSettings(DomainSettings):
+    speech_enabled: bool
+    speech_provider: str
+    speech_socket_path: Path
+    speech_root: Path
+    genie_data_dir: Path
+    speech_default_profile: str
+    speech_worker_start_timeout_seconds: float = Field(gt=0)
+    speech_worker_request_timeout_seconds: float = Field(gt=0)
+    speech_planner_enabled: bool
+    speech_default_mode: str
+    speech_split_sentence: bool
+    speech_max_synthesis_characters: int | None = Field(default=None, gt=0)
+    speech_queue_max_pending: int | None = Field(default=None, gt=0)
+    speech_cache_retention_hours: int | None = Field(default=None, gt=0)
+    speech_private_enabled: bool
+    speech_group_enabled: bool
+    speech_automation_enabled: bool
+    speech_plugin_enabled: bool
+    speech_text_fallback_enabled: bool
+    speech_spontaneous_frequency: float = Field(ge=0, le=1)
+    speech_jp_katakana_enabled: bool
+
+
+class AutomationSettings(DomainSettings):
+    automation_enabled: bool
+    default_timezone: str
+    automation_poll_seconds: float = Field(gt=0)
+    automation_lease_seconds: int = Field(gt=0)
+    automation_max_active_per_superuser: int = Field(gt=0)
+    automation_max_active_per_user: int = Field(gt=0)
+    automation_max_steps: int = Field(gt=0)
+    automation_max_llm_calls_per_run: int = Field(gt=0)
+    automation_max_tool_calls_per_run: int = Field(gt=0)
+    automation_max_messages_per_run: int = Field(gt=0)
+    automation_max_runtime_seconds: int = Field(gt=0)
+    automation_min_interval_seconds: int = Field(gt=0)
+    automation_default_misfire_grace_seconds: int = Field(gt=0)
+    automation_max_consecutive_failures: int = Field(gt=0)
+    automation_run_retention_days: int = Field(gt=0)

@@ -6,13 +6,15 @@ import json
 import logging
 from dataclasses import dataclass
 from functools import partial
-from typing import Protocol
+from typing import Protocol, cast
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatTool, ToolCall
-from qq_ai_bot.llm.base import LLMEmptyResponseError, LLMProvider
+from qq_ai_bot.llm.base import LLMEmptyResponseError
+from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.time.models import TimeContext
 
@@ -59,9 +61,22 @@ class AgentToolBackend(Protocol):
 class AgentRunner:
     """Execute a provider-neutral bounded tool loop without fabricating inbound events."""
 
-    def __init__(self, provider: LLMProvider, concurrency: ConcurrencyManager) -> None:
-        self._provider = provider
+    def __init__(
+        self,
+        model_executor: ModelExecutor | ModelCompleter,
+        concurrency: ConcurrencyManager,
+        *,
+        task: ModelTask = ModelTask.CHAT_AGENT,
+    ) -> None:
+        if callable(getattr(model_executor, "execute", None)):
+            self._models = cast(ModelExecutor, model_executor)
+        else:
+            self._models = require_model_executor(
+                None,
+                provider=cast(ModelCompleter, model_executor),
+            )
         self._concurrency = concurrency
+        self._task = task
 
     async def run(
         self,
@@ -81,7 +96,8 @@ class AgentRunner:
                 response = await self._concurrency.run_llm(
                     runtime.conversation_key,
                     partial(
-                        self._provider.complete,
+                        self._models.execute,
+                        self._task,
                         ChatRequest(
                             messages=tuple(messages),
                             model=runtime.runtime_config.llm.model or "fake",

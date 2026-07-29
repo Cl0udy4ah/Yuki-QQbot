@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -409,7 +410,7 @@ async def test_llm_replacement_selects_only_an_existing_candidate(
         )
         assets.append(asset)
 
-    provider = FakeLLMProvider(lambda _request: assets[1].id)
+    provider = FakeLLMProvider(lambda _request: json.dumps({"emoji_id": assets[1].id}))
     replacement = EmojiReplacementService(
         provider,
         model="fake",

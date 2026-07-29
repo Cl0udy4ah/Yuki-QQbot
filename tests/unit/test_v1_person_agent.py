@@ -431,27 +431,29 @@ class MemoryExtractorProvider(LLMProvider):
     async def complete(self, request: ChatRequest) -> ChatResponse:
         return ChatResponse(
             content=json.dumps(
-                [
-                    {
-                        "scope": "person",
-                        "user_id": "1001",
-                        "key": "likes:tea",
-                        "category": "preference",
-                        "content": "喜欢喝红茶",
-                        "importance": 4,
-                        "source_type": "automatic",
-                    },
-                    {
-                        "scope": "person_group",
-                        "user_id": "1001",
-                        "group_id": "2001",
-                        "key": "alias:captain",
-                        "category": "alias",
-                        "content": "在本群被叫作队长",
-                        "importance": 3,
-                        "source_type": "automatic",
-                    },
-                ],
+                {
+                    "operations": [
+                        {
+                            "scope": "person",
+                            "user_id": "1001",
+                            "key": "likes:tea",
+                            "category": "preference",
+                            "content": "喜欢喝红茶",
+                            "importance": 4,
+                            "source_type": "automatic",
+                        },
+                        {
+                            "scope": "person_group",
+                            "user_id": "1001",
+                            "group_id": "2001",
+                            "key": "alias:captain",
+                            "category": "alias",
+                            "content": "在本群被叫作队长",
+                            "importance": 3,
+                            "source_type": "automatic",
+                        },
+                    ]
+                },
                 ensure_ascii=False,
             ),
             latency_seconds=0,

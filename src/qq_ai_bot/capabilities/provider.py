@@ -1,0 +1,120 @@
+"""Adapters that export existing ChatTool definitions as common descriptors."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Protocol
+
+from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.capabilities.models import (
+    CapabilityDescriptor,
+    CapabilityEffect,
+    CapabilityIdempotency,
+    CapabilityRisk,
+    CapabilityTrustSource,
+)
+from qq_ai_bot.domain.messages import ChatTool
+
+_ALL_ORIGINS = frozenset(TurnOrigin)
+_DIRECT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE})
+
+_CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
+    "get_my_capabilities": ("admin", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "get_recent_chat_history": ("memory", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
+    "search_chat_history": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "get_person_memories": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "get_group_memories": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "web_search": ("web", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
+    "read_webpage": ("web", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
+    "call_onebot_api": ("onebot", CapabilityEffect.PLATFORM_MUTATE, CapabilityRisk.MUTATE),
+    "send_emoji": ("emoji", CapabilityEffect.REPLY_EFFECT, CapabilityRisk.READ),
+    "send_voice": ("speech", CapabilityEffect.REPLY_EFFECT, CapabilityRisk.READ),
+}
+
+_ADMIN_READ = frozenset({"admin_list_capabilities", "admin_get_config", "admin_get_history"})
+_AUTOMATION_READ = frozenset(
+    {
+        "automation_list",
+        "automation_list_history",
+        "automation_get",
+        "automation_history",
+        "time_get_current",
+        "time_get_timezone",
+    }
+)
+
+
+class CapabilityProvider(Protocol):
+    def descriptors(self) -> tuple[CapabilityDescriptor, ...]: ...
+
+
+class ChatToolCapabilityProvider:
+    """Attach policy metadata to existing domain-owned tool definitions."""
+
+    def __init__(
+        self,
+        tools: tuple[ChatTool, ...],
+        *,
+        source: CapabilityTrustSource,
+        plugin_read_only: Callable[[str], bool] | None = None,
+    ) -> None:
+        self._tools = tools
+        self._source = source
+        self._plugin_read_only = plugin_read_only
+
+    def descriptors(self) -> tuple[CapabilityDescriptor, ...]:
+        return tuple(self._descriptor(tool) for tool in self._tools)
+
+    def _descriptor(self, tool: ChatTool) -> CapabilityDescriptor:
+        group, effect, risk = self._metadata(tool.name)
+        permissions = (
+            frozenset({"superuser"})
+            if self._source is CapabilityTrustSource.ADMIN or group == "onebot"
+            else frozenset()
+        )
+        return CapabilityDescriptor(
+            canonical_name=f"{self._source.value}.{tool.name}",
+            model_name=tool.name,
+            group=group,
+            input_schema=tool.parameters,
+            output_schema={"type": "object"},
+            effect=effect,
+            risk=risk,
+            trust_source=self._source,
+            allowed_origins=(
+                _DIRECT_ORIGINS
+                if self._source is CapabilityTrustSource.ADMIN or group == "onebot"
+                else _ALL_ORIGINS
+            ),
+            required_permissions=permissions,
+            uses_external_data=effect is CapabilityEffect.EXTERNAL_READ,
+            cancellable=effect in {CapabilityEffect.READ_STATE, CapabilityEffect.EXTERNAL_READ},
+            idempotency=(
+                CapabilityIdempotency.IDEMPOTENT
+                if risk is CapabilityRisk.READ
+                else CapabilityIdempotency.CONDITIONAL
+            ),
+        )
+
+    def _metadata(self, name: str) -> tuple[str, CapabilityEffect, CapabilityRisk]:
+        if self._source is CapabilityTrustSource.CORE:
+            return _CORE_METADATA.get(
+                name,
+                ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+            )
+        if self._source is CapabilityTrustSource.ADMIN:
+            if name in _ADMIN_READ:
+                group = "config" if name == "admin_get_config" else "admin"
+                return group, CapabilityEffect.READ_STATE, CapabilityRisk.READ
+            group = "config" if "config" in name or "rollback" in name else "admin"
+            return group, CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE
+        if self._source is CapabilityTrustSource.AUTOMATION:
+            if name in _AUTOMATION_READ:
+                return "automation", CapabilityEffect.READ_STATE, CapabilityRisk.READ
+            return "automation", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE
+        read_only = bool(self._plugin_read_only and self._plugin_read_only(name))
+        return (
+            "plugin",
+            CapabilityEffect.READ_STATE if read_only else CapabilityEffect.WRITE_STATE,
+            CapabilityRisk.READ if read_only else CapabilityRisk.MUTATE,
+        )

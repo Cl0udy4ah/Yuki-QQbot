@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from dataclasses import replace
@@ -43,8 +44,7 @@ from qq_ai_bot.planner import (
     ReplyNecessityScorer,
     ToolMode,
     TurnPlan,
-    extract_json_object,
-    parse_turn_plan,
+    constrain_turn_plan,
 )
 from qq_ai_bot.planner.models import PlannerSpeechContext
 from qq_ai_bot.planner.prompt import build_planner_messages
@@ -413,10 +413,11 @@ def test_prompt_contains_only_planner_contract_and_explicit_untrusted_envelope()
     )
     assert len(messages) == 2
     assert "只负责生成本轮计划" in (messages[0].content or "")
-    assert "<external_untrusted_planner_input>" in (messages[1].content or "")
-    assert '"content_trust":"external_untrusted"' in (messages[1].content or "")
-    assert "desired_messages 设为 4" in (messages[0].content or "")
-    assert "绝对上限为 20 条" in (messages[0].content or "")
+    payload = json.loads(messages[1].content or "")
+    assert payload["current_message"]["text"] == "帮我看看"
+    assert "content_trust" not in payload["current_message"]
+    assert "<external_untrusted_planner_input>" not in (messages[1].content or "")
+    assert "desired_messages 设为 4" not in (messages[0].content or "")
 
 
 def test_planner_applies_hot_natural_multi_target_without_affecting_structure() -> None:
@@ -594,14 +595,10 @@ def test_unavailable_speech_cannot_smuggle_a_neutral_persistent_preference() -> 
     assert constrained.voice.preference_change is None
 
 
-def test_agent_speech_runtime_policy_explains_that_tts_has_no_port() -> None:
-    runtime = replace(_runtime(), speech=replace(_runtime().speech, enabled=True))
-
-    policy = PromptComposer._speech_runtime_policy(runtime)
-
-    assert "不提供 HTTP 或 TCP 端口" in policy
-    assert "/run/yuki-speech/genie.sock" in policy
-    assert "8080" in policy and "6099" in policy
+def test_agent_speech_runtime_policy_contains_no_internal_transport_details() -> None:
+    source = inspect.getsource(PromptComposer)
+    assert "/run/yuki-speech" not in source
+    assert "8080" not in source and "6099" not in source
 
 
 @pytest.mark.parametrize(
@@ -634,13 +631,7 @@ def test_explicit_turns_cannot_be_silenced_or_delayed_by_planner(
     assert constrained.wait_seconds == 0
 
 
-def test_json_extraction_supports_fenced_json() -> None:
-    payload = _valid_plan_payload()
-    result = extract_json_object(f"plan:\n```json\n{json.dumps(payload)}\n```")
-    assert result == payload
-
-
-def test_plan_parser_clips_targets_messages_wait_and_visual_tools() -> None:
+def test_plan_validation_rejects_limits_and_unknown_targets_without_clamping() -> None:
     planner_input = _planner_input(visual=True)
     payload = _valid_plan_payload(
         decision="wait",
@@ -650,79 +641,33 @@ def test_plan_parser_clips_targets_messages_wait_and_visual_tools() -> None:
         wait_seconds=250,
         tool_mode="inherit",
     )
-    plan = parse_turn_plan(
-        json.dumps(payload),
-        planner_input,
-        hard_max_messages=4,
-        max_wait_seconds=30,
-    )
-    assert plan.target_user_ids == ("1002", "1001")
-    assert plan.desired_messages == 4
-    assert plan.reply_to_message_id == "100"
-    assert plan.wait_seconds == 30
-    assert plan.tool_mode is ToolMode.READ_ONLY
+    with pytest.raises(PlannerResponseError):
+        constrain_turn_plan(
+            payload,
+            planner_input,
+            hard_max_messages=4,
+            max_wait_seconds=30,
+        )
 
-
-def test_plan_parser_discards_unknown_reply_target() -> None:
-    plan = parse_turn_plan(
-        json.dumps(_valid_plan_payload(reply_to_message_id="outside-current-context")),
-        _planner_input(scope=ScopeType.GROUP),
-    )
-
-    assert plan.reply_to_message_id is None
-
-
-def test_plan_parser_normalizes_free_form_reason_without_discarding_voice_intent() -> None:
-    plan = parse_turn_plan(
-        json.dumps(
-            _valid_plan_payload(
-                reason_code="explicit_voice_request",
-                emoji={
-                    "mode": "none",
-                    "placement": "before_text",
-                    "goal": "",
-                    "emotion": "",
-                },
-                voice={
-                    "mode": "voice",
-                    "intent": "explicit_request",
-                    "agent_tool": "required",
-                    "style_hint": "gentle",
-                    "language": "zh",
-                    "reason": "用户明确索要语音",
-                    "preference_change": {
-                        "mode": "prefer_voice",
-                        "duration": "persistent",
-                    },
-                },
-            )
-        ),
-        _planner_input(scope=ScopeType.PRIVATE, text="发条语音吧"),
-    )
-
-    assert plan.reason_code is PlannerReasonCode.DIRECT_REQUEST
-    assert plan.voice.mode is VoiceMode.VOICE
-    assert plan.voice.intent is VoiceIntent.EXPLICIT_REQUEST
-    assert plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
-    assert plan.voice.preference_change is not None
-    assert plan.voice.preference_change.mode is VoicePreferenceMode.PREFER_VOICE
+    with pytest.raises(PlannerResponseError):
+        constrain_turn_plan(
+            _valid_plan_payload(reply_to_message_id="outside-current-context"),
+            _planner_input(scope=ScopeType.GROUP),
+        )
 
 
 def test_plan_parser_rejects_unknown_fields_and_permission_modes() -> None:
     planner_input = _planner_input()
     with pytest.raises(PlannerResponseError):
-        parse_turn_plan(json.dumps(_valid_plan_payload(root=True)), planner_input)
+        constrain_turn_plan(_valid_plan_payload(root=True), planner_input)
     with pytest.raises(PlannerResponseError):
-        parse_turn_plan(
-            json.dumps(_valid_plan_payload(tool_mode="write_all")),
-            planner_input,
-        )
+        constrain_turn_plan(_valid_plan_payload(tool_mode="write_all"), planner_input)
 
 
 @pytest.mark.asyncio
 async def test_llm_planner_is_tool_free_non_thinking_and_uses_separate_model() -> None:
     payload = _valid_plan_payload()
-    llm = FakeLLMProvider(lambda _request: f"```json\n{json.dumps(payload)}\n```")
+    llm = FakeLLMProvider(lambda _request: json.dumps(payload))
     provider = LLMPlannerProvider(llm, model="planner-model")
     plan = await provider.plan(_planner_input(), runtime=_runtime())
     request = llm.requests[0]
@@ -736,7 +681,7 @@ async def test_llm_planner_is_tool_free_non_thinking_and_uses_separate_model() -
 
 
 @pytest.mark.asyncio
-async def test_runtime_planner_limits_take_priority_over_constructor_fallbacks() -> None:
+async def test_runtime_planner_limits_reject_invalid_plan_without_clamping() -> None:
     payload = _valid_plan_payload(
         decision="wait",
         desired_messages=9,
@@ -764,14 +709,14 @@ async def test_runtime_planner_limits_take_priority_over_constructor_fallbacks()
         timeout_seconds=30,
         hard_max_messages=8,
         max_wait_seconds=40,
+        fallback_on_error=False,
     )
-    plan = await provider.plan(_planner_input(), runtime=runtime)
+    with pytest.raises(PlannerResponseError):
+        await provider.plan(_planner_input(), runtime=runtime)
     request = llm.requests[0]
-    assert request.model == "runtime-planner"
+    assert request.model == "constructor-fallback"
     assert request.temperature == 0.25
     assert request.max_output_tokens == 333
-    assert plan.desired_messages == 3
-    assert plan.wait_seconds == 12
 
 
 @pytest.mark.asyncio

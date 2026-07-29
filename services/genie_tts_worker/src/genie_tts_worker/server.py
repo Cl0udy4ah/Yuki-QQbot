@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 from pathlib import Path
+from typing import Any, cast
 
 from pydantic import ValidationError
 
@@ -27,6 +28,10 @@ from genie_tts_worker.models import (
     WorkerResponse,
 )
 from genie_tts_worker.protocol import read_request, write_frame
+from genie_tts_worker.text_frontends import (
+    SpeechFrontendRegistry,
+    SpeechTextFrontendUnavailable,
+)
 
 
 class GenieWorkerServer:
@@ -37,6 +42,7 @@ class GenieWorkerServer:
         engine: GenieEngine,
         socket_mode: int,
         idle_recycle_seconds: float = 0,
+        text_frontends: SpeechFrontendRegistry | None = None,
     ) -> None:
         self._socket_path = socket_path
         self._engine = engine
@@ -49,6 +55,7 @@ class GenieWorkerServer:
         self._cancelled_request_ids: set[str] = set()
         self._idle_recycle_seconds = max(0.0, idle_recycle_seconds)
         self._idle_recycle_task: asyncio.Task[None] | None = None
+        self._text_frontends = text_frontends or SpeechFrontendRegistry()
 
     @property
     def queue_depth(self) -> int:
@@ -57,7 +64,8 @@ class GenieWorkerServer:
     async def start(self) -> None:
         self._socket_path.parent.mkdir(parents=True, exist_ok=True)
         self._socket_path.unlink(missing_ok=True)
-        self._server = await asyncio.start_unix_server(self._handle_client, path=self._socket_path)
+        start_unix_server = cast(Any, asyncio).start_unix_server
+        self._server = await start_unix_server(self._handle_client, path=self._socket_path)
         os.chmod(self._socket_path, self._socket_mode)
         try:
             self._engine.initialize()
@@ -126,11 +134,19 @@ class GenieWorkerServer:
     async def _dispatch(self, request: WorkerRequest) -> WorkerResponse:
         try:
             if isinstance(request, HealthRequest):
+                japanese = self._text_frontends.health("jp")
                 return self._success(
                     request,
                     ready=True,
                     busy=self._synthesis_lock.locked(),
                     loaded_profile_id=self._engine.loaded_profile_id,
+                    japanese_frontend_available=(
+                        japanese.available if japanese is not None else None
+                    ),
+                    japanese_frontend_version=(japanese.version if japanese is not None else None),
+                    japanese_frontend_signature=(
+                        japanese.signature if japanese is not None else None
+                    ),
                 )
             if isinstance(request, LoadProfileRequest):
                 self._cancel_idle_recycle()
@@ -186,7 +202,13 @@ class GenieWorkerServer:
             try:
                 if request.request_id in self._cancelled_request_ids:
                     return self._cancelled(request)
-                metadata = await asyncio.to_thread(self._engine.synthesize, request)
+                processed = self._text_frontends.process(request.language, request.text)
+                synthesis_request = (
+                    request.model_copy(update={"text": processed.spoken_text})
+                    if processed is not None
+                    else request
+                )
+                metadata = await asyncio.to_thread(self._engine.synthesize, synthesis_request)
                 if request.request_id in self._cancelled_request_ids:
                     self._engine.discard_output(metadata.relative_path)
                     return self._cancelled(request)
@@ -198,6 +220,21 @@ class GenieWorkerServer:
                     sample_width=metadata.sample_width,
                     duration_milliseconds=metadata.duration_milliseconds,
                     loaded_profile_id=request.profile_id,
+                    spoken_text_hash=(
+                        processed.spoken_text_hash if processed is not None else None
+                    ),
+                    frontend_version=(
+                        processed.frontend_version if processed is not None else None
+                    ),
+                    transformed_token_count=(
+                        len(processed.transformed_tokens) if processed is not None else 0
+                    ),
+                )
+            except SpeechTextFrontendUnavailable as exc:
+                return FailureResponse(
+                    request_id=request.request_id,
+                    error=WorkerErrorCode.JAPANESE_FRONTEND_UNAVAILABLE,
+                    detail=str(exc),
                 )
             except EngineFailure as exc:
                 if request.request_id in self._cancelled_request_ids:

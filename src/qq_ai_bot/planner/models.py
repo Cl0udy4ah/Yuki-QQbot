@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
@@ -45,6 +45,27 @@ class ToolMode(StrEnum):
     INHERIT = "inherit"
     NONE = "none"
     READ_ONLY = "read_only"
+
+
+class ToolGroup(StrEnum):
+    """Coarse capability groups that Planner may retain for this turn."""
+
+    WEB = "web"
+    MEMORY = "memory"
+    ADMIN = "admin"
+    CONFIG = "config"
+    AUTOMATION = "automation"
+    ONEBOT = "onebot"
+    EMOJI = "emoji"
+    SPEECH = "speech"
+    PLUGIN = "plugin"
+
+
+class ToolSelection(_StrictPlannerModel):
+    """A monotonic tool mode plus a subset of backend-advertised groups."""
+
+    mode: ToolMode = ToolMode.INHERIT
+    groups: tuple[ToolGroup, ...] = ()
 
 
 class PlannerReasonCode(StrEnum):
@@ -186,13 +207,33 @@ class TurnPlan(_StrictPlannerModel):
     delivery_mode: DeliveryMode = DeliveryMode.SINGLE
     desired_messages: int = Field(default=1, ge=1, le=20, strict=True)
     reply_to_message_id: str | None = Field(default=None, max_length=128)
-    tool_mode: ToolMode = ToolMode.INHERIT
+    tool_selection: ToolSelection = ToolSelection()
     wait_seconds: float = Field(default=0, ge=0, le=300, strict=True)
     confidence: float = Field(ge=0, le=1, strict=True)
     reason_code: PlannerReasonCode
     planner_note: str = ""
     emoji: EmojiReplyPlan = EmojiReplyPlan()
     voice: VoiceReplyPlan = VoiceReplyPlan()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_tool_mode(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "tool_mode" not in value:
+            return value
+        normalized = dict(value)
+        legacy = normalized.pop("tool_mode")
+        if "tool_selection" not in normalized:
+            normalized["tool_selection"] = {
+                "mode": legacy,
+                "groups": [group.value for group in ToolGroup],
+            }
+        return normalized
+
+    @property
+    def tool_mode(self) -> ToolMode:
+        """Source-compatible projection for 1.8 integrations."""
+
+        return self.tool_selection.mode
 
 
 class PlannedTurn(_StrictPlannerModel):
