@@ -90,9 +90,9 @@ class TaskModelExecutor:
 
     async def execute(self, task: ModelTask, request: ChatRequest) -> ChatResponse:
         required: set[ModelCapability] = set()
-        if request.tools:
+        if request.tools and not request.structured_output:
             required.add(ModelCapability.TOOLS)
-        if request.response_format is not None:
+        if request.structured_output or request.response_format is not None:
             required.add(ModelCapability.STRUCTURED_OUTPUT)
         if request.thinking_enabled:
             required.add(ModelCapability.REASONING)
@@ -117,6 +117,7 @@ class TaskModelExecutor:
             tools=request.tools,
             tool_choice=request.tool_choice,
             response_format=request.response_format,
+            structured_output=request.structured_output,
         )
         started = time.perf_counter()
         try:

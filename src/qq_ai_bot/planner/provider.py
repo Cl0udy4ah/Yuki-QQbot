@@ -91,26 +91,39 @@ def validate_turn_plan(
     hard_max_messages: int,
     max_wait_seconds: float,
 ) -> TurnPlan:
-    """Validate event-bound fields after the schema has validated the shape."""
+    """Narrow event-bound fields without discarding otherwise valid intent."""
 
-    if plan.desired_messages > hard_max_messages:
-        raise PlannerResponseError("planner desired_messages exceeds configured maximum")
-    if plan.wait_seconds > max_wait_seconds:
-        raise PlannerResponseError("planner wait_seconds exceeds configured maximum")
-    if plan.decision is not PlannerDecision.WAIT and plan.wait_seconds:
-        raise PlannerResponseError("non-wait planner decision contains wait_seconds")
     known_targets = set(planner_input.known_target_user_ids)
-    if any(target not in known_targets for target in plan.target_user_ids):
-        raise PlannerResponseError("planner selected an unknown target user")
-    if (
-        plan.reply_to_message_id is not None
-        and plan.reply_to_message_id not in planner_input.known_message_ids
-    ):
-        raise PlannerResponseError("planner selected an unknown reply message")
     available_groups = set(planner_input.available_tool_categories)
-    if any(group.value not in available_groups for group in plan.tool_selection.groups):
-        raise PlannerResponseError("planner selected an unavailable tool group")
-    return plan
+    return plan.model_copy(
+        update={
+            "target_user_ids": tuple(
+                dict.fromkeys(
+                    target for target in plan.target_user_ids if target in known_targets
+                )
+            ),
+            "reply_to_message_id": (
+                plan.reply_to_message_id
+                if plan.reply_to_message_id in planner_input.known_message_ids
+                else None
+            ),
+            "desired_messages": min(plan.desired_messages, hard_max_messages),
+            "wait_seconds": (
+                min(plan.wait_seconds, max_wait_seconds)
+                if plan.decision is PlannerDecision.WAIT
+                else 0.0
+            ),
+            "tool_selection": plan.tool_selection.model_copy(
+                update={
+                    "groups": tuple(
+                        group
+                        for group in plan.tool_selection.groups
+                        if group.value in available_groups
+                    )
+                }
+            ),
+        }
+    )
 
 
 def deterministic_fallback_plan(planner_input: PlannerInput) -> TurnPlan:
@@ -274,7 +287,11 @@ class LLMPlannerProvider:
                         error_category=type(exc).__name__,
                     )
                 raise
-            logger.warning("planner_fallback error_category=%s", type(exc).__name__)
+            logger.warning(
+                "planner_fallback error_category=%s reason=%s",
+                type(exc).__name__,
+                str(exc),
+            )
             plan = deterministic_fallback_plan(planner_input)
             if self._observability is not None and token is not None:
                 self._observability.request_finished(

@@ -169,6 +169,7 @@ class ChatRequest:
     tools: tuple[ChatTool, ...] = ()
     tool_choice: str | None = None
     response_format: dict[str, object] | None = None
+    structured_output: bool = False
 
 
 @dataclass(frozen=True, slots=True)

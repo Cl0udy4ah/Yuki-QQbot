@@ -22,20 +22,31 @@ from qq_ai_bot.capabilities.policy import CapabilityPolicyContext, CapabilityPol
 from qq_ai_bot.cli import _prompt_comparison
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.reply import ReplyEffect
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ToolCall, ToolFunction
+from qq_ai_bot.domain.messages import (
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    ChatTool,
+    ToolCall,
+    ToolFunction,
+)
 from qq_ai_bot.emoji.models import EmojiPlacement, EmojiReplyMode, PendingReplyEffect
+from qq_ai_bot.model_runtime.executor import TaskModelExecutor
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelProfile,
+    ModelRoute,
     ModelTask,
     StructuredOutputMode,
 )
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.profiles import (
+    ModelProfileCatalog,
     ModelRuntimeConfigurationError,
     load_model_profile_catalog,
 )
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
+from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.planner.models import ToolGroup, ToolMode, ToolSelection
@@ -222,6 +233,7 @@ async def test_structured_runner_uses_schema_channel_and_rejects_extra_text() ->
     )
     assert result.value == 7
     assert executor.requests[0].tools[0].name == "emit_result"
+    assert executor.requests[0].structured_output
 
     invalid = _StructuredExecutor(
         ChatResponse(content='prefix {"value":7}', latency_seconds=0),
@@ -236,6 +248,79 @@ async def test_structured_runner_uses_schema_channel_and_rejects_extra_text() ->
             temperature=0,
             max_output_tokens=100,
             allow_text_json=True,
+        )
+
+
+class _CapturingModelProvider:
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        return ChatResponse(content='{"value":7}', latency_seconds=0)
+
+
+class _SingleProviderPool:
+    def __init__(self, provider: _CapturingModelProvider) -> None:
+        self.provider = provider
+
+    def get(self, profile: ModelProfile) -> _CapturingModelProvider:
+        assert profile.id == "flash"
+        return self.provider
+
+
+@pytest.mark.asyncio
+async def test_structured_function_channel_does_not_require_agent_tool_capability() -> None:
+    profile = ModelProfile(
+        id="flash",
+        provider="fake",
+        model="flash",
+        timeout_seconds=10,
+        max_retries=0,
+        default_temperature=0,
+        default_max_output_tokens=100,
+        structured_output_mode=StructuredOutputMode.FUNCTION_TOOL,
+        capabilities=frozenset({ModelCapability.STRUCTURED_OUTPUT}),
+    )
+    catalog = ModelProfileCatalog(
+        profiles={"flash": profile},
+        routes={
+            task: ModelRoute(
+                task=task,
+                profile_id="flash",
+                required_capabilities=(
+                    frozenset({ModelCapability.STRUCTURED_OUTPUT})
+                    if task is ModelTask.PLANNER
+                    else frozenset()
+                ),
+            )
+            for task in ModelTask
+        },
+    )
+    provider = _CapturingModelProvider()
+    executor = TaskModelExecutor(
+        router=ModelRouter(catalog),
+        pool=_SingleProviderPool(provider),  # type: ignore[arg-type]
+    )
+    schema_tool = ChatTool(name="emit_result", description="result", parameters={})
+
+    await executor.execute(
+        ModelTask.PLANNER,
+        ChatRequest(
+            messages=(ChatMessage(role="user", content="{}"),),
+            tools=(schema_tool,),
+            structured_output=True,
+        ),
+    )
+
+    assert provider.requests[0].structured_output
+    with pytest.raises(ValueError, match="does not support: tools"):
+        await executor.execute(
+            ModelTask.PLANNER,
+            ChatRequest(
+                messages=(ChatMessage(role="user", content="call a business tool"),),
+                tools=(schema_tool,),
+            ),
         )
 
 

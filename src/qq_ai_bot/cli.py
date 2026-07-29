@@ -413,6 +413,13 @@ async def _speech_command(settings: Settings, args: argparse.Namespace) -> int:
                         "worker_ready": health.ready,
                         "worker_busy": health.busy,
                         "loaded_profile": health.loaded_profile_id,
+                        "japanese_frontend_available": (
+                            health.japanese_frontend_available
+                        ),
+                        "japanese_frontend_version": health.japanese_frontend_version,
+                        "japanese_frontend_signature": (
+                            health.japanese_frontend_signature
+                        ),
                     },
                     ensure_ascii=False,
                     indent=2,

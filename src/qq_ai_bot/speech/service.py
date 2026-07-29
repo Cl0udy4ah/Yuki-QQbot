@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,10 +17,15 @@ from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator, Tur
 from qq_ai_bot.speech.cache import GENIE_TTS_VERSION, SpeechCache, speech_cache_key
 from qq_ai_bot.speech.genie_client import (
     GenieWorkerClient,
+    GenieWorkerErrorCode,
     GenieWorkerFailure,
     GenieWorkerUnavailable,
 )
-from qq_ai_bot.speech.language import resolve_target_language
+from qq_ai_bot.speech.language import (
+    language_fallback_text,
+    prepare_text_for_language,
+    resolve_target_language,
+)
 from qq_ai_bot.speech.models import VoiceProfile
 from qq_ai_bot.speech.paths import SpeechPathPolicy
 from qq_ai_bot.speech.provider import (
@@ -32,6 +38,8 @@ from qq_ai_bot.speech.repository import SpeechGenerationRepository, VoiceProfile
 from qq_ai_bot.speech.style_resolver import StyleResolver
 from qq_ai_bot.speech.text_normalizer import normalize_speech_text
 from yuki_plugin_sdk.events import EventName
+
+logger = logging.getLogger(__name__)
 
 
 class SpeechUnavailableError(RuntimeError):
@@ -78,6 +86,7 @@ class GenieTTSProvider(TTSProvider):
     ) -> SynthesizedSpeech:
         profile = await self._profile(request.profile_id)
         target_language = resolve_target_language(profile, request.text, request.language_hint)
+        spoken_text = prepare_text_for_language(request.text, target_language)
         reference = self._styles.resolve(profile, request.style_hint)
         frontend_signature = (
             await self._client.japanese_frontend_signature()
@@ -87,7 +96,7 @@ class GenieTTSProvider(TTSProvider):
         key = speech_cache_key(
             profile=profile,
             reference=reference,
-            normalized_text=request.text,
+            normalized_text=spoken_text,
             split_sentence=request.split_sentence,
             target_language=target_language,
             frontend_signature=frontend_signature,
@@ -101,8 +110,8 @@ class GenieTTSProvider(TTSProvider):
             engine_version=GENIE_TTS_VERSION,
             target_language=target_language,
             text_hash=_hash(request.text),
-            normalized_text_hash=_hash(request.text),
-            character_count=len(request.text),
+            normalized_text_hash=_hash(spoken_text),
+            character_count=len(spoken_text),
             cache_key=key,
             expires_at=None,
         )
@@ -141,7 +150,7 @@ class GenieTTSProvider(TTSProvider):
                 profile=profile,
                 reference=reference,
                 target_language=target_language,
-                text=request.text,
+                text=spoken_text,
                 split_sentence=request.split_sentence,
                 output_relative_path=output,
                 cancellation=cancellation,
@@ -276,14 +285,38 @@ class SpeechService:
             {"request_id": normalized.request_id, "profile_id": normalized.profile_id},
         )
         started = time.perf_counter()
-        try:
+
+        async def invoke(candidate: SpeechSynthesisRequest) -> SynthesizedSpeech:
             if self._turns is not None and request.turn_token is not None:
                 async with self._turns.track(request.turn_token, "generation"):
-                    result = await self._provider.synthesize(normalized, cancellation=cancellation)
+                    result = await self._provider.synthesize(
+                        candidate,
+                        cancellation=cancellation,
+                    )
                 if not self._turns.is_current(request.turn_token):
                     raise TurnSupersededError("speech completed after its turn was superseded")
-            else:
-                result = await self._provider.synthesize(normalized, cancellation=cancellation)
+                return result
+            return await self._provider.synthesize(candidate, cancellation=cancellation)
+
+        try:
+            try:
+                result = await invoke(normalized)
+            except GenieWorkerFailure as exc:
+                if exc.code is not GenieWorkerErrorCode.JAPANESE_FRONTEND_UNAVAILABLE:
+                    raise
+                fallback_text = language_fallback_text(normalized.text, "zh")
+                if not fallback_text:
+                    raise
+                logger.warning(
+                    "speech_language_fallback unavailable_language=jp fallback_language=zh"
+                )
+                result = await invoke(
+                    replace(
+                        normalized,
+                        text=fallback_text,
+                        language_hint="zh",
+                    )
+                )
         except asyncio.CancelledError:
             self._last_error_category = "cancelled"
             await publish_notification(
@@ -347,16 +380,21 @@ class SpeechService:
             return PlannerSpeechContext(enabled=runtime.enabled)
         health = await self._provider.health()
         profile = await self._profile_for_context(runtime.default_profile)
+        available_languages = profile.supported_languages if profile is not None else ()
+        if health.japanese_frontend_available is False:
+            available_languages = tuple(
+                language for language in available_languages if language != "jp"
+            )
         return PlannerSpeechContext(
             enabled=True,
-            available=health.available and profile is not None,
+            available=health.available and profile is not None and bool(available_languages),
             default_profile=profile.display_name if profile is not None else "",
             available_styles=(
                 tuple(dict.fromkeys(item.style for item in profile.references if item.enabled))
                 if profile is not None
                 else ()
             ),
-            available_languages=profile.supported_languages if profile is not None else (),
+            available_languages=available_languages,
         )
 
     async def cleanup(self, *, runtime: SpeechRuntimeConfig) -> tuple[int, int]:

@@ -125,10 +125,18 @@ class EmojiReplyPlan(_FrozenModel):
     # models remain strict; only this LLM boundary model accepts JSON enums.
     model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
 
-    mode: EmojiReplyMode = EmojiReplyMode.NONE
-    placement: EmojiPlacement = EmojiPlacement.AFTER_TEXT
-    goal: str = Field(default="", max_length=300)
-    emotion: str = Field(default="", max_length=100)
+    mode: EmojiReplyMode = Field(
+        default=EmojiReplyMode.NONE,
+        description=(
+            "用户明确要求发送表情时必须使用 preferred 或 emoji_only；只有没有表情意图时才用 none。"
+        ),
+    )
+    placement: EmojiPlacement = Field(
+        default=EmojiPlacement.AFTER_TEXT,
+        description="表情相对正文的位置；emoji_only 使用 only。",
+    )
+    goal: str = Field(default="", max_length=300, description="希望表情表达的聊天语义。")
+    emotion: str = Field(default="", max_length=100, description="希望表情表达的情绪。")
 
 
 class PendingReplyEffect(_FrozenModel):

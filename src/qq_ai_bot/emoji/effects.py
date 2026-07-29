@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage, OutboundMedia, OutboundMessage
 from qq_ai_bot.emoji.models import (
@@ -15,6 +17,8 @@ from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.services.plugin_events import LifecycleEventPublisher, publish_notification
 from yuki_plugin_sdk.events import EventName
+
+logger = logging.getLogger(__name__)
 
 
 class EmojiReplyEffectService:
@@ -63,9 +67,16 @@ class EmojiReplyEffectService:
             vision_runtime=runtime.vision,
         )
         if selection.emoji_id is None:
+            logger.warning(
+                "emoji_reply_prepare_declined reason=%s source=%s mode=%s",
+                selection.reason,
+                effect.source,
+                effect.mode.value,
+            )
             return None
         asset = await self._repository.get(selection.emoji_id)
         if asset is None:
+            logger.warning("emoji_reply_asset_missing_from_repository")
             return None
         try:
             content = self._storage.read(asset.relative_path)
@@ -76,6 +87,7 @@ class EmojiReplyEffectService:
                 EventName.EMOJI_MISSING,
                 {"emoji_id": asset.id},
             )
+            logger.warning("emoji_reply_asset_missing_from_storage emoji_id=%s", asset.id)
             return None
         summary = asset.description or "Yuki 发送了一张表情图片"
         return OutboundMessage(

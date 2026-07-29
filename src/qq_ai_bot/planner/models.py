@@ -110,8 +110,11 @@ class PlannerSignal(_StrictPlannerModel):
 class PlannerSpeechContext(_StrictPlannerModel):
     """Trusted speech availability without filesystem or model internals."""
 
-    enabled: bool = False
-    available: bool = False
+    enabled: bool = Field(default=False, description="后端是否启用语音功能。")
+    available: bool = Field(
+        default=False,
+        description="后端是否确认本轮能够合成并发送语音；这是可信运行时状态。",
+    )
     default_profile: str = ""
     available_styles: tuple[str, ...] = ()
     available_languages: tuple[str, ...] = ()

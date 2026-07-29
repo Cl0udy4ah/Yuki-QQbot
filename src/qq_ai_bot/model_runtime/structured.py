@@ -93,6 +93,7 @@ class StructuredTaskRunner:
                 tools=tools,
                 tool_choice=tool_choice,
                 response_format=response_format,
+                structured_output=True,
             ),
         )
         try:

@@ -631,29 +631,32 @@ def test_explicit_turns_cannot_be_silenced_or_delayed_by_planner(
     assert constrained.wait_seconds == 0
 
 
-def test_plan_validation_rejects_limits_and_unknown_targets_without_clamping() -> None:
+def test_plan_validation_narrows_limits_and_unknown_event_bindings() -> None:
     planner_input = _planner_input(visual=True)
     payload = _valid_plan_payload(
         decision="wait",
         target_user_ids=["unknown", "1002", "1002", "1001"],
-        reply_to_message_id="100",
-        desired_messages=99,
+        reply_to_message_id="outside-current-context",
+        desired_messages=19,
         wait_seconds=250,
         tool_mode="inherit",
     )
-    with pytest.raises(PlannerResponseError):
-        constrain_turn_plan(
-            payload,
-            planner_input,
-            hard_max_messages=4,
-            max_wait_seconds=30,
-        )
+    plan = constrain_turn_plan(
+        payload,
+        planner_input,
+        hard_max_messages=4,
+        max_wait_seconds=30,
+    )
+    assert plan.target_user_ids == ("1002", "1001")
+    assert plan.reply_to_message_id is None
+    assert plan.desired_messages == 4
+    assert plan.wait_seconds == 30
 
-    with pytest.raises(PlannerResponseError):
-        constrain_turn_plan(
-            _valid_plan_payload(reply_to_message_id="outside-current-context"),
-            _planner_input(scope=ScopeType.GROUP),
-        )
+    unknown_reply = constrain_turn_plan(
+        _valid_plan_payload(reply_to_message_id="outside-current-context"),
+        _planner_input(scope=ScopeType.GROUP),
+    )
+    assert unknown_reply.reply_to_message_id is None
 
 
 def test_plan_parser_rejects_unknown_fields_and_permission_modes() -> None:
@@ -681,7 +684,7 @@ async def test_llm_planner_is_tool_free_non_thinking_and_uses_separate_model() -
 
 
 @pytest.mark.asyncio
-async def test_runtime_planner_limits_reject_invalid_plan_without_clamping() -> None:
+async def test_runtime_planner_limits_narrow_invalid_plan_without_losing_intent() -> None:
     payload = _valid_plan_payload(
         decision="wait",
         desired_messages=9,
@@ -711,8 +714,10 @@ async def test_runtime_planner_limits_reject_invalid_plan_without_clamping() -> 
         max_wait_seconds=40,
         fallback_on_error=False,
     )
-    with pytest.raises(PlannerResponseError):
-        await provider.plan(_planner_input(), runtime=runtime)
+    plan = await provider.plan(_planner_input(), runtime=runtime)
+    assert plan.decision is PlannerDecision.WAIT
+    assert plan.desired_messages == 3
+    assert plan.wait_seconds == 12
     request = llm.requests[0]
     assert request.model == "constructor-fallback"
     assert request.temperature == 0.25

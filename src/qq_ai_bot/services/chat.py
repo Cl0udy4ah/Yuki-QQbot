@@ -1004,12 +1004,7 @@ class ChatService:
         """Return only user-visible or spoken content, never internal voice metadata."""
 
         spoken_text = next((media.spoken_text for media in message.media if media.spoken_text), "")
-        visual_descriptions = " ".join(
-            f"[表情：{media.summary or '图片表情'}]"
-            for media in message.media
-            if media.kind is not AttachmentKind.AUDIO
-        )
-        return message.text or spoken_text or visual_descriptions
+        return message.text or spoken_text
 
     @staticmethod
     def _ledger_media_segment(media: OutboundMedia) -> dict[str, object]:

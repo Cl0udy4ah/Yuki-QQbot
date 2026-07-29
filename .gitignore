@@ -18,6 +18,7 @@ data/speech/*
 !data/speech/japanese_frontend/
 !data/speech/japanese_frontend/lexicon.toml
 !data/speech/japanese_frontend/models/
+data/speech/japanese_frontend/models/*
 !data/speech/japanese_frontend/models/.gitkeep
 logs/
 config/system_prompt.md

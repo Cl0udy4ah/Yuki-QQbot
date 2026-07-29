@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Literal
 from uuid import uuid4
@@ -20,6 +21,8 @@ from qq_ai_bot.speech.service import (
     SpeechUnavailableError,
 )
 from yuki_plugin_sdk.events import EventName
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +115,15 @@ class VoiceReplyEffectService:
             GenieWorkerFailure,
             TurnSupersededError,
             OSError,
-        ):
+        ) as exc:
+            error_code = (
+                exc.code.value if isinstance(exc, GenieWorkerFailure) else ""
+            )
+            logger.warning(
+                "voice_reply_prepare_failed error_category=%s error_code=%s",
+                type(exc).__name__,
+                error_code,
+            )
             return None
         effect = VoiceReplyEffect(
             generation_id=generated.generation_id,
