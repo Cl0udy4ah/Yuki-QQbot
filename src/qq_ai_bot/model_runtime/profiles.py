@@ -94,8 +94,7 @@ def load_model_profile_catalog(
 
     if not path.is_file():
         logger.warning(
-            "model_profiles_compatibility_mode file=%s profile=main; "
-            "PLANNER_MODEL is deprecated and ignored by task routing",
+            "model_profiles_compatibility_mode file=%s profile=main",
             path,
         )
         capabilities = frozenset(ModelCapability)
@@ -150,12 +149,6 @@ def load_model_profile_catalog(
         return ModelProfileCatalog(profiles=profiles, routes=routes)
     except (OSError, tomllib.TOMLDecodeError, ValidationError, KeyError, ValueError) as exc:
         raise ModelRuntimeConfigurationError(f"invalid model profile configuration: {exc}") from exc
-
-
-def default_route_requirements() -> dict[ModelTask, frozenset[ModelCapability]]:
-    """Return a copy for diagnostics and tests."""
-
-    return dict(_DEFAULT_REQUIREMENTS)
 
 
 def _resolve_profile_environment(

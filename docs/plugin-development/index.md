@@ -2,7 +2,7 @@
 
 Yuki 1.6.0 提供 Plugin API `1.0`：插件通过独立的 `yuki_plugin_sdk` 声明扩展，由 Host 负责发现、批准、生命周期、权限裁剪和运行时 Facade。插件不能直接取得 `ApplicationContainer`、数据库 Session、NoneBot Bot、原始事件、完整设置或任何密钥集合。
 
-Yuki 1.9.0 不改变 Plugin API `1.0` 的公共含义。插件 Prompt Fragment 会先由现有 `PromptRegistry` 校验，再作为一个 `context.plugins` 不可信贡献进入统一 Runtime Envelope；不会为每个插件重复一层系统包装。插件 Agent 会话通过 `ModelTask.PLUGIN_AGENT_SESSION` 使用显式模型路由，其独立上下文、持久/临时会话和权限行为保持兼容。插件工具会被适配为 `CapabilityDescriptor`，最终可见性由批准权限、调用来源、effect/risk 和 Planner 工具组共同决定；改名不应被当作安全策略。
+Yuki 2.0.0 不改变 Plugin API `1.0` 的公共含义。插件 Prompt Fragment 会先由现有 `PromptRegistry` 校验，再作为一个 `context.plugins` 不可信贡献进入统一 Runtime Envelope；不会为每个插件重复一层系统包装。插件 Agent 会话通过 `ModelTask.PLUGIN_AGENT_SESSION` 使用显式模型路由，其独立上下文、持久/临时会话和权限行为保持兼容。插件工具会被适配为 `CapabilityDescriptor`，最终可见性由批准权限、调用来源、effect/risk 和 Planner 工具组共同决定；改名不应被当作安全策略。
 
 > **真实安全边界：**1.6.0 插件是运行在 Yuki 进程内的本地可信 Python 代码。权限系统治理的是官方 API 的访问，不是操作系统沙盒；恶意插件理论上仍能绕过约束。只安装管理员完全信任、审阅过源码的插件。
 

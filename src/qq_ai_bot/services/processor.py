@@ -43,9 +43,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
 )
 from qq_ai_bot.planner.context import PlannerContextBuilder
-from qq_ai_bot.planner.fake import FakePlannerProvider
-from qq_ai_bot.planner.models import PlannedTurn, PlannerDecision, PlannerSignal
-from qq_ai_bot.planner.observability import PlannerObservability
+from qq_ai_bot.planner.models import PlannerDecision, PlannerSignal
 from qq_ai_bot.planner.provider import PlannerInterruptedError as ProviderPlannerInterruptedError
 from qq_ai_bot.planner.service import PlannerOutcome, PlannerService
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
@@ -212,6 +210,8 @@ class MessageProcessor:
         rate_limiter: SlidingWindowRateLimiter,
         concurrency: ConcurrencyManager,
         onebot_connected: Callable[[], bool],
+        planner_context: PlannerContextBuilder,
+        planner_service: PlannerService,
         ledger: EventLedgerRepository | None = None,
         people: PeopleRepository | None = None,
         memories: MemoryRepository | None = None,
@@ -232,8 +232,6 @@ class MessageProcessor:
         automation_repository: AutomationRepository | None = None,
         automation_worker: AutomationWorker | None = None,
         command_service: CommandService | None = None,
-        planner_context: PlannerContextBuilder | None = None,
-        planner_service: PlannerService | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
         planner_signals: PlannerSignalProvider | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
@@ -289,14 +287,8 @@ class MessageProcessor:
             database=database,
         )
         self._turn_coordinator = turn_coordinator or chat._turn_coordinator
-        self._planner_context = planner_context or PlannerContextBuilder(
-            ledger=self._ledger,
-            relationships=self._relationships,
-        )
-        self._planner = planner_service or PlannerService(
-            provider=FakePlannerProvider(),
-            observability=PlannerObservability(),
-        )
+        self._planner_context = planner_context
+        self._planner = planner_service
         self._planner_signals = planner_signals
         self._voice_preferences = voice_preferences
         audit = AdminAuditService(database)
@@ -544,10 +536,8 @@ class MessageProcessor:
             if (
                 message.scope_type is ScopeType.GROUP
                 and group_policy is not None
-                and (
-                    (runtime_snapshot.planner.enabled and runtime_snapshot.planner.group_enabled)
-                    or group_policy.autonomous_enabled
-                )
+                and runtime_snapshot.planner.group_enabled
+                and group_policy.autonomous_enabled
             ):
                 if self._autonomous is not None:
                     self._autonomous.observe(message, profile, sender, turn_token)
@@ -634,35 +624,32 @@ class MessageProcessor:
             return ProcessResult(True, int(sent), "input_too_long")
 
         try:
-            planner_outcome: PlannerOutcome | None = None
-            planned_turn: PlannedTurn | None = None
-            if runtime_snapshot.planner.enabled:
-                planner_outcome = await self._plan_turn(
-                    message=message,
-                    content=content,
-                    runtime=runtime_snapshot,
-                    turn_token=turn_token,
-                    visual_input_present=has_visual_input,
-                    administrator_request=admin_candidate,
-                )
-                if planner_outcome is None:
-                    return ProcessResult(True, reason="planner_interrupted")
-                planned_turn = planner_outcome.planned_turn
-                if planned_turn.plan.decision is PlannerDecision.SILENT:
-                    return ProcessResult(True, reason="planner_silent")
-                if self._voice_preferences is not None:
-                    try:
-                        await self._voice_preferences.apply(
-                            planned_turn.plan.voice,
-                            user_id=message.sender.user_id,
-                            source_message_id=message.message_id,
-                            origin=TurnOrigin.USER_MESSAGE,
-                        )
-                    except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
-                        logger.warning(
-                            "voice_preference_update_failed exception_category=%s",
-                            type(exc).__name__,
-                        )
+            planner_outcome = await self._plan_turn(
+                message=message,
+                content=content,
+                runtime=runtime_snapshot,
+                turn_token=turn_token,
+                visual_input_present=has_visual_input,
+                administrator_request=admin_candidate,
+            )
+            if planner_outcome is None:
+                return ProcessResult(True, reason="planner_interrupted")
+            planned_turn = planner_outcome.planned_turn
+            if planned_turn.plan.decision is PlannerDecision.SILENT:
+                return ProcessResult(True, reason="planner_silent")
+            if self._voice_preferences is not None:
+                try:
+                    await self._voice_preferences.apply(
+                        planned_turn.plan.voice,
+                        user_id=message.sender.user_id,
+                        source_message_id=message.message_id,
+                        origin=TurnOrigin.USER_MESSAGE,
+                    )
+                except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
+                    logger.warning(
+                        "voice_preference_update_failed exception_category=%s",
+                        type(exc).__name__,
+                    )
             sent_count = await self._chat.respond(
                 message,
                 identity,
@@ -676,12 +663,11 @@ class MessageProcessor:
                 planned_turn=planned_turn,
                 turn_token=turn_token,
             )
-            if planner_outcome is not None:
-                await self._planner.record_delivery(
-                    planner_outcome.run_id,
-                    messages_sent=sent_count,
-                    interrupted=not self._turn_coordinator.is_current(turn_token),
-                )
+            await self._planner.record_delivery(
+                planner_outcome.run_id,
+                messages_sent=sent_count,
+                interrupted=not self._turn_coordinator.is_current(turn_token),
+            )
         except (PlannerInterruptedError, ProviderPlannerInterruptedError, TurnSupersededError):
             return ProcessResult(True, reason="planner_interrupted")
         except RequestCancelledError:
@@ -799,11 +785,11 @@ class MessageProcessor:
         message: InboundMessage,
         visual_input_present: bool,
     ) -> tuple[str, ...]:
-        categories = ["history", "memory", "automation"]
+        categories = ["memory", "automation", "emoji", "speech", "plugin"]
         if self._settings.web_enabled:
             categories.append("web")
         if message.sender.user_id in self._settings.superusers and not visual_input_present:
-            categories.extend(("admin", "onebot"))
+            categories.extend(("admin", "config", "onebot"))
         return tuple(categories)
 
     async def _analyze_visual_input(

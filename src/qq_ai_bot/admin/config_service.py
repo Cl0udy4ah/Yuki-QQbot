@@ -18,7 +18,6 @@ from qq_ai_bot.admin.models import (
     AdminActor,
     AdminOperationEvent,
     AgentRuntimeConfig,
-    AutonomousRuntimeConfig,
     ConfigApplyMode,
     ConfigChangeResult,
     ConfigScopeType,
@@ -1017,18 +1016,7 @@ class RuntimeConfigService:
         delay_min = float(cast(float | int, value("reply.delay_min_seconds")))
         delay_max = float(cast(float | int, value("reply.delay_max_seconds")))
         return RuntimeConfigSnapshot(
-            autonomous=AutonomousRuntimeConfig(
-                enabled=bool(value("autonomous.enabled")),
-                silence_seconds=float(cast(float | int, value("autonomous.silence_seconds"))),
-                confidence_threshold=float(
-                    cast(float | int, value("autonomous.confidence_threshold"))
-                ),
-                cooldown_seconds=int(cast(int, value("autonomous.cooldown_seconds"))),
-                max_per_hour=int(cast(int, value("autonomous.max_per_hour"))),
-            ),
             planner=PlannerRuntimeConfig(
-                enabled=bool(value("planner.enabled")),
-                model=str(value("planner.model") or ""),
                 direct_enabled=bool(value("planner.direct_enabled")),
                 group_enabled=bool(value("planner.group_enabled")),
                 group_debounce_seconds=float(

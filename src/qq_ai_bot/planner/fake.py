@@ -36,6 +36,10 @@ class FakePlannerProvider:
         self._max_wait_seconds = max_wait_seconds
         self.inputs: list[PlannerInput] = []
 
+    @property
+    def model_name(self) -> str:
+        return "fake-planner"
+
     async def plan(
         self,
         planner_input: PlannerInput,

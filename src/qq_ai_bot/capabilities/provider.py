@@ -19,7 +19,7 @@ _ALL_ORIGINS = frozenset(TurnOrigin)
 _DIRECT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE})
 
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
-    "get_my_capabilities": ("admin", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "get_my_capabilities": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "get_recent_chat_history": ("memory", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "search_chat_history": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "get_person_memories": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),

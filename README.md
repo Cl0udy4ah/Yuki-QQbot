@@ -2,7 +2,9 @@
 
 ## 启动项目
 
-> **升级提示：**1.9.0 会执行非破坏性 Alembic `0018`，只新增不含消息正文的 `model_invocations` 模型调用统计表；人物、事件、记忆、关系、插件、自动化、表情和语音数据全部保留。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。始终先备份 `data/`。
+> **升级提示：**2.0.0 不新增破坏性数据库迁移，数据库版本仍为 Alembic `0018`，现有人物、事件、记忆、关系、插件、自动化、表情和语音数据会保留；但本版删除旧 Planner、自主群聊和私聊白名单兼容配置。升级前请备份 `data/`，并以最新 `.env.example` 检查本地 `.env`。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。
+
+Plugin API 仍为 `1.0`。第三方插件如果把 `yuki_requires` 上限写成 `<2.0`，需要在确认兼容后改为 `<3.0` 才能在 2.0.0 加载；插件代码和 manifest 的 `plugin_api` 无需因本次升级改版。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -34,7 +36,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 1.9.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 2.0.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -274,10 +276,9 @@ docker compose up -d --build --no-deps bot
 
 ### Planner-first 会话
 
-Planner 默认启用。1.9.0 中它通过 `ModelTask.PLANNER` 读取模型路由，不再读取 `PLANNER_MODEL`；旧变量只为兼容配置文件保留并会提示弃用。Planner 关闭思考、不提供工具，只通过 `StructuredTaskRunner` 提交严格的 `TurnPlan`。Planner 只能缩小本轮工具和回复计划，不能修改配置、记忆、关系、权限或直接发送消息。
+Planner 是普通聊天固定且唯一的决策边界。2.0.0 中它通过 `ModelTask.PLANNER` 和 `MODEL_PROFILES_FILE` 读取模型路由；`PLANNER_MODEL` 已删除。Planner 关闭思考、不提供工具，只通过 `StructuredTaskRunner` 提交严格的 `TurnPlan`。Planner 只能缩小本轮工具和回复计划，不能修改配置、记忆、关系、权限或直接发送消息。
 
 ```dotenv
-PLANNER_ENABLED=true
 PLANNER_DIRECT_ENABLED=true
 PLANNER_GROUP_ENABLED=true
 PLANNER_GROUP_DEBOUNCE_SECONDS=3
@@ -293,7 +294,6 @@ REPLY_PLAN_HARD_MAX_MESSAGES=10
 要先用 1.5.2 兼容聊天路径验证升级，可临时设置：
 
 ```dotenv
-PLANNER_ENABLED=false
 PLUGIN_SYSTEM_ENABLED=false
 ```
 
@@ -678,12 +678,13 @@ Planner-first 自主参与规则：
 - 达到阈值后，由 Planner 选择 `reply`、`wait` 或 `silent`，`wait` 最多重新规划一次；
 - Planner 以活跃群友为默认倾向，能自然接话、参与玩笑、回应情绪或延续话题时优先发言；
 - 真实 `@Yuki`、回复 Yuki 和私聊由后端强制回复，历史活跃度不能降低该优先级；
-- 旧置信度、冷却、每小时上限及 `AUTONOMOUS_ENABLED` 不限制 Planner-first 路径；
+- 旧置信度、冷却、每小时上限和旧自主引擎已经删除，不再存在两套群聊决策；
 - 新群消息会中断自主 Planner 和自主生成，但普通观察消息不会中断明确触发的处理轮；
 - 自主轮不开放通用 OneBot 管理工具，Planner 本身也没有任何工具；
 - 最终回复仍由同一个 Yuki Agent 生成，并使用普通消息与计划内的发送节奏。
 
-设置 `PLANNER_ENABLED=false` 后才恢复 1.5.2 的候选判断、置信度、冷却与每小时上限。
+普通聊天固定经过 Planner；不再保留 1.5.2 的候选判断、置信度、冷却与每小时上限回退链。
+旧 `.env` 中的 `PLANNER_ENABLED`、`PLANNER_MODEL`、`ALLOWED_PRIVATE_USERS` 与 `AUTONOMOUS_*` 项已失效，可以删除；项目不会改写现有 `.env`。
 
 ## 命令
 
@@ -752,7 +753,7 @@ Planner-first 自主参与规则：
 | `user` | 已启用，所有普通 QQ | 29 项本人自助接口，其中 14 项可修改本人上下文、记忆、偏好、时区或自动化任务；不能修改运行时配置 |
 | `trusted` | 仅预留，当前不可分配 | 供未来介于普通用户与管理员之间的权限扩展 |
 | `moderator` | 仅预留，当前不可分配 | 供未来群管理能力扩展 |
-| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 71 项可修改配置、12 项受保护配置、19 项管理员业务接口（15 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
+| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 131 项可修改配置、12 项受保护配置、44 项管理员业务接口（33 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
 
 能力目录直接遍历现有 `ConfigRegistry` 和 `ActionRegistry`，不会另复制配置键或业务 action。`summary` 只提供计数与类别，`focused` 提供命中项的 ID、别名、说明、类型、范围、作用域和生效方式，`full` 才提供全部 ID。`call_onebot_api(action, params)` 作为独立的 `onebot` 权限类别列出：真实超级管理员在直接触发、非自主群聊的普通 Agent 轮次中可调用全部公开 action，不设 action denylist，也不二次确认；使用网页工具后本轮会撤销网关，但不会缩减 action 范围。目录不读取配置值、API Key、凭证状态或他人权限。`trusted`、`moderator` 只有枚举和展示元数据，在执行层接入相同权限校验前不会被实际授予。
 
@@ -789,7 +790,6 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 
 | 模式 | 配置键 |
 |---|---|
-| HOT | `autonomous.enabled`、`autonomous.silence_seconds`、`autonomous.confidence_threshold`、`autonomous.cooldown_seconds`、`autonomous.max_per_hour` |
 | HOT | `planner.enabled`、`planner.direct_enabled`、`planner.group_enabled`、`planner.group_debounce_seconds`、`planner.confidence_threshold`、`planner.reply_necessity_threshold`、`planner.max_pending_messages`、`planner.recent_presence_window_seconds`、`planner.max_wait_seconds`、`planner.interrupt_autonomous_on_new_message` |
 | HOT | `context.local_event_limit`、`context.related_people_limit` |
 | HOT | `reply.daily_split_enabled`、`reply.daily_split_max_characters`、`reply.daily_split_max_messages`、`reply.delay_min_seconds`、`reply.delay_max_seconds`、`reply.max_qq_message_chars` |
@@ -818,11 +818,6 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | 环境变量 | 默认值 |
 |---|---:|
 | `OBSERVE_ENABLED_GROUPS` | `true` |
-| `AUTONOMOUS_GROUP_CHAT_ENABLED` | `true` |
-| `AUTONOMOUS_SILENCE_SECONDS` | `8` |
-| `AUTONOMOUS_CONFIDENCE_THRESHOLD` | `0.85` |
-| `AUTONOMOUS_COOLDOWN_SECONDS` | `300` |
-| `AUTONOMOUS_MAX_PER_HOUR` | `3` |
 | `RECENT_HISTORY_TOOL_LIMIT` | `20` |
 | `LOCAL_CONTEXT_EVENT_LIMIT` | `30` |
 | `MAX_CONTEXT_CHARACTERS` | `12000` |
@@ -840,8 +835,6 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `AGENT_MAX_TOOL_CALLS` | `12`（硬上限 `16`） |
 | `AGENT_MAX_MODEL_REQUESTS` | `12` |
 | `AGENT_TOOL_RESULT_MAX_CHARACTERS` | `32000` |
-| `PLANNER_ENABLED` | `true` |
-| `PLANNER_MODEL` | 空；使用 `LLM_MODEL` |
 | `PLANNER_DIRECT_ENABLED` | `true` |
 | `PLANNER_GROUP_ENABLED` | `true` |
 | `PLANNER_GROUP_DEBOUNCE_SECONDS` | `3` |
@@ -939,7 +932,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `VISION_PER_GROUP_REQUESTS_PER_MINUTE` | `60` |
 | `VISION_ANALYSIS_RETENTION_DAYS` | `7` |
 
-`ALLOWED_PRIVATE_USERS` 仅为旧配置兼容保留，1.0 不再把它当白名单；所有新 QQ 私聊默认准入。
+所有新 QQ 私聊默认准入；指定 QQ 的阻止与恢复由持久化 `/ai private <QQ号> off|on` 管理。
 
 ## 本地开发与测试
 
@@ -988,7 +981,7 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 
 1. 停止 Bot 写入但保持 NapCat 和 QQ 登录态运行：`docker compose stop bot`。
 2. 完整备份 `data/`、`napcat-data/` 和 `napcat-config/`。
-3. 将 `.env.example` 新增的 `PLANNER_*`、`REPLY_*` 和 `PLUGIN_*` 同步到 `.env`。建议首次升级保留 `PLUGIN_SYSTEM_ENABLED=false`；若要先验证旧聊天路径，可临时设 `PLANNER_ENABLED=false`。
+3. 将 `.env.example` 新增的 `PLANNER_*`、`REPLY_*` 和 `PLUGIN_*` 同步到 `.env`。建议首次升级保留 `PLUGIN_SYSTEM_ENABLED=false`，先验证 Planner 聊天路径后再启用插件。
 4. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 不会被替换，Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0014`。
 5. 检查 `docker compose ps`、`/healthz` 和日志；确认 Planner 状态及插件运行数没有触发外部探测。
 6. 依次人工验证：私聊明确请求、群聊 @、低必要性群消息静默、新消息中断剩余分句、管理员自然语言工具、自动化、视觉、联网、关系和旧命令。

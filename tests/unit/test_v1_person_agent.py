@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
@@ -30,7 +29,6 @@ from qq_ai_bot.persistence.repositories import (
     MemoryRepository,
 )
 from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
-from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.memory_worker import MemoryWorker
 from qq_ai_bot.speech.models import VoiceMode
@@ -519,74 +517,3 @@ async def test_forgetme_deletes_attributable_ledger_and_does_not_recreate_person
     ledger = EventLedgerRepository(database)
     assert not await ledger.search(keyword="秘密", user_id="1001")
     assert "彻底删除" in sender.messages[0].text
-
-
-class AutonomousProvider(LLMProvider):
-    def __init__(self) -> None:
-        self.requests: list[ChatRequest] = []
-
-    async def complete(self, request: ChatRequest) -> ChatResponse:
-        self.requests.append(request)
-        first = request.messages[0].content or ""
-        if first.startswith("判断一个像真实群友"):
-            assert not request.tools
-            return ChatResponse(
-                content='{"confidence":0.92,"reason":"群友正在提问"}',
-                latency_seconds=0,
-            )
-        assert "call_onebot_api" not in {tool.name for tool in request.tools}
-        return ChatResponse(content="我觉得可以。", latency_seconds=0)
-
-
-@pytest.mark.asyncio
-async def test_autonomous_group_chat_uses_threshold_and_cooldown_without_admin_tool(
-    database: Database,
-) -> None:
-    settings = make_settings(
-        database.url,
-        superusers_csv="9000",
-        autonomous_silence_seconds=0.01,
-        autonomous_cooldown_seconds=300,
-        daily_chat_message_delay_min_seconds=0,
-        daily_chat_message_delay_max_seconds=0,
-    )
-    provider = AutonomousProvider()
-    harness = build_harness(database, settings, provider)
-    service = AutonomousGroupService(
-        settings=settings,
-        provider=provider,
-        concurrency=harness.concurrency,
-        memories=MemoryRepository(database),
-        chat=harness.processor._chat,
-        clock=lambda: 100.0,
-    )
-    harness.processor._autonomous = service
-    sender = ToolGatewaySender()
-
-    first = await harness.processor.handle(
-        inbound(
-            "大家觉得这个方案怎么样？",
-            message_id="auto-1",
-            user_id="9000",
-            group_id="2001",
-        ),
-        sender,
-    )
-    assert first.reason == "group_observed"
-    await service.wait_until_idle("2001")
-    assert [message.text for message in sender.messages] == ["我觉得可以。"]
-    assert len(provider.requests) == 2
-
-    await harness.processor.handle(
-        inbound(
-            "还有别的建议吗？",
-            message_id="auto-2",
-            user_id="9000",
-            group_id="2001",
-        ),
-        sender,
-    )
-    await asyncio.sleep(0.1)
-    assert len(sender.messages) == 1
-    assert len(provider.requests) == 2
-    await service.close()

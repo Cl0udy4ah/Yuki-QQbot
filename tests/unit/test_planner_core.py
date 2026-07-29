@@ -12,7 +12,6 @@ from pydantic import ValidationError
 
 from qq_ai_bot.admin.models import (
     AgentRuntimeConfig,
-    AutonomousRuntimeConfig,
     ContextRuntimeConfig,
     EmojiRuntimeConfig,
     LLMRuntimeConfig,
@@ -47,7 +46,6 @@ from qq_ai_bot.planner import (
     constrain_turn_plan,
 )
 from qq_ai_bot.planner.models import PlannerSpeechContext
-from qq_ai_bot.planner.prompt import build_planner_messages
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.speech.models import (
@@ -64,16 +62,7 @@ from qq_ai_bot.speech.models import (
 
 def _runtime() -> RuntimeConfigSnapshot:
     return RuntimeConfigSnapshot(
-        autonomous=AutonomousRuntimeConfig(
-            enabled=True,
-            silence_seconds=8,
-            confidence_threshold=0.85,
-            cooldown_seconds=300,
-            max_per_hour=3,
-        ),
         planner=PlannerRuntimeConfig(
-            enabled=True,
-            model="",
             direct_enabled=True,
             group_enabled=True,
             temperature=0.1,
@@ -405,21 +394,6 @@ def test_same_plugin_and_expired_signals_cannot_bypass_caps() -> None:
     assert result.plugin_adjustment == 10
 
 
-def test_prompt_contains_only_planner_contract_and_explicit_untrusted_envelope() -> None:
-    messages = build_planner_messages(
-        _planner_input(),
-        preferred_messages=4,
-        hard_max_messages=20,
-    )
-    assert len(messages) == 2
-    assert "只负责生成本轮计划" in (messages[0].content or "")
-    payload = json.loads(messages[1].content or "")
-    assert payload["current_message"]["text"] == "帮我看看"
-    assert "content_trust" not in payload["current_message"]
-    assert "<external_untrusted_planner_input>" not in (messages[1].content or "")
-    assert "desired_messages 设为 4" not in (messages[0].content or "")
-
-
 def test_planner_applies_hot_natural_multi_target_without_affecting_structure() -> None:
     runtime = _runtime()
     runtime = replace(
@@ -696,7 +670,6 @@ async def test_runtime_planner_limits_narrow_invalid_plan_without_losing_intent(
         runtime,
         planner=replace(
             runtime.planner,
-            model="runtime-planner",
             temperature=0.25,
             max_output_tokens=333,
             timeout_seconds=4,

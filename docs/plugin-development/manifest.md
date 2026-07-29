@@ -11,7 +11,7 @@ version = "0.1.0"
 description = "天气查询和提醒插件"
 entrypoint = "weather_plugin:WeatherPlugin"
 plugin_api = "1.0"
-yuki_requires = ">=1.6.0,<2.0"
+yuki_requires = ">=1.6.0,<3.0"
 
 permissions = [
   "message.current.read",
@@ -68,4 +68,3 @@ Host 对规范化后的完整 Manifest 计算 SHA-256。批准记录绑定该哈
 uv run qq-ai-bot-cli plugin validate plugins/com.example.weather
 uv run qq-ai-bot-cli plugin inspect com.example.weather
 ```
-

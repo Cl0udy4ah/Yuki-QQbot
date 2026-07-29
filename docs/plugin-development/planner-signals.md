@@ -33,7 +33,6 @@ registrar.register_planner_signal(
 - Host 会验证 `source_plugin_id`、过期时间和真实当前场景。
 - 多插件累计调整会再次裁剪；不能绕过必要性阈值、群聊速度、存在感惩罚或小时上限。
 - Signal 只影响“是否值得进入 Planner”的建议，Planner 仍可 `silent`/`wait`。
-- `PLANNER_ENABLED=false` 时不能依赖 Signal 驱动业务逻辑。
+- Signal 只能影响 Planner 决策，不能绕过 Host 权限或直接驱动业务逻辑。
 
 不要把 Signal 当事件总线或状态存储。需要连续状态时使用私有 KV；需要独立叙事历史时使用插件 AI 会话。
-

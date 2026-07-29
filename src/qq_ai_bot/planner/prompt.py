@@ -1,10 +1,7 @@
-"""Compact decision-only Planner instruction and compatibility message builder."""
+"""Compact decision-only Planner instruction and payload projection."""
 
 from __future__ import annotations
 
-import json
-
-from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.planner.models import PlannerInput
 
 PLANNER_SYSTEM_PROMPT = """你只负责生成本轮计划，不生成给用户的回答。
@@ -33,26 +30,4 @@ def planner_payload(planner_input: PlannerInput) -> dict[str, object]:
         exclude_none=True,
         exclude_defaults=True,
         exclude_computed_fields=True,
-    )
-
-
-def build_planner_messages(
-    planner_input: PlannerInput,
-    *,
-    preferred_messages: int = 3,
-    hard_max_messages: int = 10,
-) -> tuple[ChatMessage, ...]:
-    """Compatibility helper using the same compact input as StructuredTaskRunner."""
-
-    payload = planner_payload(planner_input)
-    payload["delivery_preferences"] = {
-        "preferred_messages": preferred_messages,
-        "maximum_messages": hard_max_messages,
-    }
-    return (
-        ChatMessage(role="system", content=PLANNER_SYSTEM_PROMPT),
-        ChatMessage(
-            role="user",
-            content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-        ),
     )

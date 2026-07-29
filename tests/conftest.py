@@ -28,6 +28,10 @@ from qq_ai_bot.persistence.repositories import (
     UserProfileRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.planner.context import PlannerContextBuilder
+from qq_ai_bot.planner.fake import FakePlannerProvider
+from qq_ai_bot.planner.observability import PlannerObservability
+from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
@@ -84,7 +88,6 @@ def make_settings(database_url: str, **overrides: object) -> Settings:
     values: dict[str, object] = {
         "database_url": database_url,
         "superusers_csv": "9000",
-        "allowed_private_users_csv": "1001,1002,1003,1004,1005,1006,1007,1008,1009,1010",
         "enabled_groups_csv": "2001,2002",
         "ignored_bot_users_csv": "7777",
         "llm_provider": "fake",
@@ -94,9 +97,6 @@ def make_settings(database_url: str, **overrides: object) -> Settings:
         "per_group_requests_per_minute": 50,
         "daily_chat_message_delay_min_seconds": 0,
         "daily_chat_message_delay_max_seconds": 0,
-        # Existing 1.5 behavior remains the compatibility baseline; Planner tests
-        # opt in explicitly with a structured FakePlannerProvider.
-        "planner_enabled": False,
     }
     values.update(overrides)
     return Settings.model_validate(values)
@@ -197,6 +197,14 @@ def build_harness(
         runtime_config=runtime_config,
         time_service=time_service,
     )
+    planner_context = PlannerContextBuilder(
+        ledger=ledger,
+        relationships=relationships,
+    )
+    planner = PlannerService(
+        provider=FakePlannerProvider(),
+        observability=PlannerObservability(),
+    )
     processor = MessageProcessor(
         settings=settings,
         conversations=conversations,
@@ -214,6 +222,8 @@ def build_harness(
         ),
         concurrency=concurrency,
         onebot_connected=lambda: True,
+        planner_context=planner_context,
+        planner_service=planner,
         ledger=ledger,
         people=profiles,
         memories=memories,

@@ -6,6 +6,7 @@ import json
 
 import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.fakes import FakeWebSearchProvider
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
@@ -20,7 +21,6 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.web.base import WebSearchError
-from qq_ai_bot.web.fake import FakeWebSearchProvider
 from qq_ai_bot.web.models import WebSearchResponse, WebSearchSource
 
 

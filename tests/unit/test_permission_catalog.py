@@ -120,13 +120,13 @@ def test_superuser_report_has_exact_registry_counts_and_complete_lists() -> None
     ).report_for_message(inbound("9000"))
 
     assert report.permission_level is PermissionLevel.SUPERUSER
-    assert report.mutable_config_count == 138
+    assert report.mutable_config_count == 131
     assert report.protected_config_count == 12
     assert report.business_action_count == 44
     assert report.mutating_action_count == 33
     assert report.self_service_operation_count == 29
     assert report.onebot_gateway_count == 1
-    assert len(report.capabilities) == 224
+    assert len(report.capabilities) == 217
 
     config_ids = {
         descriptor.id
@@ -154,8 +154,8 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
 
     assert first == second
     assert first["counts"] == {
-        "total": 224,
-        "mutable_configurations": 138,
+        "total": 217,
+        "mutable_configurations": 131,
         "protected_configurations": 12,
         "business_actions": 44,
         "mutating_business_actions": 33,
@@ -208,22 +208,24 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
 def test_focused_model_view_finds_registry_alias_without_full_catalog() -> None:
     report = PermissionCatalogService(settings=settings()).report_for_message(
         inbound("9000"),
-        query="每小时插话上限",
+        query="Planner 批次消息数",
     )
     payload = report.to_model_dict("focused")
 
     assert [descriptor.id for descriptor in report.capabilities] == [
-        "config:autonomous.max_per_hour"
+        "config:planner.max_pending_messages"
     ]
-    assert [item["id"] for item in payload["capabilities"]] == ["config:autonomous.max_per_hour"]
+    assert [item["id"] for item in payload["capabilities"]] == [
+        "config:planner.max_pending_messages"
+    ]
     assert len(json.dumps(payload, ensure_ascii=False)) < 1200
 
     english_report = PermissionCatalogService(settings=settings()).report_for_message(
         inbound("9000"),
-        query="max per hour",
+        query="max pending messages",
     )
     assert [descriptor.id for descriptor in english_report.capabilities] == [
-        "config:autonomous.max_per_hour"
+        "config:planner.max_pending_messages"
     ]
 
     with pytest.raises(ValueError, match="64"):
@@ -249,7 +251,7 @@ def test_deterministic_text_contains_every_capability_and_onebot_scope() -> None
             capability_id = capability_id.removeprefix("onebot:")
         assert capability_id in rendered
 
-    assert "可修改运行时配置参数：138 项" in rendered
+    assert "可修改运行时配置参数：131 项" in rendered
     assert "管理员业务接口：44 项，其中修改型 33 项" in rendered
     assert "NapCat/OneBot 通用全接口网关：1 项" in rendered
     assert "全部公开 action" in rendered
@@ -317,7 +319,7 @@ def test_injected_registry_entries_appear_without_copying_registry_tables() -> N
     assert "action:diagnostics.snapshot:any_group" in {
         descriptor.id for descriptor in report.capabilities
     }
-    assert report.mutable_config_count == 139
+    assert report.mutable_config_count == 132
     assert report.business_action_count == 45
 
 

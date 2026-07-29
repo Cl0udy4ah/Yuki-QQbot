@@ -99,7 +99,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     assert "可修改运行时配置参数：0 项" in user_text
     assert "本人确定性自助接口：29 项，其中修改型 14 项" in user_text
     assert "memory.add" in user_text
-    assert "autonomous.max_per_hour" not in user_text
+    assert "planner.max_pending_messages" not in user_text
 
     admin_sender = MemorySender()
     await harness.processor.handle(
@@ -112,9 +112,9 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：138 项" in admin_text
+    assert "可修改运行时配置参数：131 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
-    assert "autonomous.max_per_hour" in admin_text
+    assert "planner.max_pending_messages" in admin_text
     assert "relationship.set_affection" in admin_text
     assert "受保护配置（12 项，不可修改）" in admin_text
     assert "NapCat/OneBot 通用全接口网关：1 项" in admin_text
@@ -161,7 +161,7 @@ async def test_superuser_on_off_and_permission(database: Database) -> None:
 async def test_superuser_can_persistently_toggle_private_users(database: Database) -> None:
     harness = build_harness(
         database,
-        make_settings(database.url, allowed_private_users_csv="10010001"),
+        make_settings(database.url),
     )
 
     enabled_sender = MemorySender()

@@ -19,7 +19,7 @@ from qq_ai_bot.domain.messages import (
     SenderIdentity,
 )
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.repositories import MemoryJobRepository, MemoryRepository
+from qq_ai_bot.persistence.repositories import MemoryJobRepository
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.vision.base import VisionError
 from qq_ai_bot.vision.fake import FakeVisionProvider
@@ -249,28 +249,23 @@ async def test_group_image_only_analyzed_when_existing_policy_triggers(database)
 
 @pytest.mark.asyncio
 async def test_autonomous_group_batch_never_analyzes_observed_images(database) -> None:
-    def reply(request: ChatRequest) -> str:
-        first = request.messages[0].content or ""
-        if first.startswith("判断一个像真实群友"):
-            return '{"confidence":0.99,"reason":"群友正在提问"}'
+    def reply(_request: ChatRequest) -> str:
         return "自主文字回复"
 
     llm = FakeLLMProvider(reply)
     vision = FakeVisionProvider()
     settings = _vision_settings(
         "sqlite+aiosqlite:///:memory:",
-        autonomous_silence_seconds=0.01,
-        autonomous_cooldown_seconds=1,
+        planner_group_debounce_seconds=0.01,
         daily_chat_message_delay_min_seconds=0,
         daily_chat_message_delay_max_seconds=0,
     )
     harness = build_harness(database, settings, llm, vision_provider=vision)
     autonomous = AutonomousGroupService(
-        settings=settings,
-        provider=llm,
-        concurrency=harness.concurrency,
-        memories=MemoryRepository(database),
         chat=harness.processor._chat,
+        planner_context=harness.processor._planner_context,
+        planner=harness.processor._planner,
+        runtime_config=harness.processor._runtime_config,
     )
     harness.processor._autonomous = autonomous
     sender = MemorySender()

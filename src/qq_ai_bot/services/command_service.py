@@ -223,7 +223,11 @@ class CommandService:
                 if self._planner_repository is not None
                 else None
             )
-            planner_model = self._settings.planner_model or self._settings.llm_model or "未配置"
+            planner_model = (
+                latest_planner.planner_model
+                if latest_planner is not None and latest_planner.planner_model
+                else "尚无规划记录"
+            )
             planner_latency = (
                 planner_metrics.last_latency_seconds
                 if planner_metrics and planner_metrics.last_latency_seconds is not None
@@ -252,7 +256,7 @@ class CommandService:
                 f"{emoji_counts.get('jobs_pending', 0)}\n"
                 f"当前切点后的事件数：{count}\n"
                 f"请求处理中：{'是' if self._concurrency.is_processing(identity.key) else '否'}\n"
-                f"Planner：{'已启用' if self._settings.planner_enabled else '未启用'}\n"
+                "Planner：固定启用\n"
                 f"Planner 模型：{planner_model}\n"
                 f"活动 Planner：{planner_metrics.active_requests if planner_metrics else 0}\n"
                 f"最近 Planner 延迟："

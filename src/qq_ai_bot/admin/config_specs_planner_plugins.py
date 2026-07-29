@@ -11,18 +11,6 @@ def planner_plugin_config_specs() -> tuple[ConfigSpec, ...]:
 
     return (
         _spec(
-            "planner.enabled",
-            "Planner 开关",
-            "是否由 Planner 主导正常聊天轮次。",
-            aliases=("planner开关",),
-            value_type="boolean",
-            scopes=_GGU,
-            env_alias="PLANNER_ENABLED",
-            getter=_field("planner_enabled"),
-            settings_fields=("planner_enabled",),
-            category="planner",
-        ),
-        _spec(
             "planner.direct_enabled",
             "直接会话 Planner",
             "私聊和明确触发消息是否进入 Planner。",
@@ -149,6 +137,7 @@ def planner_plugin_config_specs() -> tuple[ConfigSpec, ...]:
             "planner.max_pending_messages",
             "Planner 批次消息数",
             "一次规划最多观察的近期人类消息数量。",
+            aliases=("max pending messages", "Planner 批次上限", "批次消息数"),
             value_type="integer",
             minimum=1,
             maximum=100,
@@ -282,18 +271,6 @@ def planner_plugin_config_specs() -> tuple[ConfigSpec, ...]:
             getter=_field("plugin_max_total_prompt_characters"),
             settings_fields=("plugin_max_total_prompt_characters",),
             category="plugins",
-        ),
-        _spec(
-            "planner.model",
-            "Planner 模型",
-            "重启后用于规划的模型；留空时继承主模型。",
-            value_type="string",
-            scopes=_G,
-            mode=ConfigApplyMode.RESTART_REQUIRED,
-            env_alias="PLANNER_MODEL",
-            getter=_field("planner_model"),
-            settings_fields=("planner_model",),
-            category="planner",
         ),
         _spec(
             "plugins.enabled",

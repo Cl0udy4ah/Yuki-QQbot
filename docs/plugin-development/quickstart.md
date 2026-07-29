@@ -19,7 +19,7 @@ version = "0.1.0"
 description = "最小 Hello 插件"
 entrypoint = "hello_plugin:HelloPlugin"
 plugin_api = "1.0"
-yuki_requires = ">=1.6.0,<2.0"
+yuki_requires = ">=1.6.0,<3.0"
 permissions = ["command.register"]
 
 [limits]
@@ -122,4 +122,3 @@ docker compose logs -f bot
 ## 下一步
 
 先阅读 [权限](permissions.md) 和 [安全模型](security.md)，然后从 [Echo 示例](../../examples/plugins/com.example.echo/README.md) 复制完整结构。
-

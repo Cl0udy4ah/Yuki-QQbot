@@ -35,7 +35,6 @@ def settings() -> Settings:
     return Settings.model_validate(
         {
             "superusers_csv": "9000",
-            "allowed_private_users_csv": "1001",
             "enabled_groups_csv": "2001",
             "ai_prefix": "!ai",
         }

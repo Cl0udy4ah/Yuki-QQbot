@@ -14,7 +14,7 @@ Manifest 同时使用：
 
 ```toml
 plugin_api = "1.0"
-yuki_requires = ">=1.6.0,<2.0"
+yuki_requires = ">=1.6.0,<3.0"
 ```
 
 ## Feature 探测
@@ -38,4 +38,3 @@ ctx.features.require("plugin.agent_session.v1")
 ## Schema 版本
 
 工具、自动化 Action 和 Event 各自声明 Schema 版本。改变必填字段、类型或语义属于不兼容变更，应新建组件名或提升 Schema 并迁移；旧 Automation 不会自动套用新 Schema。
-

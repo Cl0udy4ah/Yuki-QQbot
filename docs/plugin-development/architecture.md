@@ -26,7 +26,7 @@ plugin.toml
 
 Yuki 1.6.0 的主聊天先形成受后端约束的 `TurnPlan`，再调用原有单一 Agent。Planner 只能决定回复、等待或沉默，并缩小工具与发送计划；它不能授予权限、执行工具或产生最终回复。
 
-插件可以贡献有界 `PlannerSignal`，但信号总和会被 Host 裁剪。确定性 `/ai` 命令仍绕过 Planner。设置 `PLANNER_ENABLED=false` 可回到 1.5.2 兼容流程。
+插件可以贡献有界 `PlannerSignal`，但信号总和会被 Host 裁剪。确定性 `/ai` 命令仍绕过 Planner；普通聊天统一由 Planner 决策，不再保留旧聊天流程。
 
 ## 独立插件 AI 会话
 

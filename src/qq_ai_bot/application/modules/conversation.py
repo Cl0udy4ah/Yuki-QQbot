@@ -104,7 +104,6 @@ class ConversationModule:
         planner_observability = PlannerObservability()
         planner_provider = LLMPlannerProvider(
             model_executor=models,
-            model=settings.planner_model,
             temperature=settings.planner_temperature,
             max_output_tokens=settings.planner_max_output_tokens,
             timeout_seconds=settings.planner_timeout_seconds,

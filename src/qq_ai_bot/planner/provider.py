@@ -20,6 +20,7 @@ from qq_ai_bot.planner.models import (
     PlannerDecision,
     PlannerInput,
     PlannerReasonCode,
+    ToolGroup,
     ToolMode,
     ToolSelection,
     TurnPlan,
@@ -138,6 +139,14 @@ def deterministic_fallback_plan(planner_input: PlannerInput) -> TurnPlan:
         or planner_input.reply_target_is_bot
     )
     should_reply = explicitly_triggered or planner_input.necessity.should_enter_planner
+    available_groups = tuple(
+        group for group in ToolGroup if group.value in planner_input.available_tool_categories
+    )
+    natural_direct_reply = should_reply and (
+        planner_input.scope_type is ScopeType.PRIVATE
+        or planner_input.mentions_bot
+        or planner_input.reply_target_is_bot
+    )
     return TurnPlan(
         decision=PlannerDecision.REPLY if should_reply else PlannerDecision.SILENT,
         intent=(
@@ -146,10 +155,11 @@ def deterministic_fallback_plan(planner_input: PlannerInput) -> TurnPlan:
             else "Planner 失败且本轮未通过发言门槛，保持沉默"
         ),
         target_user_ids=(planner_input.current_sender_user_id,) if should_reply else (),
-        delivery_mode=DeliveryMode.SINGLE,
-        desired_messages=1,
+        delivery_mode=(DeliveryMode.NATURAL_MULTI if natural_direct_reply else DeliveryMode.SINGLE),
+        desired_messages=3 if natural_direct_reply else 1,
         tool_selection=ToolSelection(
             mode=(ToolMode.READ_ONLY if planner_input.visual_input_present else ToolMode.INHERIT),
+            groups=available_groups,
         ),
         wait_seconds=0.0,
         confidence=0.0,
@@ -191,7 +201,6 @@ class LLMPlannerProvider:
             provider=provider,
             model=model or "fake",
         )
-        self._model = model
         self._temperature = temperature
         self._max_output_tokens = max_output_tokens
         self._timeout_seconds = timeout_seconds
@@ -201,6 +210,12 @@ class LLMPlannerProvider:
         self._observability = observability
         self._prompt_registry = prompt_registry
         self._structured = StructuredTaskRunner(self._models)
+
+    @property
+    def model_name(self) -> str:
+        """Return the model selected by the explicit Planner task route."""
+
+        return self._models.model_name(ModelTask.PLANNER)
 
     async def plan(
         self,

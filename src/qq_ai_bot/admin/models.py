@@ -129,15 +129,6 @@ class AdminActor:
 
 
 @dataclass(frozen=True, slots=True)
-class AutonomousRuntimeConfig:
-    enabled: bool
-    silence_seconds: float
-    confidence_threshold: float
-    cooldown_seconds: int
-    max_per_hour: int
-
-
-@dataclass(frozen=True, slots=True)
 class ContextRuntimeConfig:
     local_event_limit: int
     related_people_limit: int
@@ -159,8 +150,6 @@ class ReplyRuntimeConfig:
 class PlannerRuntimeConfig:
     """One effective Planner policy snapshot for a real turn."""
 
-    enabled: bool
-    model: str
     direct_enabled: bool
     group_enabled: bool
     temperature: float
@@ -295,7 +284,6 @@ class SpeechRuntimeConfig:
 class RuntimeConfigSnapshot:
     """One internally consistent runtime view for an incoming message."""
 
-    autonomous: AutonomousRuntimeConfig
     planner: PlannerRuntimeConfig
     plugins: PluginRuntimeConfig
     context: ContextRuntimeConfig

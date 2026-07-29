@@ -94,19 +94,22 @@ class PlannerService:
             planner_input.necessity,
             conversation_key=planner_input.conversation_key,
         )
-        enabled_for_turn = runtime.planner.enabled and (
-            (planner_input.origin is TurnOrigin.AUTONOMOUS_GROUP and runtime.planner.group_enabled)
-            or (
-                planner_input.origin is not TurnOrigin.AUTONOMOUS_GROUP
-                and runtime.planner.direct_enabled
-            )
+        enabled_for_turn = (
+            runtime.planner.group_enabled
+            if planner_input.origin is TurnOrigin.AUTONOMOUS_GROUP
+            else runtime.planner.direct_enabled
         )
         should_call = enabled_for_turn and planner_input.necessity.should_enter_planner
+        planner_model = (
+            str(getattr(self._provider, "model_name", "") or runtime.llm.model)
+            if should_call
+            else ""
+        )
         run_id = (
             await self._begin_run(
                 planner_input,
                 planner_used=should_call,
-                planner_model=((runtime.planner.model or runtime.llm.model) if should_call else ""),
+                planner_model=planner_model,
             )
             if runtime.planner.record_runs
             else None
@@ -130,7 +133,7 @@ class PlannerService:
         planned = PlannedTurn(
             plan=plan,
             necessity=planner_input.necessity,
-            planner_model=(runtime.planner.model or runtime.llm.model) if should_call else "",
+            planner_model=planner_model,
             planner_latency_seconds=latency,
             planner_used=should_call,
             fallback_used=fallback_used,

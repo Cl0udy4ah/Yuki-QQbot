@@ -39,5 +39,4 @@ cp -R data data.backup-1.6.0
 docker compose up -d --build
 ```
 
-设置 `PLANNER_ENABLED=false` 和 `PLUGIN_SYSTEM_ENABLED=false` 可先以 1.5.2 兼容路径启动并检查数据库，再逐项启用。
-
+首次升级可设置 `PLUGIN_SYSTEM_ENABLED=false`，先检查数据库和普通聊天，再逐项启用插件。Planner 是普通聊天的固定调度边界，不再提供旧流程回退开关。

@@ -22,7 +22,6 @@ class HealthPayload(TypedDict):
     automation_enabled: bool
     automation_worker_running: bool
     active_automation_count: int
-    planner_enabled: bool
     planner_configured: bool
     planner_active_requests: int
     plugin_system_enabled: bool
@@ -62,7 +61,6 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         automation_enabled=container.settings.automation_enabled,
         automation_worker_running=container.automation_worker.running,
         active_automation_count=await container.automation_repository.active_count(),
-        planner_enabled=container.settings.planner_enabled,
         planner_configured=container.settings.planner_configured,
         planner_active_requests=planner_metrics.active_requests,
         plugin_system_enabled=container.settings.plugin_system_enabled,

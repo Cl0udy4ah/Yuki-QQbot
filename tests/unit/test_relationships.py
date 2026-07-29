@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import func, select
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.fakes import FakeWebSearchProvider
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
@@ -39,7 +40,6 @@ from qq_ai_bot.services.relationship_evaluator import (
     LLMRelationshipEvaluator,
 )
 from qq_ai_bot.services.relationship_worker import RelationshipWorker
-from qq_ai_bot.web.fake import FakeWebSearchProvider
 
 
 def inbound(

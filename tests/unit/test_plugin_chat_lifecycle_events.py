@@ -17,7 +17,7 @@ from yuki_plugin_sdk.events import EventEnvelope, EventName
 async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
     database: Database,
 ) -> None:
-    settings = make_settings(database.url, planner_enabled=True)
+    settings = make_settings(database.url)
     harness = build_harness(database, settings)
     bus = PluginEventBus(default_timeout_seconds=0.2)
     events: list[EventEnvelope] = []

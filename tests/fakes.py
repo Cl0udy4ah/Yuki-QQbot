@@ -1,4 +1,4 @@
-"""Deterministic web provider used by tests and offline development."""
+"""Test-only provider doubles shared across suites."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchS
 
 
 class FakeWebSearchProvider:
-    """Return configured responses without performing network access."""
+    """Return configured web responses without performing network access."""
 
     def __init__(
         self,

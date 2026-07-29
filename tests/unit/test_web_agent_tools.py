@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select, update
 from tests.conftest import make_settings
+from tests.fakes import FakeWebSearchProvider
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
@@ -22,7 +23,6 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
 from qq_ai_bot.web.base import WebSearchError
-from qq_ai_bot.web.fake import FakeWebSearchProvider
 from qq_ai_bot.web.models import WebSearchResponse, WebSearchSource
 
 

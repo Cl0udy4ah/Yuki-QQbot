@@ -92,8 +92,10 @@ async def test_ocr_admin_instruction_cannot_register_any_write_or_onebot_tool(da
     )
 
     assert result.reason == "chat"
-    effective = await harness.processor._runtime_config.get_effective("autonomous.max_per_hour")
-    assert effective.value == 30
+    effective = await harness.processor._runtime_config.get_effective(
+        "planner.max_pending_messages"
+    )
+    assert effective.value == 8
 
 
 @pytest.mark.asyncio
@@ -113,7 +115,7 @@ async def test_deterministic_write_command_with_image_is_rejected_before_executi
         _image_message(
             "admin-image-command",
             user_id="9000",
-            text="/ai config set autonomous.max_per_hour 10",
+            text="/ai config set planner.max_pending_messages 10",
         ),
         sender,
     )
@@ -121,8 +123,10 @@ async def test_deterministic_write_command_with_image_is_rejected_before_executi
     assert result.reason == "image_write_isolated"
     assert "纯文本" in sender.messages[-1].text
     assert vision.requests == []
-    effective = await harness.processor._runtime_config.get_effective("autonomous.max_per_hour")
-    assert effective.value == 30
+    effective = await harness.processor._runtime_config.get_effective(
+        "planner.max_pending_messages"
+    )
+    assert effective.value == 8
 
 
 @pytest.mark.asyncio

@@ -50,7 +50,6 @@ class Settings(BaseSettings):
 
     onebot_access_token: str = ""
     superusers_csv: str = Field(default="", validation_alias="SUPERUSERS")
-    allowed_private_users_csv: str = Field(default="", validation_alias="ALLOWED_PRIVATE_USERS")
     enabled_groups_csv: str = Field(default="", validation_alias="ENABLED_GROUPS")
     ignored_bot_users_csv: str = Field(default="", validation_alias="IGNORED_BOT_USERS")
     ai_prefix: str = "!ai"
@@ -96,11 +95,6 @@ class Settings(BaseSettings):
     group_memory_max_entries: int = 100
 
     observe_enabled_groups: bool = True
-    autonomous_group_chat_enabled: bool = True
-    autonomous_silence_seconds: float = 3.0
-    autonomous_confidence_threshold: float = 0.2
-    autonomous_cooldown_seconds: int = 20
-    autonomous_max_per_hour: int = 30
     recent_history_tool_limit: int = 20
     local_context_event_limit: int = 30
     related_people_limit: int = 5
@@ -114,11 +108,8 @@ class Settings(BaseSettings):
     agent_max_model_requests: int = 12
     agent_tool_result_max_characters: int = 32000
 
-    # Planner-first conversation orchestration.  The legacy autonomous confidence,
-    # cooldown and hourly limit settings remain readable for 1.x compatibility but
-    # are not used by the 1.6 Planner pipeline.
-    planner_enabled: bool = True
-    planner_model: str = ""
+    # Planner-first conversation orchestration. Planner is a required runtime
+    # boundary; direct and group switches only control which turns invoke it.
     planner_direct_enabled: bool = True
     planner_group_enabled: bool = True
     planner_group_debounce_seconds: float = 3.0
@@ -457,10 +448,6 @@ class Settings(BaseSettings):
         return _csv_set(self.superusers_csv)
 
     @cached_property
-    def allowed_private_users(self) -> frozenset[str]:
-        return _csv_set(self.allowed_private_users_csv) | self.superusers
-
-    @cached_property
     def enabled_groups(self) -> frozenset[str]:
         return _csv_set(self.enabled_groups_csv)
 
@@ -504,6 +491,6 @@ class Settings(BaseSettings):
 
     @property
     def planner_configured(self) -> bool:
-        """Whether Planner may use the already configured main LLM provider."""
+        """Whether the mandatory Planner has a configured model provider."""
 
-        return bool(self.planner_enabled and self.llm_configured)
+        return self.llm_configured

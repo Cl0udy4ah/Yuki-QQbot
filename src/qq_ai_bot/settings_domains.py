@@ -24,7 +24,6 @@ class AppSettings(DomainSettings):
 class OneBotSettings(DomainSettings):
     onebot_access_token: str
     superusers_csv: str
-    allowed_private_users_csv: str
     enabled_groups_csv: str
     ignored_bot_users_csv: str
     ai_prefix: str
@@ -64,11 +63,6 @@ class ConversationSettings(DomainSettings):
     daily_chat_message_delay_min_seconds: float = Field(ge=0)
     daily_chat_message_delay_max_seconds: float = Field(ge=0)
     observe_enabled_groups: bool
-    autonomous_group_chat_enabled: bool
-    autonomous_silence_seconds: float = Field(ge=0)
-    autonomous_confidence_threshold: float = Field(ge=0, le=1)
-    autonomous_cooldown_seconds: int = Field(gt=0)
-    autonomous_max_per_hour: int = Field(gt=0)
     recent_history_tool_limit: int = Field(gt=0)
     local_context_event_limit: int = Field(gt=0)
     related_people_limit: int = Field(gt=0)
@@ -86,8 +80,6 @@ class ConversationSettings(DomainSettings):
 
 
 class PlannerSettings(DomainSettings):
-    planner_enabled: bool
-    planner_model: str
     planner_direct_enabled: bool
     planner_group_enabled: bool
     planner_group_debounce_seconds: float = Field(ge=0)

@@ -332,10 +332,6 @@ class ApplicationContainer:
         self.emoji_selector.set_plugin_signals(self.plugin_emoji_signals)
         self.chat.set_plugin_tools(self.plugin_tools)
         self.autonomous_groups = AutonomousGroupService(
-            settings=settings,
-            model_executor=self.models,
-            concurrency=self.concurrency,
-            memories=self.memories,
             chat=self.chat,
             runtime_config=self.runtime_config,
             planner_context=self.planner_context,
