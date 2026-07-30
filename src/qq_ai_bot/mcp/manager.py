@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -22,6 +24,11 @@ from qq_ai_bot.mcp.models import (
 )
 from qq_ai_bot.mcp.repository import MCPRepository
 from qq_ai_bot.mcp.result_normalizer import normalize_mcp_result
+
+logger = logging.getLogger(__name__)
+MCPToolsChangedListener = Callable[
+    [str, tuple[MCPToolMetadata, ...]], Awaitable[None]
+]
 
 
 class MCPManager:
@@ -63,6 +70,7 @@ class MCPManager:
         self._last_error_category: str | None = None
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._reconnect_tasks: dict[str, asyncio.Task[None]] = {}
+        self._tools_changed_listeners: list[MCPToolsChangedListener] = []
 
     @property
     def enabled(self) -> bool:
@@ -107,6 +115,22 @@ class MCPManager:
 
     def server_config(self, server_id: str) -> MCPServerConfig | None:
         return self._config.servers.get(server_id)
+
+    def server_enabled(self, server_id: str) -> bool:
+        config = self._config.servers.get(server_id)
+        return bool(
+            self._enabled
+            and config is not None
+            and self._enabled_servers.get(server_id, not config.disabled)
+        )
+
+    def add_tools_changed_listener(self, listener: MCPToolsChangedListener) -> None:
+        if listener not in self._tools_changed_listeners:
+            self._tools_changed_listeners.append(listener)
+
+    def remove_tools_changed_listener(self, listener: MCPToolsChangedListener) -> None:
+        if listener in self._tools_changed_listeners:
+            self._tools_changed_listeners.remove(listener)
 
     async def start(self) -> None:
         self._closing = False
@@ -163,6 +187,8 @@ class MCPManager:
             self._enabled_servers.pop(server_id, None)
         self._config = loaded
         await self.start()
+        for server_id in removed:
+            await self._notify_tools_changed(server_id, ())
 
     async def refresh(self, server_id: str, *, force: bool = True) -> tuple[MCPToolMetadata, ...]:
         config = self._require_enabled(server_id)
@@ -196,6 +222,7 @@ class MCPManager:
                     connected=True,
                     refreshed=True,
                 )
+                await self._notify_tools_changed(server_id, tools)
                 return tools
             except BaseException as exc:
                 await self._save_error(server_id, config, exc)
@@ -333,6 +360,7 @@ class MCPManager:
         if not enabled:
             self._cancel_reconnect(server_id)
             await self.disconnect(server_id)
+            await self._notify_tools_changed(server_id, ())
 
     async def reconnect(self, server_id: str) -> tuple[MCPToolMetadata, ...]:
         self._cancel_reconnect(server_id)
@@ -530,3 +558,18 @@ class MCPManager:
 
     def _lock(self, server_id: str) -> asyncio.Lock:
         return self._locks.setdefault(server_id, asyncio.Lock())
+
+    async def _notify_tools_changed(
+        self,
+        server_id: str,
+        tools: tuple[MCPToolMetadata, ...],
+    ) -> None:
+        for listener in tuple(self._tools_changed_listeners):
+            try:
+                await listener(server_id, tools)
+            except Exception as exc:
+                logger.warning(
+                    "mcp_tools_changed_listener_failed server=%s category=%s",
+                    server_id,
+                    type(exc).__name__,
+                )

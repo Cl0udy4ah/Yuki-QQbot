@@ -95,5 +95,10 @@ def redacted_server_config(server: MCPServerConfig) -> dict[str, object]:
         "include_tools": list(server.include_tools),
         "exclude_tools": list(server.exclude_tools),
         "tool_annotation_overrides": sorted(server.yuki.tool_annotations),
+        "automation": {
+            "enabled": server.yuki.automation.enabled,
+            "permission": server.yuki.automation.permission,
+            "include_tools": list(server.yuki.automation.include_tools),
+        },
         "reconnect_delay_seconds": server.reconnect_delay_seconds,
     }

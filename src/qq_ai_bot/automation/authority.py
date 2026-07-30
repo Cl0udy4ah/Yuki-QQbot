@@ -26,7 +26,7 @@ class DelegatedAuthority(StrictModel):
     created_at: str
     permission_level: PermissionLevel
     granted_capabilities: tuple[str, ...]
-    capability_schema_versions: dict[str, int]
+    capability_schema_versions: dict[str, int | str]
     capability_provenance: dict[str, dict[str, str]] = Field(default_factory=dict)
     authority_version: int = 1
     origin: TurnOrigin = TurnOrigin.SCHEDULED_AUTOMATION

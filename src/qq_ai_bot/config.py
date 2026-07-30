@@ -285,7 +285,7 @@ class Settings(BaseSettings):
     automation_max_active_per_superuser: int = 50
     automation_max_active_per_user: int = 10
     automation_max_steps: int = 16
-    automation_max_llm_calls_per_run: int = 5
+    automation_max_llm_calls_per_run: int = 10
     automation_max_tool_calls_per_run: int = 16
     automation_max_messages_per_run: int = 10
     automation_max_runtime_seconds: int = 600

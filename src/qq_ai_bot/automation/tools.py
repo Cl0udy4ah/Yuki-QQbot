@@ -6,7 +6,8 @@ import json
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from qq_ai_bot.automation.models import AutomationRecord, AutomationScript
+from qq_ai_bot.automation.compiler import ExecutionPlan, TaskSpec
+from qq_ai_bot.automation.models import AutomationRecord
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -39,22 +40,24 @@ class AutomationToolService:
             "automation_cancel",
             "automation_run_now",
             "automation_history",
+            "automation_diagnose",
             "time_get_current",
             "time_get_timezone",
             "time_set_timezone",
         }
     )
     _ALLOWED_ARGUMENTS: ClassVar[dict[str, frozenset[str]]] = {
-        "automation_create": frozenset({"script", "max_runs"}),
+        "automation_create": frozenset({"task", "max_runs"}),
         "automation_list": frozenset(),
         "automation_list_history": frozenset({"limit"}),
         "automation_get": frozenset({"automation_id"}),
-        "automation_update": frozenset({"automation_id", "script"}),
+        "automation_update": frozenset({"automation_id", "task"}),
         "automation_pause": frozenset({"automation_id"}),
         "automation_resume": frozenset({"automation_id"}),
         "automation_cancel": frozenset({"automation_id"}),
         "automation_run_now": frozenset({"automation_id"}),
         "automation_history": frozenset({"automation_id"}),
+        "automation_diagnose": frozenset(),
         "time_get_current": frozenset(),
         "time_get_timezone": frozenset(),
         "time_set_timezone": frozenset({"timezone"}),
@@ -64,58 +67,52 @@ class AutomationToolService:
         self._service = service
 
     def definitions(self) -> tuple[ChatTool, ...]:
-        script_schema = AutomationScript.model_json_schema()
-        script_schema["description"] = (
-            "持久化任务 DSL。普通定时提醒不要调用通用 OneBot action：私聊使用 "
-            "onebot.send_private_message，群聊使用 onebot.send_group_message。"
+        task_schema = TaskSpec.model_json_schema()
+        catalog = self._service.task_capability_catalog()
+        capability_ids = [item["id"] for item in catalog]
+        capabilities_schema = task_schema["properties"]["capabilities"]
+        if isinstance(capabilities_schema, dict):
+            capabilities_schema["items"] = {
+                "type": "string",
+                "enum": capability_ids,
+            }
+            capabilities_schema["description"] = (
+                "仅填写本任务运行时确实需要的 capability ID；简单提醒留空。"
+            )
+        task_schema["description"] = (
+            "高层任务意图。后端会自动选择执行策略、计算预算、解析能力 ID，并编译为严格 DSL。"
         )
-        script_schema["examples"] = [
+        task_schema["examples"] = [
             {
                 "version": 1,
                 "name": "五分钟后喝水提醒",
-                "timezone": "Asia/Shanghai",
-                "schedule": {"type": "after", "seconds": 300},
+                "goal": "提醒我喝水",
+                "trigger": {"type": "after", "seconds": 300},
+                "strategy": "static",
+                "capabilities": [],
+                "constraints": [],
                 "context": {"scene": "none"},
-                "steps": [
-                    {
-                        "id": "send_reminder",
-                        "call": "onebot.send_private_message",
-                        "arguments": {
-                            "user_id": "$creator_user_id",
-                            "text": "该喝水啦～",
-                        },
-                    }
-                ],
-                "limits": {
-                    "max_steps": 1,
-                    "max_llm_calls": 0,
-                    "max_tool_calls": 1,
-                    "max_messages": 1,
-                    "timeout_seconds": 30,
-                },
+                "delivery": {"target": "auto", "text": "该喝水啦～"},
             }
         ]
+        catalog_hint = "；".join(
+            f"{item['id']}={item['description']}" for item in catalog
+        )
         id_schema = {"automation_id": {"type": "integer", "minimum": 1}}
         definitions = (
             ChatTool(
                 name="automation_create",
                 description=(
-                    "创建真实持久化自动化任务。普通用户也可调用，但后端只授予其本人私聊、"
-                    "当前群、生成和只读能力；超级管理员可额外委托管理员与通用 OneBot 能力。"
-                    "一次性延迟提醒使用 schedule={type:'after',seconds:N}。私聊提醒步骤必须使用 "
-                    "call='onebot.send_private_message'、user_id='$creator_user_id'；"
-                    "当前群提醒使用 "
-                    "call='onebot.send_group_message'、group_id='$current_group_id'。这两个是自动化"
-                    "运行时已有的主动消息网关，不需要也不应改用聊天工具 call_onebot_api 或"
-                    "自动化 capability onebot.call_api。时间含糊时先追问，只有工具返回 ok 才能"
-                    "声称创建成功；失败时根据 detail 修正脚本后可重试。每天按条件清理人物"
-                    "记忆可用 interval=86400 和单个 admin.execute_action 步骤：action="
-                    "'memory.prune'、target='self'、max_importance、older_than_days；这是原子批量"
-                    "操作，不要先 list 再逐条 delete。"
+                    "根据高层 TaskSpec 创建真实持久化任务；不要手写 AutomationScript、步骤、"
+                    "底层 capability 名或预算。简单提醒使用 static 且 capabilities 留空；需要"
+                    "模型生成内容用 generated；需要运行时查询或操作外部系统用 agentic，并只"
+                    "选择必要 capability ID。创建任务时不得提前执行这些外部工具。只有返回"
+                    "confirmation='persisted' 和 automation_id 后才能告诉用户已经创建成功。"
+                    f"可选 capability ID：{catalog_hint}"
                 ),
                 parameters=_object_schema(
-                    {"script": script_schema, "max_runs": {"type": "integer", "minimum": 1}},
-                    required=("script",),
+                    {"task": task_schema, "max_runs": {"type": "integer", "minimum": 1}},
+                    required=("task",),
                 ),
             ),
             ChatTool(
@@ -143,11 +140,20 @@ class AutomationToolService:
             ),
             ChatTool(
                 name="automation_update",
-                description="用完整的新 DSL 创建任务新版本；只能修改当前发送者自己的任务。",
-                parameters=_object_schema(
-                    {**id_schema, "script": script_schema},
-                    required=("automation_id", "script"),
+                description=(
+                    "用完整的新 TaskSpec 编译并替换任务版本；只能修改当前发送者自己的任务。"
                 ),
+                parameters=_object_schema(
+                    {**id_schema, "task": task_schema},
+                    required=("automation_id", "task"),
+                ),
+            ),
+            ChatTool(
+                name="automation_diagnose",
+                description=(
+                    "读取当前真实发送者最近的自动化创建结果，用于核实任务是否真的持久化或定位失败。"
+                ),
+                parameters=_object_schema({}),
             ),
             *(
                 ChatTool(
@@ -194,31 +200,44 @@ class AutomationToolService:
             return _result(
                 error="permission_context_mismatch", detail="自动化工具未绑定当前真实消息"
             )
+        inbound = runtime.inbound
         try:
             arguments = json.loads(arguments_json)
             if not isinstance(arguments, dict):
                 raise ValueError("参数必须是 JSON 对象")
         except (json.JSONDecodeError, ValueError) as exc:
+            if name == "automation_create":
+                await self._service.record_creation_failure(
+                    inbound=inbound,
+                    conversation_key=runtime.conversation_key,
+                    error=exc,
+                )
             return _result(error="invalid_arguments", detail=str(exc))
         allowed = self._ALLOWED_ARGUMENTS.get(name)
         if allowed is None:
             return _result(error="unknown_tool", detail=f"未知自动化工具：{name}")
         unexpected = set(arguments) - allowed
         if unexpected:
+            error = ValueError(f"不接受参数：{', '.join(sorted(unexpected))}")
+            if name == "automation_create":
+                await self._service.record_creation_failure(
+                    inbound=inbound,
+                    conversation_key=runtime.conversation_key,
+                    error=error,
+                )
             return _result(
                 error="invalid_arguments",
-                detail=f"不接受参数：{', '.join(sorted(unexpected))}",
+                detail=str(error),
             )
-        inbound = runtime.inbound
         try:
             if name == "automation_create":
-                row = await self._service.create(
-                    arguments.get("script"),
+                row, plan = await self._service.create_task(
+                    arguments.get("task"),
                     inbound=inbound,
                     conversation_key=runtime.conversation_key,
                     max_runs=arguments.get("max_runs"),
                 )
-                return _result(data=_record(row))
+                return _result(data=_record(row, plan=plan, persisted=True))
             if name == "automation_list":
                 automations = await self._service.list_current(inbound.sender.user_id)
                 return _result(
@@ -259,6 +278,14 @@ class AutomationToolService:
                         )
                     }
                 )
+            if name == "automation_diagnose":
+                return _result(
+                    data={
+                        "recent_creation_outcomes": await self._service.diagnose_creation(
+                            inbound.sender.user_id
+                        )
+                    }
+                )
             automation_id = _automation_id(arguments)
             if name == "automation_get":
                 return _result(
@@ -267,13 +294,13 @@ class AutomationToolService:
                     )
                 )
             if name == "automation_update":
-                row = await self._service.update(
+                row, plan = await self._service.update_task(
                     automation_id,
-                    arguments.get("script"),
+                    arguments.get("task"),
                     inbound=inbound,
                     conversation_key=runtime.conversation_key,
                 )
-                return _result(data=_record(row))
+                return _result(data=_record(row, plan=plan, persisted=True))
             if name == "automation_pause":
                 changed = await self._service.pause(
                     automation_id, inbound=inbound, conversation_key=runtime.conversation_key
@@ -314,6 +341,12 @@ class AutomationToolService:
                 return _result(error="unknown_tool", detail=f"未知自动化工具：{name}")
             return _result(data={"automation_id": automation_id, "changed": changed})
         except (PermissionError, ValueError) as exc:
+            if name == "automation_create":
+                await self._service.record_creation_failure(
+                    inbound=inbound,
+                    conversation_key=runtime.conversation_key,
+                    error=exc,
+                )
             return _result(error=type(exc).__name__, detail=str(exc))
 
     @staticmethod
@@ -339,6 +372,8 @@ def _record(
     *,
     number: int | None = None,
     history_number: int | None = None,
+    plan: ExecutionPlan | None = None,
+    persisted: bool = False,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "automation_id": row.id,
@@ -350,6 +385,12 @@ def _record(
         "required_capabilities": row.required_capabilities,
         "run_count": row.run_count,
     }
+    if plan is not None:
+        payload["compiled_strategy"] = plan.strategy
+        payload["selected_capabilities"] = plan.selected_capabilities
+        payload["warnings"] = plan.warnings
+    if persisted:
+        payload["confirmation"] = "persisted"
     if number is not None:
         payload["number"] = number
     if history_number is not None:

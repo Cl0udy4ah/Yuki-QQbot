@@ -13,6 +13,7 @@ from typing import Any, Protocol, cast
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import contains_internal_capability_payload
+from qq_ai_bot.automation.intent import enforce_creation_claim, is_scheduled_automation_request
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities import (
     AuthorityContext,
@@ -194,6 +195,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._admin_retry_constraint: tuple[str, str] | None = None
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
+        self._automation_persisted = False
         self._batch: list[ToolCall] = []
         self._catalog: UnifiedToolCatalog | None = None
         self._provider_registry: ToolProviderRegistry | None = None
@@ -342,7 +344,19 @@ class _ChatAgentBackend(AgentToolBackend):
         mutation_identity = (
             (call.function.name, call.function.arguments) if self._is_mutating_call(call) else None
         )
-        if mutation_identity is not None and mutation_identity in self._completed_admin_mutations:
+        if (
+            self._runtime.scheduled_automation_intent
+            and descriptor.trust_source is not CapabilityTrustSource.AUTOMATION
+        ):
+            result = json.dumps(
+                {
+                    "ok": False,
+                    "error": "scheduled_intent_requires_automation_create",
+                    "detail": "这是未来触发任务；本轮只能创建自动化，不能立即执行目标工具。",
+                },
+                ensure_ascii=False,
+            )
+        elif mutation_identity is not None and mutation_identity in self._completed_admin_mutations:
             result = json.dumps(
                 {
                     "ok": False,
@@ -483,6 +497,17 @@ class _ChatAgentBackend(AgentToolBackend):
                 self._web_calls_used += 1
                 self._web_was_used = True
         decoded = self._service._decode_tool_result(result)
+        if (
+            descriptor.provider_id == "automation"
+            and descriptor.provider_tool_name == "automation_create"
+        ):
+            data = decoded.get("data")
+            self._automation_persisted = bool(
+                decoded.get("ok")
+                and isinstance(data, dict)
+                and data.get("confirmation") == "persisted"
+                and isinstance(data.get("automation_id"), int)
+            )
         if self._is_mutating_call(call):
             if bool(decoded.get("ok")):
                 self._admin_retry_constraint = None
@@ -504,7 +529,11 @@ class _ChatAgentBackend(AgentToolBackend):
             return self._service._admin_failure_text(self._admin_terminal_failure)
         if self._capability_was_used and contains_internal_capability_payload(content):
             return "我已经在本轮内部读取了权限范围，但没有生成合适的简短回答。请再问一次。"
-        return content
+        return enforce_creation_claim(
+            content,
+            scheduled_intent=self._runtime.scheduled_automation_intent,
+            persisted=self._automation_persisted,
+        )
 
     def has_visible_effects(self) -> bool:
         """Return whether queued effects can produce a reply without model text."""
@@ -925,6 +954,29 @@ class ChatService:
                 visual_failure=visual_failure,
                 planned_turn=planned_turn,
             )
+            scheduled_automation_intent = bool(
+                not autonomous
+                and not visual_input_present
+                and self._automation_tools is not None
+                and any(
+                    tool.name == "automation_create"
+                    for tool in self._automation_tools.definitions()
+                )
+                and is_scheduled_automation_request(content)
+            )
+            if scheduled_automation_intent:
+                messages = (
+                    *messages,
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "当前消息是明确的未来触发任务。必须使用 automation_create 提交高层 "
+                            "TaskSpec；本轮禁止提前执行任务目标中的 MCP、联网、OneBot 或其他业务"
+                            "工具。时间含糊时直接追问。只有工具返回 confirmation=persisted 和真实 "
+                            "automation_id 后，才能声称任务已经创建。"
+                        ),
+                    ),
+                )
             gateway = (
                 cast(OneBotToolGateway, sender)
                 if callable(getattr(sender, "call_api", None))
@@ -954,12 +1006,22 @@ class ChatService:
                 runtime_config=runtime_config,
                 origin=(TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE),
                 tool_mode=(
-                    planned_turn.plan.tool_mode if planned_turn is not None else ToolMode.INHERIT
+                    ToolMode.INHERIT
+                    if scheduled_automation_intent
+                    else (
+                        planned_turn.plan.tool_mode
+                        if planned_turn is not None
+                        else ToolMode.INHERIT
+                    )
                 ),
                 tool_groups=(
-                    frozenset(planned_turn.plan.tool_selection.scope_ids)
-                    if planned_turn is not None
-                    else frozenset(group.value for group in ToolGroup)
+                    frozenset({ToolGroup.AUTOMATION.value})
+                    if scheduled_automation_intent
+                    else (
+                        frozenset(planned_turn.plan.tool_selection.scope_ids)
+                        if planned_turn is not None
+                        else frozenset(group.value for group in ToolGroup)
+                    )
                 ),
                 turn_token=turn_token,
                 reply_effects=[],
@@ -967,9 +1029,16 @@ class ChatService:
                     planned_turn is not None
                     and planned_turn.plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
                 ),
-                planner_scopes_explicit=planned_turn is not None,
+                planner_scopes_explicit=(
+                    scheduled_automation_intent or planned_turn is not None
+                ),
                 selection_query=content,
-                planner_intent=(planned_turn.plan.intent if planned_turn is not None else ""),
+                planner_intent=(
+                    "创建未来触发的持久化自动化任务"
+                    if scheduled_automation_intent
+                    else (planned_turn.plan.intent if planned_turn is not None else "")
+                ),
+                scheduled_automation_intent=scheduled_automation_intent,
             )
             if turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
@@ -1249,6 +1318,17 @@ class ChatService:
             if callable(prepare):
                 await prepare(scopes, runtime)
         catalog = registry.catalog(runtime)
+        if (
+            runtime.scheduled_automation_intent
+            and catalog.by_model_name("automation_create") is not None
+        ):
+            return replace(
+                runtime,
+                tool_mode=ToolMode.INHERIT,
+                tool_groups=frozenset({ToolGroup.AUTOMATION.value}),
+                selected_tool_names=frozenset({"automation_create"}),
+                planner_scopes_explicit=True,
+            )
         known_scopes = {scope.scope_id for scope in catalog.scopes}
         candidate_scopes = tuple(scope for scope in scopes if scope in known_scopes)
         if (

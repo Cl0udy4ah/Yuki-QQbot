@@ -294,6 +294,8 @@ class ApplicationContainer:
             emoji_selector=self.emoji_selector,
             emoji_storage=self.emoji_storage,
             speech=self.speech,
+            mcp_manager=self.mcp_manager,
+            mcp_artifacts=self.tool_artifacts,
             bot_connected=self.bot_account_connected,
         )
         automation = self.automation_module.build()
@@ -306,6 +308,7 @@ class ApplicationContainer:
         self.chat.set_automation_tools(self.automation_tools)
         self.automation_executor = automation.executor
         self.automation_worker = automation.worker
+        self.mcp_automation_bridge = automation.mcp_bridge
         self._plugin_contexts: dict[str, HostPluginContext] = {}
         self.plugin_module = PluginModule(
             settings=settings.plugins,

@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from qq_ai_bot.automation.authority import PermissionLevel
 from qq_ai_bot.automation.models import AutomationScript, IntervalSchedule
-from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
+from qq_ai_bot.automation.registry import AutomationCapability, AutomationCapabilityRegistry
 from qq_ai_bot.automation.templates import TemplateError, referenced_steps, validate_templates
 from qq_ai_bot.config import Settings
 from qq_ai_bot.time.schedules import initial_run_at
@@ -114,7 +114,7 @@ class AutomationValidator:
             if missing:
                 raise ValueError(f"步骤 {step.id} 引用了尚未执行的步骤：{sorted(missing)}")
             self._validate_untrusted_flow(step.arguments)
-            self._validate_arguments(definition.argument_model, step.arguments)
+            self._validate_arguments(definition, step.arguments)
             if step.call in _LLM_CAPABILITIES and (
                 step.arguments.get("context_profile") != script.context.scene
             ):
@@ -126,11 +126,14 @@ class AutomationValidator:
             if step.call not in required:
                 required.append(step.call)
             if step.call == "yuki.agent":
-                for delegated in self._agent_delegation_capabilities(provenance.permission):
+                for delegated in self._agent_delegation_capabilities(
+                    step.arguments,
+                    provenance.permission,
+                ):
                     if delegated not in required:
                         required.append(delegated)
-                llm_calls += int(step.arguments.get("max_model_requests", 4))
-                tool_calls += 1 + int(step.arguments.get("max_tool_calls", 3))
+                llm_calls += int(step.arguments.get("max_model_requests", 10))
+                tool_calls += 1 + int(step.arguments.get("max_tool_calls", 6))
             else:
                 llm_calls += int(step.call in _LLM_CAPABILITIES)
                 tool_calls += 1
@@ -164,16 +167,28 @@ class AutomationValidator:
         if limits.timeout_seconds > self._settings.automation_max_runtime_seconds:
             raise ValueError("limits.timeout_seconds 超过后端硬限制")
 
-    def _agent_delegation_capabilities(self, permission: PermissionLevel) -> tuple[str, ...]:
-        excluded = {
-            "yuki.generate",
-            "yuki.agent",
-            "onebot.send_private_message",
-            "onebot.send_group_message",
-            "speech.send_private",
-            "speech.send_group",
-        }
-        return tuple(name for name in self._registry.names_for(permission) if name not in excluded)
+    def _agent_delegation_capabilities(
+        self,
+        arguments: dict[str, Any],
+        permission: PermissionLevel,
+    ) -> tuple[str, ...]:
+        declared = arguments.get("allowed_capabilities", ())
+        if not isinstance(declared, list | tuple):
+            raise ValueError("yuki.agent.allowed_capabilities 必须是数组")
+        delegatable = {item.name for item in self._registry.delegatable()}
+        result: list[str] = []
+        for reference in declared:
+            if not isinstance(reference, str):
+                raise ValueError("yuki.agent.allowed_capabilities 只能包含字符串")
+            name = self._registry.resolve_agent_reference(reference)
+            if name not in delegatable:
+                raise ValueError(f"capability 不能委托给自动化 Agent：{name}")
+            definition = self._registry.require(name)
+            if not definition.permits(permission):
+                raise PermissionError(f"当前用户无权委托 capability：{name}")
+            if name not in result:
+                result.append(name)
+        return tuple(result)
 
     @staticmethod
     def _reject_ambiguous_time(original_text: str) -> None:
@@ -189,13 +204,18 @@ class AutomationValidator:
             raise ValueError("请明确是上午、下午、晚上或具体日期的几点")
 
     @staticmethod
-    def _validate_arguments(model: type[Any], arguments: dict[str, Any]) -> None:
+    def _validate_arguments(
+        definition: AutomationCapability,
+        arguments: dict[str, Any],
+    ) -> None:
         try:
             # Template values are strings and therefore remain schema-valid for all
             # privilege-bearing target fields. Runtime validates the resolved object again.
-            model.model_validate(arguments)
+            definition.validate_arguments(arguments, allow_templates=True)
         except ValidationError as exc:
             raise ValueError(f"capability 参数不符合 Schema：{exc.errors()[0]['msg']}") from exc
+        except ValueError as exc:
+            raise ValueError(f"capability 参数不符合 Schema：{exc}") from exc
 
     @classmethod
     def _validate_untrusted_flow(cls, value: Any, *, key: str = "") -> None:

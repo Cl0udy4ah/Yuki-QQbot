@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -27,6 +28,7 @@ from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.persistence.models import AutomationStepRunModel, AutomationVersionModel
+from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.time.schedules import schedule_after_completion
 from qq_ai_bot.time.service import TimeContextService
 
@@ -114,7 +116,7 @@ async def test_repository_persists_versions_and_owner_scope(database) -> None:
         await service.current_by_number("10001", 1)
 
 
-def test_create_tool_teaches_the_model_the_proactive_message_gateway(database) -> None:
+def test_create_tool_exposes_high_level_task_spec(database) -> None:
     settings = make_settings(database.url, automation_enabled=True)
     service = AutomationService(
         settings=settings,
@@ -128,13 +130,63 @@ def test_create_tool_teaches_the_model_the_proactive_message_gateway(database) -
         for item in AutomationToolService(service).definitions()
         if item.name == "automation_create"
     )
-    assert "onebot.send_private_message" in tool.description
-    assert "不需要也不应改用聊天工具 call_onebot_api" in tool.description
-    example = tool.parameters["properties"]["script"]["examples"][0]  # type: ignore[index]
-    assert example["steps"][0]["arguments"]["user_id"] == "$creator_user_id"
+    assert "不要手写 AutomationScript" in tool.description
+    assert "confirmation='persisted'" in tool.description
+    example = tool.parameters["properties"]["task"]["examples"][0]  # type: ignore[index]
+    assert example["goal"] == "提醒我喝水"
+    assert example["delivery"]["target"] == "auto"
     assert "automation_list_history" in {
         item.name for item in AutomationToolService(service).definitions()
     }
+
+
+@pytest.mark.asyncio
+async def test_create_tool_compiles_and_confirms_database_persistence(database) -> None:
+    settings = make_settings(
+        database.url,
+        automation_enabled=True,
+        automation_max_llm_calls_per_run=10,
+    )
+    service = AutomationService(
+        settings=settings,
+        repository=AutomationRepository(database),
+        registry=build_capability_registry(),
+        time_service=TimeContextService(database),
+    )
+    inbound = _inbound()
+    runtime = ToolRuntime(
+        inbound=inbound,
+        gateway=None,
+        allow_generic_onebot=False,
+        allow_automation=True,
+        conversation_key="private:10001",
+        trigger_message_id=inbound.message_id,
+        actor_user_id=inbound.sender.user_id,
+        current_group_id=inbound.group_id,
+    )
+    result = json.loads(
+        await AutomationToolService(service).execute(
+            "automation_create",
+            json.dumps(
+                {
+                    "task": {
+                        "name": "喝水提醒",
+                        "goal": "该喝水了",
+                        "trigger": {"type": "after", "seconds": 300},
+                        "strategy": "static",
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            runtime,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["confirmation"] == "persisted"
+    assert result["data"]["compiled_strategy"] == "static"
+    automation_id = result["data"]["automation_id"]
+    assert (await service.require_owned(automation_id, "10001")).id == automation_id
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## 2.1.1 - 2026-07-31
+
+### 通用自动化编译器
+
+- 自然语言创建入口由要求模型手写完整 `AutomationScript` 改为高层 `TaskSpec`；新增
+  `AutomationCompiler`，由后端确定 `static/generated/agentic` 策略、投递步骤、上下文、工具与
+  超时预算，再生成现有严格 DSL 作为稳定运行时 IR。Worker、租约、执行器和插件 SDK 不需要
+  重写，也未新增聊天路由或第二人格。
+- capability 在模型侧使用只含字母、数字和下划线的稳定 ID；后端兼容点号、连字符与下划线
+  差异并解析为真实注册名。受委托 `yuki.agent` 只保存 TaskSpec 明确选择的最小能力集合，不再
+  自动继承当时全部可用工具；模型函数名也统一规范化，修复 `create-order/create_order` 导致的
+  工具不可用问题。
+- Agentic 自动化的基础模型请求预算提升到 10 次，并由编译器按后端硬限制计算工具和消息预算；
+  复杂点餐等任务在触发时再查询动态菜单、优惠券、价格和订单信息，创建时不会提前执行外部工具。
+- 创建成功结果新增 `confirmation=persisted`，只有数据库返回真实 `automation_id` 才允许报告成功；
+  失败的编译/提交尝试写入脱敏审计，并新增 `automation_diagnose` 供 Yuki 核实最近创建结果。
+- 修复“几分钟后查询菜单”“明天几点下单”等请求被 MCP 关键词抢占、当场执行的问题。未来触发
+  意图现在在同一 Planner/Agent 链路中强制收敛到 `automation_create`，并从本轮移除即时 MCP、
+  联网、OneBot 和业务工具；没有持久化确认时，最终输出不能再声称“设好了”。
+
+### MCP 自动化桥接
+
+- 新增通用 `MCPAutomationBridge`：可将任意 MCP Server 明确选择的远端工具动态投影为
+  `mcp.<server>.<tool>` 自动化 capability，直接步骤和受委托 `yuki.agent` 共用同一套
+  JSON Schema、执行结果、Artifact、重试和审计链路，不在自动化核心中硬编码麦当劳逻辑。
+- MCP 配置新增 `yuki.automation.enabled/permission/includeTools`；必须显式列出可供后台任务
+  使用的工具。远端 Schema 的完整元数据哈希会写入委托快照，工具参数变化、移除、禁用或
+  创建者权限下降都会使旧委托失效。
+- 麦当劳预设默认只向真实超级管理员的自动化开放 14 个活动、优惠券、账户、菜单、校价及
+  订单工具；加入 `query-meals → query-meal-detail → calculate-price → create-order` 到店点餐链路。
+  查询失败可瞬时重试，`auto-bind-coupons` 与 `create-order` 等修改型调用不自动重试；创建订单
+  只返回官方待支付订单和支付链接，不代替用户完成支付。新增动态刷新、权限隔离、JSON Schema
+  校验和旧委托撤销回归测试。
+
 ## 2.1.0 - 2026-07-30
 
 ### 麦当劳 MCP

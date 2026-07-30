@@ -390,7 +390,7 @@ def test_explicit_target_must_be_a_complete_numeric_token() -> None:
         )
 
 
-def test_yuki_agent_delegates_only_current_registered_permission_set() -> None:
+def test_yuki_agent_delegates_only_explicit_selected_capabilities() -> None:
     payload = _script().model_dump(mode="json")
     payload["steps"] = [
         {
@@ -401,6 +401,7 @@ def test_yuki_agent_delegates_only_current_registered_permission_set() -> None:
                 "context_profile": "none",
                 "max_tool_calls": 2,
                 "max_model_requests": 2,
+                "allowed_capabilities": ["history.search", "web.search"],
             },
         }
     ]
@@ -420,6 +421,11 @@ def test_yuki_agent_delegates_only_current_registered_permission_set() -> None:
     assert "onebot.call_api" not in ordinary.required_capabilities
     assert "config.set" not in ordinary.required_capabilities
 
+    payload["steps"][0]["arguments"]["allowed_capabilities"] = [
+        "onebot.call_api",
+        "admin.execute_action",
+        "config.set",
+    ]
     admin = _validator().validate(
         AutomationScript.model_validate(payload),
         _provenance(superuser=True),

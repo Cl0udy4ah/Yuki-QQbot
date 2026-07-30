@@ -2,8 +2,8 @@
 
 ## 启动项目
 
-> **升级提示：**2.1.0 会执行非破坏性的 Alembic `0019`，新增 MCP 元数据、工具
-> Artifact 和调用指标表；现有人物、事件、记忆、关系、插件、自动化、表情和语音数据均保留。
+> **升级提示：**2.1.1 是自动化可靠性补丁，沿用 2.1.0 的非破坏性 Alembic `0019`；
+> 现有人物、事件、记忆、关系、插件、自动化、表情和语音数据均保留。
 > 升级前仍建议备份 `data/`，并以最新 `.env.example` 检查本地 `.env`。
 > 本版本同时提供麦当劳中国官方 MCP 预设；该能力默认关闭，配置 Token 后才会连接官方服务。
 
@@ -39,7 +39,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 2.1.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 2.1.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -103,6 +103,23 @@ Yuki-QQbot 2.1.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 档案对紧凑候选精排；Flash 不会看到工具 Schema。大量工具部署可设置
 `TOOLING_SELECTED_TOOL_LIMIT`、`TOOLING_SCHEMA_TOKEN_BUDGET`、
 `MCP_SELECTED_TOOL_LIMIT` 与 `MCP_SCHEMA_TOKEN_BUDGET`。留空表示不增加对应限制。
+
+需要让持久化任务调用某个 MCP 时，在该 Server 的 `yuki` 下显式配置自动化允许列表：
+
+```json
+"automation": {
+  "enabled": true,
+  "permission": "superuser",
+  "includeTools": ["campaign-calendar", "query-my-coupons"]
+}
+```
+
+桥接后的内部名称为 `mcp.<server_id>.<remote_tool_name>`。自然语言创建任务时，Yuki 只需从
+TaskSpec Schema 提供的模型安全 ID 中选择能力，后端会解析为真实名称并保存最小委托集合；
+无需手写名称或 Automation DSL。插件 SDK 和内部调用仍可直接使用底层 DSL。`includeTools`
+不能为空；未列出的远端工具不会进入后台任务目录。默认 `permission=superuser`，只有需要明确
+开放给普通用户的只读服务才应改为 `user`。远端 Schema 发生变化时，旧任务会停止执行并进入
+委托失效状态，需要重新保存任务。
 
 完整说明见 [MCP 文档](docs/mcp/architecture.md) 与
 [Tool Kernel 架构](docs/architecture/tool-kernel.md)。麦当劳点餐、领券和积分能力可直接使用
@@ -551,56 +568,68 @@ relationship_weight = round(0.6 × affection_score + 0.4 × effective_trust)
 
 ```text
 真实普通文本消息
-  → 同一个 Yuki Agent 生成 AutomationScript JSON
+  → 同一个 Yuki Agent 只生成高层 TaskSpec
   → automation_create
-  → Schema、时间、来源目标、权限和模板污点校验
+  → AutomationCompiler 解析模型安全 capability ID、选择策略并自动计算预算
+  → 生成 ExecutionPlan 与内部 AutomationScript
+  → Schema、时间、来源目标、最小权限和模板污点校验
   → SQLite 持久化脚本、版本和最小委托权限
   → AutomationWorker 使用数据库租约领取
   → AutomationExecutor 顺序执行已登记 capability
   → 写运行/步骤审计；真实发送消息写回 chat_events
 ```
 
-Automation DSL v1 的完整结构如下。所有对象均拒绝未声明字段：
+聊天侧 TaskSpec 的结构如下。所有对象均拒绝未声明字段：
 
 ```json
 {
   "version": 1,
-  "name": "任务名称，1–128 字符",
-  "timezone": "IANA 时区，例如 Asia/Shanghai",
-  "schedule": {
+  "name": "早餐订单",
+  "goal": "运行时查询菜单、优惠券和价格，创建待支付订单并把结果发给我",
+  "trigger": {
     "type": "after | once | daily | weekly | interval",
     "seconds": "after/interval 使用；interval 不少于 60",
     "local_datetime": "once 使用的本地 ISO 时间",
     "weekdays": "weekly 使用，星期一=1 到星期日=7",
     "hour": "daily/weekly 使用，0–23",
     "minute": "daily/weekly 使用，0–59",
-    "timezone": "once/daily/weekly 可覆盖脚本时区"
+    "timezone": "once/daily/weekly 可覆盖任务时区"
   },
+  "timezone": "可选；默认使用用户保存的 IANA 时区",
+  "strategy": "auto | static | generated | agentic",
+  "capabilities": ["由 Schema 枚举提供的模型安全 ID；只选本任务所需能力"],
+  "constraints": ["运行时重新查询动态商品编号和价格", "只创建待支付订单，不代替支付"],
   "context": {
     "scene": "none | creator_private | current_group",
     "include_relationship": false,
     "include_memories": false,
     "history_limit": 0
   },
-  "steps": [
-    {
-      "id": "[a-z][a-z0-9_]{0,31}",
-      "call": "注册表中的固定 capability 名",
-      "arguments": {},
-      "save_as": "可选的结构化输出别名"
-    }
-  ],
-  "limits": {
-    "max_steps": 3,
-    "max_llm_calls": 1,
-    "max_tool_calls": 3,
-    "max_messages": 1,
-    "timeout_seconds": 60
+  "delivery": {
+    "target": "auto | self_private | current_group | none",
+    "text": "可选固定消息；Agentic 任务默认投递运行结果"
   }
 }
 ```
 
-只允许 `$creator_user_id`、`$bot_user_id`、`$automation_id`、`$automation_run_id`、`$scheduled_for`、`$actual_started_at`、`$local_time`、`$current_group_id`，以及 `${step_id.field}` 形式的既有步骤输出。步骤输出可以进入最终消息文本，但不能进入 `user_id`、`group_id`、OneBot action、配置键、管理员 action 或自动化 ID。系统不执行 Python、Shell、JavaScript、`eval`、SQL、文件、Docker 或任意 HTTP 请求。
+`static` 用于固定提醒且不调用模型；`generated` 用于每次生成新文字但不访问外部系统；
+`agentic` 用于菜单查询、下单、网页读取等运行时才可决定步骤的任务；`auto` 在声明 capability
+时选择 `agentic`，否则选择 `static`。后端内部编译器会生成步骤、目标变量、模板、10 次基础
+模型请求预算、工具预算和超时，Yuki 不再手写这些字段。创建结果只有同时返回
+`confirmation=persisted` 与真实 `automation_id` 才算成功；失败尝试会以脱敏记录进入现有审计，
+可通过 `automation_diagnose` 核实，不能仅凭聊天记忆声称任务存在。
+
+主聊天链路还会确定性识别“几分钟后查询”“明天九点下单”“每天检查”等未来执行请求。此类
+消息即使被 Planner 或工具精排误判为 MCP 查询，本轮也只会向 Agent 暴露
+`automation_create`，不会提前执行目标 MCP、联网或 OneBot 工具；未取得持久化确认时，后端会
+拦截“设好了”“创建成功”等错误宣称。普通的“明天早餐有什么”“明天九点天气怎么样”只是
+询问信息，不会因为包含未来时间而自动创建任务。
+
+底层 Automation DSL v1 继续作为稳定运行时 IR，供 Worker、插件 SDK 和内部测试使用。
+它只允许 `$creator_user_id`、`$bot_user_id`、`$automation_id`、`$automation_run_id`、
+`$scheduled_for`、`$actual_started_at`、`$local_time`、`$current_group_id`，以及
+`${step_id.field}` 形式的既有步骤输出。步骤输出可以进入最终消息文本，但不能进入权限字段。
+系统不执行 Python、Shell、JavaScript、`eval`、SQL、文件、Docker 或任意 HTTP 请求。
 
 首批 capability：
 
@@ -614,8 +643,9 @@ Automation DSL v1 的完整结构如下。所有对象均拒绝未声明字段�
 | `onebot.call_api` | — | ✓ | 全部公开 NapCat/OneBot action，不设 denylist |
 | `admin.execute_action` | — | ✓ | 复用关系、记忆、偏好、群和私聊准入业务接口 |
 | `config.get`、`config.set` | — | ✓ | 仅显式注册配置；任务不能修改 `automation.*` |
+| `mcp.<server>.<tool>` | 按 Server 配置 | 按 Server 配置 | 仅 `yuki.automation.includeTools` 明确列出的远端工具 |
 
-每个任务只保存本脚本实际使用的 capability 及其 Schema 版本。运行时有效权限是“创建时授予的最小集合 ∩ 当前仍登记且版本一致的集合 ∩ 创建者当前权限”；超级管理员后来从 `SUPERUSERS` 移除时，其旧管理员任务会变为 `blocked`，后端新增能力不会自动授予旧任务。普通用户的任务始终保持本人/当前群的后端范围校验。
+每个任务只保存本脚本实际使用的 capability 及其 Schema 版本。运行时有效权限是“创建时授予的最小集合 ∩ 当前仍登记且版本一致的集合 ∩ 创建者当前权限”；超级管理员后来从 `SUPERUSERS` 移除时，其旧管理员任务会变为 `blocked`，后端新增能力不会自动授予旧任务。MCP capability 使用远端工具完整元数据哈希作为 Schema 版本；远端改参、配置移除允许项或停用 Server 都不会让旧任务悄悄改用新语义。普通用户的任务始终保持本人/当前群的后端范围校验。
 
 Worker 默认每 2 秒轮询，用租约防止多实例重复执行，并以 `(automation_id, scheduled_for)` 唯一约束保证幂等。一次性任务在 30 分钟宽限内补执行一次，超出后记为 `missed`；周期任务直接计算下一个未来时刻，不逐条补发。Bot 未连接时在宽限期内保留原计划槽。生成、Agent、联网、记忆和历史读取仅对明确瞬时错误最多重试一次；消息发送、通用 OneBot、配置和管理员修改不重试，发送结果无法确认时记为 `uncertain`。连续失败 3 次后任务进入 `failed`，修改或恢复后才会继续。
 
@@ -904,7 +934,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `AUTOMATION_MAX_ACTIVE_PER_SUPERUSER` | `50` |
 | `AUTOMATION_MAX_ACTIVE_PER_USER` | `10` |
 | `AUTOMATION_MAX_STEPS` | `16` |
-| `AUTOMATION_MAX_LLM_CALLS_PER_RUN` | `5` |
+| `AUTOMATION_MAX_LLM_CALLS_PER_RUN` | `10` |
 | `AUTOMATION_MAX_TOOL_CALLS_PER_RUN` | `16` |
 | `AUTOMATION_MAX_MESSAGES_PER_RUN` | `10` |
 | `AUTOMATION_MAX_RUNTIME_SECONDS` | `600` |
@@ -988,7 +1018,7 @@ docker compose up -d
 docker compose ps
 ```
 
-健康检查不会请求 DeepSeek、Planner、Tavily、Qwen 或执行真实自动化，也不会暴露密钥；`planner_enabled/configured/active_requests`、`plugin_system_enabled/running_count`、`web_configured`、`vision_configured`、`automation_worker_running` 和 `active_automation_count` 都只读取本地配置或运行状态：
+健康检查不会请求 DeepSeek、Planner、Tavily、Qwen 或执行真实自动化，也不会暴露密钥；`planner_enabled/configured/active_requests`、`plugin_system_enabled/running_count`、`web_configured`、`vision_configured`、`automation_worker_running`、`active_automation_count`、`mcp_automation_tools` 和 `mcp_automation_missing_tools` 都只读取本地配置或运行状态：
 
 ```bash
 docker compose exec bot python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/healthz').read().decode())"

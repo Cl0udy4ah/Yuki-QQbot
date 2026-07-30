@@ -167,6 +167,9 @@ class AutomationCapabilityHandlers:
             group_id=context.current_group_id,
         )
         current_time = self._time.at(context.actual_started_at, context.timezone)
+        selected_capabilities = frozenset(
+            str(name) for name in arguments.get("allowed_capabilities", ())
+        )
         runtime = AgentRuntime(
             origin=context.authority.origin,
             actor_user_id=context.creator_user_id,
@@ -178,7 +181,9 @@ class AutomationCapabilityHandlers:
             gateway=self._gateway_factory(context),
             runtime_config=snapshot,
             current_time=current_time,
-            allowed_capabilities=context.authority.allowed_capabilities,
+            allowed_capabilities=(
+                context.authority.allowed_capabilities.intersection(selected_capabilities)
+            ),
             max_tool_calls=min(int(arguments["max_tool_calls"]), snapshot.agent.max_tool_calls),
             max_model_requests=min(
                 int(arguments["max_model_requests"]), snapshot.agent.max_model_requests
@@ -637,7 +642,7 @@ class _AutomationAgentBackend(AgentToolBackend):
                 "config.set",
             }:
                 continue
-            tool_name = capability.name.replace(".", "__")
+            tool_name = self._registry.agent_tool_name(capability.name)
             self._name_map[tool_name] = capability.name
             tools.append(
                 ChatTool(
@@ -679,7 +684,7 @@ class _AutomationAgentBackend(AgentToolBackend):
             return json.dumps({"ok": False, "error": "handler_unavailable"})
         try:
             raw = json.loads(arguments_json)
-            arguments = definition.argument_model.model_validate(raw).model_dump()
+            arguments = definition.validate_arguments(raw)
             result = await definition.handler(arguments, self._context)
         except (AutomationExecutionError, ValueError, json.JSONDecodeError) as exc:
             return json.dumps(

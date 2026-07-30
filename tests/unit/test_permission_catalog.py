@@ -69,7 +69,7 @@ def test_user_report_includes_automation_and_time_self_service_operations() -> N
     assert report.protected_config_count == 0
     assert report.business_action_count == 0
     assert report.mutating_action_count == 0
-    assert report.self_service_operation_count == 29
+    assert report.self_service_operation_count == 30
     assert report.self_service_mutation_count == 14
     assert {descriptor.kind for descriptor in report.capabilities} == {CapabilityKind.COMMAND}
     assert {descriptor.id for descriptor in report.capabilities} == {
@@ -85,6 +85,7 @@ def test_user_report_includes_automation_and_time_self_service_operations() -> N
         "command:automation.list_history:self",
         "command:automation.get:self",
         "command:automation.update:self",
+        "command:automation.diagnose:self",
         "command:automation.pause:self",
         "command:automation.resume:self",
         "command:automation.cancel:self",
@@ -124,9 +125,9 @@ def test_superuser_report_has_exact_registry_counts_and_complete_lists() -> None
     assert report.protected_config_count == 12
     assert report.business_action_count == 44
     assert report.mutating_action_count == 33
-    assert report.self_service_operation_count == 29
+    assert report.self_service_operation_count == 30
     assert report.onebot_gateway_count == 1
-    assert len(report.capabilities) == 236
+    assert len(report.capabilities) == 237
 
     config_ids = {
         descriptor.id
@@ -154,12 +155,12 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
 
     assert first == second
     assert first["counts"] == {
-        "total": 236,
+        "total": 237,
         "mutable_configurations": 150,
         "protected_configurations": 12,
         "business_actions": 44,
         "mutating_business_actions": 33,
-        "self_service_operations": 29,
+        "self_service_operations": 30,
         "self_service_mutations": 14,
         "onebot_api_gateways": 1,
     }

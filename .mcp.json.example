@@ -14,6 +14,26 @@
         "scope": "mcp.mcd",
         "summary": "麦当劳官方菜单、门店、活动、优惠券、订单和积分服务",
         "tags": ["麦当劳", "点餐", "菜单", "优惠券", "门店", "积分"],
+        "automation": {
+          "enabled": true,
+          "permission": "superuser",
+          "includeTools": [
+            "now-time-info",
+            "campaign-calendar",
+            "available-coupons",
+            "query-my-coupons",
+            "auto-bind-coupons",
+            "query-my-account",
+            "query-meals",
+            "query-meal-detail",
+            "calculate-price",
+            "create-order",
+            "order-list",
+            "query-order",
+            "mall-order-list",
+            "mall-order-detail"
+          ]
+        },
         "toolAnnotations": {
           "list-nutrition-foods": {"readOnlyHint": true, "idempotentHint": true},
           "delivery-query-addresses": {"readOnlyHint": true, "idempotentHint": true},

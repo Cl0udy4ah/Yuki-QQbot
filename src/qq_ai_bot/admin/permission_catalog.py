@@ -512,7 +512,9 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         kind=CapabilityKind.COMMAND,
         category="automation",
         display_name="创建本人自动化",
-        description="通过普通文本聊天中的 automation_create 工具创建当前发送者自己的任务。",
+        description=(
+            "通过普通文本聊天中的 automation_create 工具提交 TaskSpec，由后端编译并持久化任务。"
+        ),
         minimum_level=PermissionLevel.USER,
         mutating=True,
         target_scopes=("self", "current_group"),
@@ -554,10 +556,20 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         kind=CapabilityKind.COMMAND,
         category="automation",
         display_name="更新本人自动化",
-        description="通过 automation_update 为当前发送者自己的任务创建新脚本版本。",
+        description="通过 automation_update 编译 TaskSpec，为本人任务创建新脚本版本。",
         minimum_level=PermissionLevel.USER,
         mutating=True,
         target_scopes=("self", "current_group"),
+    ),
+    CapabilityDescriptor(
+        id="command:automation.diagnose:self",
+        kind=CapabilityKind.COMMAND,
+        category="automation",
+        display_name="诊断自动化创建",
+        description="读取本人最近的脱敏创建结果，核实任务是否真正持久化。",
+        minimum_level=PermissionLevel.USER,
+        mutating=False,
+        target_scopes=("self",),
     ),
     *(
         CapabilityDescriptor(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 from pydantic import ValidationError
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.automation.authority import DelegatedAuthority, permission_for
+from qq_ai_bot.automation.compiler import AutomationCompiler, ExecutionPlan, TaskSpec
 from qq_ai_bot.automation.models import (
     AutomationRecord,
     AutomationRunRecord,
@@ -22,6 +24,8 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.time.schedules import initial_run_at
 from qq_ai_bot.time.service import TimeContextService
+
+logger = logging.getLogger(__name__)
 
 
 class AutomationService:
@@ -41,11 +45,128 @@ class AutomationService:
         self._registry = registry
         self._time = time_service
         self._validator = AutomationValidator(settings=settings, registry=registry)
+        self._compiler = AutomationCompiler(settings=settings, registry=registry)
         self._audit = audit
 
     @property
     def enabled(self) -> bool:
         return self._settings.automation_enabled
+
+    def capability_catalog(self, *, prefix: str = "") -> tuple[tuple[str, str], ...]:
+        """Return current reviewed capability names for Agent-facing DSL documentation."""
+
+        return tuple(
+            (item.name, item.description)
+            for item in self._registry.list()
+            if not prefix or item.name.startswith(prefix)
+        )
+
+    def task_capability_catalog(self) -> tuple[dict[str, str], ...]:
+        """Return model-safe capability references accepted by TaskSpec."""
+
+        return self._compiler.capability_catalog()
+
+    async def create_task(
+        self,
+        task_payload: object,
+        *,
+        inbound: InboundMessage,
+        conversation_key: str,
+        max_runs: int | None = None,
+    ) -> tuple[AutomationRecord, ExecutionPlan]:
+        """Compile, validate, and persist a high-level task as one atomic operation."""
+
+        self._require_enabled()
+        try:
+            task = TaskSpec.model_validate(task_payload)
+        except ValidationError as exc:
+            raise ValueError(f"任务规格格式错误：{exc.errors()[0]['msg']}") from exc
+        provenance = self._creation_provenance(inbound)
+        plan = self._compiler.compile(
+            task,
+            provenance,
+            default_timezone=await self._time.timezone_for(inbound.sender.user_id),
+        )
+        row = await self.create(
+            plan.script,
+            inbound=inbound,
+            conversation_key=conversation_key,
+            max_runs=max_runs,
+        )
+        return row, plan
+
+    async def update_task(
+        self,
+        automation_id: int,
+        task_payload: object,
+        *,
+        inbound: InboundMessage,
+        conversation_key: str,
+    ) -> tuple[AutomationRecord, ExecutionPlan]:
+        """Compile and validate a high-level replacement before switching versions."""
+
+        try:
+            task = TaskSpec.model_validate(task_payload)
+        except ValidationError as exc:
+            raise ValueError(f"任务规格格式错误：{exc.errors()[0]['msg']}") from exc
+        plan = self._compiler.compile(
+            task,
+            self._creation_provenance(inbound),
+            default_timezone=await self._time.timezone_for(inbound.sender.user_id),
+        )
+        row = await self.update(
+            automation_id,
+            plan.script,
+            inbound=inbound,
+            conversation_key=conversation_key,
+        )
+        return row, plan
+
+    async def record_creation_failure(
+        self,
+        *,
+        inbound: InboundMessage,
+        conversation_key: str,
+        error: Exception,
+    ) -> None:
+        """Persist a redacted failed compile/create attempt for later diagnosis."""
+
+        if self._audit is None:
+            return
+        try:
+            await self._audit.record(
+                actor=self._actor(inbound, conversation_key),
+                capability="automation",
+                operation="create_task",
+                target_type="automation_draft",
+                target_id=inbound.message_id,
+                after={"phase": "compile_or_commit"},
+                success=False,
+                error_category=type(error).__name__,
+            )
+        except Exception:
+            logger.warning("automation_creation_failure_audit_unavailable", exc_info=True)
+
+    async def diagnose_creation(self, creator_user_id: str) -> tuple[dict[str, object], ...]:
+        """Return the caller's recent redacted creation outcomes."""
+
+        if self._audit is None:
+            return ()
+        events = await self._audit.history(
+            actor_user_id=creator_user_id,
+            capability="automation",
+            limit=20,
+        )
+        relevant = [event for event in events if event.operation in {"create", "create_task"}]
+        return tuple(
+            {
+                "success": event.success,
+                "error_category": event.error_category,
+                "created_at": event.created_at.isoformat(),
+                "target_id": event.target_id if event.success else None,
+            }
+            for event in relevant[:10]
+        )
 
     async def create(
         self,
@@ -67,15 +188,7 @@ class AutomationService:
             raise ValueError(f"自动化脚本格式错误：{exc.errors()[0]['msg']}") from exc
         now = self._time.clock.now()
         permission = permission_for(self._settings, inbound.sender.user_id)
-        provenance = CreationProvenance(
-            creator_user_id=inbound.sender.user_id,
-            bot_user_id=inbound.bot_user_id,
-            message_id=inbound.message_id,
-            original_text=inbound.text,
-            current_group_id=inbound.group_id,
-            mentioned_user_ids=inbound.mentioned_user_ids,
-            permission=permission,
-        )
+        provenance = self._creation_provenance(inbound)
         validated = self._validator.validate(script, provenance, now_utc=now)
         maximum = (
             self._settings.automation_max_active_per_superuser
@@ -307,6 +420,28 @@ class AutomationService:
         if not self._settings.automation_enabled:
             raise ValueError("自动化功能当前未启用")
 
+    def _creation_provenance(self, inbound: InboundMessage) -> CreationProvenance:
+        return CreationProvenance(
+            creator_user_id=inbound.sender.user_id,
+            bot_user_id=inbound.bot_user_id,
+            message_id=inbound.message_id,
+            original_text=inbound.text,
+            current_group_id=inbound.group_id,
+            mentioned_user_ids=inbound.mentioned_user_ids,
+            permission=permission_for(self._settings, inbound.sender.user_id),
+        )
+
+    def _actor(self, inbound: InboundMessage, conversation_key: str) -> AdminActor:
+        return AdminActor(
+            user_id=inbound.sender.user_id,
+            is_superuser=inbound.sender.user_id in self._settings.superusers,
+            trigger_message_id=inbound.message_id,
+            conversation_key=conversation_key,
+            current_group_id=inbound.group_id,
+            mentioned_user_ids=inbound.mentioned_user_ids,
+            current_message_text=inbound.text,
+        )
+
     def _capability_provenance(
         self,
         names: tuple[str, ...],
@@ -337,15 +472,7 @@ class AutomationService:
         if self._audit is None:
             return
         await self._audit.record(
-            actor=AdminActor(
-                user_id=inbound.sender.user_id,
-                is_superuser=inbound.sender.user_id in self._settings.superusers,
-                trigger_message_id=inbound.message_id,
-                conversation_key=conversation_key,
-                current_group_id=inbound.group_id,
-                mentioned_user_ids=inbound.mentioned_user_ids,
-                current_message_text=inbound.text,
-            ),
+            actor=self._actor(inbound, conversation_key),
             capability="automation",
             operation=operation,
             target_type="automation",

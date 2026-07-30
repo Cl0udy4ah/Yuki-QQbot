@@ -156,7 +156,7 @@ async def test_get_my_capabilities_is_event_bound_and_accepts_no_target(
     assert report["ok"]
     assert report["data"]["permission_level"] == "user"
     assert report["data"]["counts"]["mutable_configurations"] == 0
-    assert report["data"]["counts"]["self_service_operations"] == 29
+    assert report["data"]["counts"]["self_service_operations"] == 30
 
     targeted = json.loads(
         await tools.execute(

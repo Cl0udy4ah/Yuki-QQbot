@@ -74,7 +74,7 @@ class AutomationStep(StrictModel):
 
 class AutomationLimits(StrictModel):
     max_steps: int = Field(default=3, ge=1, le=16)
-    max_llm_calls: int = Field(default=1, ge=0, le=5)
+    max_llm_calls: int = Field(default=1, ge=0, le=10)
     max_tool_calls: int = Field(default=3, ge=1, le=16)
     max_messages: int = Field(default=1, ge=0, le=10)
     timeout_seconds: int = Field(default=60, ge=1, le=600)

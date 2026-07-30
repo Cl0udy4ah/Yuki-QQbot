@@ -41,6 +41,8 @@ class HealthPayload(TypedDict):
     mcp_configured_servers: int
     mcp_connected_servers: int
     mcp_cached_tools: int
+    mcp_automation_tools: int
+    mcp_automation_missing_tools: int
     mcp_active_calls: int
     uptime_seconds: int
 
@@ -93,6 +95,8 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         mcp_configured_servers=mcp_health.configured_servers,
         mcp_connected_servers=mcp_health.connected_servers,
         mcp_cached_tools=mcp_health.cached_tools,
+        mcp_automation_tools=container.mcp_automation_bridge.registered_tool_count,
+        mcp_automation_missing_tools=container.mcp_automation_bridge.missing_tool_count,
         mcp_active_calls=mcp_health.active_calls,
         uptime_seconds=max(0, int(time.monotonic() - container.started_at)),
     )

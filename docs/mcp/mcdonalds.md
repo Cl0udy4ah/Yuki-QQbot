@@ -34,6 +34,31 @@ Yuki 使用麦当劳中国托管的 Streamable HTTP MCP Server，不在本项目
 诊断成功后，普通聊天即可自然提出“查一下附近麦当劳”“看看现在有什么券”“帮我搭一份套餐”等请求。
 Yuki 会按 Planner 选择官方工具；不需要让模型拼 `/ai` 命令。
 
+## 用于持久化自动化
+
+预设在 `yuki.automation` 中为麦当劳声明了独立的后台任务允许列表，默认权限是
+`superuser`。启用 `AUTOMATION_ENABLED=true` 后，超级管理员可以直接说：
+
+```text
+每天早上九点检查麦当劳本周活动，有新的就私聊告诉我
+每天中午查看我的麦当劳优惠券和积分，整理成一条消息发给我
+```
+
+创建任务的聊天 Agent 只生成高层 TaskSpec，并选择 Schema 中与活动、优惠券、菜单或订单对应的
+模型安全 capability ID；后端编译器再生成 `yuki.agent` 步骤和最小委托权限。Yuki 不再手写
+`mcp.mcd.create-order` 一类内部名称，也不会在创建定时任务时提前下单。后台运行时仍通过同一个
+`MCPManager` 调用官方服务，不会模拟 `/ai` 命令，也不会复制一套麦当劳客户端。
+
+允许列表目前覆盖时间、活动日历、可用/本人优惠券、自动领券、账户、菜单与套餐详情、校价、
+创建到店订单、普通订单和商城订单查询。到店点餐由后台 Agent 依次调用 `query-meals`、
+`query-meal-detail`、`calculate-price` 和 `create-order`，不能根据商品中文名猜测编码或跳过校价。
+官方 `create-order` 只创建待支付订单并返回 `payH5Url`，自动化应把支付链接发送给任务创建者，
+不能声称已经支付。创建地址、外送和积分兑换没有默认进入自动化。
+
+`auto-bind-coupons` 和 `create-order` 会改变账户状态，因此不会自动重试；如不希望无人值守的
+领券或订单创建，可从 `includeTools` 删除对应工具并重启 Bot。远端工具 Schema 变化后，已有相关
+任务会被后端阻止，重新确认并保存任务后才会采用新版参数。
+
 ## 调度语义
 
 `.mcp.json.example` 通过 `yuki.toolAnnotations` 将已知查询工具标为只读且幂等，使它们可以安全并行；

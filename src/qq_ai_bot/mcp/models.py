@@ -35,6 +35,24 @@ class MCPToolAnnotationOverride(_StrictModel):
     open_world_hint: bool | None = Field(default=None, alias="openWorldHint")
 
 
+class MCPAutomationMetadata(_StrictModel):
+    """Explicit opt-in for exposing selected server tools to scheduled tasks."""
+
+    enabled: bool = False
+    permission: Literal["user", "superuser"] = "superuser"
+    include_tools: tuple[str, ...] = Field(default=(), alias="includeTools")
+
+    @model_validator(mode="after")
+    def _included_tools(self) -> MCPAutomationMetadata:
+        if self.enabled and not self.include_tools:
+            raise ValueError("automation.includeTools is required when automation is enabled")
+        if any(not name.strip() or len(name) > 255 for name in self.include_tools):
+            raise ValueError("automation.includeTools values must be remote tool names")
+        if len(set(self.include_tools)) != len(self.include_tools):
+            raise ValueError("automation.includeTools contains duplicate tool names")
+        return self
+
+
 class MCPServerMetadata(_StrictModel):
     scope: str = ""
     summary: str = Field(default="", max_length=500)
@@ -43,6 +61,7 @@ class MCPServerMetadata(_StrictModel):
         default_factory=dict,
         alias="toolAnnotations",
     )
+    automation: MCPAutomationMetadata = MCPAutomationMetadata()
 
     @model_validator(mode="after")
     def _tool_names(self) -> MCPServerMetadata:

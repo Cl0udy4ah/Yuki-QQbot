@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -27,7 +29,8 @@ class AgentArguments(CapabilityArguments):
     instruction: str = Field(min_length=1, max_length=4000)
     context_profile: Literal["none", "creator_private", "current_group"] = "none"
     max_tool_calls: int = Field(default=6, ge=0, le=16)
-    max_model_requests: int = Field(default=8, ge=1, le=12)
+    max_model_requests: int = Field(default=10, ge=1, le=10)
+    allowed_capabilities: tuple[str, ...] = Field(default=(), max_length=16)
 
 
 class SendPrivateArguments(CapabilityArguments):
@@ -156,6 +159,8 @@ class CapabilityExecutionContext:
 CapabilityHandler = Callable[
     [dict[str, Any], CapabilityExecutionContext], Awaitable[CapabilityResult]
 ]
+CapabilityArgumentValidator = Callable[[object, bool], dict[str, Any]]
+CapabilitySchemaVersion = int | str
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,7 +173,9 @@ class AutomationCapability:
     risk_class: RiskClass
     retry_policy: RetryPolicy
     allowed_origins: frozenset[TurnOrigin]
-    schema_version: int = 1
+    schema_version: CapabilitySchemaVersion = 1
+    argument_schema: dict[str, object] | None = None
+    argument_validator: CapabilityArgumentValidator | None = field(default=None, repr=False)
     provider_plugin_id: str | None = None
     provider_version: str | None = None
     provider_manifest_hash: str | None = None
@@ -176,7 +183,19 @@ class AutomationCapability:
 
     @property
     def input_schema(self) -> dict[str, object]:
-        return self.argument_model.model_json_schema()
+        return self.argument_schema or self.argument_model.model_json_schema()
+
+    def validate_arguments(
+        self,
+        value: object,
+        *,
+        allow_templates: bool = False,
+    ) -> dict[str, Any]:
+        """Validate arguments through the capability's native schema contract."""
+
+        if self.argument_validator is not None:
+            return self.argument_validator(value, allow_templates)
+        return self.argument_model.model_validate(value).model_dump()
 
     def permits(self, permission: PermissionLevel) -> bool:
         return not (
@@ -219,6 +238,48 @@ class AutomationCapabilityRegistry:
 
     def names_for(self, permission: PermissionLevel) -> tuple[str, ...]:
         return tuple(item.name for item in self.list() if item.permits(permission))
+
+    def agent_tool_name(self, capability_name: str) -> str:
+        """Return a provider-neutral model-safe name for one registered capability."""
+
+        self.require(capability_name)
+        normalized = re.sub(r"[^a-zA-Z0-9_]", "_", capability_name.replace(".", "__"))
+        normalized = re.sub(r"_+", "_", normalized).strip("_") or "capability"
+        digest = hashlib.sha256(capability_name.encode("utf-8")).hexdigest()[:8]
+        return f"{normalized[:51]}_{digest}"
+
+    def resolve_agent_reference(self, reference: str) -> str:
+        """Resolve exact names or model-safe aliases without guessing ambiguous tools."""
+
+        if reference in self._items:
+            return reference
+        matches = [
+            name for name in self._items if self.agent_tool_name(name) == reference
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        normalized = _loose_capability_key(reference)
+        loose_matches = [
+            name for name in self._items if _loose_capability_key(name) == normalized
+        ]
+        if len(loose_matches) == 1:
+            return loose_matches[0]
+        if len(loose_matches) > 1:
+            raise ValueError(f"自动化能力引用不明确：{reference}")
+        raise ValueError(f"未登记的自动化 capability：{reference}")
+
+    def delegatable(self) -> tuple[AutomationCapability, ...]:
+        """List capabilities that a scheduled Agent may call itself."""
+
+        return tuple(item for item in self.list() if _is_agent_delegatable(item))
+
+
+def _loose_capability_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.casefold())
+
+
+def _is_agent_delegatable(item: AutomationCapability) -> bool:
+    return not item.name.startswith("yuki.") and item.risk_class is not RiskClass.SEND
 
 
 def build_capability_registry(

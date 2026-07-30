@@ -12,12 +12,163 @@ from tests.unit.test_normalizer import group_event, private_event
 from tests.unit.test_runtime_admin import admin_stack
 
 from qq_ai_bot.adapters.onebot.normalizer import normalize_event
+from qq_ai_bot.automation.authority import PermissionLevel
+from qq_ai_bot.automation.models import RetryPolicy, RiskClass, TurnOrigin
+from qq_ai_bot.automation.registry import (
+    AutomationCapability,
+    CapabilityArguments,
+    build_capability_registry,
+)
+from qq_ai_bot.automation.repository import AutomationRepository
+from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.automation.tools import AutomationToolService
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
+from qq_ai_bot.time.service import TimeContextService
+
+
+def _attach_test_automation(database: Database, harness, settings):
+    registry = build_capability_registry()
+    registry.register(
+        AutomationCapability(
+            name="mcp.mcd.query-meals",
+            description="查询指定门店菜单",
+            argument_model=CapabilityArguments,
+            output_schema={"type": "object"},
+            required_permission=PermissionLevel.USER,
+            risk_class=RiskClass.READ,
+            retry_policy=RetryPolicy.TRANSIENT_ONCE,
+            allowed_origins=frozenset({TurnOrigin.SCHEDULED_AUTOMATION}),
+        )
+    )
+    repository = AutomationRepository(database)
+    service = AutomationService(
+        settings=settings,
+        repository=repository,
+        registry=registry,
+        time_service=TimeContextService(database),
+    )
+    harness.processor._chat.set_automation_tools(AutomationToolService(service))
+    return repository, registry
+
+
+@pytest.mark.asyncio
+async def test_future_mcd_query_is_persisted_instead_of_executed_immediately(
+    database: Database,
+) -> None:
+    calls = 0
+    settings = make_settings(
+        database.url,
+        automation_enabled=True,
+        automation_max_llm_calls_per_run=10,
+    )
+    capability_ids: dict[str, str] = {}
+
+    def responder(request: ChatRequest) -> ChatResponse:
+        nonlocal calls
+        calls += 1
+        assert {tool.name for tool in request.tools} == {"automation_create"}
+        if calls == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="create-future-query",
+                        function=ToolFunction(
+                            name="automation_create",
+                            arguments=json.dumps(
+                                {
+                                    "task": {
+                                        "name": "两分钟后查询早餐套餐",
+                                        "goal": (
+                                            "查询 storeCode 1410135 当前可用早餐套餐和价格，不下单"
+                                        ),
+                                        "trigger": {"type": "after", "seconds": 120},
+                                        "strategy": "agentic",
+                                        "capabilities": [
+                                            capability_ids["query_meals"]
+                                        ],
+                                    }
+                                },
+                                ensure_ascii=False,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        tool_payload = json.loads(
+            next(
+                message.content or "{}"
+                for message in reversed(request.messages)
+                if message.role == "tool"
+            )
+        )
+        assert tool_payload["data"]["confirmation"] == "persisted"
+        return ChatResponse(content="设好了，两分钟后再查询", latency_seconds=0)
+
+    harness = build_harness(database, settings, FakeLLMProvider(responder))
+    repository, registry = _attach_test_automation(database, harness, settings)
+    safe_id = registry.agent_tool_name("mcp.mcd.query-meals")
+    capability_ids["query_meals"] = safe_id
+    sender = MemorySender()
+
+    result = await harness.processor.handle(
+        normalize_event(
+            private_event(
+                Message(
+                    "两分钟后查询 storeCode 1410135 当前可用的早餐套餐，"
+                    "把套餐名称和价格简短发给我，不要下单"
+                ),
+                message_id=105,
+            )
+        ),
+        sender,
+    )
+
+    assert result.reason == "chat"
+    assert calls == 2
+    tasks = await repository.list_for_creator("1001")
+    assert len(tasks) == 1
+    assert tasks[0].required_capabilities == (
+        "yuki.agent",
+        "mcp.mcd.query-meals",
+        "onebot.send_private_message",
+    )
+    assert sender.messages[0].text == "设好了，两分钟后再查询"
+
+
+@pytest.mark.asyncio
+async def test_future_task_success_claim_is_blocked_without_create_tool_result(
+    database: Database,
+) -> None:
+    settings = make_settings(database.url, automation_enabled=True)
+
+    def responder(request: ChatRequest) -> ChatResponse:
+        assert {tool.name for tool in request.tools} == {"automation_create"}
+        return ChatResponse(content="设好了，明天九点四十五分准时查", latency_seconds=0)
+
+    harness = build_harness(database, settings, FakeLLMProvider(responder))
+    repository, _registry = _attach_test_automation(database, harness, settings)
+    sender = MemorySender()
+    await harness.processor.handle(
+        normalize_event(
+            private_event(
+                Message(
+                    "明天早上九点四十五分，在 storeCode 1410135 查询双层原味板烧鸡腿麦满分套餐"
+                ),
+                message_id=106,
+            )
+        ),
+        sender,
+    )
+
+    assert await repository.list_for_creator("1001") == ()
+    assert sender.messages[0].text == "这个定时任务还没有写入任务列表，不能算创建成功。"
 
 
 @pytest.mark.asyncio
@@ -81,9 +232,9 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
         )
         assert payload["data"]["transient_internal_reference"] is True
         assert payload["data"]["do_not_copy_verbatim_to_user"] is True
-        assert payload["data"]["counts"]["self_service_operations"] == 29
+        assert payload["data"]["counts"]["self_service_operations"] == 30
         return ChatResponse(
-            content="你目前有 29 项本人自助能力，其中 14 项会修改本人数据；不能修改系统配置。",
+            content="你目前有 30 项本人自助能力，其中 14 项会修改本人数据；不能修改系统配置。",
             latency_seconds=0,
         )
 
@@ -103,7 +254,7 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
     assert result.reason == "chat"
     assert calls == 2
     rendered = "\n".join(message.text for message in sender.messages)
-    assert rendered == "你目前有 29 项本人自助能力，其中 14 项会修改本人数据；不能修改系统配置。"
+    assert rendered == "你目前有 30 项本人自助能力，其中 14 项会修改本人数据；不能修改系统配置。"
     assert "transient_internal_reference" not in rendered
     events = await EventLedgerRepository(database).list_recent(
         scope_type=ScopeType.PRIVATE,

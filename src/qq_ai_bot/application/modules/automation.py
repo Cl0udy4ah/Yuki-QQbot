@@ -17,10 +17,13 @@ from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.tools import AutomationToolService
 from qq_ai_bot.automation.worker import AutomationWorker
+from qq_ai_bot.capabilities.results import ToolArtifactWriter, ToolResultBudgeter
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.emoji.storage import EmojiStorage
+from qq_ai_bot.mcp.automation import MCPAutomationBridge
+from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
@@ -44,6 +47,7 @@ class AutomationBundle:
     tools: AutomationToolService
     executor: AutomationExecutor
     worker: AutomationWorker
+    mcp_bridge: MCPAutomationBridge
 
 
 class AutomationModule:
@@ -67,6 +71,8 @@ class AutomationModule:
         emoji_selector: EmojiSelector,
         emoji_storage: EmojiStorage,
         speech: SpeechService,
+        mcp_manager: MCPManager,
+        mcp_artifacts: ToolArtifactWriter,
         bot_connected: Callable[[str], bool],
     ) -> None:
         self._settings = settings
@@ -86,6 +92,8 @@ class AutomationModule:
         self._emoji_selector = emoji_selector
         self._emoji_storage = emoji_storage
         self._speech = speech
+        self._mcp_manager = mcp_manager
+        self._mcp_artifacts = mcp_artifacts
         self._bot_connected = bot_connected
 
     def build(self) -> AutomationBundle:
@@ -116,6 +124,19 @@ class AutomationModule:
         )
         registry = build_capability_registry(handlers.mapping())
         handlers.bind_registry(registry)
+        mcp_bridge = MCPAutomationBridge(
+            manager=self._mcp_manager,
+            registry=registry,
+            result_budgeter=ToolResultBudgeter(
+                max_characters=(
+                    self._settings.mcp_result_token_budget * 4
+                    if self._settings.mcp_result_token_budget is not None
+                    else self._settings.agent_tool_result_max_characters
+                ),
+                artifacts=self._mcp_artifacts,
+                artifact_retention_seconds=self._settings.mcp_artifact_retention_seconds,
+            ),
+        )
         service = AutomationService(
             settings=self._settings,
             repository=repository,
@@ -137,13 +158,28 @@ class AutomationModule:
             time_service=self._time_service,
             bot_connected=self._bot_connected,
         )
-        return AutomationBundle(repository, handlers, registry, service, tools, executor, worker)
+        return AutomationBundle(
+            repository,
+            handlers,
+            registry,
+            service,
+            tools,
+            executor,
+            worker,
+            mcp_bridge,
+        )
 
     @staticmethod
     def register_lifecycle(
         bundle: AutomationBundle,
         lifecycle: LifecycleRegistry,
     ) -> None:
+        lifecycle.register(
+            "mcp_automation_bridge",
+            start=bundle.mcp_bridge.start,
+            close=bundle.mcp_bridge.close,
+            health=bundle.mcp_bridge.health,
+        )
         lifecycle.register(
             "automation_worker",
             start=bundle.worker.start,

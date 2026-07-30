@@ -21,6 +21,8 @@ speech.available_languages；只有一种可用语言时直接选择它，不要
 available_tool_scopes 是后端动态提供的紧凑目录，只包含 scope、简述、标签和工具数量，不含
 工具 Schema。只在本轮确实需要工具时选择最小必要 scopes；不需要工具时返回空 scopes。
 不得输出目录中不存在的 scope，也不得用旧的固定工具组猜测远程能力。
+当前消息若要求在几分钟后、某个未来日期时刻或固定周期再执行提醒、查询、下单或其他动作，
+只选择 automation scope；不得选择目标 MCP、联网、OneBot 或业务 scope 并在本轮提前执行。
 用户明确要求发送表情或表情包，且 available_tool_categories 包含 emoji 时，必须输出
 emoji.mode=preferred 或 emoji_only，并填写简短的 goal 和 emotion；不要让 Agent 查询表情库存，
 也不要在正文中用文字描述代替实际表情效果。

@@ -120,7 +120,7 @@ class AutomationExecutor:
                             builtins=builtins,
                             step_outputs=outputs,
                         )
-                        arguments = definition.argument_model.model_validate(resolved).model_dump()
+                        arguments = definition.validate_arguments(resolved)
                     except (TemplateError, ValueError) as exc:
                         raise AutomationExecutionError("runtime_argument_validation") from exc
                     context = CapabilityExecutionContext(

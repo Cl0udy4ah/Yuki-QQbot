@@ -85,6 +85,7 @@ class ToolRuntime:
     selection_query: str = ""
     planner_intent: str = ""
     selected_tool_names: frozenset[str] | None = None
+    scheduled_automation_intent: bool = False
 
 
 def _object_schema(
