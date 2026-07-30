@@ -11,6 +11,7 @@ from typing import Protocol, cast
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
 from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatTool, ToolCall
 from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
@@ -53,6 +54,8 @@ class AgentToolBackend(Protocol):
 
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str: ...
 
+    def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool: ...
+
     def finalize(self, content: str, runtime: AgentRuntime) -> str: ...
 
     def exhausted(self, runtime: AgentRuntime) -> str: ...
@@ -77,6 +80,7 @@ class AgentRunner:
             )
         self._concurrency = concurrency
         self._task = task
+        self._tool_coordinator = ToolInvocationCoordinator()
 
     async def run(
         self,
@@ -174,44 +178,36 @@ class AgentRunner:
             )
             if tools is not None:
                 tools.begin_batch(response.tool_calls, runtime)
-            for call in response.tool_calls:
-                if calls_used >= runtime.max_tool_calls:
-                    result = json.dumps(
-                        {"ok": False, "error": "tool_limit_exceeded"},
-                        ensure_ascii=False,
-                    )
-                elif tools is None:
-                    result = json.dumps(
-                        {"ok": False, "error": "tools_unavailable"},
-                        ensure_ascii=False,
-                    )
-                else:
-                    result = await tools.execute(
-                        call.function.name,
-                        call.function.arguments,
-                        runtime,
-                    )
-                    calls_used += 1
-                    if call.function.name in {
-                        "web.search",
-                        "web.read_page",
-                        "web_search",
-                        "read_webpage",
-                        "web__search",
-                        "web__read_page",
-                    }:
-                        web_was_used = True
-                    try:
-                        outcome = json.loads(result)
-                    except json.JSONDecodeError:
-                        outcome = {}
-                    logger.info(
-                        "agent_tool_complete tool=%s ok=%s error=%s",
-                        call.function.name,
-                        outcome.get("ok") if isinstance(outcome, dict) else None,
-                        outcome.get("error") if isinstance(outcome, dict) else None,
-                    )
+            tooling = getattr(runtime.runtime_config, "tooling", None)
+            coordinated = await self._tool_coordinator.execute_batch(
+                response.tool_calls,
+                tools,
+                runtime,
+                remaining_calls=max(0, runtime.max_tool_calls - calls_used),
+                max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
+            )
+            batch, executed = coordinated.calls, coordinated.executed_count
+            calls_used += executed
+            for call, result, _was_executed in batch:
+                try:
+                    outcome = json.loads(result)
+                except json.JSONDecodeError:
+                    outcome = {}
+                logger.info(
+                    "agent_tool_complete tool=%s ok=%s error=%s",
+                    call.function.name,
+                    outcome.get("ok") if isinstance(outcome, dict) else None,
+                    (
+                        outcome.get("error") or outcome.get("error_code")
+                        if isinstance(outcome, dict)
+                        else None
+                    ),
+                )
                 messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
+            if tools is not None:
+                effect_probe = getattr(tools, "did_use_web", None)
+                if callable(effect_probe) and effect_probe():
+                    web_was_used = True
         exhausted = (
             tools.exhausted(runtime) if tools is not None else "工具调用次数过多，Agent 已停止。"
         )

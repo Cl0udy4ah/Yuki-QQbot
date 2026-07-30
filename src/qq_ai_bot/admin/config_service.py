@@ -27,12 +27,14 @@ from qq_ai_bot.admin.models import (
     EffectiveConfigValue,
     EmojiRuntimeConfig,
     LLMRuntimeConfig,
+    MCPRuntimeConfig,
     PlannerRuntimeConfig,
     PluginRuntimeConfig,
     RelationshipRuntimeConfig,
     ReplyRuntimeConfig,
     RuntimeConfigSnapshot,
     SpeechRuntimeConfig,
+    ToolingRuntimeConfig,
     VisionRuntimeConfig,
     WebRuntimeConfig,
 )
@@ -1066,8 +1068,8 @@ class RuntimeConfigService:
                     cast(int, value("reply.daily_split_max_characters"))
                 ),
                 daily_split_max_messages=int(cast(int, value("reply.daily_split_max_messages"))),
-                delay_min_seconds=min(delay_min, delay_max),
-                delay_max_seconds=max(delay_min, delay_max),
+                delay_min_seconds=delay_min,
+                delay_max_seconds=delay_max,
                 max_qq_message_chars=int(cast(int, value("reply.max_qq_message_chars"))),
                 cancel_on_new_message=bool(value("reply.cancel_on_new_message")),
                 plan_hard_max_messages=int(cast(int, value("reply.plan_hard_max_messages"))),
@@ -1086,6 +1088,67 @@ class RuntimeConfigService:
                 tool_result_max_characters=int(
                     cast(int, value("agent.tool_result_max_characters"))
                 ),
+            ),
+            tooling=ToolingRuntimeConfig(
+                max_parallel_calls=int(cast(int, value("tooling.max_parallel_calls"))),
+                selected_tool_limit=(
+                    int(cast(int, value("tooling.selected_tool_limit")))
+                    if value("tooling.selected_tool_limit") is not None
+                    else None
+                ),
+                schema_token_budget=(
+                    int(cast(int, value("tooling.schema_token_budget")))
+                    if value("tooling.schema_token_budget") is not None
+                    else None
+                ),
+                result_token_budget=(
+                    int(cast(int, value("tooling.result_token_budget")))
+                    if value("tooling.result_token_budget") is not None
+                    else None
+                ),
+                result_item_limit=(
+                    int(cast(int, value("tooling.result_item_limit")))
+                    if value("tooling.result_item_limit") is not None
+                    else None
+                ),
+                result_artifact_enabled=bool(value("tooling.result_artifact_enabled")),
+                result_artifact_retention_seconds=int(
+                    cast(int, value("tooling.result_artifact_retention_seconds"))
+                ),
+            ),
+            mcp=MCPRuntimeConfig(
+                enabled=bool(value("mcp.enabled")),
+                gateway_enabled=bool(value("mcp.gateway_enabled")),
+                tool_selection_mode=str(value("mcp.tool_selection_mode")),
+                metadata_cache_ttl_seconds=int(cast(int, value("mcp.metadata_cache_ttl_seconds"))),
+                connect_timeout_seconds=float(
+                    cast(float | int, value("mcp.connect_timeout_seconds"))
+                ),
+                request_timeout_seconds=float(
+                    cast(float | int, value("mcp.request_timeout_seconds"))
+                ),
+                selected_tool_limit=(
+                    int(cast(int, value("mcp.selected_tool_limit")))
+                    if value("mcp.selected_tool_limit") is not None
+                    else None
+                ),
+                schema_token_budget=(
+                    int(cast(int, value("mcp.schema_token_budget")))
+                    if value("mcp.schema_token_budget") is not None
+                    else None
+                ),
+                result_token_budget=(
+                    int(cast(int, value("mcp.result_token_budget")))
+                    if value("mcp.result_token_budget") is not None
+                    else None
+                ),
+                result_item_limit=(
+                    int(cast(int, value("mcp.result_item_limit")))
+                    if value("mcp.result_item_limit") is not None
+                    else None
+                ),
+                max_parallel_calls=int(cast(int, value("mcp.max_parallel_calls"))),
+                artifact_retention_seconds=int(cast(int, value("mcp.artifact_retention_seconds"))),
             ),
             web=WebRuntimeConfig(
                 search_max_results=int(cast(int, value("web.search_max_results"))),

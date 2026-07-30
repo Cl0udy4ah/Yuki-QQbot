@@ -18,6 +18,7 @@ DEFAULT_FEATURES: frozenset[str] = frozenset(
         "emoji.selection_signals.v1",
         "speech.facade.v1",
         "speech.tts_provider.v1",
+        "mcp.facade.v1",
     }
 )
 

@@ -37,6 +37,11 @@ class HealthPayload(TypedDict):
     speech_default_profile_loaded: bool
     speech_can_send_record: bool
     speech_queue_depth: int
+    mcp_enabled: bool
+    mcp_configured_servers: int
+    mcp_connected_servers: int
+    mcp_cached_tools: int
+    mcp_active_calls: int
     uptime_seconds: int
 
 
@@ -50,6 +55,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     emoji_counts = await container.emoji_repository.counts()
     speech_health = await container.speech.health()
     speech_metrics = await container.speech.metrics()
+    mcp_health = container.mcp_manager.health()
     return HealthPayload(
         status="ok" if database_ok else "degraded",
         version=__version__,
@@ -83,5 +89,10 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         ),
         speech_can_send_record=container.onebot_connected(),
         speech_queue_depth=speech_metrics.queue_depth,
+        mcp_enabled=mcp_health.enabled,
+        mcp_configured_servers=mcp_health.configured_servers,
+        mcp_connected_servers=mcp_health.connected_servers,
+        mcp_cached_tools=mcp_health.cached_tools,
+        mcp_active_calls=mcp_health.active_calls,
         uptime_seconds=max(0, int(time.monotonic() - container.started_at)),
     )

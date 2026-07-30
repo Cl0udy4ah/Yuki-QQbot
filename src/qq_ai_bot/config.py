@@ -16,6 +16,7 @@ from qq_ai_bot.settings_domains import (
     AutomationSettings,
     ConversationSettings,
     EmojiSettings,
+    MCPSettings,
     MemorySettings,
     ModelRuntimeSettings,
     OneBotSettings,
@@ -23,6 +24,7 @@ from qq_ai_bot.settings_domains import (
     PluginSettings,
     RelationshipSettings,
     SpeechSettings,
+    ToolingSettings,
     VisionSettings,
     WebSettings,
 )
@@ -107,6 +109,31 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = 12
     agent_max_model_requests: int = 12
     agent_tool_result_max_characters: int = 32000
+
+    # Unified Tool Kernel budgets. None deliberately means no additional cap.
+    tooling_max_parallel_calls: int = 8
+    tooling_selected_tool_limit: int | None = None
+    tooling_schema_token_budget: int | None = None
+    tooling_result_token_budget: int | None = None
+    tooling_result_item_limit: int | None = None
+    tooling_result_artifact_enabled: bool = True
+    tooling_result_artifact_retention_seconds: int = 86400
+
+    # Generic MCP client. Only MCP_CONFIG_PATH is inspected; no other client config is imported.
+    mcp_enabled: bool = False
+    mcp_config_path: Path = Path(".mcp.json")
+    mcp_cache_enabled: bool = True
+    mcp_gateway_enabled: bool = True
+    mcp_tool_selection_mode: str = "hybrid"
+    mcp_metadata_cache_ttl_seconds: int = 3600
+    mcp_connect_timeout_seconds: float = 15.0
+    mcp_request_timeout_seconds: float = 60.0
+    mcp_selected_tool_limit: int | None = None
+    mcp_schema_token_budget: int | None = None
+    mcp_result_token_budget: int | None = None
+    mcp_result_item_limit: int | None = None
+    mcp_max_parallel_calls: int = 8
+    mcp_artifact_retention_seconds: int = 86400
 
     # Planner-first conversation orchestration. Planner is a required runtime
     # boundary; direct and group switches only control which turns invoke it.
@@ -388,6 +415,8 @@ class Settings(BaseSettings):
             self.emoji,
             self.speech,
             self.automation,
+            self.tooling,
+            self.mcp,
         )
         return self
 
@@ -442,6 +471,14 @@ class Settings(BaseSettings):
     @cached_property
     def automation(self) -> AutomationSettings:
         return AutomationSettings.model_validate(self)
+
+    @cached_property
+    def tooling(self) -> ToolingSettings:
+        return ToolingSettings.model_validate(self)
+
+    @cached_property
+    def mcp(self) -> MCPSettings:
+        return MCPSettings.model_validate(self)
 
     @cached_property
     def superusers(self) -> frozenset[str]:

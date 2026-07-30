@@ -40,6 +40,7 @@ from qq_ai_bot.emoji.models import (
 )
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
+from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
@@ -81,6 +82,7 @@ from yuki_plugin_sdk.context import (
     GroupFacade,
     HttpFacade,
     LLMFacade,
+    MCPFacade,
     MediaFacade,
     MemoryFacade,
     MessageFacade,
@@ -236,6 +238,7 @@ class PluginFacadeServices:
     agent_runner: AgentRunner | None = None
     agent_tools: AgentToolBackend | None = None
     web_provider: WebSearchProvider | None = None
+    mcp_manager: MCPManager | None = None
     vision: VisionService | None = None
     emoji_repository: EmojiRepository | None = None
     emoji_collector: EmojiCollector | None = None
@@ -319,6 +322,7 @@ class HostPluginContext:
         "_http",
         "_llm",
         "_logger",
+        "_mcp",
         "_media",
         "_memory",
         "_messages",
@@ -365,6 +369,7 @@ class HostPluginContext:
         self._agent = _AgentFacade(self)
         self._agent_sessions = _AgentSessionsFacade(self)
         self._web = _WebFacade(self)
+        self._mcp = _MCPFacade(self)
         self._http = _HttpFacade(self)
         self._vision = _VisionFacade(self)
         self._media = _MediaFacade(self)
@@ -432,6 +437,10 @@ class HostPluginContext:
     @property
     def web(self) -> WebFacade:
         return self._web
+
+    @property
+    def mcp(self) -> MCPFacade:
+        return self._mcp
 
     @property
     def http(self) -> HttpFacade:
@@ -1485,6 +1494,58 @@ class _WebFacade:
                 "untrusted_external_data": True,
                 "source": _web_source(source),
             }
+        )
+
+
+class _MCPFacade:
+    def __init__(self, host: HostPluginContext) -> None:
+        self._host = host
+
+    async def status(self) -> Mapping[str, JsonValue]:
+        self._host._require(PluginPermission.MCP_READ)
+        manager = _require_service(self._host._services.mcp_manager, "MCP")
+        return cast(Mapping[str, JsonValue], manager.health().model_dump(mode="json"))
+
+    async def list_servers(self) -> tuple[Mapping[str, JsonValue], ...]:
+        self._host._require(PluginPermission.MCP_READ)
+        manager = _require_service(self._host._services.mcp_manager, "MCP")
+        return tuple(
+            cast(Mapping[str, JsonValue], item.model_dump(mode="json"))
+            for item in await manager.statuses()
+        )
+
+    async def search_tools(self, query: str) -> tuple[Mapping[str, JsonValue], ...]:
+        self._host._require(PluginPermission.MCP_READ)
+        manager = _require_service(self._host._services.mcp_manager, "MCP")
+        return tuple(
+            {
+                "server_id": item.server_id,
+                "tool_name": item.remote_tool_name,
+                "description": item.compact_description,
+            }
+            for item in manager.search_tools(_bounded_text(query, maximum=400, field_name="query"))
+        )
+
+    async def call(
+        self,
+        server_id: str,
+        tool_name: str,
+        arguments: Mapping[str, JsonValue],
+    ) -> PluginResult:
+        invocation = self._host._require(PluginPermission.MCP_CALL)
+        assert invocation is not None
+        manager = _require_service(self._host._services.mcp_manager, "MCP")
+        result = await manager.call_tool(
+            _bounded_text(server_id, maximum=64, field_name="server_id"),
+            _bounded_text(tool_name, maximum=255, field_name="tool_name"),
+            {str(key): cast(object, value) for key, value in arguments.items()},
+            conversation_key=invocation.conversation_key,
+        )
+        return PluginResult(
+            ok=result.ok,
+            data={"result": _safe_json(result.model_payload())},
+            error_code=result.error_code,
+            detail=result.public_message or "",
         )
 
 

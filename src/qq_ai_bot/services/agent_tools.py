@@ -81,6 +81,10 @@ class ToolRuntime:
     turn_token: TurnToken | None = None
     reply_effects: list[ReplyEffect] | None = None
     voice_tool_authorized: bool = False
+    planner_scopes_explicit: bool = False
+    selection_query: str = ""
+    planner_intent: str = ""
+    selected_tool_names: frozenset[str] | None = None
 
 
 def _object_schema(

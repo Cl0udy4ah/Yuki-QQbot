@@ -145,6 +145,21 @@ class WebFacade(Protocol):
     async def read(self, url: str, question: str = "") -> PluginResult: ...
 
 
+class MCPFacade(Protocol):
+    async def status(self) -> Mapping[str, JsonValue]: ...
+
+    async def list_servers(self) -> tuple[Mapping[str, JsonValue], ...]: ...
+
+    async def search_tools(self, query: str) -> tuple[Mapping[str, JsonValue], ...]: ...
+
+    async def call(
+        self,
+        server_id: str,
+        tool_name: str,
+        arguments: Mapping[str, JsonValue],
+    ) -> PluginResult: ...
+
+
 class HttpFacade(Protocol):
     async def request(
         self,
@@ -357,6 +372,9 @@ class PluginContext(Protocol):
 
     @property
     def web(self) -> WebFacade: ...
+
+    @property
+    def mcp(self) -> MCPFacade: ...
 
     @property
     def http(self) -> HttpFacade: ...

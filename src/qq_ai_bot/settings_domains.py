@@ -277,3 +277,36 @@ class AutomationSettings(DomainSettings):
     automation_default_misfire_grace_seconds: int = Field(gt=0)
     automation_max_consecutive_failures: int = Field(gt=0)
     automation_run_retention_days: int = Field(gt=0)
+
+
+class ToolingSettings(DomainSettings):
+    tooling_max_parallel_calls: int = Field(gt=0)
+    tooling_selected_tool_limit: int | None = Field(default=None, gt=0)
+    tooling_schema_token_budget: int | None = Field(default=None, gt=0)
+    tooling_result_token_budget: int | None = Field(default=None, gt=0)
+    tooling_result_item_limit: int | None = Field(default=None, gt=0)
+    tooling_result_artifact_enabled: bool
+    tooling_result_artifact_retention_seconds: int = Field(gt=0)
+
+
+class MCPSettings(DomainSettings):
+    mcp_enabled: bool
+    mcp_config_path: Path
+    mcp_cache_enabled: bool
+    mcp_gateway_enabled: bool
+    mcp_tool_selection_mode: str
+    mcp_metadata_cache_ttl_seconds: int = Field(gt=0)
+    mcp_connect_timeout_seconds: float = Field(gt=0)
+    mcp_request_timeout_seconds: float = Field(gt=0)
+    mcp_selected_tool_limit: int | None = Field(default=None, gt=0)
+    mcp_schema_token_budget: int | None = Field(default=None, gt=0)
+    mcp_result_token_budget: int | None = Field(default=None, gt=0)
+    mcp_result_item_limit: int | None = Field(default=None, gt=0)
+    mcp_max_parallel_calls: int = Field(gt=0)
+    mcp_artifact_retention_seconds: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _selection_mode(self) -> MCPSettings:
+        if self.mcp_tool_selection_mode not in {"all", "catalog", "hybrid", "gateway"}:
+            raise ValueError("MCP_TOOL_SELECTION_MODE must be all/catalog/hybrid/gateway")
+        return self

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 2.1.0 - 2026-07-30
+
+### Tool Kernel 与 MCP Client
+
+- 新增统一 `ToolProviderRegistry`、`UnifiedToolCatalog`、`ToolBinding`、
+  `ToolExecutionResult`、`ToolInvocationCoordinator` 和完整 Schema/结果预算；Core、Admin、
+  Automation、Plugin、MCP 共用同一 Planner 与 AgentRunner，不再按来源维护执行分支。
+- Planner 的固定 `groups` 迁移为动态 `scopes`，继续接受 2.0 旧字段；未知 scope 明确失败。
+  Planner 只看紧凑摘要，普通聊天未选择 MCP 时不会注入 MCP Schema。
+- 新增本地 `ToolCandidateSelector` 与 `ModelTask.TOOL_SELECTION` Flash 精排；Flash 输入不含
+  JSON Schema，返回值必须由后端当前目录复核。
+- 新增通用 MCP Client，支持 `.mcp.json`、集中环境变量插值、stdio、Streamable HTTP、
+  lazy/eager/keep_alive/lazy_keep_alive、元数据缓存、同名工具隔离和可选 `mcp_gateway`。
+- 新增统一超长结果 Artifact 和 `read_tool_artifact` 分页读取；数据库只保存不可猜测 handle
+  与内容无关的调用指标，完整结果保存在有期限的 `data/tool_artifacts/` 文件中。
+- 新增 `/ai mcp list|show|status|tools|search|refresh|reconnect|enable|disable|doctor|call`、
+  `/healthz` MCP 指标和 `/ai status` 最近调用状态。管理输出不显示 Header、Cookie 或 Secret。
+- Plugin API v1 新增 `ctx.mcp` 门面与 `mcp.read`、`mcp.call` 权限；MCP Tool 本身不申请
+  PluginPermission，也没有新增 MCP 专属逐项审批流程。
+- Alembic `0019` 非破坏性新增 `mcp_server_states`、`mcp_tool_cache`、`tool_artifacts`、
+  `tool_invocations`；版本提升到 2.1.0，新增完整 MCP 与扩展内核路线文档。
+
 ### 人格与语气
 
 - 系统提示词恢复旧版的人格层次与口语例句，补充银白长发、蓝色兔耳发带、雪花发饰、

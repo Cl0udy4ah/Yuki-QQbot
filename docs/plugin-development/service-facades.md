@@ -13,6 +13,7 @@
 | `web`, `http` | Yuki 联网与白名单 HTTP |
 | `vision`, `media` | 当前真实媒体的受控分析 |
 | `automation` | 当前所有者的持久化任务 |
+| `mcp` | MCP Server 状态、目录检索与工具调用 |
 | `config`, `secrets`, `storage` | 插件配置、Secret 和私有 KV |
 | `scheduler` | Host 托管的短生命周期后台任务 |
 | `onebot` | 按读/发送/修改分类的 OneBot 接口 |
@@ -81,5 +82,14 @@ await ctx.messages.send_text(turn.text)
 | `web.read` | `read_webpage` |
 
 实际能力是“调用参数 ∩ 上表批准权限 ∩ 当前真实调用上下文 ∩ 本轮安全策略”。普通用户只能读取本人记忆、当前私聊或当前群范围；图片轮次或本轮已经使用网页时，Host 会继续收窄工具集。`call_onebot_api`、管理员修改和自动化修改不会通过这个只读后端开放。
+
+## MCP Facade
+
+`ctx.mcp.status/list_servers/search_tools` 需要 `mcp.read`；
+`ctx.mcp.call(server_id, tool_name, arguments)` 需要 `mcp.call`。Facade 复用宿主唯一
+`MCPManager`，不会创建插件私有连接池，也不会向插件暴露 Session、Header 或环境 Secret。
+
+这两项是 Plugin Host 的能力批准，不是针对每个 MCP Tool 的审批；Server 是否可用仍只取决于
+Yuki 配置和启停状态。
 
 独立长期故事、跑团或游戏状态使用 `agent_sessions`；不要把大量连续历史塞进一次 `llm.generate()`。

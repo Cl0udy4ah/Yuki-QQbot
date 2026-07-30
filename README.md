@@ -2,7 +2,9 @@
 
 ## 启动项目
 
-> **升级提示：**2.0.0 不新增破坏性数据库迁移，数据库版本仍为 Alembic `0018`，现有人物、事件、记忆、关系、插件、自动化、表情和语音数据会保留；但本版删除旧 Planner、自主群聊和私聊白名单兼容配置。升级前请备份 `data/`，并以最新 `.env.example` 检查本地 `.env`。若从 1.0 之前直接升级，仍会经过不可逆的 `0005` 数据重建。
+> **升级提示：**2.1.0 会执行非破坏性的 Alembic `0019`，新增 MCP 元数据、工具
+> Artifact 和调用指标表；现有人物、事件、记忆、关系、插件、自动化、表情和语音数据均保留。
+> 升级前仍建议备份 `data/`，并以最新 `.env.example` 检查本地 `.env`。
 
 Plugin API 仍为 `1.0`。第三方插件如果把 `yuki_requires` 上限写成 `<2.0`，需要在确认兼容后改为 `<3.0` 才能在 2.0.0 加载；插件代码和 manifest 的 `plugin_api` 无需因本次升级改版。
 
@@ -36,7 +38,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 2.0.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 2.1.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -45,6 +47,9 @@ Yuki-QQbot 2.0.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 私聊默认向所有 QQ 开放；`/ai private <QQ> off` 用于阻止指定用户。
 - 个人记忆可以在私聊与群聊间自然复用，群记忆和群成员记忆仍按群隔离。
 - 机器人支持 DeepSeek 普通/思考模式的多轮工具调用。
+- 内置 Tool Kernel 将 Core、Admin、Automation、Plugin 与 MCP 工具统一为同一目录、
+  Planner scope、Binding、结果预算和 AgentRunner 执行链。
+- 可按 `.mcp.json` 接入 stdio 与 Streamable HTTP MCP Server；默认关闭，不影响原有聊天。
 - 可选使用 Qwen3.7-Plus 作为独立视觉前端，动态思考并识别图片、虚构角色、图片表情、动态表情和回复图片；DeepSeek 仍是唯一主聊天模型并负责最终回复。
 - 可选接入 Tavily 受控联网搜索，由后端严格控制来源保存、隔离和显示。
 - 每个 QQ 拥有独立、持久化的好感度和信任度，关系阶段会自然影响 Yuki 的语气。
@@ -66,6 +71,10 @@ Yuki-QQbot 2.0.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - Planner、记忆提取、关系评价与表情替换共用 `StructuredTaskRunner`，输出结构直接来自 Pydantic Schema；不再解析 Markdown JSON fence 或从自由文本中猜测第一个花括号对象。
 - Prompt 由不可变 `PromptContribution` 经 `PromptCompiler` 组成一个稳定静态前缀和一个紧凑动态 Envelope；人物、群、关系、记忆和插件资料由通用 `ContextContribution` 预算器按 required、priority、relevance 和 cost 选择。
 - 工具访问由 `CapabilityDescriptor` 的 effect、risk、trust source、origin 和权限元数据决定；Planner 的 `ToolSelection` 只会缩小工具组，图片、网页和插件资料不能扩大权限。本地表情和语音统一作为 `ReplyEffect` 进入既有回复序列。
+- Planner 只接收紧凑 Tool scope 摘要，不接收完整 JSON Schema；主 Agent 只会获得本轮选中的
+  完整工具 Schema。MCP 未启用或未被选择时，普通聊天不会增加 MCP Schema Token。
+- 配置启用的 MCP Server 是可信工具来源，但返回内容仍作为外部资料处理。MCP 不增加逐工具审批，
+  可用性只由配置、Server 启停状态和既有 Planner/能力策略决定。
 - 组合根通过不可变 Bundle 装配 Persistence、ModelRuntime、Web、Media、Emoji、Speech、Conversation、Admin 和 Automation Module；`LifecycleRegistry` 负责按注册顺序启动、反序关闭、失败回滚及模块健康检查。
 - 根 `Settings` 保留 1.x 的扁平 `.env` 名称作为兼容入口，同时组合不可变的 App、OneBot、ModelRuntime、Conversation、Planner、Plugin、Memory、Relationship、Web、Vision、Emoji、Speech 和 Automation 领域设置。
 - 正常聊天、管理员自然语言操作、联网和自动化创建继续使用同一个聊天 Agent；Planner 只规划，不能执行工具或产生权限。插件独立 AI 会话只服务插件任务，不是第二套管理员人格或主聊天路由。
@@ -80,6 +89,22 @@ Yuki-QQbot 2.0.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - GitHub Actions 还会单独验证 Prompt benchmark、模型路由和无真实模型下载的 Genie Worker 日语前端测试。
 
 本版本不识别用户发来的语音，也不处理视频、PDF 和普通文件，不实现 ASR、实时语音通话、VAD 或 WebRTC。已启用群里未触发 Yuki 的图片可以按 `EMOJI_COLLECTION_MODE` 进入独立后台表情候选流程；这不会触发聊天回复、人物记忆、关系评价或管理员操作。普通聊天视觉理解仍只处理当前真实消息或回复中的图片。
+
+## MCP 快速开始
+
+1. 本机运行时复制 `.mcp.json.example` 为 `.mcp.json`；Docker 部署时复制为
+   `config/mcp.json`，并在 `.env` 设置 `MCP_CONFIG_PATH=/app/config/mcp.json`。
+2. 在 `.env` 中设置 `MCP_ENABLED=true`；令牌、Cookie 等仅通过 `${ENV_NAME}` 引用。
+3. 重建 Bot：`docker compose up -d --build bot`。不要重建或退出 NapCat，可保留 QQ 登录状态。
+4. 用 `/ai mcp list` 查看状态；超级管理员可执行 `/ai mcp doctor <server_id>`。
+
+`MCP_TOOL_SELECTION_MODE=hybrid` 会先做本地目录粗选，再由 `TOOL_SELECTION` 的 Flash
+档案对紧凑候选精排；Flash 不会看到工具 Schema。大量工具部署可设置
+`TOOLING_SELECTED_TOOL_LIMIT`、`TOOLING_SCHEMA_TOKEN_BUDGET`、
+`MCP_SELECTED_TOOL_LIMIT` 与 `MCP_SCHEMA_TOKEN_BUDGET`。留空表示不增加对应限制。
+
+完整说明见 [MCP 文档](docs/mcp/architecture.md) 与
+[Tool Kernel 架构](docs/architecture/tool-kernel.md)。
 
 ## 持久化表情系统
 

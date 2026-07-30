@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import time
 import uuid
 from dataclasses import replace
 from typing import Any, Protocol, cast
@@ -17,10 +18,20 @@ from qq_ai_bot.capabilities import (
     AuthorityContext,
     CapabilityPolicyContext,
     CapabilityPolicyEngine,
-    CapabilityRegistry,
     CapabilityRisk,
     CapabilityTrustSource,
-    ChatToolCapabilityProvider,
+    FlashToolReranker,
+    InProcessToolProvider,
+    ToolArtifactWriter,
+    ToolCandidateSelector,
+    ToolExecutionResult,
+    ToolInvocationContext,
+    ToolKernelMetrics,
+    ToolProvider,
+    ToolProviderRegistry,
+    ToolResultBudgeter,
+    ToolSchemaBudgeter,
+    UnifiedToolCatalog,
 )
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
@@ -44,7 +55,13 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
     WebSearchSourceRepository,
 )
-from qq_ai_bot.planner.models import PlannedTurn, ToolGroup, ToolMode, ToolSelection
+from qq_ai_bot.planner.models import (
+    PlannedTurn,
+    ToolGroup,
+    ToolMode,
+    ToolScopeSummary,
+    ToolSelection,
+)
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRuntime,
@@ -149,6 +166,21 @@ class PluginToolProvider(Protocol):
     ) -> str: ...
 
 
+class ToolInvocationRecorder(Protocol):
+    async def record_invocation(
+        self,
+        *,
+        conversation_key: str,
+        provider_id: str,
+        tool_name: str,
+        success: bool,
+        latency_seconds: float,
+        result_size: int,
+        artifact_created: bool,
+        error_category: str | None,
+    ) -> None: ...
+
+
 class _ChatAgentBackend(AgentToolBackend):
     """Preserve event-bound chat policies behind the shared model tool loop."""
 
@@ -163,71 +195,28 @@ class _ChatAgentBackend(AgentToolBackend):
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
         self._batch: list[ToolCall] = []
-        self._capabilities = CapabilityRegistry()
+        self._catalog: UnifiedToolCatalog | None = None
+        self._provider_registry: ToolProviderRegistry | None = None
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         self._web_was_used = self._web_was_used or web_was_used
         if self._tools_closed:
             return ()
         request_runtime = self._request_runtime()
-        core_definitions = self._service._tools.definitions(request_runtime)
-        definitions = core_definitions
-        providers = [
-            ChatToolCapabilityProvider(
-                core_definitions,
-                source=CapabilityTrustSource.CORE,
-            )
-        ]
-        automation = self._service._automation_tools
-        if request_runtime.allow_automation and automation is not None:
-            automation_definitions = automation.definitions()
-            definitions += automation_definitions
-            providers.append(
-                ChatToolCapabilityProvider(
-                    automation_definitions,
-                    source=CapabilityTrustSource.AUTOMATION,
-                )
-            )
-        admin = self._service._admin_tools
-        if request_runtime.allow_admin_actions and admin is not None:
-            admin_definitions = admin.definitions()
-            definitions = (
-                tuple(tool for tool in definitions if tool.name != "get_my_capabilities")
-                + admin_definitions
-            )
-            providers.append(
-                ChatToolCapabilityProvider(
-                    admin_definitions,
-                    source=CapabilityTrustSource.ADMIN,
-                )
-            )
-        plugin = self._service._plugin_tools
-        if plugin is not None:
-            plugin_definitions = plugin.definitions(
-                request_runtime,
-                web_was_used=self._web_was_used,
-            )
-            definitions += plugin_definitions
-            providers.append(
-                ChatToolCapabilityProvider(
-                    plugin_definitions,
-                    source=CapabilityTrustSource.PLUGIN,
-                    plugin_read_only=plugin.is_read_only,
-                )
-            )
-        descriptors = tuple(
-            descriptor
-            for provider in providers
-            for descriptor in provider.descriptors()
-            if any(tool.name == descriptor.model_name for tool in definitions)
+        self._provider_registry = self._service._build_tool_registry(
+            request_runtime,
+            web_was_used=self._web_was_used,
         )
-        self._capabilities = CapabilityRegistry(descriptors)
+        self._catalog = self._provider_registry.catalog(request_runtime)
+        policy_scopes = tuple(sorted(self._runtime.tool_groups))
+        if any(scope.startswith("mcp.") for scope in policy_scopes) and "mcp" not in policy_scopes:
+            policy_scopes = (*policy_scopes, "mcp")
         selection = ToolSelection(
             mode=self._runtime.tool_mode,
-            groups=tuple(ToolGroup(group) for group in sorted(self._runtime.tool_groups)),
+            scopes=policy_scopes,
         )
         visible = CapabilityPolicyEngine().visible(
-            self._capabilities.all(),
+            tuple(entry.descriptor for entry in self._catalog.entries),
             CapabilityPolicyContext(
                 authority=AuthorityContext(
                     actor_user_id=self._runtime.actor_user_id,
@@ -242,7 +231,75 @@ class _ChatAgentBackend(AgentToolBackend):
             ),
         )
         visible_names = {descriptor.model_name for descriptor in visible}
-        definitions = tuple(tool for tool in definitions if tool.name in visible_names)
+        filtered_catalog = replace(
+            self._catalog,
+            entries=tuple(
+                entry
+                for entry in self._catalog.entries
+                if entry.descriptor.model_name in visible_names
+            ),
+        )
+        if self._runtime.planner_scopes_explicit and not self._runtime.tool_groups:
+            return ()
+        if self._runtime.selected_tool_names is not None:
+            filtered_catalog = replace(
+                filtered_catalog,
+                entries=tuple(
+                    entry
+                    for entry in filtered_catalog.entries
+                    if entry.descriptor.model_name in self._runtime.selected_tool_names
+                ),
+            )
+        config = self._runtime.runtime_config
+        assert config is not None
+        tooling = config.tooling
+        mcp = config.mcp
+        if mcp is not None:
+            mcp_count = 0
+            mcp_schema_tokens = 0
+            limited_entries = []
+            for entry in filtered_catalog.entries:
+                if entry.descriptor.trust_source is not CapabilityTrustSource.MCP:
+                    limited_entries.append(entry)
+                    continue
+                if mcp.selected_tool_limit is not None and mcp_count >= mcp.selected_tool_limit:
+                    continue
+                if (
+                    mcp.schema_token_budget is not None
+                    and mcp_schema_tokens + entry.estimated_schema_tokens > mcp.schema_token_budget
+                ):
+                    continue
+                limited_entries.append(entry)
+                mcp_count += 1
+                mcp_schema_tokens += entry.estimated_schema_tokens
+            filtered_catalog = replace(filtered_catalog, entries=tuple(limited_entries))
+        known_scopes = {scope.scope_id for scope in filtered_catalog.scopes}
+        selected_scopes = tuple(
+            scope for scope in sorted(self._runtime.tool_groups) if scope in known_scopes
+        )
+        if (
+            any(scope.startswith("mcp.") for scope in self._runtime.tool_groups)
+            and "mcp" in known_scopes
+            and "mcp" not in selected_scopes
+        ):
+            selected_scopes = (*selected_scopes, "mcp")
+        if self._runtime.tool_groups and not selected_scopes:
+            return ()
+        budgeted = ToolSchemaBudgeter(
+            selected_tool_limit=tooling.selected_tool_limit if tooling is not None else None,
+            schema_token_budget=tooling.schema_token_budget if tooling is not None else None,
+        ).select(
+            filtered_catalog,
+            scopes=selected_scopes,
+            query=f"{self._runtime.selection_query} {self._runtime.planner_intent}",
+        )
+        definitions = tuple(entry.descriptor.as_chat_tool() for entry in budgeted.entries)
+        for entry in budgeted.entries:
+            self._service._tool_metrics.record_selection(
+                entry.provider_id,
+                entry.descriptor.provider_tool_name or entry.descriptor.model_name,
+                entry.estimated_schema_tokens,
+            )
         if self._admin_retry_constraint is not None:
             definitions = tuple(
                 tool for tool in definitions if tool.name == self._admin_retry_constraint[0]
@@ -252,25 +309,34 @@ class _ChatAgentBackend(AgentToolBackend):
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
         self._batch = list(calls)
 
+    def did_use_web(self) -> bool:
+        """Expose a provider-metadata-derived effect to the shared Agent loop."""
+
+        return self._web_was_used
+
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
         if not self._batch:
             return json.dumps(
                 {"ok": False, "error": "tool_batch_state_missing"}, ensure_ascii=False
             )
-        call = self._batch.pop(0)
-        if call.function.name != name or call.function.arguments != arguments_json:
+        call_index = next(
+            (
+                index
+                for index, item in enumerate(self._batch)
+                if item.function.name == name and item.function.arguments == arguments_json
+            ),
+            None,
+        )
+        if call_index is None:
             return json.dumps(
                 {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
             )
-        descriptor = self._capabilities.get(name)
-        if descriptor is None:
+        call = self._batch.pop(call_index)
+        entry = self._catalog.by_model_name(name) if self._catalog is not None else None
+        descriptor = entry.descriptor if entry is not None else None
+        if descriptor is None or descriptor.binding is None:
             return json.dumps({"ok": False, "error": "unknown_capability"})
-        is_web_tool = descriptor.group == ToolGroup.WEB.value
-        is_admin_tool = descriptor.trust_source is CapabilityTrustSource.ADMIN
-        automation = self._service._automation_tools
-        is_automation_tool = bool(automation is not None and automation.owns(name))
-        plugin = self._service._plugin_tools
-        is_plugin_tool = bool(plugin is not None and plugin.owns(name))
+        is_web_tool = descriptor.scope_id == ToolGroup.WEB.value
         config = self._runtime.runtime_config
         assert config is not None
         mutation_identity = (
@@ -319,48 +385,98 @@ class _ChatAgentBackend(AgentToolBackend):
                 ensure_ascii=False,
             )
             self._tools_closed = True
-        elif is_admin_tool and (
-            self._service._admin_tools is None or not self._request_runtime().allow_admin_actions
-        ):
-            result = json.dumps(
-                {
-                    "ok": False,
-                    "error": "permission_denied",
-                    "detail": "当前真实消息事件没有管理员工具权限。",
-                },
-                ensure_ascii=False,
-            )
-            self._tools_closed = True
         else:
             execution_runtime = self._request_runtime()
             if mutation_identity is not None and execution_runtime.turn_token is not None:
                 await self._service._turn_coordinator.mark_mutation_started(
                     execution_runtime.turn_token
                 )
-            if is_admin_tool:
-                assert self._service._admin_tools is not None
-                result = await self._service._admin_tools.execute(
-                    name,
-                    arguments_json,
-                    execution_runtime,
-                )
-            elif is_automation_tool:
-                assert automation is not None
-                result = await automation.execute(name, arguments_json, execution_runtime)
-            elif is_plugin_tool:
-                assert plugin is not None
-                result = await plugin.execute(
-                    name,
-                    arguments_json,
-                    execution_runtime,
-                    web_was_used=self._web_was_used,
+            try:
+                parsed = json.loads(arguments_json)
+            except json.JSONDecodeError:
+                parsed = None
+            if not isinstance(parsed, dict):
+                result = json.dumps(
+                    {"ok": False, "error": "invalid_json"},
+                    ensure_ascii=False,
                 )
             else:
-                result = await self._service._tools.execute(
-                    name,
-                    arguments_json,
-                    execution_runtime,
+                started = time.perf_counter()
+                try:
+                    outcome = await descriptor.binding.invoke(
+                        {str(key): value for key, value in parsed.items()},
+                        ToolInvocationContext(
+                            runtime=execution_runtime,
+                            call_id=call.id,
+                            conversation_key=execution_runtime.conversation_key,
+                            actor_user_id=execution_runtime.actor_user_id,
+                            trigger_message_id=execution_runtime.trigger_message_id,
+                        ),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    outcome = ToolExecutionResult(
+                        ok=False,
+                        error_code=type(exc).__name__,
+                        public_message="工具执行失败",
+                        retryable=False,
+                        provider_id=descriptor.provider_id,
+                        tool_name=descriptor.provider_tool_name or descriptor.model_name,
+                    )
+                tooling = config.tooling
+                mcp = config.mcp
+                is_mcp = descriptor.trust_source is CapabilityTrustSource.MCP
+                result_tokens = (
+                    mcp.result_token_budget
+                    if is_mcp and mcp is not None and mcp.result_token_budget is not None
+                    else (tooling.result_token_budget if tooling is not None else None)
                 )
+                result_budget = (
+                    result_tokens * 4
+                    if result_tokens is not None
+                    else config.agent.tool_result_max_characters
+                )
+                item_limit = (
+                    mcp.result_item_limit
+                    if is_mcp and mcp is not None and mcp.result_item_limit is not None
+                    else (tooling.result_item_limit if tooling is not None else None)
+                )
+                artifact_store = (
+                    self._service._tool_artifacts
+                    if tooling is not None and tooling.result_artifact_enabled
+                    else None
+                )
+                retention_seconds = (
+                    mcp.artifact_retention_seconds
+                    if is_mcp and mcp is not None
+                    else (
+                        tooling.result_artifact_retention_seconds if tooling is not None else None
+                    )
+                )
+                budgeted = await ToolResultBudgeter(
+                    max_characters=result_budget,
+                    item_limit=item_limit,
+                    artifacts=artifact_store,
+                    artifact_retention_seconds=retention_seconds,
+                ).render(outcome)
+                result = budgeted.text
+                self._service._tool_metrics.record_invocation(
+                    descriptor.provider_id,
+                    descriptor.provider_tool_name or descriptor.model_name,
+                    outcome.ok,
+                )
+                if self._service._tool_invocations is not None:
+                    await self._service._tool_invocations.record_invocation(
+                        conversation_key=execution_runtime.conversation_key,
+                        provider_id=descriptor.provider_id,
+                        tool_name=descriptor.provider_tool_name or descriptor.model_name,
+                        success=outcome.ok,
+                        latency_seconds=time.perf_counter() - started,
+                        result_size=len(result.encode("utf-8")),
+                        artifact_created=budgeted.artifact_id is not None,
+                        error_category=outcome.error_code,
+                    )
             if contains_internal_capability_payload(result):
                 self._capability_was_used = True
             if is_web_tool:
@@ -373,7 +489,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 self._admin_terminal_failure = None
                 if mutation_identity is not None:
                     self._completed_admin_mutations.add(mutation_identity)
-            elif decoded.get("error") in _ADMIN_RETRYABLE_ERRORS:
+            elif (decoded.get("error") or decoded.get("error_code")) in _ADMIN_RETRYABLE_ERRORS:
                 self._admin_terminal_failure = decoded
                 self._admin_retry_constraint = self._retry_identity(call)
                 if self._admin_retry_constraint is None:
@@ -413,8 +529,16 @@ class _ChatAgentBackend(AgentToolBackend):
         return "这次操作的工具调用次数过多，已停止继续执行。请把请求拆小后再试。"
 
     def _is_mutating_call(self, call: ToolCall) -> bool:
-        descriptor = self._capabilities.get(call.function.name)
+        entry = (
+            self._catalog.by_model_name(call.function.name) if self._catalog is not None else None
+        )
+        descriptor = entry.descriptor if entry is not None else None
         return bool(descriptor is not None and descriptor.risk is not CapabilityRisk.READ)
+
+    def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
+        del runtime
+        entry = self._catalog.by_model_name(name) if self._catalog is not None else None
+        return bool(entry is not None and entry.descriptor.parallel_safe)
 
     def _retry_identity(self, call: ToolCall) -> tuple[str, str] | None:
         if not self._is_mutating_call(call):
@@ -475,6 +599,8 @@ class ChatService:
         emoji_effects: EmojiReplyEffectService | None = None,
         speech_effects: VoiceReplyEffectService | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
+        tool_artifacts: ToolArtifactWriter | None = None,
+        tool_invocations: ToolInvocationRecorder | None = None,
     ) -> None:
         self._settings = settings
         models = require_model_executor(
@@ -494,9 +620,15 @@ class ChatService:
         self._source_renderer = source_renderer or SourceRenderer()
         self._runtime_config = runtime_config
         self._agent_runner = AgentRunner(models, concurrency)
+        self._tool_selector = ToolCandidateSelector()
+        self._tool_reranker = FlashToolReranker(models)
         self._admin_tools: AdminToolService | None = None
         self._automation_tools: AutomationToolProvider | None = None
         self._plugin_tools: PluginToolProvider | None = None
+        self._external_tool_providers: list[ToolProvider] = []
+        self._tool_artifacts = tool_artifacts
+        self._tool_invocations = tool_invocations
+        self._tool_metrics = ToolKernelMetrics()
         self._time = time_service
         self._context_assembler = context_assembler or ContextAssembler(
             settings=settings,
@@ -532,6 +664,211 @@ class ChatService:
         """Attach approved plugin tools without a parallel chat router."""
 
         self._plugin_tools = service
+
+    def register_tool_provider(self, provider: ToolProvider) -> None:
+        """Register one host-owned provider before the application starts."""
+
+        if any(item.provider_id == provider.provider_id for item in self._external_tool_providers):
+            raise ValueError(f"duplicate tool provider: {provider.provider_id}")
+        self._external_tool_providers.append(provider)
+
+    def planner_tool_scopes(
+        self,
+        base_scopes: tuple[str, ...],
+        runtime: RuntimeConfigSnapshot | None = None,
+    ) -> tuple[ToolScopeSummary, ...]:
+        summaries = [
+            ToolScopeSummary(
+                scope_id=scope,
+                parent=scope.rpartition(".")[0] or None,
+                display_name=scope,
+                description=f"Yuki 内置 {scope} 能力",
+                tool_count=0,
+                provider_ids=("core",),
+                tags=(scope,),
+            )
+            for scope in base_scopes
+        ]
+        for provider in self._external_tool_providers:
+            getter = getattr(provider, "scope_summaries", None)
+            if callable(getter):
+                try:
+                    summaries.extend(getter(runtime))
+                except TypeError:
+                    summaries.extend(getter())
+        merged: dict[str, ToolScopeSummary] = {}
+        for item in summaries:
+            previous = merged.get(item.scope_id)
+            if previous is None:
+                merged[item.scope_id] = item
+                continue
+            descriptions = tuple(
+                dict.fromkeys(text for text in (previous.description, item.description) if text)
+            )
+            merged[item.scope_id] = ToolScopeSummary(
+                scope_id=item.scope_id,
+                parent=item.parent or previous.parent,
+                display_name=item.display_name or previous.display_name,
+                description="；".join(descriptions)[:300],
+                tool_count=previous.tool_count + item.tool_count,
+                provider_ids=tuple(sorted(set(previous.provider_ids) | set(item.provider_ids))),
+                tags=tuple(sorted(set(previous.tags) | set(item.tags))),
+            )
+        return tuple(merged[key] for key in sorted(merged))
+
+    def _build_tool_registry(
+        self,
+        runtime: ToolRuntime,
+        *,
+        web_was_used: bool,
+    ) -> ToolProviderRegistry:
+        """Adapt every domain service once; execution later uses bindings only."""
+
+        registry = ToolProviderRegistry()
+
+        def core_definitions(context: ToolRuntime) -> tuple[ChatTool, ...]:
+            definitions = self._tools.definitions(context)
+            if context.allow_admin_actions and self._admin_tools is not None:
+                definitions = tuple(
+                    tool for tool in definitions if tool.name != "get_my_capabilities"
+                )
+            return definitions
+
+        async def core_execute(name: str, arguments: str, context: ToolRuntime) -> object:
+            return await self._tools.execute(name, arguments, context)
+
+        registry.register(
+            InProcessToolProvider(
+                provider_id="core",
+                source=CapabilityTrustSource.CORE,
+                definitions=core_definitions,
+                execute=core_execute,
+            )
+        )
+        if self._tool_artifacts is not None:
+            artifacts = self._tool_artifacts
+
+            async def artifact_execute(
+                name: str,
+                arguments: str,
+                context: ToolRuntime,
+            ) -> object:
+                del name, context
+                decoded = json.loads(arguments)
+                if not isinstance(decoded, dict):
+                    raise ValueError("artifact arguments must be an object")
+                handle = str(decoded.get("handle", ""))
+                offset = int(decoded.get("offset", 0))
+                limit = int(decoded.get("limit", 8000))
+                query = str(decoded.get("query", ""))
+                result = await artifacts.read(
+                    handle,
+                    offset=offset,
+                    limit=limit,
+                    query=query,
+                )
+                if result is None:
+                    return {
+                        "ok": False,
+                        "error": "artifact_not_found",
+                        "detail": "Artifact 不存在或已过期",
+                    }
+                return {"ok": True, "data": result}
+
+            registry.register(
+                InProcessToolProvider(
+                    provider_id="artifacts",
+                    source=CapabilityTrustSource.CORE,
+                    definitions=lambda _context: (
+                        ChatTool(
+                            name="read_tool_artifact",
+                            description="分页读取工具产生的短期 Artifact，可按关键词定位。",
+                            parameters={
+                                "type": "object",
+                                "properties": {
+                                    "handle": {"type": "string"},
+                                    "offset": {"type": "integer", "minimum": 0},
+                                    "limit": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 32000,
+                                    },
+                                    "query": {"type": "string"},
+                                },
+                                "required": ["handle"],
+                                "additionalProperties": False,
+                            },
+                        ),
+                    ),
+                    execute=artifact_execute,
+                )
+            )
+        if runtime.allow_automation and self._automation_tools is not None:
+            automation = self._automation_tools
+
+            async def automation_execute(
+                name: str,
+                arguments: str,
+                context: ToolRuntime,
+            ) -> object:
+                return await automation.execute(name, arguments, context)
+
+            registry.register(
+                InProcessToolProvider(
+                    provider_id="automation",
+                    source=CapabilityTrustSource.AUTOMATION,
+                    definitions=lambda _context: automation.definitions(),
+                    execute=automation_execute,
+                )
+            )
+        if runtime.allow_admin_actions and self._admin_tools is not None:
+            admin = self._admin_tools
+
+            async def admin_execute(
+                name: str,
+                arguments: str,
+                context: ToolRuntime,
+            ) -> object:
+                return await admin.execute(name, arguments, context)
+
+            registry.register(
+                InProcessToolProvider(
+                    provider_id="admin",
+                    source=CapabilityTrustSource.ADMIN,
+                    definitions=lambda _context: admin.definitions(),
+                    execute=admin_execute,
+                )
+            )
+        if self._plugin_tools is not None:
+            plugin = self._plugin_tools
+
+            async def plugin_execute(
+                name: str,
+                arguments: str,
+                context: ToolRuntime,
+            ) -> object:
+                return await plugin.execute(
+                    name,
+                    arguments,
+                    context,
+                    web_was_used=web_was_used,
+                )
+
+            registry.register(
+                InProcessToolProvider(
+                    provider_id="plugin",
+                    source=CapabilityTrustSource.PLUGIN,
+                    definitions=lambda context: plugin.definitions(
+                        context,
+                        web_was_used=web_was_used,
+                    ),
+                    execute=plugin_execute,
+                    plugin_read_only=plugin.is_read_only,
+                )
+            )
+        for provider in self._external_tool_providers:
+            registry.register(provider)
+        return registry
 
     def configure_runtime_controls(self, runtime: RuntimeConfigSnapshot) -> None:
         """Apply HOT controls shared by the Agent and Planner prompt pipeline."""
@@ -620,7 +957,7 @@ class ChatService:
                     planned_turn.plan.tool_mode if planned_turn is not None else ToolMode.INHERIT
                 ),
                 tool_groups=(
-                    frozenset(group.value for group in planned_turn.plan.tool_selection.groups)
+                    frozenset(planned_turn.plan.tool_selection.scope_ids)
                     if planned_turn is not None
                     else frozenset(group.value for group in ToolGroup)
                 ),
@@ -630,6 +967,9 @@ class ChatService:
                     planned_turn is not None
                     and planned_turn.plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
                 ),
+                planner_scopes_explicit=planned_turn is not None,
+                selection_query=content,
+                planner_intent=(planned_turn.plan.intent if planned_turn is not None else ""),
             )
             if turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
@@ -866,6 +1206,7 @@ class ChatService:
                 group_id=runtime.inbound.group_id,
             )
             runtime = replace(runtime, runtime_config=config)
+        runtime = await self._prepare_tool_candidates(runtime)
         current_time = await self._time.current(runtime.inbound.sender.user_id)
         result = await self._agent_runner.run(
             initial_messages,
@@ -888,6 +1229,78 @@ class ChatService:
         )
         return result.text
 
+    async def _prepare_tool_candidates(self, runtime: ToolRuntime) -> ToolRuntime:
+        """Discover selected lazy scopes, then locally select and optionally rerank tools."""
+
+        config = runtime.runtime_config
+        assert config is not None
+        if self._tool_artifacts is not None and config.tooling is not None:
+            self._tool_artifacts.configure_retention(
+                config.tooling.result_artifact_retention_seconds
+            )
+        if runtime.tool_mode is ToolMode.NONE:
+            return replace(runtime, selected_tool_names=frozenset())
+        if runtime.planner_scopes_explicit and not runtime.tool_groups:
+            return replace(runtime, selected_tool_names=frozenset())
+        registry = self._build_tool_registry(runtime, web_was_used=False)
+        scopes = tuple(sorted(runtime.tool_groups))
+        for provider in registry.providers():
+            prepare = getattr(provider, "prepare_scopes", None)
+            if callable(prepare):
+                await prepare(scopes, runtime)
+        catalog = registry.catalog(runtime)
+        known_scopes = {scope.scope_id for scope in catalog.scopes}
+        candidate_scopes = tuple(scope for scope in scopes if scope in known_scopes)
+        if (
+            any(scope.startswith("mcp.") for scope in scopes)
+            and "mcp" in known_scopes
+            and "mcp" not in candidate_scopes
+        ):
+            candidate_scopes = (*candidate_scopes, "mcp")
+        mcp = config.mcp
+        mode = mcp.tool_selection_mode if mcp is not None else "all"
+        has_mcp_tools = any(
+            item.descriptor.trust_source is CapabilityTrustSource.MCP for item in catalog.entries
+        )
+        if mcp is None or not mcp.enabled or not has_mcp_tools or mode in {"all", "gateway"}:
+            return runtime
+        tooling = config.tooling
+        global_limit = tooling.selected_tool_limit if tooling is not None else None
+        candidates = list(
+            self._tool_selector.select(
+                catalog,
+                scopes=candidate_scopes,
+                user_request=runtime.selection_query,
+                planner_intent=runtime.planner_intent,
+                limit=None,
+            ).entries
+        )
+        if mcp.selected_tool_limit is not None:
+            mcp_used = 0
+            limited = []
+            for candidate in candidates:
+                if candidate.descriptor.trust_source is CapabilityTrustSource.MCP:
+                    if mcp_used >= mcp.selected_tool_limit:
+                        continue
+                    mcp_used += 1
+                limited.append(candidate)
+            candidates = limited
+        if global_limit is not None:
+            candidates = candidates[:global_limit]
+        if mode == "hybrid" and candidates:
+            candidates = list(
+                await self._tool_reranker.rerank(
+                    tuple(candidates),
+                    user_request=runtime.selection_query,
+                    planner_intent=runtime.planner_intent,
+                    limit=global_limit,
+                )
+            )
+        return replace(
+            runtime,
+            selected_tool_names=frozenset(item.descriptor.model_name for item in candidates),
+        )
+
     @staticmethod
     def _decode_tool_result(value: str) -> dict[str, object]:
         try:
@@ -898,7 +1311,13 @@ class ChatService:
 
     @staticmethod
     def _admin_failure_text(result: dict[str, object]) -> str:
-        detail = str(result.get("detail") or result.get("error") or "未知错误")
+        detail = str(
+            result.get("public_message")
+            or result.get("detail")
+            or result.get("error")
+            or result.get("error_code")
+            or "未知错误"
+        )
         return f"操作未完成：{detail}"
 
     def _render_chunks(

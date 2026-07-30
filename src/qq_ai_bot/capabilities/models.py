@@ -5,10 +5,13 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.messages import ChatTool
+
+if TYPE_CHECKING:
+    from qq_ai_bot.capabilities.binding import ToolBinding
 
 
 class CapabilityEffect(StrEnum):
@@ -31,6 +34,7 @@ class CapabilityTrustSource(StrEnum):
     ADMIN = "admin"
     AUTOMATION = "automation"
     PLUGIN = "plugin"
+    MCP = "mcp"
 
 
 class CapabilityIdempotency(StrEnum):
@@ -58,11 +62,26 @@ class CapabilityDescriptor:
     cancellable: bool
     idempotency: CapabilityIdempotency
     handler: CapabilityHandler | None = None
+    provider_id: str = ""
+    provider_tool_name: str = ""
+    description: str = ""
+    compact_description: str = ""
+    tags: tuple[str, ...] = ()
+    binding: ToolBinding | None = None
+    parallel_safe: bool = False
+    result_kind: str = "json"
+    schema_version: str = "1"
 
-    def as_chat_tool(self, description: str) -> ChatTool:
+    @property
+    def scope_id(self) -> str:
+        """Return the dynamic Planner scope used by this capability."""
+
+        return self.group
+
+    def as_chat_tool(self, description: str | None = None) -> ChatTool:
         return ChatTool(
             name=self.model_name,
-            description=description,
+            description=description if description is not None else self.description,
             parameters=self.input_schema,
         )
 

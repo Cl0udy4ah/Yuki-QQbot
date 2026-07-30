@@ -18,6 +18,7 @@ from qq_ai_bot.planner.models import (
     PlannerMessage,
     PlannerSignal,
     PlannerSpeechContext,
+    ToolScopeSummary,
 )
 from qq_ai_bot.planner.necessity import ReplyNecessityFeatures, ReplyNecessityScorer
 from qq_ai_bot.planner.repository import PlannerRepository, PlannerVoiceCadence
@@ -67,6 +68,7 @@ class PlannerContextBuilder:
         runtime: RuntimeConfigSnapshot,
         visual_input_present: bool = False,
         available_tool_categories: tuple[str, ...] = (),
+        available_tool_scopes: tuple[ToolScopeSummary, ...] = (),
         plugin_signals: tuple[PlannerSignal, ...] = (),
         speech: PlannerSpeechContext | None = None,
         now: datetime | None = None,
@@ -177,6 +179,7 @@ class PlannerContextBuilder:
             current_time=current_time,
             necessity=necessity,
             available_tool_categories=available_tool_categories,
+            available_tool_scopes=available_tool_scopes,
             plugin_signals=plugin_signals,
             speech=speech_context or PlannerSpeechContext(),
         )

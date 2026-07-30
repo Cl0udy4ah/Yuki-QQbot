@@ -19,6 +19,7 @@ class ModelTask(StrEnum):
     AUTOMATION_TEXT_GENERATION = "automation_text_generation"
     AUTOMATION_AGENT = "automation_agent"
     PLUGIN_AGENT_SESSION = "plugin_agent_session"
+    TOOL_SELECTION = "tool_selection"
     UTILITY_STRUCTURED = "utility_structured"
 
 

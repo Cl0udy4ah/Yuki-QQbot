@@ -851,6 +851,91 @@ class AutomationStepRunModel(Base):
     run: Mapped[AutomationRunModel] = relationship(back_populates="step_runs")
 
 
+class MCPServerStateModel(Base):
+    """Secret-free lifecycle metadata for one configured MCP server."""
+
+    __tablename__ = "mcp_server_states"
+
+    server_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    transport: Mapped[str] = mapped_column(String(32), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    lifecycle: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    server_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    server_version: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    server_instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    last_connected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MCPToolCacheModel(Base):
+    """Cached MCP tools/list metadata; never stores credentials or results."""
+
+    __tablename__ = "mcp_tool_cache"
+    __table_args__ = (
+        UniqueConstraint("server_id", "remote_tool_name", name="uq_mcp_tool_cache_server_tool"),
+        Index("ix_mcp_tool_cache_server", "server_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    server_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    remote_tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    compact_description: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    input_schema_json: Mapped[str] = mapped_column(Text, nullable=False)
+    output_schema_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    annotations_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    metadata_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ToolArtifactModel(Base):
+    """Handle metadata for an oversized tool result stored outside SQLite."""
+
+    __tablename__ = "tool_artifacts"
+    __table_args__ = (Index("ix_tool_artifacts_expires", "expires_at"),)
+
+    handle_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    relative_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ToolInvocationModel(Base):
+    """Content-free audit metrics for all provider-neutral tool executions."""
+
+    __tablename__ = "tool_invocations"
+    __table_args__ = (
+        CheckConstraint("latency_seconds >= 0", name="ck_tool_invocations_latency"),
+        CheckConstraint("result_size >= 0", name="ck_tool_invocations_result_size"),
+        Index("ix_tool_invocations_provider_created", "provider_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    latency_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    result_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    artifact_created: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    error_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 # Source-compatibility aliases for integrations that only inspect the old profile types.
 UserProfileModel = PersonModel
 UserGroupProfileModel = MembershipModel

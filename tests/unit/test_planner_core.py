@@ -45,7 +45,7 @@ from qq_ai_bot.planner import (
     TurnPlan,
     constrain_turn_plan,
 )
-from qq_ai_bot.planner.models import PlannerSpeechContext
+from qq_ai_bot.planner.models import PlannerSpeechContext, ToolScopeSummary
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.speech.models import (
@@ -659,6 +659,53 @@ def test_plan_parser_rejects_unknown_fields_and_permission_modes() -> None:
         constrain_turn_plan(_valid_plan_payload(root=True), planner_input)
     with pytest.raises(PlannerResponseError):
         constrain_turn_plan(_valid_plan_payload(tool_mode="write_all"), planner_input)
+
+
+def test_dynamic_scopes_are_authoritative_and_legacy_groups_remain_compatible() -> None:
+    planner_input = _planner_input().model_copy(
+        update={
+            "available_tool_scopes": (
+                ToolScopeSummary(
+                    scope_id="mcp.music",
+                    parent="mcp",
+                    display_name="Music",
+                    description="music tools",
+                    tool_count=2,
+                    provider_ids=("mcp.music",),
+                ),
+                ToolScopeSummary(
+                    scope_id="automation",
+                    display_name="Automation",
+                    tool_count=3,
+                    provider_ids=("automation",),
+                ),
+            ),
+            "available_tool_categories": (),
+        }
+    )
+    valid = constrain_turn_plan(
+        _valid_plan_payload(
+            tool_selection={
+                "mode": "inherit",
+                "scopes": ["mcp.music", "automation"],
+            }
+        ),
+        planner_input,
+    )
+    assert valid.tool_selection.scope_ids == ("mcp.music", "automation")
+
+    with pytest.raises(PlannerResponseError, match="unknown tool scopes"):
+        constrain_turn_plan(
+            _valid_plan_payload(tool_selection={"mode": "inherit", "scopes": ["mcp.unknown"]}),
+            planner_input,
+        )
+
+    legacy = constrain_turn_plan(
+        _valid_plan_payload(tool_selection={"mode": "inherit", "groups": ["automation"]}),
+        planner_input,
+    )
+    assert legacy.tool_selection.scope_ids == ("automation",)
+    assert legacy.tool_selection.groups == ()
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,12 @@ _EMOJI_TABLES = {
     "emoji_jobs",
     "emoji_usage_events",
 }
+_TOOL_KERNEL_TABLES = {
+    "mcp_server_states",
+    "mcp_tool_cache",
+    "tool_artifacts",
+    "tool_invocations",
+}
 
 
 def _alembic_config(database_url: str, monkeypatch: pytest.MonkeyPatch) -> Config:
@@ -88,10 +94,11 @@ def test_0013_non_destructively_upgrades_0012(
         person = connection.execute(
             "SELECT nickname FROM people WHERE user_id = '10001'"
         ).fetchone()
-    assert revision == ("0018",)
+    assert revision == ("0019",)
     assert person == ("保留用户",)
     assert _NEW_TABLES <= _tables(path)
     assert _EMOJI_TABLES <= _tables(path)
+    assert _TOOL_KERNEL_TABLES <= _tables(path)
 
     command.downgrade(config, "0012")
     with sqlite3.connect(path) as connection:
@@ -105,6 +112,7 @@ def test_0013_non_destructively_upgrades_0012(
     assert retained_person == ("保留用户",)
     assert not (_NEW_TABLES & _tables(path))
     assert not (_EMOJI_TABLES & _tables(path))
+    assert not (_TOOL_KERNEL_TABLES & _tables(path))
 
 
 async def _install(repository: PluginInstallationRepository, plugin_id: str) -> None:

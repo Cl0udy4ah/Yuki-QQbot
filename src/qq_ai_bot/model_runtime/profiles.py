@@ -73,6 +73,7 @@ _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
     ModelTask.AUTOMATION_TEXT_GENERATION: frozenset(),
     ModelTask.AUTOMATION_AGENT: frozenset({ModelCapability.TOOLS}),
     ModelTask.PLUGIN_AGENT_SESSION: frozenset({ModelCapability.TOOLS}),
+    ModelTask.TOOL_SELECTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.UTILITY_STRUCTURED: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
 }
 
@@ -138,13 +139,20 @@ def load_model_profile_catalog(
             )
             for profile_id, payload in document.profiles.items()
         }
+        raw_routes = dict(document.routes)
+        if (
+            ModelTask.TOOL_SELECTION.value not in raw_routes
+            and ModelTask.PLANNER.value in raw_routes
+        ):
+            logger.warning("model_route_compatibility task=tool_selection source=planner")
+            raw_routes[ModelTask.TOOL_SELECTION.value] = raw_routes[ModelTask.PLANNER.value]
         routes = {
             ModelTask(task_name): ModelRoute(
                 task=ModelTask(task_name),
                 profile_id=profile_id,
                 required_capabilities=_DEFAULT_REQUIREMENTS[ModelTask(task_name)],
             )
-            for task_name, profile_id in document.routes.items()
+            for task_name, profile_id in raw_routes.items()
         }
         return ModelProfileCatalog(profiles=profiles, routes=routes)
     except (OSError, tomllib.TOMLDecodeError, ValidationError, KeyError, ValueError) as exc:

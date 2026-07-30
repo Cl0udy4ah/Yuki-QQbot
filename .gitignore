@@ -1,4 +1,5 @@
 .env
+.mcp.json
 .venv/
 .venv-dev/
 __pycache__/

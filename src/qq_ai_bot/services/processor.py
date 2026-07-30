@@ -728,6 +728,7 @@ class MessageProcessor:
             if self._planner_signals is not None
             else ()
         )
+        tool_categories = self._tool_categories(message, visual_input_present)
         planner_input = await self._planner_context.build(
             inbound=message,
             conversation_key=turn_token.conversation_key,
@@ -735,7 +736,8 @@ class MessageProcessor:
             origin=TurnOrigin.USER_MESSAGE,
             runtime=runtime,
             visual_input_present=visual_input_present,
-            available_tool_categories=self._tool_categories(message, visual_input_present),
+            available_tool_categories=tool_categories,
+            available_tool_scopes=self._chat.planner_tool_scopes(tool_categories, runtime),
             plugin_signals=plugin_signals,
         )
         async with self._turn_coordinator.track(turn_token, "planner"):
@@ -766,7 +768,8 @@ class MessageProcessor:
             origin=TurnOrigin.USER_MESSAGE,
             runtime=runtime,
             visual_input_present=visual_input_present,
-            available_tool_categories=self._tool_categories(message, visual_input_present),
+            available_tool_categories=tool_categories,
+            available_tool_scopes=self._chat.planner_tool_scopes(tool_categories, runtime),
             plugin_signals=plugin_signals,
         )
         async with self._turn_coordinator.track(turn_token, "planner"):

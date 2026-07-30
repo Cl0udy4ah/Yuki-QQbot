@@ -194,6 +194,33 @@ class AgentRuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolingRuntimeConfig:
+    max_parallel_calls: int
+    selected_tool_limit: int | None
+    schema_token_budget: int | None
+    result_token_budget: int | None
+    result_item_limit: int | None
+    result_artifact_enabled: bool
+    result_artifact_retention_seconds: int
+
+
+@dataclass(frozen=True, slots=True)
+class MCPRuntimeConfig:
+    enabled: bool
+    gateway_enabled: bool
+    tool_selection_mode: str
+    metadata_cache_ttl_seconds: int
+    connect_timeout_seconds: float
+    request_timeout_seconds: float
+    selected_tool_limit: int | None
+    schema_token_budget: int | None
+    result_token_budget: int | None
+    result_item_limit: int | None
+    max_parallel_calls: int
+    artifact_retention_seconds: int
+
+
+@dataclass(frozen=True, slots=True)
 class WebRuntimeConfig:
     search_max_results: int
     extract_max_results: int
@@ -295,3 +322,5 @@ class RuntimeConfigSnapshot:
     vision: VisionRuntimeConfig
     emoji: EmojiRuntimeConfig
     speech: SpeechRuntimeConfig
+    tooling: ToolingRuntimeConfig | None = None
+    mcp: MCPRuntimeConfig | None = None

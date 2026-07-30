@@ -85,6 +85,17 @@ automation.resume(task_id) -> PluginResult
 automation.cancel(task_id) -> PluginResult
 ```
 
+## MCP
+
+```python
+mcp.status() -> Mapping[str, JsonValue]
+mcp.list_servers() -> tuple[Mapping[str, JsonValue], ...]
+mcp.search_tools(query) -> tuple[Mapping[str, JsonValue], ...]
+mcp.call(server_id, tool_name, arguments) -> PluginResult
+```
+
+MCP Facade 使用 Host 的共享 Manager，不暴露连接、进程或 Secret。
+
 ## Config / Secret / Storage
 
 ```python
@@ -113,4 +124,3 @@ events.publish(EventEnvelope) -> None
 ```
 
 `PluginContext` 还提供 `plugin_id`、隔离 `logger`、脱敏 `current` 和 `FeatureRegistry features`。
-

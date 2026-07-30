@@ -69,6 +69,8 @@ class PluginPermission(StrEnum):
     BACKGROUND_WORKER = "background.worker"
     STORAGE_PRIVATE = "storage.private"
     PLANNER_SIGNAL_REGISTER = "planner.signal.register"
+    MCP_READ = "mcp.read"
+    MCP_CALL = "mcp.call"
 
 
 HIGH_RISK_PERMISSIONS: frozenset[PluginPermission] = frozenset(

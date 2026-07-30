@@ -34,13 +34,13 @@ class CapabilityPolicyEngine:
     ) -> tuple[CapabilityDescriptor, ...]:
         if not context.conversation_open or context.tool_selection.mode is ToolMode.NONE:
             return ()
-        selected_groups = {group.value for group in context.tool_selection.groups}
+        selected_scopes = set(context.tool_selection.scope_ids)
         granted = set(context.authority.permissions)
         if context.authority.is_superuser:
             granted.add("superuser")
         visible: list[CapabilityDescriptor] = []
         for descriptor in descriptors:
-            if descriptor.group not in selected_groups:
+            if selected_scopes and descriptor.scope_id not in selected_scopes:
                 continue
             if context.origin not in descriptor.allowed_origins:
                 continue

@@ -18,6 +18,9 @@ voice.mode=voice 或 text_and_voice、voice.agent_tool=required；即使 Agent �
 也应把拒绝或替代回答用用户明确索要的语音载体发送。明确不要语音时使用 explicit_opt_out；
 只有用户没有表达任何语音偏好时才能使用 neutral。voice.language 必须来自
 speech.available_languages；只有一种可用语言时直接选择它，不要选择不可用的语言。
+available_tool_scopes 是后端动态提供的紧凑目录，只包含 scope、简述、标签和工具数量，不含
+工具 Schema。只在本轮确实需要工具时选择最小必要 scopes；不需要工具时返回空 scopes。
+不得输出目录中不存在的 scope，也不得用旧的固定工具组猜测远程能力。
 用户明确要求发送表情或表情包，且 available_tool_categories 包含 emoji 时，必须输出
 emoji.mode=preferred 或 emoji_only，并填写简短的 goal 和 emotion；不要让 Agent 查询表情库存，
 也不要在正文中用文字描述代替实际表情效果。

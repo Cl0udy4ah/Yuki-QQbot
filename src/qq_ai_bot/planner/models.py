@@ -62,10 +62,46 @@ class ToolGroup(StrEnum):
 
 
 class ToolSelection(_StrictPlannerModel):
-    """A monotonic tool mode plus a subset of backend-advertised groups."""
+    """A monotonic tool mode plus dynamic backend-advertised scopes.
+
+    ``groups`` remains an accepted legacy spelling for 2.0 Planner responses.
+    New providers should emit ``scopes``.
+    """
 
     mode: ToolMode = ToolMode.INHERIT
+    scopes: tuple[str, ...] = ()
     groups: tuple[ToolGroup, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_legacy_groups(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or not value.get("groups"):
+            return value
+        normalized = dict(value)
+        scopes = [str(item) for item in normalized.get("scopes", ())]
+        for group in normalized.get("groups", ()):
+            group_id = group.value if isinstance(group, ToolGroup) else str(group)
+            if group_id not in scopes:
+                scopes.append(group_id)
+        normalized["scopes"] = scopes
+        normalized["groups"] = []
+        return normalized
+
+    @property
+    def scope_ids(self) -> tuple[str, ...]:
+        return self.scopes
+
+
+class ToolScopeSummary(_StrictPlannerModel):
+    """Compact Planner-visible scope metadata; never contains JSON Schemas."""
+
+    scope_id: str = Field(min_length=1, max_length=128)
+    parent: str | None = Field(default=None, max_length=128)
+    display_name: str = Field(default="", max_length=128)
+    description: str = Field(default="", max_length=300)
+    tool_count: int = Field(ge=0, strict=True)
+    provider_ids: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
 
 
 class PlannerReasonCode(StrEnum):
@@ -166,6 +202,7 @@ class PlannerInput(_StrictPlannerModel):
     current_time: datetime
     necessity: ReplyNecessitySnapshot
     available_tool_categories: tuple[str, ...] = ()
+    available_tool_scopes: tuple[ToolScopeSummary, ...] = ()
     plugin_signals: tuple[PlannerSignal, ...] = ()
     speech: PlannerSpeechContext = PlannerSpeechContext()
 
@@ -235,7 +272,10 @@ class TurnPlan(_StrictPlannerModel):
         if "tool_selection" not in normalized:
             normalized["tool_selection"] = {
                 "mode": legacy,
-                "groups": [group.value for group in ToolGroup],
+                # An empty scope list means all backend-approved scopes.  This
+                # preserves the 2.0 ``tool_mode`` contract without fabricating
+                # names that may not exist in a dynamic provider catalog.
+                "scopes": [],
             }
         return normalized
 

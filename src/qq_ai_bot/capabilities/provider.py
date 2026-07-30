@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Protocol
+import json
+from collections.abc import Awaitable, Callable
+from dataclasses import replace
+from typing import Any, Protocol
 
 from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.capabilities.binding import InProcessToolBinding
+from qq_ai_bot.capabilities.invocation import ToolInvocationContext
 from qq_ai_bot.capabilities.models import (
     CapabilityDescriptor,
     CapabilityEffect,
@@ -118,3 +122,78 @@ class ChatToolCapabilityProvider:
             CapabilityEffect.READ_STATE if read_only else CapabilityEffect.WRITE_STATE,
             CapabilityRisk.READ if read_only else CapabilityRisk.MUTATE,
         )
+
+
+LegacyExecutor = Callable[[str, str, Any], Awaitable[object]]
+DefinitionFactory = Callable[[Any], tuple[ChatTool, ...]]
+
+
+class InProcessToolProvider:
+    """Expose an existing domain service through provider-neutral bindings."""
+
+    def __init__(
+        self,
+        *,
+        provider_id: str,
+        source: CapabilityTrustSource,
+        definitions: DefinitionFactory,
+        execute: LegacyExecutor,
+        plugin_read_only: Callable[[str], bool] | None = None,
+    ) -> None:
+        self._provider_id = provider_id
+        self._source = source
+        self._definitions = definitions
+        self._execute = execute
+        self._plugin_read_only = plugin_read_only
+
+    @property
+    def provider_id(self) -> str:
+        return self._provider_id
+
+    def descriptors(self, context: Any) -> tuple[CapabilityDescriptor, ...]:
+        tools = self._definitions(context)
+        descriptors = ChatToolCapabilityProvider(
+            tools,
+            source=self._source,
+            plugin_read_only=self._plugin_read_only,
+        ).descriptors()
+        return tuple(
+            self._bound(descriptor, tool)
+            for descriptor, tool in zip(descriptors, tools, strict=True)
+        )
+
+    def _bound(
+        self,
+        descriptor: CapabilityDescriptor,
+        tool: ChatTool,
+    ) -> CapabilityDescriptor:
+        async def invoke(
+            arguments: dict[str, object],
+            context: ToolInvocationContext,
+        ) -> object:
+            return await self._execute(
+                tool.name,
+                json.dumps(arguments, ensure_ascii=False),
+                context.runtime,
+            )
+
+        return replace(
+            descriptor,
+            provider_id=self._provider_id,
+            provider_tool_name=tool.name,
+            description=tool.description,
+            compact_description=tool.description[:240],
+            tags=(descriptor.group, self._source.value),
+            binding=InProcessToolBinding(
+                provider_id=self._provider_id,
+                tool_name=tool.name,
+                handler=invoke,
+            ),
+            parallel_safe=descriptor.risk is CapabilityRisk.READ,
+        )
+
+    async def refresh(self, *, force: bool = False) -> None:
+        del force
+
+    async def close(self) -> None:
+        return None

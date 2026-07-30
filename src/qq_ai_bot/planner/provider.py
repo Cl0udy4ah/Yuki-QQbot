@@ -20,7 +20,6 @@ from qq_ai_bot.planner.models import (
     PlannerDecision,
     PlannerInput,
     PlannerReasonCode,
-    ToolGroup,
     ToolMode,
     ToolSelection,
     TurnPlan,
@@ -95,7 +94,20 @@ def validate_turn_plan(
     """Narrow event-bound fields without discarding otherwise valid intent."""
 
     known_targets = set(planner_input.known_target_user_ids)
-    available_groups = set(planner_input.available_tool_categories)
+    available_scopes = {
+        *(scope.scope_id for scope in planner_input.available_tool_scopes),
+        *planner_input.available_tool_categories,
+    }
+    # Compatibility inputs built before dynamic scope summaries existed do not
+    # advertise a catalog.  Production inputs always do; only validate names
+    # when the caller supplied the authoritative catalog.
+    unknown_scopes = (
+        sorted(set(plan.tool_selection.scope_ids) - available_scopes) if available_scopes else []
+    )
+    if unknown_scopes:
+        raise PlannerResponseError(
+            f"planner selected unknown tool scopes: {', '.join(unknown_scopes)}"
+        )
     return plan.model_copy(
         update={
             "target_user_ids": tuple(
@@ -113,11 +125,7 @@ def validate_turn_plan(
             ),
             "tool_selection": plan.tool_selection.model_copy(
                 update={
-                    "groups": tuple(
-                        group
-                        for group in plan.tool_selection.groups
-                        if group.value in available_groups
-                    )
+                    "scopes": plan.tool_selection.scope_ids,
                 }
             ),
         }
@@ -164,8 +172,9 @@ def deterministic_fallback_plan(planner_input: PlannerInput) -> TurnPlan:
         or planner_input.reply_target_is_bot
     )
     should_reply = explicitly_triggered or planner_input.necessity.should_enter_planner
-    available_groups = tuple(
-        group for group in ToolGroup if group.value in planner_input.available_tool_categories
+    available_scopes = (
+        tuple(scope.scope_id for scope in planner_input.available_tool_scopes)
+        or planner_input.available_tool_categories
     )
     natural_direct_reply = should_reply and (
         planner_input.scope_type is ScopeType.PRIVATE
@@ -184,7 +193,7 @@ def deterministic_fallback_plan(planner_input: PlannerInput) -> TurnPlan:
         desired_messages=3 if natural_direct_reply else 1,
         tool_selection=ToolSelection(
             mode=(ToolMode.READ_ONLY if planner_input.visual_input_present else ToolMode.INHERIT),
-            groups=available_groups,
+            scopes=available_scopes,
         ),
         wait_seconds=0.0,
         confidence=0.0,

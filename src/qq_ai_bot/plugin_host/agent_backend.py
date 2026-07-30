@@ -47,6 +47,17 @@ class PluginAgentToolBackend:
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
         del calls, runtime
 
+    def did_use_web(self) -> bool:
+        """Plugin sessions cannot invoke the host web tools after web isolation."""
+
+        return False
+
+    def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
+        """Plugin sessions expose read-only core tools, so calls may overlap."""
+
+        del name, runtime
+        return True
+
     async def execute(
         self,
         name: str,

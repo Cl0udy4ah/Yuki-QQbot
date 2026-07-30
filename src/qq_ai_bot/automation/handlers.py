@@ -651,6 +651,16 @@ class _AutomationAgentBackend(AgentToolBackend):
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
         return None
 
+    def did_use_web(self) -> bool:
+        return self._web_was_used
+
+    def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
+        capability_name = self._name_map.get(name)
+        if capability_name is None:
+            return False
+        definition = self._registry.require(capability_name)
+        return definition.risk_class.value == "read"
+
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
         capability_name = self._name_map.get(name)
         if capability_name is None:

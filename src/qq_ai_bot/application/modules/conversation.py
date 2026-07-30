@@ -9,6 +9,7 @@ from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.application.modules.model_runtime import ModelRuntimeBundle
 from qq_ai_bot.application.modules.persistence import PersistenceBundle
+from qq_ai_bot.capabilities import ToolArtifactWriter
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.model_runtime.models import ModelTask
@@ -18,7 +19,7 @@ from qq_ai_bot.planner.provider import LLMPlannerProvider
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.plugin_host.agent_backend import PluginAgentToolBackend
 from qq_ai_bot.services.agent_tools import AgentToolService
-from qq_ai_bot.services.chat import ChatService
+from qq_ai_bot.services.chat import ChatService, ToolInvocationRecorder
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
 from qq_ai_bot.services.memory_worker import MemoryWorker
@@ -77,6 +78,8 @@ class ConversationModule:
         speech: SpeechService,
         speech_effects: VoiceReplyEffectService,
         voice_preferences: VoicePreferenceService,
+        tool_artifacts: ToolArtifactWriter | None = None,
+        tool_invocations: ToolInvocationRecorder | None = None,
     ) -> None:
         self._settings = settings
         self._persistence = persistence
@@ -91,6 +94,8 @@ class ConversationModule:
         self._speech = speech
         self._speech_effects = speech_effects
         self._voice_preferences = voice_preferences
+        self._tool_artifacts = tool_artifacts
+        self._tool_invocations = tool_invocations
 
     def build(self) -> ConversationBundle:
         settings = self._settings
@@ -174,6 +179,8 @@ class ConversationModule:
             reply_sequence=reply_sequence,
             emoji_effects=self._emoji_effects,
             speech_effects=self._speech_effects,
+            tool_artifacts=self._tool_artifacts,
+            tool_invocations=self._tool_invocations,
         )
         memory_worker = MemoryWorker(
             settings=settings,

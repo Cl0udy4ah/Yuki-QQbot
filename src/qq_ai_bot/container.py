@@ -24,6 +24,7 @@ from qq_ai_bot.application.modules import (
     AutomationModule,
     ConversationModule,
     EmojiModule,
+    MCPModule,
     MediaModule,
     ModelRuntimeModule,
     PersistenceModule,
@@ -34,6 +35,7 @@ from qq_ai_bot.application.modules import (
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.mcp.admin import MCPCommandHandler
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.plugin_host.config import BoundConfigFacade
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind
@@ -87,6 +89,22 @@ class ApplicationContainer:
         self.persistence = persistence
         self.database = persistence.database
         self.runtime_config = persistence.runtime_config
+        mcp = MCPModule(settings, self.database, lifecycle=self.lifecycle).build()
+        self.mcp_bundle = mcp
+        self.mcp_repository = mcp.repository
+        self.tool_artifacts = mcp.artifacts
+        self.mcp_manager = mcp.manager
+        self.mcp_tools = mcp.provider
+        self.mcp_commands = MCPCommandHandler(
+            self.mcp_manager,
+            result_max_characters=(
+                settings.mcp_result_token_budget * 4
+                if settings.mcp_result_token_budget is not None
+                else settings.agent_tool_result_max_characters
+            ),
+            artifacts=self.tool_artifacts,
+            artifact_retention_seconds=settings.mcp_artifact_retention_seconds,
+        )
         self.admin_action_registry = ActionRegistry()
         self.permission_catalog = PermissionCatalogService(
             settings=settings,
@@ -209,6 +227,8 @@ class ApplicationContainer:
             speech=self.speech,
             speech_effects=self.speech_effects,
             voice_preferences=self.voice_preference_service,
+            tool_artifacts=self.tool_artifacts,
+            tool_invocations=self.mcp_repository,
         )
         conversation = self.conversation_module.build()
         self.conversation = conversation
@@ -224,6 +244,7 @@ class ApplicationContainer:
         self.agent_tools = conversation.agent_tools
         self.plugin_agent_tools = conversation.plugin_agent_tools
         self.chat = conversation.chat
+        self.chat.register_tool_provider(self.mcp_tools)
         self.memory_worker = conversation.memory_worker
         self.relationship_worker = conversation.relationship_worker
         admin = AdminModule(
@@ -365,6 +386,7 @@ class ApplicationContainer:
             emoji_admin=self.emoji_admin,
             speech_admin=self.speech_admin,
             model_invocations=self.model_invocations,
+            mcp_commands=self.mcp_commands,
         )
         self.processor = MessageProcessor(
             settings=settings,
@@ -478,6 +500,7 @@ class ApplicationContainer:
                 agent_tools=self.plugin_agent_tools,
                 agent_capabilities=frozenset(agent_capabilities),
                 web_provider=self.web_provider,
+                mcp_manager=self.mcp_manager,
                 vision=self.vision,
                 emoji_repository=self.emoji_repository,
                 emoji_collector=self.emoji_collector,
@@ -690,6 +713,9 @@ class ApplicationContainer:
                 plugin_state_deleted = await self.plugin_state.cleanup_expired()
                 if plugin_state_deleted:
                     logger.info("plugin_state_cleaned count=%d", plugin_state_deleted)
+                artifact_deleted = await self.tool_artifacts.cleanup()
+                if artifact_deleted:
+                    logger.info("tool_artifacts_cleaned count=%d", artifact_deleted)
                 plugin_sessions_expired = await self.plugin_session_repository.expire_due()
                 if plugin_sessions_expired:
                     logger.info(
