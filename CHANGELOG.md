@@ -4,6 +4,8 @@
 
 ### 网易云音乐卡片插件
 
+- 修复网易云搜索返回候选、未命中等“查询成功但尚未发送”的中间结果被误记为已完成修改，导致同一轮补充歌手或歌曲 ID 时触发 `duplicate_mutation` 的问题；Plugin SDK 现可显式报告条件型工具是否已经产生外部效果。
+- 搜索请求会把歌名和歌手共同交给 MCP；仅输入歌手且搜索结果明确属于该歌手时，可直接选择网易云排序首位的歌曲发送。
 - 新增内置可选插件 `io.github.yuanyeyoutao.netease-music-card`：通过独立
   `netease_music` MCP Server 搜索、校验歌曲，重名时先返回最多 5 个候选，选定后向
   当前 QQ 私聊或群聊发送 OneBot `music(type=163)` 原生网易云分享卡片。

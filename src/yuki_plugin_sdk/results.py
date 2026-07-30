@@ -25,6 +25,15 @@ class PluginResult(StrictModel):
 class ToolResult(PluginResult):
     """Plugin tool output; the Host treats data as untrusted model context."""
 
+    # Conditional tools can inspect or disambiguate before they perform their
+    # declared SEND/MUTATE effect. ``None`` preserves the legacy rule that a
+    # successful mutating tool committed; explicit ``False`` keeps a harmless
+    # intermediate result eligible for a corrected follow-up call.
+    mutation_committed: bool | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
 
 class CommandResult(PluginResult):
     text: str = Field(default="", max_length=12_000)

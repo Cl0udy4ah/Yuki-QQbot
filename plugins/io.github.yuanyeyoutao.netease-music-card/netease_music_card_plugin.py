@@ -94,20 +94,27 @@ class NetEaseMusicCardPlugin:
                 return candidates_or_error
             candidates = candidates_or_error
             if not candidates:
-                return ShareMusicOutput(
-                    status="not_found",
-                    message="没有找到这个网易云歌曲 ID，请重新搜索后再选择",
+                return _intermediate_result(
+                    ShareMusicOutput(
+                        status="not_found",
+                        message="没有找到这个网易云歌曲 ID，请重新搜索后再选择",
+                    )
                 )
             selected = candidates[0]
         else:
-            candidates_or_error = await self._search(context, request.query.strip())
+            search_query = " ".join(
+                value for value in (request.query.strip(), request.artist.strip()) if value
+            )
+            candidates_or_error = await self._search(context, search_query)
             if isinstance(candidates_or_error, ToolResult):
                 return candidates_or_error
             candidates = candidates_or_error
             if not candidates:
-                return ShareMusicOutput(
-                    status="not_found",
-                    message="没有搜索到匹配的网易云歌曲，请换一个歌曲名或补充歌手",
+                return _intermediate_result(
+                    ShareMusicOutput(
+                        status="not_found",
+                        message="没有搜索到匹配的网易云歌曲，请换一个歌曲名或补充歌手",
+                    )
                 )
             selected = _select_unambiguous(
                 query=request.query,
@@ -115,13 +122,15 @@ class NetEaseMusicCardPlugin:
                 candidates=candidates,
             )
             if selected is None:
-                return ShareMusicOutput(
-                    status="selection_required",
-                    message=(
-                        "存在重名或结果不够明确，请把候选歌曲和歌手简短列给用户选择；"
-                        "用户选定后，用对应 song_id 再调用本工具"
-                    ),
-                    candidates=candidates,
+                return _intermediate_result(
+                    ShareMusicOutput(
+                        status="selection_required",
+                        message=(
+                            "存在重名或结果不够明确，请把候选歌曲和歌手简短列给用户选择；"
+                            "用户选定后，用对应 song_id 再调用本工具"
+                        ),
+                        candidates=candidates,
+                    )
                 )
 
         sent = await context.onebot.send_music_card(
@@ -245,6 +254,16 @@ def _select_unambiguous(
         return matches[0] if len(matches) == 1 else None
     if len(exact_titles) == 1:
         return exact_titles[0]
+    # A query that exactly names an artist means "send any/top song by this
+    # artist" in ordinary chat. Cloud Search already ranks the artist's songs,
+    # so selecting its first exact-artist result is deterministic.
+    artist_query_matches = [
+        item
+        for item in candidates
+        if any(_search_key(name) == query_key for name in item.artists)
+    ]
+    if artist_query_matches:
+        return artist_query_matches[0]
     combined = [
         item
         for item in candidates
@@ -265,4 +284,13 @@ def _mcp_failure(result: object, fallback: str) -> ToolResult:
         ok=False,
         error_code="music_card.mcp_failed",
         detail=detail[:1_000],
+    )
+
+
+def _intermediate_result(output: ShareMusicOutput) -> ToolResult:
+    """Return a successful lookup that has not yet sent or mutated anything."""
+
+    return ToolResult(
+        data={"result": output.model_dump(mode="json")},
+        mutation_committed=False,
     )

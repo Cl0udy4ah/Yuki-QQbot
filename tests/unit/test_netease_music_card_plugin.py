@@ -80,6 +80,12 @@ def _song(song_id: str, title: str, artist: str) -> dict[str, Any]:
     return {"id": song_id, "title": title, "artists": [{"id": "9", "name": artist}]}
 
 
+def _share_output(result: object, output_model: type[Any]) -> Any:
+    if isinstance(result, PluginResult):
+        return output_model.model_validate(result.data["result"])
+    return result
+
+
 async def _running_tool(
     responses: list[PluginResult],
 ) -> tuple[Plugin, ToolRegistration, FakePluginContext, StubMCP]:
@@ -114,11 +120,13 @@ async def test_artist_disambiguates_search_and_sends_native_card() -> None:
 
     arguments = tool.input_model.model_validate({"query": "晴天", "artist": "周杰伦"})
     result = await tool.handler(arguments)
+    output = _share_output(result, tool.output_model)
 
-    assert result.status == "sent"
-    assert result.selected is not None and result.selected.song_id == "200"
+    assert output.status == "sent"
+    assert output.selected is not None and output.selected.song_id == "200"
     assert context.onebot.music_cards == [("netease", "200")]
     assert mcp.calls[0][0:2] == ("netease_music", "music_search")
+    assert mcp.calls[0][2]["query"] == "晴天 周杰伦"
     await plugin.stop()
 
 
@@ -128,9 +136,11 @@ async def test_ambiguous_search_returns_choices_without_sending() -> None:
     )
 
     result = await tool.handler(tool.input_model.model_validate({"query": "晴天"}))
+    output = _share_output(result, tool.output_model)
 
-    assert result.status == "selection_required"
-    assert [item.song_id for item in result.candidates] == ["100", "200"]
+    assert output.status == "selection_required"
+    assert [item.song_id for item in output.candidates] == ["100", "200"]
+    assert isinstance(result, PluginResult) and result.mutation_committed is False
     assert context.onebot.music_cards == []
     await plugin.stop()
 
@@ -141,8 +151,9 @@ async def test_selected_song_id_is_verified_before_sending() -> None:
     )
 
     result = await tool.handler(tool.input_model.model_validate({"song_id": "200"}))
+    output = _share_output(result, tool.output_model)
 
-    assert result.status == "sent"
+    assert output.status == "sent"
     assert context.onebot.music_cards == [("netease", "200")]
     assert mcp.calls == [
         (
@@ -151,6 +162,27 @@ async def test_selected_song_id_is_verified_before_sending() -> None:
             {"song_ids": ["200"], "detail_level": "summary"},
         )
     ]
+    await plugin.stop()
+
+
+async def test_artist_only_query_selects_top_song_and_sends() -> None:
+    plugin, tool, context, _mcp = await _running_tool(
+        [
+            _mcp_result(
+                [
+                    _song("523567", "夢のつづき", "玉置浩二"),
+                    _song("524331", "行かないで", "玉置浩二"),
+                ]
+            )
+        ]
+    )
+
+    result = await tool.handler(tool.input_model.model_validate({"query": "玉置浩二"}))
+    output = _share_output(result, tool.output_model)
+
+    assert output.status == "sent"
+    assert output.selected is not None and output.selected.song_id == "523567"
+    assert context.onebot.music_cards == [("netease", "523567")]
     await plugin.stop()
 
 

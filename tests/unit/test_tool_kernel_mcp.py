@@ -26,6 +26,7 @@ from qq_ai_bot.capabilities import (
     ToolSchemaBudgeter,
 )
 from qq_ai_bot.capabilities.invocation import ToolInvocationContext
+from qq_ai_bot.capabilities.results import normalize_legacy_result
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ChatTool, ToolCall, ToolFunction
 from qq_ai_bot.mcp.config import MCPConfigurationError, load_mcp_config, redacted_server_config
 from qq_ai_bot.mcp.connection import SDKMCPConnection
@@ -49,6 +50,22 @@ def _tool(name: str, description: str = "") -> ChatTool:
             "additionalProperties": False,
         },
     )
+
+
+def test_conditional_mutation_result_preserves_explicit_commit_state() -> None:
+    lookup_only = normalize_legacy_result(
+        {"ok": True, "data": {"status": "selection_required"}, "mutation_committed": False},
+        provider_id="plugin",
+        tool_name="conditional_send",
+    )
+    legacy_success = normalize_legacy_result(
+        {"ok": True, "data": {"status": "sent"}},
+        provider_id="plugin",
+        tool_name="legacy_send",
+    )
+
+    assert lookup_only.mutation_committed is False
+    assert legacy_success.mutation_committed is True
 
 
 @dataclass(slots=True)

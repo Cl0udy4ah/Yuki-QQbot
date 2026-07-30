@@ -156,7 +156,8 @@ def normalize_legacy_result(
         ok = bool(raw.pop("ok", True))
         error = raw.pop("error_code", raw.pop("error", None))
         public = raw.pop("public_message", raw.pop("detail", None))
-        committed = bool(raw.pop("mutation_committed", ok))
+        committed_value = raw.pop("mutation_committed", None)
+        committed = ok if committed_value is None else bool(committed_value)
         data = raw.pop("data", raw if raw else None)
         return ToolExecutionResult(
             ok=ok,

@@ -346,6 +346,7 @@ class _ChatAgentBackend(AgentToolBackend):
         mutation_identity = (
             (call.function.name, call.function.arguments) if self._is_mutating_call(call) else None
         )
+        mutation_committed = False
         if (
             self._runtime.scheduled_automation_intent
             and descriptor.trust_source is not CapabilityTrustSource.AUTOMATION
@@ -440,6 +441,7 @@ class _ChatAgentBackend(AgentToolBackend):
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
                     )
+                mutation_committed = outcome.mutation_committed
                 tooling = config.tooling
                 mcp = config.mcp
                 is_mcp = descriptor.trust_source is CapabilityTrustSource.MCP
@@ -514,7 +516,7 @@ class _ChatAgentBackend(AgentToolBackend):
             if bool(decoded.get("ok")):
                 self._admin_retry_constraint = None
                 self._admin_terminal_failure = None
-                if mutation_identity is not None:
+                if mutation_identity is not None and mutation_committed:
                     self._completed_admin_mutations.add(mutation_identity)
             elif (decoded.get("error") or decoded.get("error_code")) in _ADMIN_RETRYABLE_ERRORS:
                 self._admin_terminal_failure = decoded
