@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.1.0 - 2026-07-30
+
 ### 麦当劳 MCP
 
 - 将 `.mcp.json.example` 的麦当劳配置升级为官方 `https://mcp.mcd.cn` Streamable HTTP
@@ -10,8 +12,6 @@
   开放世界提示；麦当劳查询工具据此并行调度，地址新增、领券、下单和兑换仍按修改型串行执行。
 - MCP HTTP 401/403、429、5xx、超时和网络故障改为稳定且不含 Secret 的诊断信息；新增麦当劳
   Bearer Header、`2025-06-18` 协议协商、查询/下单调度语义和错误分类的离线回归测试。
-
-## 2.1.0 - 2026-07-30
 
 ### Tool Kernel 与 MCP Client
 
