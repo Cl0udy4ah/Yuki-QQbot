@@ -33,6 +33,7 @@
           "mall-points-products": {"readOnlyHint": true, "idempotentHint": true},
           "mall-product-detail": {"readOnlyHint": true, "idempotentHint": true},
           "mall-order-list": {"readOnlyHint": true, "idempotentHint": true},
+          "mall-order-detail": {"readOnlyHint": true, "idempotentHint": true},
           "now-time-info": {"readOnlyHint": true, "idempotentHint": true}
         }
       }

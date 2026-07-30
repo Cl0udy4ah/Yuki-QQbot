@@ -43,6 +43,7 @@ def test_checked_in_mcd_preset_is_standalone_and_secret_free() -> None:
     display = json.dumps(redacted_server_config(server), ensure_ascii=False)
     assert "offline-token" not in display
     assert "query-meals" in display
+    assert "mall-order-detail" in display
 
 
 @pytest.mark.asyncio
