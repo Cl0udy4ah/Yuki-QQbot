@@ -26,10 +26,29 @@ class MCPLifecycle(StrEnum):
     LAZY_KEEP_ALIVE = "lazy_keep_alive"
 
 
+class MCPToolAnnotationOverride(_StrictModel):
+    """Operator-supplied MCP annotation hints keyed by the remote tool name."""
+
+    read_only_hint: bool | None = Field(default=None, alias="readOnlyHint")
+    destructive_hint: bool | None = Field(default=None, alias="destructiveHint")
+    idempotent_hint: bool | None = Field(default=None, alias="idempotentHint")
+    open_world_hint: bool | None = Field(default=None, alias="openWorldHint")
+
+
 class MCPServerMetadata(_StrictModel):
     scope: str = ""
     summary: str = Field(default="", max_length=500)
     tags: tuple[str, ...] = ()
+    tool_annotations: dict[str, MCPToolAnnotationOverride] = Field(
+        default_factory=dict,
+        alias="toolAnnotations",
+    )
+
+    @model_validator(mode="after")
+    def _tool_names(self) -> MCPServerMetadata:
+        if any(not name.strip() or len(name) > 255 for name in self.tool_annotations):
+            raise ValueError("toolAnnotations keys must be non-empty remote tool names")
+        return self
 
 
 class MCPServerConfig(_StrictModel):

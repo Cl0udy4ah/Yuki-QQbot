@@ -104,7 +104,8 @@ Yuki-QQbot 2.1.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 `MCP_SELECTED_TOOL_LIMIT` 与 `MCP_SCHEMA_TOKEN_BUDGET`。留空表示不增加对应限制。
 
 完整说明见 [MCP 文档](docs/mcp/architecture.md) 与
-[Tool Kernel 架构](docs/architecture/tool-kernel.md)。
+[Tool Kernel 架构](docs/architecture/tool-kernel.md)。麦当劳点餐、领券和积分能力可直接使用
+[麦当劳官方 MCP 接入指南](docs/mcp/mcdonalds.md)。
 
 ## 持久化表情系统
 

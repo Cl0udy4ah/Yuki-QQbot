@@ -94,5 +94,6 @@ def redacted_server_config(server: MCPServerConfig) -> dict[str, object]:
         "environment_names": sorted(server.env),
         "include_tools": list(server.include_tools),
         "exclude_tools": list(server.exclude_tools),
+        "tool_annotation_overrides": sorted(server.yuki.tool_annotations),
         "reconnect_delay_seconds": server.reconnect_delay_seconds,
     }

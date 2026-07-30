@@ -7,7 +7,8 @@ from pathlib import Path
 
 from qq_ai_bot.config import Settings
 
-_COMPOSE_ONLY_KEYS = {
+_EXTERNAL_ENVIRONMENT_KEYS = {
+    "MCD_MCP_TOKEN",
     "NAPCAT_GID",
     "NAPCAT_IMAGE",
     "NAPCAT_UID",
@@ -33,5 +34,5 @@ def test_env_example_matches_typed_settings_and_reviewed_compose_keys() -> None:
         for name, field in Settings.model_fields.items()
     }
 
-    assert documented - settings_keys == _COMPOSE_ONLY_KEYS
+    assert documented - settings_keys == _EXTERNAL_ENVIRONMENT_KEYS
     assert settings_keys - documented == _COMPOSE_MANAGED_SETTINGS

@@ -578,7 +578,7 @@ async def test_mcp_connection_failure_is_real_and_next_call_can_recover(
     await manager.start()
 
     failed = await manager.call_tool("recoverable", "health", {})
-    assert not failed.ok and failed.error_code == "OSError"
+    assert not failed.ok and failed.error_code == "mcp_transport_unavailable"
     connection.fail_connect = False
     recovered = await manager.call_tool("recoverable", "health", {})
     assert recovered.ok and recovered.data == {"ready": True}

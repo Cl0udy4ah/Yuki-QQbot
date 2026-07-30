@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from qq_ai_bot.capabilities.results import ToolArtifactWriter, ToolResultBudgeter
+from qq_ai_bot.mcp.errors import classify_mcp_exception
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.mcp.models import MCPHealthSnapshot
 
@@ -112,6 +113,7 @@ class MCPCommandHandler:
                 return rendered.text
         except json.JSONDecodeError:
             return "MCP 调用参数不是有效 JSON"
-        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
-            return f"MCP 操作失败：{type(exc).__name__}"
+        except Exception as exc:
+            failure = classify_mcp_exception(exc)
+            return f"MCP 操作失败：{failure.public_message}"
         return "未知 MCP 操作"

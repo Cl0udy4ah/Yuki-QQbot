@@ -32,12 +32,16 @@ def metadata_from_sdk_tool(
         dump = getattr(annotations_value, "model_dump", None)
         if callable(dump):
             annotations = dump(mode="json", exclude_none=True)
+    annotation_values = dict(annotations) if isinstance(annotations, dict) else {}
+    override = config.yuki.tool_annotations.get(name)
+    if override is not None:
+        annotation_values.update(override.model_dump(mode="json", by_alias=True, exclude_none=True))
     raw = {
         "name": name,
         "description": description,
         "input": input_schema,
         "output": output_schema,
-        "annotations": annotations,
+        "annotations": annotation_values,
     }
     digest = hashlib.sha256(
         json.dumps(raw, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
@@ -50,7 +54,7 @@ def metadata_from_sdk_tool(
         compact_description=" ".join(description.split())[:300],
         input_schema=dict(input_schema) if isinstance(input_schema, dict) else {"type": "object"},
         output_schema=dict(output_schema) if isinstance(output_schema, dict) else {},
-        annotations=dict(annotations) if isinstance(annotations, dict) else {},
+        annotations=annotation_values,
         metadata_hash=digest,
         refreshed_at=datetime.now(UTC),
     )

@@ -12,24 +12,29 @@
       "reconnectDelaySeconds": 5,
       "yuki": {
         "scope": "mcp.mcd",
-        "summary": "麦当劳菜单、门店、优惠券、订单和积分",
-        "tags": ["麦当劳", "点餐", "优惠券", "门店"]
-      }
-    },
-    "netease_music": {
-      "command": "python",
-      "args": ["-m", "netease_music_mcp"],
-      "cwd": ".",
-      "env": {
-        "NETEASE_COOKIE": "${NETEASE_COOKIE}"
-      },
-      "lifecycle": "lazy_keep_alive",
-      "includeTools": [],
-      "excludeTools": [],
-      "yuki": {
-        "scope": "mcp.netease_music",
-        "summary": "歌曲、歌手、专辑、歌单和歌词",
-        "tags": ["音乐", "网易云", "歌曲", "歌单"]
+        "summary": "麦当劳官方菜单、门店、活动、优惠券、订单和积分服务",
+        "tags": ["麦当劳", "点餐", "菜单", "优惠券", "门店", "积分"],
+        "toolAnnotations": {
+          "list-nutrition-foods": {"readOnlyHint": true, "idempotentHint": true},
+          "delivery-query-addresses": {"readOnlyHint": true, "idempotentHint": true},
+          "delivery-query-stores": {"readOnlyHint": true, "idempotentHint": true},
+          "query-meal-assistance": {"readOnlyHint": true, "idempotentHint": true},
+          "query-nearby-stores": {"readOnlyHint": true, "idempotentHint": true},
+          "query-store-coupons": {"readOnlyHint": true, "idempotentHint": true},
+          "query-meals": {"readOnlyHint": true, "idempotentHint": true},
+          "query-meal-detail": {"readOnlyHint": true, "idempotentHint": true},
+          "calculate-price": {"readOnlyHint": true, "idempotentHint": true},
+          "query-order": {"readOnlyHint": true, "idempotentHint": true},
+          "order-list": {"readOnlyHint": true, "idempotentHint": true},
+          "campaign-calendar": {"readOnlyHint": true, "idempotentHint": true},
+          "available-coupons": {"readOnlyHint": true, "idempotentHint": true},
+          "query-my-coupons": {"readOnlyHint": true, "idempotentHint": true},
+          "query-my-account": {"readOnlyHint": true, "idempotentHint": true},
+          "mall-points-products": {"readOnlyHint": true, "idempotentHint": true},
+          "mall-product-detail": {"readOnlyHint": true, "idempotentHint": true},
+          "mall-order-list": {"readOnlyHint": true, "idempotentHint": true},
+          "now-time-info": {"readOnlyHint": true, "idempotentHint": true}
+        }
       }
     }
   }

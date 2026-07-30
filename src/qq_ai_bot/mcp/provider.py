@@ -123,6 +123,8 @@ class MCPToolProvider:
     def _descriptor(self, item: Any) -> CapabilityDescriptor:
         annotations = item.annotations
         read_only = bool(annotations.get("readOnlyHint", False))
+        idempotent_hint = annotations.get("idempotentHint")
+        idempotent = read_only if idempotent_hint is None else bool(idempotent_hint)
         config = self._manager.server_config(item.server_id)
         assert config is not None
         scope = config.yuki.scope or f"mcp.{item.server_id}"
@@ -140,7 +142,9 @@ class MCPToolProvider:
             uses_external_data=True,
             cancellable=True,
             idempotency=(
-                CapabilityIdempotency.IDEMPOTENT if read_only else CapabilityIdempotency.CONDITIONAL
+                CapabilityIdempotency.IDEMPOTENT
+                if idempotent
+                else CapabilityIdempotency.CONDITIONAL
             ),
             provider_id=f"mcp.{item.server_id}",
             provider_tool_name=item.remote_tool_name,

@@ -11,6 +11,7 @@ from pathlib import Path
 from qq_ai_bot.capabilities.results import ToolExecutionResult
 from qq_ai_bot.mcp.config import LoadedMCPConfig, load_mcp_config, redacted_server_config
 from qq_ai_bot.mcp.connection import MCPConnection, MCPConnectionFactory, SDKMCPConnection
+from qq_ai_bot.mcp.errors import classify_mcp_exception
 from qq_ai_bot.mcp.metadata import metadata_from_sdk_tool
 from qq_ai_bot.mcp.models import (
     MCPHealthSnapshot,
@@ -250,11 +251,12 @@ class MCPManager:
                 self._schedule_reconnect_if_persistent(server_id, config)
                 return result
             except Exception as exc:
+                failure = classify_mcp_exception(exc)
                 result = ToolExecutionResult(
                     ok=False,
-                    error_code=type(exc).__name__,
-                    public_message="MCP 工具暂时不可用",
-                    retryable=isinstance(exc, (OSError, TimeoutError)),
+                    error_code=failure.code,
+                    public_message=failure.public_message,
+                    retryable=failure.retryable,
                     provider_id=f"mcp.{server_id}",
                     tool_name=tool_name,
                 )
@@ -502,13 +504,14 @@ class MCPManager:
         config: MCPServerConfig,
         exc: BaseException,
     ) -> None:
+        failure = classify_mcp_exception(exc)
         await self._repository.save_state(
             server_id,
             config,
             self._config.hashes[server_id],
             enabled=self._enabled_servers.get(server_id, True),
             status="failed",
-            error_category=type(exc).__name__,
+            error_category=failure.code,
         )
 
     def _require_server(self, server_id: str) -> MCPServerConfig:

@@ -4,7 +4,7 @@
 
 `command` 配置由 Yuki 启动子进程，官方 MCP Python SDK 通过标准输入输出通信。`lazy` 在第一次
 目录发现或调用时启动，`lazy_keep_alive` 首次使用后保持；应用退出时 Session 和由 Yuki 启动的
-子进程都会关闭。本地网易云示例见 `.mcp.json.example`。
+子进程都会关闭。本地网易云结构示例见 [`examples/netease_music.json`](examples/netease_music.json)。
 
 每个 SDK Session 由一个连接拥有者任务管理；初始化、请求取消和异步上下文关闭均由该任务协调，
 因此应用生命周期任务可以安全回收连接，不会跨任务退出 AnyIO cancel scope。
