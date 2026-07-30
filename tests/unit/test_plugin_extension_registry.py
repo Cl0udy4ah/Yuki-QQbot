@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.planner.models import ToolMode
 from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
+from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
 from yuki_plugin_sdk.errors import PluginPermissionError, RegistrationError
 from yuki_plugin_sdk.models import PromptFragment, PromptStage
 from yuki_plugin_sdk.permissions import PluginPermission
@@ -71,6 +78,56 @@ def test_running_plugin_tools_contribute_compact_planner_scope_descriptions() ->
     )
 
     assert adapter.planner_scope_descriptions() == ("echo: Echo input",)
+
+
+@pytest.mark.asyncio
+async def test_execution_uses_current_host_lifecycle_when_persisted_status_is_stale(
+    database: Database,
+) -> None:
+    plugin_id = "com.example.echo"
+    registry = ExtensionRegistry()
+    registry.registrar(plugin_id, (PluginPermission.TOOL_REGISTER,)).register_tool(_tool())
+    installations = PluginInstallationRepository(database)
+    await installations.upsert_discovered(
+        plugin_id=plugin_id,
+        name="Echo",
+        version="1.0.0",
+        plugin_api="1.0",
+        yuki_requires=">=2.1.1,<3.0",
+        manifest_hash="a" * 64,
+        entrypoint="echo:Plugin",
+        requested_permissions=(PluginPermission.TOOL_REGISTER.value,),
+    )
+    await installations.approve(plugin_id)
+    await installations.set_enabled(plugin_id, enabled=True)
+    # Simulate another short-lived Host overwriting process metadata after the
+    # current Host loaded the plugin successfully.
+    await installations.set_status(plugin_id, status="approved")
+    adapter = PluginCapabilityAdapter(
+        registry=registry,
+        installations=installations,
+        is_running=lambda candidate: candidate == plugin_id,
+    )
+    item = registry.list(kind=ExtensionKind.TOOL)[0]
+    assert item.model_name is not None
+    runtime = SimpleNamespace(
+        origin=TurnOrigin.USER_MESSAGE,
+        actor_is_superuser=False,
+        tool_mode=ToolMode.INHERIT,
+        inbound=SimpleNamespace(attachments=(), reply_attachments=()),
+    )
+
+    result = json.loads(
+        await adapter.execute(
+            item.model_name,
+            '{"text":"hello"}',
+            runtime,  # type: ignore[arg-type]
+            web_was_used=False,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["echoed"] == "text='hello'"
 
 
 def test_registration_requires_approved_permission() -> None:

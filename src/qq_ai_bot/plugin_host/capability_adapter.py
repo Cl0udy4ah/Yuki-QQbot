@@ -158,7 +158,16 @@ class PluginCapabilityAdapter:
         web_was_used: bool,
     ) -> bool:
         installation = await self._installations.get(item.plugin_id)
-        if installation is None or not installation.enabled or installation.status != "running":
+        # The current Host owns the authoritative process-local lifecycle.
+        # Persisted status is operational metadata and can temporarily lag (or
+        # be changed by a short-lived diagnostic process) while this instance
+        # still has the plugin loaded and running. Definitions already use the
+        # same in-memory predicate; execution must not disagree with discovery.
+        if (
+            installation is None
+            or not installation.enabled
+            or not self._is_running(item.plugin_id)
+        ):
             return False
         return self._allowed_for_turn(registration, runtime, web_was_used)
 
