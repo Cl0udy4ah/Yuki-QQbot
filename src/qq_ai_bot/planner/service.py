@@ -19,7 +19,11 @@ from qq_ai_bot.planner.models import (
     TurnPlan,
 )
 from qq_ai_bot.planner.observability import PlannerObservability
-from qq_ai_bot.planner.provider import PlannerProvider, deterministic_fallback_plan
+from qq_ai_bot.planner.provider import (
+    PlannerProvider,
+    deterministic_fallback_plan,
+    normalize_reply_target,
+)
 from qq_ai_bot.planner.repository import PlannerRepository
 from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
@@ -198,12 +202,9 @@ class PlannerService:
         updates: dict[str, object] = {
             "delivery_mode": delivery_mode,
             "desired_messages": desired_messages,
-            "reply_to_message_id": (
-                plan.reply_to_message_id
-                if plan.reply_to_message_id is not None
-                and plan.reply_to_message_id.isdigit()
-                and plan.reply_to_message_id in planner_input.known_message_ids
-                else None
+            "reply_to_message_id": normalize_reply_target(
+                plan.reply_to_message_id,
+                planner_input,
             ),
             "wait_seconds": min(plan.wait_seconds, runtime.planner.max_wait_seconds),
         }

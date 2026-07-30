@@ -101,10 +101,9 @@ def validate_turn_plan(
             "target_user_ids": tuple(
                 dict.fromkeys(target for target in plan.target_user_ids if target in known_targets)
             ),
-            "reply_to_message_id": (
-                plan.reply_to_message_id
-                if plan.reply_to_message_id in planner_input.known_message_ids
-                else None
+            "reply_to_message_id": normalize_reply_target(
+                plan.reply_to_message_id,
+                planner_input,
             ),
             "desired_messages": min(plan.desired_messages, hard_max_messages),
             "wait_seconds": (
@@ -123,6 +122,32 @@ def validate_turn_plan(
             ),
         }
     )
+
+
+def normalize_reply_target(
+    requested_message_id: str | None,
+    planner_input: PlannerInput,
+) -> str | None:
+    """Keep only an intentional, useful OneBot quote target.
+
+    Replying to the current private message adds a redundant quote bubble to
+    every turn, so it is always rendered as a normal message.  The Planner may
+    still quote an older private message or any explicitly selected message in
+    a group conversation where disambiguation is useful.
+    """
+
+    if (
+        requested_message_id is None
+        or not requested_message_id.isdigit()
+        or requested_message_id not in planner_input.known_message_ids
+    ):
+        return None
+    if (
+        planner_input.scope_type is ScopeType.PRIVATE
+        and requested_message_id == planner_input.current_message.message_id
+    ):
+        return None
+    return requested_message_id
 
 
 def deterministic_fallback_plan(planner_input: PlannerInput) -> TurnPlan:

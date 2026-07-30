@@ -633,6 +633,26 @@ def test_plan_validation_narrows_limits_and_unknown_event_bindings() -> None:
     assert unknown_reply.reply_to_message_id is None
 
 
+def test_reply_target_is_plain_by_default_but_preserves_intentional_quotes() -> None:
+    private_input = _planner_input(scope=ScopeType.PRIVATE)
+    current_private = constrain_turn_plan(
+        _valid_plan_payload(reply_to_message_id="101"),
+        private_input,
+    )
+    older_private = constrain_turn_plan(
+        _valid_plan_payload(reply_to_message_id="100"),
+        private_input,
+    )
+    current_group = constrain_turn_plan(
+        _valid_plan_payload(reply_to_message_id="101"),
+        _planner_input(scope=ScopeType.GROUP),
+    )
+
+    assert current_private.reply_to_message_id is None
+    assert older_private.reply_to_message_id == "100"
+    assert current_group.reply_to_message_id == "101"
+
+
 def test_plan_parser_rejects_unknown_fields_and_permission_modes() -> None:
     planner_input = _planner_input()
     with pytest.raises(PlannerResponseError):
@@ -655,6 +675,7 @@ async def test_llm_planner_is_tool_free_non_thinking_and_uses_separate_model() -
     assert request.thinking_enabled is False
     assert request.tools == ()
     assert request.tool_choice is None
+    assert "reply_to_message_id 默认必须为 null" in (request.messages[0].content or "")
 
 
 @pytest.mark.asyncio

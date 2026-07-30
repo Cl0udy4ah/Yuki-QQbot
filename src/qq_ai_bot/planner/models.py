@@ -209,7 +209,14 @@ class TurnPlan(_StrictPlannerModel):
     target_user_ids: tuple[str, ...] = Field(default=(), max_length=5)
     delivery_mode: DeliveryMode = DeliveryMode.SINGLE
     desired_messages: int = Field(default=1, ge=1, le=20, strict=True)
-    reply_to_message_id: str | None = Field(default=None, max_length=128)
+    reply_to_message_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description=(
+            "默认必须为 null。只有需要在多人对话中明确指向某条真实消息，或特意回到较早消息时"
+            "才填写；正常回答当前消息不得使用。"
+        ),
+    )
     tool_selection: ToolSelection = ToolSelection()
     wait_seconds: float = Field(default=0, ge=0, le=300, strict=True)
     confidence: float = Field(ge=0, le=1, strict=True)

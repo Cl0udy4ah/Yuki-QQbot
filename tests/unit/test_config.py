@@ -41,6 +41,30 @@ def test_system_prompt_file_must_not_be_empty(tmp_path: Path) -> None:
         Settings.model_validate({"system_prompt_file": prompt_file})
 
 
+def test_example_system_prompt_preserves_yuki_persona_and_short_style() -> None:
+    prompt_path = Path(__file__).parents[2] / "config" / "system_prompt.example.md"
+    prompt = prompt_path.read_text(encoding="utf-8")
+
+    required_fragments = (
+        "生日是 7 月 23 日",
+        "银白色长发",
+        "蓝色兔耳形发带",
+        "雪花发饰",
+        "白色水手服",
+        "默认只说一句",
+        "通常控制在 50 个中文字符以内",
+        "日常聊天使用短句和常用词",
+        "普通短回复不使用中文句号“。”收尾",
+        "日常聊天不使用括号动作、场景描写、心理旁白",
+        "必须由用户明确提出这种表达方式",
+        "不使用 Unicode Emoji",
+        "不使用颜文字、ASCII 表情",
+        "下面是语气方向，不是必须逐字复读的固定台词",
+        "作为自己名字或自称出现的英文 Yuki 写成平假名“ゆき”",
+    )
+    assert all(fragment in prompt for fragment in required_fragments)
+
+
 def test_daily_chat_delay_range_must_be_ordered() -> None:
     with pytest.raises(
         ValidationError,
