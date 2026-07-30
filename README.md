@@ -394,6 +394,41 @@ uv run qq-ai-bot-cli plugin test plugins/com.example.echo
 
 插件需要连续独立上下文时可使用 `ctx.agent_sessions`。例如跑团插件可以创建 `durable + current_group` 会话；历史只写 `plugin_agent_messages`，不写主 `chat_events`，默认不注入主聊天或人物记忆，也不返回隐藏推理。详见 [独立 AI 会话](docs/plugin-development/service-facades.md#独立-ai-会话跑团示例)。
 
+#### 可选：网易云音乐卡片
+
+仓库内置 [`io.github.yuanyeyoutao.netease-music-card`](plugins/io.github.yuanyeyoutao.netease-music-card/README.md)
+插件。网易云查询仍由独立的
+[`YuanYeYouTao/netease-music-mcp`](https://github.com/YuanYeYouTao/netease-music-mcp)
+提供，插件只负责“搜索/消歧 → 当前 QQ 会话原生音乐卡片”的编排，不会把 NapCat 依赖写进
+通用 MCP Server。
+
+先在相邻目录启动 MCP Server，并确认宿主机 `8766` 端口可用：
+
+```bash
+git clone https://github.com/YuanYeYouTao/netease-music-mcp.git
+cd netease-music-mcp
+docker compose up -d --build
+```
+
+将 [`.mcp.json.example`](.mcp.json.example) 的 `netease_music` 配置同步到
+`config/mcp.json`，把该项的 `disabled` 改成 `false`；Docker 中的 Bot 通过
+`http://host.docker.internal:8766/mcp` 访问宿主服务。随后在 `.env` 设置
+`PLUGIN_SYSTEM_ENABLED=true`，批准插件并只重启 Bot：
+
+```bash
+docker compose up -d --build --no-deps bot
+docker compose exec bot qq-ai-bot-cli plugin discover
+docker compose exec bot qq-ai-bot-cli plugin inspect io.github.yuanyeyoutao.netease-music-card
+docker compose exec bot qq-ai-bot-cli plugin approve io.github.yuanyeyoutao.netease-music-card
+docker compose exec bot qq-ai-bot-cli plugin enable io.github.yuanyeyoutao.netease-music-card
+docker compose restart bot
+```
+
+然后可直接对 Yuki 说“给我发一张周杰伦《晴天》的网易云音乐卡片”。结果唯一时会直接发送
+QQ 原生网易云分享卡片；重名时 Yuki 先列候选，用户选定后才发送。仅询问歌曲、歌词或歌手
+资料不会触发卡片发送。`get_user_library` 仍需要外部 MCP Server 配置网易云 Cookie/用户 ID，
+公开歌曲搜索和卡片发送不依赖该登录态。
+
 ## 1.x 数据模型
 
 `0005` 会创建以下主要数据：

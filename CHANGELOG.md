@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### 网易云音乐卡片插件
+
+- 新增内置可选插件 `io.github.yuanyeyoutao.netease-music-card`：通过独立
+  `netease_music` MCP Server 搜索、校验歌曲，重名时先返回最多 5 个候选，选定后向
+  当前 QQ 私聊或群聊发送 OneBot `music(type=163)` 原生网易云分享卡片。
+- Plugin API v1 的 `ctx.onebot` 新增 `send_music_card(provider, resource_id)` 安全 Facade；
+  只允许发送到当前真实消息场景，普通插件无需也不会获得任意 OneBot action 或任意目标权限。
+  成功发送会写入永久事件账本，并保留脱敏审计记录。
+- `.mcp.json.example` 新增默认禁用的网易云只读服务模板，README 补充外部 Server、插件批准、
+  Docker 启动和自然语言实测步骤；网易云数据访问与 QQ 平台发送继续保持职责分离。
+
 ## 2.1.1 - 2026-07-31
 
 ### 通用自动化编译器

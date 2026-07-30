@@ -31,12 +31,12 @@ def _remote_tool(name: str, description: str) -> SimpleNamespace:
     )
 
 
-def test_checked_in_mcd_preset_is_standalone_and_secret_free() -> None:
+def test_checked_in_mcp_presets_are_standalone_and_secret_free() -> None:
     loaded = load_mcp_config(
         Path(".mcp.json.example"),
         environment={"MCD_MCP_TOKEN": "offline-token"},
     )
-    assert set(loaded.servers) == {"mcd"}
+    assert set(loaded.servers) == {"mcd", "netease_music"}
     server = loaded.servers["mcd"]
     assert server.url == "https://mcp.mcd.cn"
     assert server.headers["Authorization"] == "Bearer offline-token"
@@ -47,6 +47,23 @@ def test_checked_in_mcd_preset_is_standalone_and_secret_free() -> None:
     assert "create-order" in server.yuki.automation.include_tools
     assert server.yuki.automation.permission == "superuser"
     assert "mall-order-detail" in display
+
+    music = loaded.servers["netease_music"]
+    assert music.disabled is True
+    assert music.url == "http://host.docker.internal:8766/mcp"
+    assert music.yuki.scope == "mcp.netease_music"
+    assert set(music.include_tools) == {
+        "music_search",
+        "get_songs",
+        "get_album",
+        "get_artist",
+        "get_playlist",
+        "get_lyrics",
+        "get_user_library",
+        "get_playlist_statistics",
+    }
+    music_display = json.dumps(redacted_server_config(music), ensure_ascii=False)
+    assert "Authorization" not in music_display
 
 
 @pytest.mark.asyncio

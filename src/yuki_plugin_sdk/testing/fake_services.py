@@ -510,6 +510,11 @@ class FakeOneBotFacade:
         self.read_calls: list[str] = []
         self.mutating_calls: list[str] = []
         self.sent: list[tuple[str, str, str]] = []
+        self.music_cards: list[tuple[str, str]] = []
+
+    async def send_music_card(self, *, provider: str, resource_id: str) -> PluginResult:
+        self.music_cards.append((provider, resource_id))
+        return PluginResult(data={"sent": True})
 
     async def send_private(self, user_id: str, text: str) -> PluginResult:
         self.sent.append(("private", user_id, text))

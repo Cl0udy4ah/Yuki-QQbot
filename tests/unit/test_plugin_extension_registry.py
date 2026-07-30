@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from yuki_plugin_sdk.errors import PluginPermissionError, RegistrationError
 from yuki_plugin_sdk.models import PromptFragment, PromptStage
@@ -58,6 +59,18 @@ def test_tool_registration_has_canonical_and_model_names() -> None:
     item = registry.list(kind=ExtensionKind.TOOL)[0]
     assert item.canonical_name == "com.example.echo:echo"
     assert item.model_name == "plugin__com_example_echo__echo"
+
+
+def test_running_plugin_tools_contribute_compact_planner_scope_descriptions() -> None:
+    registry = ExtensionRegistry()
+    registry.registrar("com.example.echo", (PluginPermission.TOOL_REGISTER,)).register_tool(_tool())
+    adapter = PluginCapabilityAdapter(
+        registry=registry,
+        installations=None,  # type: ignore[arg-type]
+        is_running=lambda plugin_id: plugin_id == "com.example.echo",
+    )
+
+    assert adapter.planner_scope_descriptions() == ("echo: Echo input",)
 
 
 def test_registration_requires_approved_permission() -> None:

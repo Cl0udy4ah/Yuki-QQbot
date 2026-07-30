@@ -80,6 +80,19 @@ class PluginCapabilityAdapter:
             )
         return tuple(result)
 
+    def planner_scope_descriptions(self) -> tuple[str, ...]:
+        """Describe running plugin tools without exposing their JSON Schemas."""
+
+        descriptions: list[str] = []
+        for item in self._registry.list(kind=ExtensionKind.TOOL):
+            if not self._is_running(item.plugin_id):
+                continue
+            registration = cast(ToolRegistration, item.registration)
+            descriptions.append(
+                f"{registration.metadata.name}: {registration.metadata.description}"[:300]
+            )
+        return tuple(descriptions)
+
     def owns(self, model_name: str) -> bool:
         item = self._registry.resolve_model_name(model_name)
         return item is not None and item.kind is ExtensionKind.TOOL

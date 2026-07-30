@@ -113,7 +113,16 @@ from yuki_plugin_sdk.sessions import (
 )
 
 _QQ_ID = re.compile(r"^[1-9][0-9]{4,19}$")
+_MUSIC_RESOURCE_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _TASK_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,128}$")
+_MUSIC_PROVIDERS = {
+    "163": "163",
+    "kugou": "kugou",
+    "kuwo": "kuwo",
+    "migu": "migu",
+    "netease": "163",
+    "qq": "qq",
+}
 _SENSITIVE_KEYS = frozenset(
     {"access_token", "authorization", "cookie", "password", "secret", "token"}
 )
@@ -2240,6 +2249,59 @@ class _OneBotFacade:
     def __init__(self, host: HostPluginContext) -> None:
         self._host = host
 
+    async def send_music_card(self, *, provider: str, resource_id: str) -> PluginResult:
+        """Send one provider-native music card to this invocation's real scene."""
+
+        invocation = self._host._invocation()
+        assert invocation is not None
+
+        async def send() -> PluginResult:
+            checked = self._host._require(PluginPermission.ONEBOT_SEND, send=True)
+            assert checked is not None
+            if checked.inbound is None or checked.origin not in {
+                TurnOrigin.USER_MESSAGE,
+                TurnOrigin.AUTONOMOUS_GROUP,
+            }:
+                raise PluginPermissionError("music cards require a current real message scene")
+            card_provider = _validated_music_provider(provider)
+            card_resource_id = _validated_music_resource_id(resource_id)
+            message = [
+                {
+                    "type": "music",
+                    "data": {"type": card_provider, "id": card_resource_id},
+                }
+            ]
+            outbound_segments = (
+                {
+                    "type": "music",
+                    "data": {"provider": card_provider, "id": card_resource_id},
+                },
+            )
+            if checked.current_group_id is not None:
+                target = self._host._require_group_scope(checked, checked.current_group_id)
+                return await _send_onebot(
+                    self._host,
+                    checked,
+                    "send_group_msg",
+                    {"group_id": target, "message": message},
+                    outbound=_group_music_outbound(target, outbound_segments),
+                )
+            target = self._host._require_user_scope(checked, checked.actor_user_id)
+            return await _send_onebot(
+                self._host,
+                checked,
+                "send_private_msg",
+                {"user_id": target, "message": message},
+                outbound=_private_music_outbound(target, outbound_segments),
+            )
+
+        return await self._host._run_audited(
+            invocation,
+            operation="onebot.send_music_card",
+            permission=PluginPermission.ONEBOT_SEND,
+            runner=send,
+        )
+
     async def send_private(self, user_id: str, text: str) -> PluginResult:
         invocation = self._host._invocation()
         assert invocation is not None
@@ -2530,6 +2592,30 @@ def _group_voice_outbound(
     )
 
 
+def _private_music_outbound(
+    user_id: str,
+    segments: tuple[dict[str, Any], ...],
+) -> _OutboundLedgerMessage:
+    return _OutboundLedgerMessage(
+        scope_type=ScopeType.PRIVATE,
+        private_peer_user_id=user_id,
+        content="",
+        segments=segments,
+    )
+
+
+def _group_music_outbound(
+    group_id: str,
+    segments: tuple[dict[str, Any], ...],
+) -> _OutboundLedgerMessage:
+    return _OutboundLedgerMessage(
+        scope_type=ScopeType.GROUP,
+        group_id=group_id,
+        content="",
+        segments=segments,
+    )
+
+
 def _voice_segments(speech: SynthesizedSpeech) -> tuple[dict[str, Any], ...]:
     return (
         {
@@ -2807,6 +2893,21 @@ def _validated_qq(value: str) -> str:
     normalized = value.strip()
     if _QQ_ID.fullmatch(normalized) is None:
         raise ValueError("QQ or group id is invalid")
+    return normalized
+
+
+def _validated_music_provider(value: str) -> str:
+    normalized = value.strip().casefold()
+    provider = _MUSIC_PROVIDERS.get(normalized)
+    if provider is None:
+        raise ValueError("music provider must be qq, netease, kugou, kuwo, or migu")
+    return provider
+
+
+def _validated_music_resource_id(value: str) -> str:
+    normalized = value.strip()
+    if _MUSIC_RESOURCE_ID.fullmatch(normalized) is None:
+        raise ValueError("music resource id is invalid")
     return normalized
 
 

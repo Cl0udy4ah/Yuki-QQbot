@@ -116,6 +116,7 @@ storage.compare_and_set(namespace, key, expected, value) -> bool
 scheduler.create_task(name, runner) -> str
 scheduler.cancel(task_id) -> bool
 scheduler.sleep_until_stopped() -> None
+onebot.send_music_card(*, provider, resource_id) -> PluginResult
 onebot.send_private(user_id, text) -> PluginResult
 onebot.send_group(group_id, text) -> PluginResult
 onebot.call_read_action(action, params) -> PluginResult

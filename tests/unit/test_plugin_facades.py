@@ -171,6 +171,41 @@ async def test_message_facade_rechecks_permission_scope_and_redacts_gateway_resu
 
 
 @pytest.mark.asyncio
+async def test_music_card_facade_targets_only_the_current_real_scene() -> None:
+    gateway = Gateway()
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(PluginPermission.ONEBOT_SEND,),
+    )
+
+    with context.bind(invocation(user_id="10001", gateway=gateway)):
+        result = await context.onebot.send_music_card(
+            provider="netease",
+            resource_id="123456",
+        )
+        assert result.ok
+        with pytest.raises(ValueError, match="provider"):
+            await context.onebot.send_music_card(provider="custom", resource_id="123456")
+        with pytest.raises(ValueError, match="resource id"):
+            await context.onebot.send_music_card(provider="netease", resource_id="https://bad")
+
+    assert gateway.calls == [
+        (
+            "send_private_msg",
+            {
+                "user_id": "10001",
+                "message": [
+                    {
+                        "type": "music",
+                        "data": {"type": "163", "id": "123456"},
+                    }
+                ],
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
     database: Database,
 ) -> None:
@@ -203,6 +238,7 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
             target_id="20001",
             media_reference="event-file-secret",
         )
+        await context.onebot.send_music_card(provider="netease", resource_id="123456")
         await context.onebot.send_private("10001", "onebot-private-body-secret")
         await context.onebot.send_group("20001", "onebot-group-body-secret")
 
@@ -216,6 +252,7 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
         "send-text-body-secret",
         "group-body-secret",
         "",
+        "",
         "onebot-group-body-secret",
     ]
     assert all(row.direction == "outbound" for row in group_events)
@@ -223,6 +260,9 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
     assert all(row.group_id == "20001" for row in group_events)
     assert all(row.private_peer_user_id is None for row in group_events)
     assert group_events[2].segments == ({"type": "image", "data": {}},)
+    assert group_events[3].segments == (
+        {"type": "music", "data": {"provider": "163", "id": "123456"}},
+    )
 
     private_events = await ledger.list_recent(
         scope_type=ScopeType.PRIVATE,
@@ -246,6 +286,7 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
         "message.send_private",
         "message.send_group",
         "message.send_image",
+        "onebot.send_music_card",
         "onebot.send_private",
         "onebot.send_group",
     }
@@ -253,6 +294,7 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
     assert all(row.success and row.error_category is None for row in audit_rows)
     assert by_operation["message.send_text"].permission == "message.group.send"
     assert by_operation["message.send_image"].permission == "message.media.send"
+    assert by_operation["onebot.send_music_card"].permission == "onebot.send"
     assert by_operation["onebot.send_private"].permission == "onebot.send"
     assert all(row.detail == {} for row in audit_rows)
     serialized_audit = json.dumps(

@@ -157,6 +157,8 @@ class PluginToolProvider(Protocol):
 
     def is_read_only(self, name: str) -> bool: ...
 
+    def planner_scope_descriptions(self) -> tuple[str, ...]: ...
+
     async def execute(
         self,
         name: str,
@@ -718,6 +720,19 @@ class ChatService:
             )
             for scope in base_scopes
         ]
+        if self._plugin_tools is not None:
+            plugin_descriptions = self._plugin_tools.planner_scope_descriptions()
+            if plugin_descriptions:
+                summaries.append(
+                    ToolScopeSummary(
+                        scope_id=ToolGroup.PLUGIN.value,
+                        display_name="本地插件",
+                        description="；".join(plugin_descriptions)[:300],
+                        tool_count=len(plugin_descriptions),
+                        provider_ids=("plugin",),
+                        tags=("插件", "扩展"),
+                    )
+                )
         for provider in self._external_tool_providers:
             getter = getattr(provider, "scope_summaries", None)
             if callable(getter):

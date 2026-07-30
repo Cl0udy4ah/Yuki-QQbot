@@ -57,6 +57,39 @@
           "now-time-info": {"readOnlyHint": true, "idempotentHint": true}
         }
       }
+    },
+    "netease_music": {
+      "url": "http://host.docker.internal:8766/mcp",
+      "lifecycle": "keep_alive",
+      "disabled": true,
+      "connectTimeoutSeconds": 10,
+      "requestTimeoutSeconds": 30,
+      "reconnectDelaySeconds": 5,
+      "includeTools": [
+        "music_search",
+        "get_songs",
+        "get_album",
+        "get_artist",
+        "get_playlist",
+        "get_lyrics",
+        "get_user_library",
+        "get_playlist_statistics"
+      ],
+      "yuki": {
+        "scope": "mcp.netease_music",
+        "summary": "网易云音乐的歌曲、歌手、专辑、歌单、歌词和用户音乐库只读查询",
+        "tags": ["音乐", "网易云", "歌曲", "歌手", "专辑", "歌单", "歌词"],
+        "toolAnnotations": {
+          "music_search": {"readOnlyHint": true, "idempotentHint": true},
+          "get_songs": {"readOnlyHint": true, "idempotentHint": true},
+          "get_album": {"readOnlyHint": true, "idempotentHint": true},
+          "get_artist": {"readOnlyHint": true, "idempotentHint": true},
+          "get_playlist": {"readOnlyHint": true, "idempotentHint": true},
+          "get_lyrics": {"readOnlyHint": true, "idempotentHint": true},
+          "get_user_library": {"readOnlyHint": true, "idempotentHint": true},
+          "get_playlist_statistics": {"readOnlyHint": true, "idempotentHint": true}
+        }
+      }
     }
   }
 }

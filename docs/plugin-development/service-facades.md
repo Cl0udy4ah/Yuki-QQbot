@@ -92,4 +92,16 @@ await ctx.messages.send_text(turn.text)
 这两项是 Plugin Host 的能力批准，不是针对每个 MCP Tool 的审批；Server 是否可用仍只取决于
 Yuki 配置和启停状态。
 
+## 当前会话音乐卡片
+
+`ctx.onebot.send_music_card(provider=..., resource_id=...)` 使用 `onebot.send` 权限，将
+OneBot `music` 消息段发送到触发插件的当前真实私聊或群聊。插件不能为这个方法传入 QQ 号或
+群号，因此它不能跨会话改变目标；Host 会再次验证当前事件、provider、资源 ID、图片轮次隔离和
+发送权限，成功后再写事件账本与脱敏审计。
+
+当前 provider 支持 `qq`、`netease`（发送时规范化为 `163`）、`kugou`、`kuwo` 和 `migu`。
+如果资源来自 MCP、网页或其他外部数据，插件应先做结构校验和重名消歧，不得把自定义 URL 当成
+资源 ID。任意 OneBot action 仍必须走权限更高的 `call_mutating_action`，不能借音乐卡片 Facade
+绕过。
+
 独立长期故事、跑团或游戏状态使用 `agent_sessions`；不要把大量连续历史塞进一次 `llm.generate()`。
