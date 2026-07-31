@@ -13,6 +13,7 @@ import pytest
 from tests.conftest import make_settings
 
 from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
@@ -21,10 +22,17 @@ from qq_ai_bot.domain.messages import (
     MessageAttachment,
     SenderIdentity,
 )
+from qq_ai_bot.memory.context import MemoryContextService
+from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
+from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
+from qq_ai_bot.memory.models import MemoryFactCreate
+from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from qq_ai_bot.persistence.repositories import EventLedgerRepository, PeopleRepository
 from qq_ai_bot.plugin_host.audit import PluginAuditService
 from qq_ai_bot.plugin_host.facades import (
     HostPluginContext,
@@ -189,6 +197,73 @@ async def test_plugin_memory_facade_writes_v2_fact_with_current_event_evidence_o
     evidence = await facts.list_evidence(int(rows[0]["fact_id"]))
     assert evidence[0].event_id == event.id
     assert evidence[0].source_speaker_user_id == "10001"
+
+
+@pytest.mark.asyncio
+async def test_plugin_memory_search_reuses_scoped_retriever(database: Database) -> None:
+    settings = make_settings(database.url)
+    repository = MemoryFactRepository(database)
+    facts = MemoryFactService(repository)
+    wanted = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="10001",
+            kind="fact",
+            memory_key="hobby:boardgame",
+            category="hobby",
+            content="喜欢合作桌游",
+            importance=4,
+            confidence=0.9,
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="10002",
+            kind="fact",
+            memory_key="hobby:boardgame",
+            category="hobby",
+            content="喜欢合作桌游",
+            importance=5,
+            confidence=1,
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    memory_context = MemoryContextService(
+        query_builder=MemoryQueryBuilder(MemoryTargetResolver(PeopleRepository(database))),
+        retriever=MemoryRetriever(
+            repository=repository,
+            lexical_index=SQLiteMemoryFTSIndex(database),
+        ),
+        facts=facts,
+    )
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(PluginPermission.MEMORY_SEARCH,),
+        services=PluginFacadeServices(
+            memories=facts,
+            memory_context=memory_context,
+            runtime_config=RuntimeConfigService(settings=settings, database=database),
+        ),
+    )
+    with context.bind(invocation(user_id="10001")):
+        rows = await context.memory.search(
+            "合作桌游",
+            scope_type="person",
+            subject_id="10001",
+            limit=5,
+        )
+        with pytest.raises(PluginPermissionError):
+            await context.memory.search(
+                "合作桌游",
+                scope_type="person",
+                subject_id="10002",
+                limit=5,
+            )
+
+    assert [row["fact_id"] for row in rows] == [wanted.id]
+    assert rows[0]["retrieval_reason"] == "lexical_match"
 
 
 def test_public_context_does_not_expose_core_objects_or_raw_media() -> None:

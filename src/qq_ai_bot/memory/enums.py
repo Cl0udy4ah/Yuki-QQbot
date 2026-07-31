@@ -39,3 +39,16 @@ class MemoryJobStatus(StrEnum):
     PROCESSING = "processing"
     DONE = "done"
     FAILED = "failed"
+
+
+class MemoryRetrievalMode(StrEnum):
+    RELEVANT = "relevant"
+    OVERVIEW = "overview"
+
+
+class MemoryTargetRole(StrEnum):
+    CURRENT_PERSON = "current_person"
+    CURRENT_PERSON_GROUP = "current_person_group"
+    CURRENT_GROUP = "current_group"
+    REFERENCED_PERSON = "referenced_person"
+    REFERENCED_PERSON_GROUP = "referenced_person_group"

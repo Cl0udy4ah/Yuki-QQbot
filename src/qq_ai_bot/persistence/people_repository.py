@@ -219,6 +219,27 @@ class PeopleRepository:
             )
             return int(value or 0)
 
+    async def members_in_group(
+        self,
+        user_ids: tuple[str, ...],
+        group_id: str,
+    ) -> frozenset[str]:
+        """Return only identities with a real membership in the exact group."""
+
+        unique_ids = tuple(dict.fromkeys(user_ids))
+        if not unique_ids:
+            return frozenset()
+        async with self._database.sessions() as session:
+            values = (
+                await session.scalars(
+                    select(MembershipModel.user_id).where(
+                        MembershipModel.group_id == group_id,
+                        MembershipModel.user_id.in_(unique_ids),
+                    )
+                )
+            ).all()
+        return frozenset(values)
+
     async def set_enabled(
         self,
         user_id: str,

@@ -132,6 +132,13 @@ class MemorySettings(DomainSettings):
     memory_batch_seconds: float = Field(ge=0)
     memory_batch_trigger_count: int = Field(gt=0)
     memory_batch_max_events: int = Field(gt=0)
+    memory_retrieval_enabled: bool
+    memory_lexical_candidate_limit: int = Field(gt=0)
+    memory_context_limit_per_entity: int = Field(gt=0)
+    memory_overview_limit_per_entity: int = Field(gt=0)
+    memory_always_on_explicit_preference_limit: int = Field(ge=0)
+    memory_query_term_limit: int = Field(gt=0)
+    memory_short_query_fallback_enabled: bool
 
 
 class RelationshipSettings(DomainSettings):

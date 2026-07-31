@@ -123,6 +123,8 @@ class ApplicationContainer:
         self.processed_events = persistence.processed_events
         self.ledger = persistence.ledger
         self.memories = persistence.memories
+        self.memory_context = persistence.memory_context
+        self.memory_index = persistence.memory_index
         self.memory_jobs = persistence.memory_jobs
         self.agent_actions = persistence.agent_actions
         self.web_sources = persistence.web_sources
@@ -255,6 +257,8 @@ class ApplicationContainer:
             permission_catalog=self.permission_catalog,
             relationships=self.relationships,
             memories=self.memories,
+            memory_context=self.memory_context,
+            memory_index=self.memory_index,
             groups=self.groups,
             private_users=self.private_users,
             emoji_repository=self.emoji_repository,
@@ -495,6 +499,7 @@ class ApplicationContainer:
                 people=self.people,
                 groups=self.groups,
                 memories=self.memories,
+                memory_context=self.memory_context,
                 relationships=self.relationships,
                 memory_admin=self.memory_admin,
                 relationship_admin=self.relationship_admin,

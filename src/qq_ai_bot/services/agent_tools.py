@@ -24,7 +24,16 @@ from qq_ai_bot.emoji.models import (
     EmojiReplyMode,
     PendingReplyEffect,
 )
+from qq_ai_bot.memory.context import MemoryContextService
+from qq_ai_bot.memory.enums import MemoryRetrievalMode, MemoryScopeType
+from qq_ai_bot.memory.errors import MemoryRetrievalError
+from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
+from qq_ai_bot.memory.query import MemoryQueryBuilder
+from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.targets import MemoryTargetResolver
+from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
     EventLedgerRepository,
@@ -110,6 +119,7 @@ class AgentToolService:
         settings: Settings,
         ledger: EventLedgerRepository,
         memories: MemoryFactService,
+        memory_context: MemoryContextService | None = None,
         actions: AgentActionRepository,
         web_provider: WebSearchProvider | None = None,
         web_sources: WebSearchSourceRepository | None = None,
@@ -119,6 +129,19 @@ class AgentToolService:
         self._settings = settings
         self._ledger = ledger
         self._memories = memories
+        if memory_context is None:
+            memory_repository = MemoryFactRepository(ledger._database)
+            memory_context = MemoryContextService(
+                query_builder=MemoryQueryBuilder(
+                    MemoryTargetResolver(PeopleRepository(ledger._database))
+                ),
+                retriever=MemoryRetriever(
+                    repository=memory_repository,
+                    lexical_index=SQLiteMemoryFTSIndex(ledger._database),
+                ),
+                facts=memories,
+            )
+        self._memory_context = memory_context
         self._actions = actions
         self._web_provider = web_provider
         self._web_sources = web_sources
@@ -185,13 +208,29 @@ class AgentToolService:
             ),
             ChatTool(
                 name="get_person_memories",
-                description="读取指定 QQ 人物的跨私聊和跨群结构记忆。",
-                parameters=_object_schema({"user_id": {"type": "string"}}, required=("user_id",)),
+                description="读取当前本人或本轮明确提及人物的结构记忆，可按自然语言查询。",
+                parameters=_object_schema(
+                    {
+                        "user_id": {"type": "string"},
+                        "query": {"type": "string", "maxLength": 400},
+                        "mode": {"type": "string", "enum": ["relevant", "overview"]},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    },
+                    required=("user_id",),
+                ),
             ),
             ChatTool(
                 name="get_group_memories",
-                description="读取指定群号的共同结构记忆。",
-                parameters=_object_schema({"group_id": {"type": "string"}}, required=("group_id",)),
+                description="读取当前群的共同结构记忆，可按自然语言查询。",
+                parameters=_object_schema(
+                    {
+                        "group_id": {"type": "string"},
+                        "query": {"type": "string", "maxLength": 400},
+                        "mode": {"type": "string", "enum": ["relevant", "overview"]},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    },
+                    required=("group_id",),
+                ),
             ),
         ]
         if (
@@ -351,9 +390,9 @@ class AgentToolService:
                 if name == "search_chat_history":
                     return await self._search(arguments, runtime)
                 if name == "get_person_memories":
-                    return await self._person_memories(arguments)
+                    return await self._person_memories(arguments, runtime)
                 if name == "get_group_memories":
-                    return await self._group_memories(arguments)
+                    return await self._group_memories(arguments, runtime)
                 if name == "web_search":
                     return await self._web_search(arguments, runtime)
                 if name == "read_webpage":
@@ -367,6 +406,8 @@ class AgentToolService:
                 return self._result(error="unknown_tool", detail=f"未知工具：{name}")
             except WebSearchError as exc:
                 return self._web_result(error=exc.code, detail=exc.detail)
+            except MemoryRetrievalError as exc:
+                return self._result(error=exc.code, detail="记忆检索失败")
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
         finally:
@@ -721,57 +762,149 @@ class AgentToolService:
         )
         return self._result(data={"events": [self._event_json(row) for row in rows]})
 
-    async def _person_memories(self, arguments: dict[str, Any]) -> str:
+    async def _person_memories(
+        self,
+        arguments: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
         user_id = arguments.get("user_id")
         if not isinstance(user_id, str) or not user_id:
             return self._result(error="invalid_user_id", detail="user_id 必须是字符串")
-        rows = await self._memories.list_person(
-            user_id, limit=self._settings.person_memory_max_entries
+        limit = self._memory_limit(arguments)
+        query, mode = self._memory_query(arguments)
+        targets = await self._memory_context.resolve_targets(runtime.inbound, self._runtime())
+        target = next(
+            (
+                item
+                for item in targets
+                if item.scope_type is MemoryScopeType.PERSON and item.subject_user_id == user_id
+            ),
+            None,
         )
+        if target is None:
+            return self._result(
+                error="permission_denied",
+                detail="只能读取当前本人或本轮明确提及人物的记忆",
+            )
+        if query is None and mode is None:
+            rows = await self._memories.list_person(user_id, limit=limit)
+            memories = [
+                self._memory_json(row, retrieval_reason="deterministic_list") for row in rows
+            ]
+        else:
+            result = await self._memory_context.search(
+                text=query or "",
+                mode=mode or MemoryRetrievalMode.RELEVANT,
+                targets=(target,),
+                runtime=self._runtime(),
+                limit=limit,
+            )
+            await self._memory_context.mark_used(
+                result,
+                tuple(hit.fact.id for hit in result.hits),
+            )
+            memories = [
+                self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
+                for hit in result.hits
+            ]
         return self._result(
             data={
                 "user_id": user_id,
-                "memories": [
-                    {
-                        "fact_id": row.id,
-                        "kind": row.kind.value,
-                        "category": row.category,
-                        "content": row.content,
-                        "importance": row.importance,
-                        "confidence": row.confidence,
-                        "source_type": row.source_type.value,
-                        "status": row.status.value,
-                    }
-                    for row in rows
-                ],
+                "memories": memories,
             }
         )
 
-    async def _group_memories(self, arguments: dict[str, Any]) -> str:
+    async def _group_memories(
+        self,
+        arguments: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
         group_id = arguments.get("group_id")
         if not isinstance(group_id, str) or not group_id:
             return self._result(error="invalid_group_id", detail="group_id 必须是字符串")
-        rows = await self._memories.list_group(
-            group_id, limit=self._settings.group_memory_max_entries
+        limit = self._memory_limit(arguments)
+        query, mode = self._memory_query(arguments)
+        targets = await self._memory_context.resolve_targets(runtime.inbound, self._runtime())
+        target = next(
+            (
+                item
+                for item in targets
+                if item.scope_type is MemoryScopeType.GROUP and item.group_id == group_id
+            ),
+            None,
         )
+        if target is None:
+            return self._result(error="permission_denied", detail="只能读取当前群的共同记忆")
+        if query is None and mode is None:
+            rows = await self._memories.list_group(group_id, limit=limit)
+            memories = [
+                self._memory_json(row, retrieval_reason="deterministic_list") for row in rows
+            ]
+        else:
+            result = await self._memory_context.search(
+                text=query or "",
+                mode=mode or MemoryRetrievalMode.RELEVANT,
+                targets=(target,),
+                runtime=self._runtime(),
+                limit=limit,
+            )
+            await self._memory_context.mark_used(
+                result,
+                tuple(hit.fact.id for hit in result.hits),
+            )
+            memories = [
+                self._memory_json(hit.fact, retrieval_reason=hit.selection_reason)
+                for hit in result.hits
+            ]
         return self._result(
             data={
                 "group_id": group_id,
-                "memories": [
-                    {
-                        "fact_id": row.id,
-                        "kind": row.kind.value,
-                        "category": row.category,
-                        "content": row.content,
-                        "importance": row.importance,
-                        "confidence": row.confidence,
-                        "source_type": row.source_type.value,
-                        "status": row.status.value,
-                    }
-                    for row in rows
-                ],
+                "memories": memories,
             }
         )
+
+    @staticmethod
+    def _memory_limit(arguments: dict[str, Any]) -> int:
+        value = arguments.get("limit", 20)
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 100:
+            raise ValueError("limit 必须是 1～100 的整数")
+        return int(value)
+
+    @staticmethod
+    def _memory_query(
+        arguments: dict[str, Any],
+    ) -> tuple[str | None, MemoryRetrievalMode | None]:
+        raw_query = arguments.get("query")
+        if raw_query is not None and (not isinstance(raw_query, str) or len(raw_query) > 400):
+            raise ValueError("query 必须是不超过 400 字符的字符串")
+        raw_mode = arguments.get("mode")
+        if raw_mode is None:
+            mode = None
+        elif isinstance(raw_mode, str) and raw_mode in {"relevant", "overview"}:
+            mode = MemoryRetrievalMode(raw_mode)
+        else:
+            raise ValueError("mode 必须是 relevant 或 overview")
+        return raw_query, mode
+
+    @staticmethod
+    def _memory_json(row: Any, *, retrieval_reason: str) -> dict[str, Any]:
+        return {
+            "fact_id": row.id,
+            "scope": row.scope_type.value,
+            "subject": {
+                "user_id": row.subject_user_id,
+                "group_id": row.group_id,
+            },
+            "kind": row.kind.value,
+            "category": row.category,
+            "content": row.content,
+            "importance": row.importance,
+            "confidence": row.confidence,
+            "source_type": row.source_type.value,
+            "status": row.status.value,
+            "evidence_count": row.evidence_count,
+            "retrieval_reason": retrieval_reason,
+        }
 
     async def _call_onebot(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         if (

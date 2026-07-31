@@ -404,7 +404,7 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
         event_type="message:group:normal",
         scope_type=ScopeType.GROUP,
         sender=SenderIdentity(user_id="1001", nickname="当前用户"),
-        text="1002 最近怎么样",
+        text="只属于当前人物，只属于当前群，当前群内称呼",
         group_id="2001",
         mentioned_user_ids=("1002",),
         mentions_bot=True,
@@ -429,4 +429,56 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
     related = blocks["related_person.0"]
     assert set(related) == {"user_id", "display_name", "group_card"}
     assert "另一个人的秘密" not in envelope
+
+
+@pytest.mark.asyncio
+async def test_context_loads_mentioned_member_facts_in_separate_block(database: Database) -> None:
+    memories = MemoryFactService(MemoryFactRepository(database))
+    person_fact = await memories.remember(
+        _fact(content="小李喜欢水彩绘画", memory_key="hobby:painting", user_id="1002")
+    )
+    group_fact = await memories.remember(
+        _fact(
+            content="小李在本群负责美术",
+            memory_key="role:artist",
+            user_id="1002",
+            group_id="2001",
+            scope_type=MemoryScopeType.PERSON_GROUP,
+        )
+    )
+    harness = build_harness(database, make_settings(database.url, max_context_characters=20_000))
+    await harness.groups.set_enabled("2001", True)
+    await harness.profiles.upsert(
+        user_id="1002",
+        nickname="小李",
+        group_id="2001",
+        group_card="画师小李",
+    )
+    message = InboundMessage(
+        message_id="referenced-memory-context",
+        event_type="message:group:normal",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="1001", nickname="当前用户"),
+        text="小李喜欢水彩绘画，也在本群负责美术吗",
+        group_id="2001",
+        mentioned_user_ids=("1002",),
+        mentions_bot=True,
+        bot_user_id="8000",
+    )
+    await harness.processor.handle(message, MemorySender())
+    request = harness.provider.requests[0]  # type: ignore[attr-defined]
+    envelope = next(
+        item.content or ""
+        for item in request.messages
+        if item.role == "system" and '"id":"context.people_and_scene"' in (item.content or "")
+    )
+    items = json.loads(envelope[envelope.index("[") :])
+    context = next(item["data"] for item in items if item["id"] == "context.people_and_scene")
+    blocks = {item["id"]: item["data"] for item in context["items"]}
+    referenced = blocks["referenced_person.0"]
+
+    assert referenced["user_id"] == "1002"
+    assert [fact["fact_id"] for fact in referenced["person_facts"]] == [person_fact.id]
+    assert [fact["fact_id"] for fact in referenced["group_facts"]] == [group_fact.id]
+    assert blocks["current_person"]["facts"] == []
     assert "另一个群的秘密" not in envelope

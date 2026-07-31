@@ -28,6 +28,7 @@ from qq_ai_bot.admin.models import (
     EmojiRuntimeConfig,
     LLMRuntimeConfig,
     MCPRuntimeConfig,
+    MemoryRetrievalRuntimeConfig,
     PlannerRuntimeConfig,
     PluginRuntimeConfig,
     RelationshipRuntimeConfig,
@@ -1061,6 +1062,17 @@ class RuntimeConfigService:
             context=ContextRuntimeConfig(
                 local_event_limit=int(cast(int, value("context.local_event_limit"))),
                 related_people_limit=int(cast(int, value("context.related_people_limit"))),
+            ),
+            memory=MemoryRetrievalRuntimeConfig(
+                retrieval_enabled=bool(value("memory.retrieval_enabled")),
+                lexical_candidate_limit=int(cast(int, value("memory.lexical_candidate_limit"))),
+                context_limit_per_entity=int(cast(int, value("memory.context_limit_per_entity"))),
+                overview_limit_per_entity=int(cast(int, value("memory.overview_limit_per_entity"))),
+                always_on_explicit_preference_limit=int(
+                    cast(int, value("memory.always_on_explicit_preference_limit"))
+                ),
+                query_term_limit=int(cast(int, value("memory.query_term_limit"))),
+                short_query_fallback_enabled=bool(value("memory.short_query_fallback_enabled")),
             ),
             reply=ReplyRuntimeConfig(
                 daily_split_enabled=bool(value("reply.daily_split_enabled")),

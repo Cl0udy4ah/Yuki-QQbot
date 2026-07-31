@@ -229,9 +229,6 @@ class CapabilityReport:
             "permission_source": full["permission_source"],
             "counts": full["counts"],
             "groups": groups,
-            "available_scopes": full["available_scopes"],
-            "available_apply_modes": full["available_apply_modes"],
-            "permission_levels": full["permission_levels"],
         }
 
     def to_model_dict(

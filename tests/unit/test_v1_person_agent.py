@@ -21,6 +21,8 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.emoji.models import PendingReplyEffect
 from qq_ai_bot.llm.base import LLMProvider
+from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
+from qq_ai_bot.memory.models import MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.worker import MemoryWorker
@@ -223,6 +225,66 @@ async def test_non_superuser_never_receives_generic_onebot_tool(database: Databa
         "get_person_memories",
         "get_group_memories",
     } <= provider.tool_names
+
+
+@pytest.mark.asyncio
+async def test_core_memory_tool_uses_scoped_query_retriever(database: Database) -> None:
+    settings = make_settings(database.url)
+    ledger = EventLedgerRepository(database)
+    memories = MemoryFactService(MemoryFactRepository(database))
+    wanted = await memories.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            kind="fact",
+            memory_key="hobby:photography",
+            category="hobby",
+            content="喜欢街头摄影",
+            importance=4,
+            confidence=0.9,
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    await memories.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1002",
+            kind="fact",
+            memory_key="hobby:photography",
+            category="hobby",
+            content="喜欢街头摄影",
+            importance=5,
+            confidence=1,
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    tools = AgentToolService(
+        settings=settings,
+        ledger=ledger,
+        memories=memories,
+        actions=AgentActionRepository(database),
+    )
+    result = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps(
+                {
+                    "user_id": "1001",
+                    "query": "街头摄影",
+                    "mode": "relevant",
+                    "limit": 5,
+                },
+                ensure_ascii=False,
+            ),
+            ToolRuntime(inbound("摄影呢", message_id="memory-tool"), None, False),
+        )
+    )
+
+    assert result["ok"] is True
+    assert [item["fact_id"] for item in result["data"]["memories"]] == [wanted.id]
+    assert result["data"]["memories"][0]["retrieval_reason"] == "lexical_match"
+    used = await memories.repository.get_fact(wanted.id)
+    assert used is not None and used.last_used_at is not None
 
 
 class HistoryGateway:

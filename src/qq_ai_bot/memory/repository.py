@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.memory.enums import MemoryJobStatus, MemoryStatus
 from qq_ai_bot.memory.models import (
+    MemoryEntityTarget,
     MemoryEvidence,
     MemoryEvidenceCreate,
     MemoryFact,
@@ -42,6 +43,10 @@ class MemoryFactRepository:
 
     def __init__(self, database: Database) -> None:
         self._database = database
+
+    @property
+    def database(self) -> Database:
+        return self._database
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[AsyncSession]:
@@ -72,6 +77,13 @@ class MemoryFactRepository:
             conditions.append(MemoryFactModel.group_id == query.group_id)
         if query.kind is not None:
             conditions.append(MemoryFactModel.kind == query.kind.value)
+        if query.status is MemoryStatus.ACTIVE:
+            conditions.append(
+                or_(
+                    MemoryFactModel.valid_until.is_(None),
+                    MemoryFactModel.valid_until > datetime.now(UTC),
+                )
+            )
         statement = (
             select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
             .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
@@ -104,6 +116,128 @@ class MemoryFactRepository:
             )
         ).first()
         return self._project_fact(result[0], int(result[1])) if result else None
+
+    async def get_active_for_target(
+        self,
+        target: MemoryEntityTarget,
+        fact_ids: tuple[int, ...],
+        *,
+        session: AsyncSession | None = None,
+    ) -> tuple[MemoryFact, ...]:
+        """Load candidate facts only inside the already resolved identity boundary."""
+
+        unique_ids = tuple(dict.fromkeys(fact_ids))
+        if not unique_ids:
+            return ()
+        if session is None:
+            async with self._database.sessions() as owned:
+                return await self.get_active_for_target(target, unique_ids, session=owned)
+        statement = (
+            select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
+            .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
+            .where(
+                MemoryFactModel.id.in_(unique_ids),
+                *self._target_conditions(target),
+                MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                or_(
+                    MemoryFactModel.valid_until.is_(None),
+                    MemoryFactModel.valid_until > datetime.now(UTC),
+                ),
+            )
+            .group_by(MemoryFactModel.id)
+        )
+        rows = (await session.execute(statement)).all()
+        projected = {
+            row.id: self._project_fact(row, int(evidence_count)) for row, evidence_count in rows
+        }
+        return tuple(projected[fact_id] for fact_id in unique_ids if fact_id in projected)
+
+    async def list_overview(
+        self,
+        target: MemoryEntityTarget,
+        *,
+        limit: int,
+    ) -> tuple[MemoryFact, ...]:
+        async with self._database.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
+                    .outerjoin(
+                        MemoryEvidenceModel,
+                        MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+                    )
+                    .where(
+                        *self._target_conditions(target),
+                        MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                        or_(
+                            MemoryFactModel.valid_until.is_(None),
+                            MemoryFactModel.valid_until > datetime.now(UTC),
+                        ),
+                    )
+                    .group_by(MemoryFactModel.id)
+                    .order_by(
+                        MemoryFactModel.importance.desc(),
+                        MemoryFactModel.confidence.desc(),
+                        MemoryFactModel.updated_at.desc(),
+                        MemoryFactModel.id.asc(),
+                    )
+                    .limit(max(1, limit))
+                )
+            ).all()
+        return tuple(self._project_fact(row, int(count)) for row, count in rows)
+
+    async def list_explicit_preferences(
+        self,
+        target: MemoryEntityTarget,
+        *,
+        limit: int,
+    ) -> tuple[MemoryFact, ...]:
+        if limit <= 0:
+            return ()
+        async with self._database.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
+                    .outerjoin(
+                        MemoryEvidenceModel,
+                        MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+                    )
+                    .where(
+                        *self._target_conditions(target),
+                        MemoryFactModel.kind == "preference",
+                        MemoryFactModel.source_type == "explicit",
+                        MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                        or_(
+                            MemoryFactModel.valid_until.is_(None),
+                            MemoryFactModel.valid_until > datetime.now(UTC),
+                        ),
+                    )
+                    .group_by(MemoryFactModel.id)
+                    .order_by(
+                        MemoryFactModel.importance.desc(),
+                        MemoryFactModel.confidence.desc(),
+                        MemoryFactModel.updated_at.desc(),
+                        MemoryFactModel.id.asc(),
+                    )
+                    .limit(limit)
+                )
+            ).all()
+        return tuple(self._project_fact(row, int(count)) for row, count in rows)
+
+    async def mark_used(self, fact_ids: tuple[int, ...]) -> int:
+        unique_ids = tuple(dict.fromkeys(fact_ids))
+        if not unique_ids:
+            return 0
+        async with self._database.sessions() as session, session.begin():
+            result = await session.execute(
+                update(MemoryFactModel)
+                .where(
+                    MemoryFactModel.id.in_(unique_ids),
+                    MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                )
+                .values(last_used_at=datetime.now(UTC))
+            )
+        return int(cast(CursorResult[Any], result).rowcount or 0)
 
     async def find_active(
         self,
@@ -391,6 +525,22 @@ class MemoryFactRepository:
             updated_at=row.updated_at,
             last_used_at=row.last_used_at,
             evidence_count=evidence_count,
+        )
+
+    @staticmethod
+    def _target_conditions(target: MemoryEntityTarget) -> tuple[Any, ...]:
+        return (
+            MemoryFactModel.scope_type == target.scope_type.value,
+            (
+                MemoryFactModel.subject_user_id.is_(None)
+                if target.subject_user_id is None
+                else MemoryFactModel.subject_user_id == target.subject_user_id
+            ),
+            (
+                MemoryFactModel.group_id.is_(None)
+                if target.group_id is None
+                else MemoryFactModel.group_id == target.group_id
+            ),
         )
 
 

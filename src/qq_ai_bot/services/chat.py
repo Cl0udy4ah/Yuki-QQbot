@@ -57,7 +57,13 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.emoji.models import EmojiPlacement, EmojiReplyMode, PendingReplyEffect
+from qq_ai_bot.memory.context import MemoryContextService
+from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
+from qq_ai_bot.memory.query import MemoryQueryBuilder
+from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
@@ -860,6 +866,7 @@ class ChatService:
         time_service: TimeContextService,
         source_policy: SourceDisplayPolicy | None = None,
         source_renderer: SourceRenderer | None = None,
+        memory_context: MemoryContextService | None = None,
         context_assembler: ContextAssembler | None = None,
         prompt_composer: PromptComposer | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
@@ -898,11 +905,21 @@ class ChatService:
         self._tool_invocations = tool_invocations
         self._tool_metrics = ToolKernelMetrics()
         self._time = time_service
+        if memory_context is None:
+            memory_repository = MemoryFactRepository(self._ledger._database)
+            memory_context = MemoryContextService(
+                query_builder=MemoryQueryBuilder(MemoryTargetResolver(self._people)),
+                retriever=MemoryRetriever(
+                    repository=memory_repository,
+                    lexical_index=SQLiteMemoryFTSIndex(self._ledger._database),
+                ),
+                facts=self._memories,
+            )
         self._context_assembler = context_assembler or ContextAssembler(
             settings=settings,
             ledger=self._ledger,
             people=self._people,
-            memories=self._memories,
+            memory_context=memory_context,
             relationships=self._relationships,
             time_service=self._time,
         )
@@ -1498,6 +1515,7 @@ class ChatService:
             profile=profile,
             content=content,
             runtime=runtime,
+            planner_intent=(planned_turn.plan.intent if planned_turn is not None else ""),
         )
         return self._prompt_composer.compose(
             inbound=inbound,

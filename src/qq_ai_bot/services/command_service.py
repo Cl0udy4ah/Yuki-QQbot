@@ -140,7 +140,11 @@ class CommandService:
             return True
         operation = argument.split(maxsplit=1)[0].casefold() if argument.strip() else ""
         if command is CommandName.MEMORY:
-            return operation not in {"", "list"}
+            normalized = argument.casefold().split()
+            return not (
+                operation in {"", "list", "evidence", "search"}
+                or normalized[:2] == ["index", "status"]
+            )
         if command is CommandName.PREFERENCE:
             return operation not in {"", "list"}
         if command is CommandName.AFFECTION:
@@ -496,6 +500,9 @@ class CommandService:
             "QQ AI 助手命令：\n"
             "/ai help | new | status | stop | ping | whoami | forgetme\n"
             "/ai memory list|add|update|delete|evidence\n"
+            "/ai memory search person <QQ号> <query>（超级管理员）\n"
+            "/ai memory search group <群号> <query>（超级管理员）\n"
+            "/ai memory index status|rebuild（超级管理员）\n"
             "/ai preference list|set|delete\n"
             "/ai affection show|history\n"
             "/ai affection set|adjust|trust user <QQ号> <数值>（超级管理员）\n"

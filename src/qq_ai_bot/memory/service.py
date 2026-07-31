@@ -30,6 +30,10 @@ class MemoryFactService:
     def __init__(self, repository: MemoryFactRepository) -> None:
         self._repository = repository
 
+    @property
+    def repository(self) -> MemoryFactRepository:
+        return self._repository
+
     async def remember(
         self,
         fact: MemoryFactCreate,
@@ -328,3 +332,8 @@ class MemoryFactService:
 
     async def list_evidence(self, fact_id: int, *, limit: int = 100) -> tuple[MemoryEvidence, ...]:
         return await self._repository.list_evidence(fact_id, limit=limit)
+
+    async def mark_used(self, fact_ids: tuple[int, ...]) -> int:
+        """Mark only facts that survived final context budgeting."""
+
+        return await self._repository.mark_used(fact_ids)

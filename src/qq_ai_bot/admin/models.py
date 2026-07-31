@@ -135,6 +135,17 @@ class ContextRuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryRetrievalRuntimeConfig:
+    retrieval_enabled: bool
+    lexical_candidate_limit: int
+    context_limit_per_entity: int
+    overview_limit_per_entity: int
+    always_on_explicit_preference_limit: int
+    query_term_limit: int
+    short_query_fallback_enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ReplyRuntimeConfig:
     daily_split_enabled: bool
     daily_split_max_characters: int
@@ -314,6 +325,7 @@ class RuntimeConfigSnapshot:
     planner: PlannerRuntimeConfig
     plugins: PluginRuntimeConfig
     context: ContextRuntimeConfig
+    memory: MemoryRetrievalRuntimeConfig
     reply: ReplyRuntimeConfig
     llm: LLMRuntimeConfig
     agent: AgentRuntimeConfig

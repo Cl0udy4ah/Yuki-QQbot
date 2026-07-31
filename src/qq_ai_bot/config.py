@@ -106,6 +106,13 @@ class Settings(BaseSettings):
     memory_batch_seconds: float = 30.0
     memory_batch_trigger_count: int = 10
     memory_batch_max_events: int = 20
+    memory_retrieval_enabled: bool = True
+    memory_lexical_candidate_limit: int = 50
+    memory_context_limit_per_entity: int = 8
+    memory_overview_limit_per_entity: int = 20
+    memory_always_on_explicit_preference_limit: int = 3
+    memory_query_term_limit: int = 12
+    memory_short_query_fallback_enabled: bool = True
     agent_max_tool_calls: int = 12
     agent_max_model_requests: int = 12
     agent_tool_result_max_characters: int = 32000

@@ -67,7 +67,7 @@ class Database:
 
     @staticmethod
     async def _create_fts_schema(connection: Any) -> None:
-        """Create the external-content FTS index used by the event ledger."""
+        """Create external-content FTS indexes used by isolated test databases."""
 
         statements = (
             """
@@ -97,6 +97,41 @@ class Database:
                 INSERT INTO chat_events_fts(chat_events_fts, rowid, content)
                 VALUES ('delete', old.id, old.content);
                 INSERT INTO chat_events_fts(rowid, content) VALUES (new.id, new.content);
+            END
+            """,
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_facts_fts USING fts5(
+                content,
+                memory_key,
+                category,
+                content='memory_facts',
+                content_rowid='id',
+                tokenize='trigram'
+            )
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS memory_facts_fts_ai
+            AFTER INSERT ON memory_facts BEGIN
+                INSERT INTO memory_facts_fts(rowid, content, memory_key, category)
+                VALUES (new.id, new.content, new.memory_key, new.category);
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS memory_facts_fts_ad
+            AFTER DELETE ON memory_facts BEGIN
+                INSERT INTO memory_facts_fts(
+                    memory_facts_fts, rowid, content, memory_key, category
+                ) VALUES ('delete', old.id, old.content, old.memory_key, old.category);
+            END
+            """,
+            """
+            CREATE TRIGGER IF NOT EXISTS memory_facts_fts_au
+            AFTER UPDATE OF content, memory_key, category ON memory_facts BEGIN
+                INSERT INTO memory_facts_fts(
+                    memory_facts_fts, rowid, content, memory_key, category
+                ) VALUES ('delete', old.id, old.content, old.memory_key, old.category);
+                INSERT INTO memory_facts_fts(rowid, content, memory_key, category)
+                VALUES (new.id, new.content, new.memory_key, new.category);
             END
             """,
         )

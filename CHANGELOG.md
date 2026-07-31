@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## 3.0.0a2 - 2026-08-01
+
+### 查询驱动的 Memory V2
+
+- 新增 `MemoryQueryBuilder`、可信 `MemoryTargetResolver`、`MemoryRetriever`、确定性
+  `MemoryRanker`、`MemoryContextService` 和不记录正文的检索指标；普通聊天按当前消息、
+  有界回复文本和 Planner intent 选择相关事实，不增加 LLM 调用。
+- 人物、人物群内和群作用域在词法候选 SQL 内硬过滤。只有当前事件真实 `@` 或回复且已验证为
+  本群成员的人物才有独立 referenced block；最近发言者不再自动获得长期记忆检索资格。
+- relevant 无匹配时不加载全部事实，只允许当前人物有界的显式交互偏好；overview 按实体独立
+  限量。事实只有通过最终上下文预算后才批量更新 `last_used_at`。
+
+### FTS5、接口与运维
+
+- 新增 Alembic `0021`：建立外部内容 FTS5 `trigram` 表 `memory_facts_fts`、三类同步触发器并
+  回填现有 Memory V2 facts；downgrade 只删除派生索引，不删除事实和证据。
+- 查询统一执行 NFKC、casefold、空白压缩、运算符隔离与有界词项生成；两字查询只在已有实体
+  硬过滤的范围内使用 `LIKE`。排序稳定考虑 key/内容/类别精确匹配、BM25、重要度、置信度、
+  更新时间和事实 ID。
+- Core `get_person_memories` / `get_group_memories` 增加 `query`、`mode` 和 `limit`；管理员新增
+  memory search 与 index status/rebuild；Plugin API v1 `MemoryFacade.search()` 复用相同检索器。
+- 新增 7 项热配置、跨 QQ/跨群/短查询/排序/迁移/一万条事实规模回归，版本提升到
+  `3.0.0a2`。本版本没有 Embedding、向量依赖、模型重排或历史聊天重建。
+
 ## 3.0.0a1 - 2026-07-31
 
 ### Memory V2 不可逆切换

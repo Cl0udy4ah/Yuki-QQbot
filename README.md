@@ -6,6 +6,9 @@
 > 群内人物记忆、偏好和旧记忆任务。聊天事件账本、人物、群、关系、自动化和插件数据会保留；
 > 新记忆库从空库开始，也不会自动扫描历史聊天重建。升级前必须完整备份 `data/`，唯一回退
 > 方法是恢复该备份。详细步骤见 [Memory V2 升级指南](docs/upgrade-memory-v2.md)。
+>
+> **3.0.0a2：**Alembic `0021` 只新增可重建的 Memory V2 FTS5 派生索引，不删除事实、
+> 证据或聊天账本。普通聊天现在按当前问题检索相关事实，不再固定加载大量长期事实。
 
 Plugin API 仍为 `1.0`。第三方插件如果把 `yuki_requires` 上限写成 `<3.0`，需要在确认兼容后
 改为 `<4.0` 才能在 3.0.0a1 加载；插件代码和 manifest 的 `plugin_api` 无需因本次升级改版。
@@ -40,7 +43,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.0.0a1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 3.0.0a2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -503,6 +506,7 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 | `chat_events` | 永久保存收发消息、消息段、回复关系和时间；`0010` 增加图片摘要，`0012` 增加自动化来源、任务和运行 ID |
 | `chat_events_fts` | FTS5 `trigram` 全文索引 |
 | `memory_facts` | person/person_group/group 三种作用域的版本化事实与偏好 |
+| `memory_facts_fts` | `0021` 新增的可重建 FTS5 `trigram` 派生索引，只索引事实正文、key 和类别 |
 | `memory_evidence` | 事实对应的真实聊天事件、真实发送者、关系类型与短摘录 |
 | `memory_jobs` | 每个真实入站非 Bot 事件一个、最多重试 3 次的持久提取任务 |
 | `person_relationships` | 每个 QQ 当前好感度、信任度和自动变化时间 |
@@ -570,11 +574,19 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 
 每次普通回答会装配：
 
-- 当前用户 QQ、昵称、别名、person facts 和关系状态；
-- 当前群号、group facts 以及当前用户在该群的 person_group facts；
-- 被提及者和最近发言者中最多 5 人的当前群身份元数据，不附带其长期事实或关系；
+- 当前用户 QQ、昵称、别名、与当前问题相关的 person facts 和关系状态；
+- 当前群号、与当前问题相关的 group facts，以及当前用户在该群的 person_group facts；
+- 只有当前真实事件明确 `@` 或回复的群成员，才以独立块加载该人的相关长期事实；
+- 被提及者和最近发言者中最多 5 人仍可提供当前群身份元数据，但最近发言者不会自动成为
+  长期记忆检索目标；
 - 当前私聊或当前群最近 30 条本地事件；
 - 只有模型主动调用搜索工具时，才加入更早历史。
+
+相关记忆检索不会调用 LLM。后端先按 QQ、群号和作用域在同一 SQL 中硬过滤，再使用 SQLite
+FTS5 `trigram` 选候选并确定性排序。两字以内查询只在已经限定的主体范围内使用 `LIKE`；无
+匹配时不会加载全部事实，只保留有界的显式交互偏好。“你记得我什么”等概览请求使用有界的
+`overview` 模式。FTS 是可删除、可重建的派生索引，`memory_facts` 仍是唯一事实源；当前尚未
+实现 Embedding、向量数据库或历史重建。详见 [Memory V2 架构](docs/architecture/memory-v2.md)。
 
 新事件立即进入账本。后台记忆任务每 30 秒或累计 10 条时唤醒，每批最多 claim 20 条，随后
 逐事件独立提取和提交，失败最多重试 3 次。明确添加的事实标记为 `explicit`，自动提炼不能
@@ -867,6 +879,10 @@ Planner-first 自主参与规则：
 | `/ai memory update <ID> <内容>` | 修改本人的人物记忆 |
 | `/ai memory delete <ID>` | 删除本人的人物记忆 |
 | `/ai memory evidence <ID>` | 查看本人某条 Memory V2 事实的真实消息证据 |
+| `/ai memory search person <QQ号> <query>` | 超级管理员诊断指定人物的词法召回 |
+| `/ai memory search group <群号> <query>` | 超级管理员诊断指定群的词法召回 |
+| `/ai memory index status` | 超级管理员查看 Memory V2 FTS 健康状态 |
+| `/ai memory index rebuild` | 超级管理员只重建派生 FTS 索引 |
 | `/ai preference list` | 查看本人的交互偏好 |
 | `/ai preference set <键> <值>` | 设置交互偏好 |
 | `/ai preference delete <键>` | 删除交互偏好 |
@@ -998,6 +1014,13 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `MEMORY_BATCH_SECONDS` | `30` |
 | `MEMORY_BATCH_TRIGGER_COUNT` | `10` |
 | `MEMORY_BATCH_MAX_EVENTS` | `20` |
+| `MEMORY_RETRIEVAL_ENABLED` | `true` |
+| `MEMORY_LEXICAL_CANDIDATE_LIMIT` | `50` |
+| `MEMORY_CONTEXT_LIMIT_PER_ENTITY` | `8` |
+| `MEMORY_OVERVIEW_LIMIT_PER_ENTITY` | `20` |
+| `MEMORY_ALWAYS_ON_EXPLICIT_PREFERENCE_LIMIT` | `3` |
+| `MEMORY_QUERY_TERM_LIMIT` | `12` |
+| `MEMORY_SHORT_QUERY_FALLBACK_ENABLED` | `true` |
 | `LLM_TIMEOUT_SECONDS` | `120` |
 | `LLM_MAX_RETRIES` | `2` |
 | `LLM_MAX_OUTPUT_TOKENS` | `8192` |
@@ -1158,3 +1181,13 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 
 `0020` 不支持 downgrade，不会自动从 2.1.2 记忆或历史聊天重建事实。唯一回退方式是停止服务
 并恢复升级前完整数据库备份。完整说明见 [Memory V2 升级指南](docs/upgrade-memory-v2.md)。
+
+## 3.0.0a2 升级步骤
+
+1. 停止 Bot 写入但保持 NapCat 登录态：`docker compose stop bot`。
+2. 备份 `data/` 后执行 `uv run alembic upgrade head`，升级到 `0021`。
+3. `0021` 会从现有 `memory_facts` 回填 FTS5；不会读取旧版记忆或扫描聊天历史。
+4. 执行 `docker compose up -d --build --no-deps bot`，再用 `/ai memory index status` 检查索引。
+
+本次 downgrade 只会删除 FTS 表和触发器，不删除 Memory V2 facts 或 evidence。索引异常时使用
+`/ai memory index rebuild` 重建派生数据，不需要删除数据库。

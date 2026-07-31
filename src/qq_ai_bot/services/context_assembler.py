@@ -14,8 +14,8 @@ from qq_ai_bot.domain.conversations import ConversationIdentity
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.domain.relationships import RelationshipSnapshot
-from qq_ai_bot.memory.context import fact_context
-from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.context import MemoryContextService, retrieval_fact_context
+from qq_ai_bot.memory.enums import MemoryTargetRole
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     EventRecord,
@@ -64,14 +64,14 @@ class ContextAssembler:
         settings: Settings,
         ledger: EventLedgerRepository,
         people: PeopleRepository,
-        memories: MemoryFactService,
+        memory_context: MemoryContextService,
         relationships: RelationshipRepository,
         time_service: TimeContextService,
     ) -> None:
         self._settings = settings
         self._ledger = ledger
         self._people = people
-        self._memories = memories
+        self._memory_context = memory_context
         self._relationships = relationships
         self._time = time_service
 
@@ -83,6 +83,7 @@ class ContextAssembler:
         profile: UserProfileSnapshot,
         content: str,
         runtime: RuntimeConfigSnapshot,
+        planner_intent: str = "",
     ) -> AssembledContext:
         """Build one bounded snapshot without persisting model-only metadata."""
 
@@ -94,10 +95,22 @@ class ContextAssembler:
             limit=runtime.context.local_event_limit,
             since=reset,
         )
-        person_memories = await self._memories.list_person(
-            inbound.sender.user_id,
-            limit=self._settings.person_memory_max_entries,
+        retrieval = await self._memory_context.retrieve_for_turn(
+            inbound=inbound,
+            content=content,
+            planner_intent=planner_intent,
+            runtime=runtime,
         )
+        hits_by_role = {
+            block.target.role: block.hits
+            for block in retrieval.blocks
+            if block.target.role
+            in {
+                MemoryTargetRole.CURRENT_PERSON,
+                MemoryTargetRole.CURRENT_PERSON_GROUP,
+                MemoryTargetRole.CURRENT_GROUP,
+            }
+        }
         aliases = await self._people.aliases(inbound.sender.user_id)
         current_time = await self._time.current(inbound.sender.user_id)
         current_relationship = (
@@ -116,7 +129,10 @@ class ContextAssembler:
                 "nickname": profile.nickname,
                 "display_name": profile.display_name,
                 "aliases": list(aliases),
-                "facts": [fact_context(row) for row in person_memories],
+                "facts": [
+                    retrieval_fact_context(hit)
+                    for hit in hits_by_role.get(MemoryTargetRole.CURRENT_PERSON, ())
+                ],
                 **(
                     {"relationship": self.relationship_json(current_relationship)}
                     if current_relationship is not None
@@ -132,24 +148,50 @@ class ContextAssembler:
 
         related_count = 0
         if inbound.group_id is not None:
-            group_memories = await self._memories.list_group(
-                inbound.group_id,
-                limit=self._settings.group_memory_max_entries,
-            )
-            member_memories = await self._memories.list_person_group(
-                inbound.sender.user_id,
-                inbound.group_id,
-                limit=self._settings.person_group_memory_max_entries,
-            )
             context["current_person_in_group"] = {
                 "user_id": inbound.sender.user_id,
                 "group_id": inbound.group_id,
-                "facts": [fact_context(row) for row in member_memories],
+                "facts": [
+                    retrieval_fact_context(hit)
+                    for hit in hits_by_role.get(MemoryTargetRole.CURRENT_PERSON_GROUP, ())
+                ],
             }
             context["current_group"] = {
                 "group_id": inbound.group_id,
-                "facts": [fact_context(row) for row in group_memories],
+                "facts": [
+                    retrieval_fact_context(hit)
+                    for hit in hits_by_role.get(MemoryTargetRole.CURRENT_GROUP, ())
+                ],
             }
+            referenced: dict[str, dict[str, Any]] = {}
+            for block in retrieval.blocks:
+                target = block.target
+                if (
+                    target.role
+                    not in {
+                        MemoryTargetRole.REFERENCED_PERSON,
+                        MemoryTargetRole.REFERENCED_PERSON_GROUP,
+                    }
+                    or target.subject_user_id is None
+                ):
+                    continue
+                entry = referenced.setdefault(
+                    target.subject_user_id,
+                    {
+                        "user_id": target.subject_user_id,
+                        "group_id": inbound.group_id,
+                        "person_facts": [],
+                        "group_facts": [],
+                    },
+                )
+                key = (
+                    "person_facts"
+                    if target.role is MemoryTargetRole.REFERENCED_PERSON
+                    else "group_facts"
+                )
+                entry[key] = [retrieval_fact_context(hit) for hit in block.hits]
+            if referenced:
+                context["referenced_people"] = list(referenced.values())
             related_ids = self._related_ids(inbound, recent, runtime.context.related_people_limit)
             related_count = len(related_ids)
             context["related_people"] = await self._related_people(
@@ -162,7 +204,8 @@ class ContextAssembler:
             1,
             int(total_budget * self._settings.context_metadata_budget_ratio),
         )
-        metadata_payload = self._fit_metadata(context, metadata_budget)
+        metadata_payload, selected_fact_ids = self._fit_metadata(context, metadata_budget)
+        await self._memory_context.mark_used(retrieval, selected_fact_ids)
         metadata_json = json.dumps(
             metadata_payload,
             ensure_ascii=False,
@@ -247,7 +290,11 @@ class ContextAssembler:
         }
 
     @classmethod
-    def _fit_metadata(cls, context: dict[str, Any], limit: int) -> dict[str, object]:
+    def _fit_metadata(
+        cls,
+        context: dict[str, Any],
+        limit: int,
+    ) -> tuple[dict[str, object], tuple[int, ...]]:
         """Select domain-neutral contributions; no category-specific pop loop remains."""
 
         contributions = cls._context_contributions(context)
@@ -257,9 +304,20 @@ class ContextAssembler:
         )
         selected = {item.id: item.payload for item in selection.selected}
         items: list[dict[str, object]] = []
+        selected_fact_ids: list[int] = []
         for item in selection.selected:
+            if isinstance(item.payload, dict):
+                fact_id = item.payload.get("fact_id")
+                if isinstance(fact_id, int) and fact_id > 0:
+                    selected_fact_ids.append(fact_id)
             if item.id.startswith(
-                ("person_memory.", "current_group.fact.", "current_person_in_group.fact.")
+                (
+                    "person_memory.",
+                    "current_group.fact.",
+                    "current_person_in_group.fact.",
+                    "referenced_person_fact.",
+                    "referenced_group_fact.",
+                )
             ):
                 continue
             payload = item.payload
@@ -282,7 +340,25 @@ class ContextAssembler:
                     ],
                 }
             items.append({"id": item.id, "data": payload})
-        return {"items": items}
+        for output_item in items:
+            item_id = output_item["id"]
+            payload = output_item["data"]
+            if not isinstance(item_id, str) or not item_id.startswith("referenced_person."):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            index = item_id.rsplit(".", 1)[-1]
+            payload["person_facts"] = [
+                value
+                for key, value in selected.items()
+                if key.startswith(f"referenced_person_fact.{index}.")
+            ]
+            payload["group_facts"] = [
+                value
+                for key, value in selected.items()
+                if key.startswith(f"referenced_group_fact.{index}.")
+            ]
+        return {"items": items}, tuple(dict.fromkeys(selected_fact_ids))
 
     @staticmethod
     def _context_contributions(
@@ -342,6 +418,35 @@ class ContextAssembler:
                 add(f"{key}.fact.{index}", value, priority=priority, relevance=0.8)
         for index, person in enumerate(context.get("related_people", ())):
             add(f"related_person.{index}", person, priority=40, relevance=0.6)
+        for index, person in enumerate(context.get("referenced_people", ())):
+            if not isinstance(person, dict):
+                continue
+            identity = {
+                key: value
+                for key, value in person.items()
+                if key not in {"person_facts", "group_facts"}
+            }
+            add(
+                f"referenced_person.{index}",
+                identity,
+                priority=90,
+                relevance=1,
+                required=True,
+            )
+            for fact_index, fact in enumerate(person.get("person_facts", ())):
+                add(
+                    f"referenced_person_fact.{index}.{fact_index}",
+                    fact,
+                    priority=58,
+                    relevance=0.85,
+                )
+            for fact_index, fact in enumerate(person.get("group_facts", ())):
+                add(
+                    f"referenced_group_fact.{index}.{fact_index}",
+                    fact,
+                    priority=57,
+                    relevance=0.85,
+                )
         return tuple(items)
 
     @classmethod

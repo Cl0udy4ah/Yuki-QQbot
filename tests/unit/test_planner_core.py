@@ -15,6 +15,7 @@ from qq_ai_bot.admin.models import (
     ContextRuntimeConfig,
     EmojiRuntimeConfig,
     LLMRuntimeConfig,
+    MemoryRetrievalRuntimeConfig,
     PlannerRuntimeConfig,
     PluginRuntimeConfig,
     RelationshipRuntimeConfig,
@@ -83,6 +84,15 @@ def _runtime() -> RuntimeConfigSnapshot:
             max_total_prompt_characters=8000,
         ),
         context=ContextRuntimeConfig(local_event_limit=30, related_people_limit=5),
+        memory=MemoryRetrievalRuntimeConfig(
+            retrieval_enabled=True,
+            lexical_candidate_limit=50,
+            context_limit_per_entity=8,
+            overview_limit_per_entity=20,
+            always_on_explicit_preference_limit=3,
+            query_term_limit=12,
+            short_query_fallback_enabled=True,
+        ),
         reply=ReplyRuntimeConfig(
             daily_split_enabled=True,
             daily_split_max_characters=80,

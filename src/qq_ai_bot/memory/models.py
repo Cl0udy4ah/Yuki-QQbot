@@ -10,9 +10,11 @@ from qq_ai_bot.memory.enums import (
     MemoryEvidenceRelation,
     MemoryJobStatus,
     MemoryKind,
+    MemoryRetrievalMode,
     MemoryScopeType,
     MemorySourceType,
     MemoryStatus,
+    MemoryTargetRole,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -142,3 +144,85 @@ class MemoryContextBlock(_MemoryModel):
     subject_user_id: str | None = None
     group_id: str | None = None
     facts: tuple[MemoryFact, ...] = ()
+
+
+class MemoryEntityTarget(_MemoryModel):
+    role: MemoryTargetRole
+    scope_type: MemoryScopeType
+    subject_user_id: str | None = None
+    group_id: str | None = None
+    block_id: str
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> MemoryEntityTarget:
+        MemoryFactQuery(
+            scope_type=self.scope_type,
+            subject_user_id=self.subject_user_id,
+            group_id=self.group_id,
+        )
+        expected = {
+            MemoryTargetRole.CURRENT_PERSON: MemoryScopeType.PERSON,
+            MemoryTargetRole.CURRENT_PERSON_GROUP: MemoryScopeType.PERSON_GROUP,
+            MemoryTargetRole.CURRENT_GROUP: MemoryScopeType.GROUP,
+            MemoryTargetRole.REFERENCED_PERSON: MemoryScopeType.PERSON,
+            MemoryTargetRole.REFERENCED_PERSON_GROUP: MemoryScopeType.PERSON_GROUP,
+        }[self.role]
+        if self.scope_type is not expected:
+            raise ValueError("memory target role does not match its scope")
+        return self
+
+
+class MemoryQuery(_MemoryModel):
+    text: str
+    normalized_text: str
+    mode: MemoryRetrievalMode
+    targets: tuple[MemoryEntityTarget, ...]
+    kinds: tuple[MemoryKind, ...] = ()
+    candidate_limit: int = Field(gt=0)
+    limit_per_target: int = Field(gt=0)
+    always_on_explicit_preference_limit: int = Field(ge=0)
+    query_term_limit: int = Field(gt=0)
+    short_query_fallback_enabled: bool = True
+
+
+class MemoryLexicalCandidate(_MemoryModel):
+    fact_id: int = Field(gt=0)
+    target: MemoryEntityTarget
+    fts_rank: float
+    exact_match: bool = False
+    matched_terms: tuple[str, ...] = ()
+
+
+class MemoryRetrievalHit(_MemoryModel):
+    fact: MemoryFact
+    target: MemoryEntityTarget
+    rank: int = Field(gt=0)
+    lexical_score: float
+    exact_match: bool = False
+    matched_terms: tuple[str, ...] = ()
+    selection_reason: str
+
+
+class MemoryRetrievalBlock(_MemoryModel):
+    target: MemoryEntityTarget
+    hits: tuple[MemoryRetrievalHit, ...] = ()
+
+
+class MemoryRetrievalResult(_MemoryModel):
+    blocks: tuple[MemoryRetrievalBlock, ...]
+    hits: tuple[MemoryRetrievalHit, ...]
+    candidate_count: int = Field(ge=0)
+    selected_count: int = Field(ge=0)
+    query_hash: str
+    mode: MemoryRetrievalMode
+
+
+class MemoryIndexHealth(_MemoryModel):
+    fact_count: int = Field(ge=0)
+    indexed_row_count: int = Field(ge=0)
+    missing_row_count: int = Field(ge=0)
+    orphan_row_count: int = Field(ge=0)
+
+    @property
+    def healthy(self) -> bool:
+        return self.missing_row_count == 0 and self.orphan_row_count == 0

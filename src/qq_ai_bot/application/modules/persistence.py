@@ -8,8 +8,13 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.repository import EmojiRepository
+from qq_ai_bot.memory.context import MemoryContextService
+from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
+from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
+from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
@@ -41,6 +46,8 @@ class PersistenceBundle:
     processed_events: ProcessedEventRepository
     ledger: EventLedgerRepository
     memories: MemoryFactService
+    memory_context: MemoryContextService
+    memory_index: SQLiteMemoryFTSIndex
     memory_jobs: MemoryJobRepository
     agent_actions: AgentActionRepository
     web_sources: WebSearchSourceRepository
@@ -81,17 +88,30 @@ class PersistenceModule:
             "initial_affection": settings.relationship_initial_affection,
             "initial_trust": settings.relationship_initial_trust,
         }
+        people = UserProfileRepository(database, **initial)
         memory_repository = MemoryFactRepository(database)
+        memories = MemoryFactService(memory_repository)
+        memory_index = SQLiteMemoryFTSIndex(database)
+        memory_context = MemoryContextService(
+            query_builder=MemoryQueryBuilder(MemoryTargetResolver(people)),
+            retriever=MemoryRetriever(
+                repository=memory_repository,
+                lexical_index=memory_index,
+            ),
+            facts=memories,
+        )
         return PersistenceBundle(
             database=database,
             runtime_config=runtime_config,
             conversations=ConversationRepository(database),
             groups=GroupSettingsRepository(database),
             private_users=PrivateUserSettingsRepository(database, **initial),
-            people=UserProfileRepository(database, **initial),
+            people=people,
             processed_events=ProcessedEventRepository(database),
             ledger=EventLedgerRepository(database),
-            memories=MemoryFactService(memory_repository),
+            memories=memories,
+            memory_context=memory_context,
+            memory_index=memory_index,
             memory_jobs=MemoryJobRepository(database),
             agent_actions=AgentActionRepository(database),
             web_sources=WebSearchSourceRepository(database),

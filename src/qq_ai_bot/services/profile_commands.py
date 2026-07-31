@@ -36,6 +36,9 @@ class ProfileCommandHandler:
         self._relationship_admin = relationship_admin
 
     async def memory(self, *, actor: AdminActor, argument: str) -> str:
+        special = await self._memory_diagnostics(actor, argument)
+        if special is not None:
+            return special
         parsed = self._parse_scoped_operation(
             argument,
             actor.user_id,
@@ -86,7 +89,51 @@ class ProfileCommandHandler:
             return "\n".join(
                 f"事件 {row.event_id} [{row.relation}] {row.excerpt}" for row in evidence_rows
             )
-        return "可用操作：list、add、update、delete、evidence。"
+        return "可用操作：list、add、update、delete、evidence、search、index。"
+
+    async def _memory_diagnostics(self, actor: AdminActor, argument: str) -> str | None:
+        parts = argument.split()
+        if not parts or parts[0].casefold() not in {"search", "index"}:
+            return None
+        if not actor.is_superuser:
+            return "权限不足：记忆检索诊断仅限超级管理员。"
+        operation = parts.pop(0).casefold()
+        try:
+            if operation == "search":
+                if len(parts) < 3 or parts[0].casefold() not in {"person", "group"}:
+                    return "格式：/ai memory search person <QQ号> <query> 或 group <群号> <query>"
+                scope = parts.pop(0).casefold()
+                target = parts.pop(0)
+                if _NUMERIC_PLATFORM_ID.fullmatch(target) is None:
+                    return "目标 QQ 号或群号格式错误。"
+                query = " ".join(parts).strip()
+                if not query:
+                    return "检索 query 不能为空。"
+                result = (
+                    await self._memory_admin.search_person(actor, target, query)
+                    if scope == "person"
+                    else await self._memory_admin.search_group(actor, target, query)
+                )
+                if not result.hits:
+                    return "没有检索到相关记忆。"
+                return "\n".join(
+                    f"{hit.fact.id}. [{hit.selection_reason}] {hit.fact.content}"
+                    for hit in result.hits
+                )
+            if len(parts) != 1 or parts[0].casefold() not in {"status", "rebuild"}:
+                return "格式：/ai memory index status|rebuild"
+            health = (
+                await self._memory_admin.index_status(actor)
+                if parts[0].casefold() == "status"
+                else await self._memory_admin.rebuild_index(actor)
+            )
+            prefix = "记忆索引已重建" if parts[0].casefold() == "rebuild" else "记忆索引状态"
+            return (
+                f"{prefix}：事实 {health.fact_count}，索引 {health.indexed_row_count}，"
+                f"缺失 {health.missing_row_count}，孤儿 {health.orphan_row_count}。"
+            )
+        except (PermissionError, RuntimeError, ValueError) as exc:
+            return str(exc)
 
     async def preference(self, *, actor: AdminActor, argument: str) -> str:
         parsed = self._parse_scoped_operation(

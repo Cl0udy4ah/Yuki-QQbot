@@ -10,6 +10,10 @@ from tests.conftest import MemorySender, build_harness, make_settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
+from qq_ai_bot.memory.models import MemoryFactCreate
+from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.services.processor import MENTION_ONLY_CONTEXT, _vision_failure_message
@@ -112,13 +116,52 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：150 项" in admin_text
+    assert "可修改运行时配置参数：157 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "planner.max_pending_messages" in admin_text
     assert "relationship.set_affection" in admin_text
     assert "受保护配置（12 项，不可修改）" in admin_text
     assert "NapCat/OneBot 通用全接口网关：1 项" in admin_text
     assert "call_onebot_api:any_public_action" in admin_text
+
+
+@pytest.mark.asyncio
+async def test_superuser_memory_search_and_index_diagnostics(database: Database) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    fact = await MemoryFactService(MemoryFactRepository(database)).remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="10001",
+            kind="fact",
+            memory_key="plan:travel",
+            category="plan",
+            content="计划去杭州旅行",
+            importance=4,
+            confidence=0.9,
+            source_type=MemorySourceType.AUTOMATIC,
+        )
+    )
+    search_sender = MemorySender()
+    await harness.processor.handle(
+        inbound(
+            "/ai memory search person 10001 杭州旅行",
+            message_id="memory-search-admin",
+            user_id="9000",
+        ),
+        search_sender,
+    )
+    assert f"{fact.id}. [lexical_match] 计划去杭州旅行" in search_sender.messages[0].text
+
+    status_sender = MemorySender()
+    await harness.processor.handle(
+        inbound(
+            "/ai memory index status",
+            message_id="memory-index-admin",
+            user_id="9000",
+        ),
+        status_sender,
+    )
+    assert "缺失 0，孤儿 0" in status_sender.messages[0].text
 
 
 @pytest.mark.asyncio

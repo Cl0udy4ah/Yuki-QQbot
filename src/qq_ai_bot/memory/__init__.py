@@ -4,10 +4,13 @@ from qq_ai_bot.memory.enums import (
     MemoryEvidenceRelation,
     MemoryJobStatus,
     MemoryKind,
+    MemoryRetrievalMode,
     MemoryScopeType,
     MemorySourceType,
     MemoryStatus,
+    MemoryTargetRole,
 )
+from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.models import (
     MemoryContextBlock,
     MemoryEvidence,
@@ -16,6 +19,8 @@ from qq_ai_bot.memory.models import (
     MemoryFactCreate,
     MemoryFactQuery,
     MemoryJob,
+    MemoryQuery,
+    MemoryRetrievalResult,
 )
 
 __all__ = [
@@ -29,7 +34,12 @@ __all__ = [
     "MemoryJob",
     "MemoryJobStatus",
     "MemoryKind",
+    "MemoryQuery",
+    "MemoryRetrievalError",
+    "MemoryRetrievalMode",
+    "MemoryRetrievalResult",
     "MemoryScopeType",
     "MemorySourceType",
     "MemoryStatus",
+    "MemoryTargetRole",
 ]

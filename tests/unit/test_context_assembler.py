@@ -16,6 +16,7 @@ from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import PeopleRepository
+from qq_ai_bot.services.context_assembler import ContextAssembler
 
 
 @pytest.mark.asyncio
@@ -135,3 +136,61 @@ async def test_sqlite_connections_enable_wal_and_bounded_busy_wait(database: Dat
     assert str(journal_mode).casefold() == "wal"
     assert int(busy_timeout or 0) == 5000
     assert int(foreign_keys or 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_only_facts_surviving_context_budget_are_marked_used(database: Database) -> None:
+    repository = MemoryFactRepository(database)
+    memories = MemoryFactService(repository)
+    selected = await memories.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            kind="fact",
+            category="profile",
+            source_type=MemorySourceType.AUTOMATIC,
+            confidence=0.9,
+            memory_key="selected",
+            content="短事实",
+            importance=5,
+        )
+    )
+    omitted = await memories.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="1001",
+            kind="fact",
+            category="profile",
+            source_type=MemorySourceType.AUTOMATIC,
+            confidence=0.9,
+            memory_key="omitted",
+            content="不会进入预算的事实" * 200,
+            importance=1,
+        )
+    )
+    context = {
+        "current_person": {
+            "user_id": "1001",
+            "nickname": "测试",
+            "display_name": "测试",
+            "facts": [
+                {"fact_id": selected.id, "content": selected.content, "importance": 5},
+                {"fact_id": omitted.id, "content": omitted.content, "importance": 1},
+            ],
+        },
+        "scene": {"type": "private", "group_id": None},
+    }
+    contributions = ContextAssembler._context_contributions(context)
+    required_cost = sum(item.cost for item in contributions if item.required)
+    selected_cost = next(item.cost for item in contributions if item.id == "person_memory.0")
+    _, fact_ids = ContextAssembler._fit_metadata(
+        context,
+        required_cost + selected_cost,
+    )
+    await memories.mark_used(fact_ids)
+
+    selected_row = await repository.get_fact(selected.id)
+    omitted_row = await repository.get_fact(omitted.id)
+    assert fact_ids == (selected.id,)
+    assert selected_row is not None and selected_row.last_used_at is not None
+    assert omitted_row is not None and omitted_row.last_used_at is None

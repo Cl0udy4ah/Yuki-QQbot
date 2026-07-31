@@ -41,8 +41,14 @@ from qq_ai_bot.emoji.models import (
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.mcp.manager import MCPManager
-from qq_ai_bot.memory.enums import MemoryEvidenceRelation
-from qq_ai_bot.memory.models import MemoryEvidenceCreate
+from qq_ai_bot.memory.context import MemoryContextService
+from qq_ai_bot.memory.enums import (
+    MemoryEvidenceRelation,
+    MemoryRetrievalMode,
+    MemoryScopeType,
+    MemoryTargetRole,
+)
+from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryEvidenceCreate
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.validation import normalize_memory_text
 from qq_ai_bot.persistence.repositories import (
@@ -243,6 +249,7 @@ class PluginFacadeServices:
     people: PeopleRepository | None = None
     groups: GroupSettingsRepository | None = None
     memories: MemoryFactService | None = None
+    memory_context: MemoryContextService | None = None
     relationships: RelationshipRepository | None = None
     memory_admin: MemoryAdminService | None = None
     relationship_admin: RelationshipAdminService | None = None
@@ -1081,17 +1088,42 @@ class _MemoryFacade:
         subject_id: str,
         limit: int = 20,
     ) -> tuple[Mapping[str, JsonValue], ...]:
-        self._host._require(PluginPermission.MEMORY_SEARCH)
-        keyword = _bounded_text(query, maximum=400, field_name="query").casefold()
+        invocation = self._host._require(PluginPermission.MEMORY_SEARCH)
+        assert invocation is not None
+        keyword = _bounded_text(query, maximum=400, field_name="query")
         if scope_type == "person":
-            rows = await self.list_person(subject_id, limit=100)
+            target_id = self._host._require_user_scope(invocation, subject_id)
+            target = MemoryEntityTarget(
+                role=MemoryTargetRole.CURRENT_PERSON,
+                scope_type=MemoryScopeType.PERSON,
+                subject_user_id=target_id,
+                block_id="plugin_person",
+            )
         elif scope_type == "group":
-            rows = await self.list_group(subject_id, limit=100)
+            target_id = self._host._require_group_scope(invocation, subject_id)
+            target = MemoryEntityTarget(
+                role=MemoryTargetRole.CURRENT_GROUP,
+                scope_type=MemoryScopeType.GROUP,
+                group_id=target_id,
+                block_id="plugin_group",
+            )
         else:
             raise ValueError("memory search scope_type must be person or group")
-        return tuple(item for item in rows if keyword in str(item.get("content", "")).casefold())[
-            : _bounded_limit(limit, maximum=100)
-        ]
+        service = _require_service(self._host._services.memory_context, "memory retrieval")
+        result = await service.search(
+            text=keyword,
+            mode=MemoryRetrievalMode.RELEVANT,
+            targets=(target,),
+            runtime=await _runtime_snapshot(self._host, invocation),
+            limit=_bounded_limit(limit, maximum=100),
+        )
+        return tuple(
+            {
+                **_memory_record(hit.fact, scope_type),
+                "retrieval_reason": hit.selection_reason,
+            }
+            for hit in result.hits
+        )
 
     async def add(
         self,

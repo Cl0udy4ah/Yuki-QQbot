@@ -112,7 +112,7 @@ def test_0020_destroys_only_v1_memory_and_preserves_the_event_ledger(
         )
         connection.commit()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0020")
 
     with sqlite3.connect(path) as connection:
         tables = {
@@ -166,7 +166,7 @@ def test_fresh_install_creates_empty_memory_v2_schema(
 ) -> None:
     path = tmp_path / "memory-v2-fresh.db"
     config = _config(path, monkeypatch)
-    command.upgrade(config, "head")
+    command.upgrade(config, "0020")
 
     with sqlite3.connect(path) as connection:
         tables = {

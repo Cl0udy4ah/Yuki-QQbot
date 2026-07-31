@@ -6,10 +6,25 @@ import time
 from datetime import UTC, datetime, timedelta
 
 from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.config import Settings
-from qq_ai_bot.memory.models import MemoryEvidence, MemoryEvidenceCreate, MemoryFact
+from qq_ai_bot.memory.context import MemoryContextService
+from qq_ai_bot.memory.enums import MemoryRetrievalMode, MemoryScopeType, MemoryTargetRole
+from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
+from qq_ai_bot.memory.models import (
+    MemoryEntityTarget,
+    MemoryEvidence,
+    MemoryEvidenceCreate,
+    MemoryFact,
+    MemoryIndexHealth,
+    MemoryRetrievalResult,
+)
+from qq_ai_bot.memory.query import MemoryQueryBuilder
+from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.targets import MemoryTargetResolver
+from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.services.admin.common import require_self_or_superuser
 
 
@@ -22,10 +37,27 @@ class MemoryAdminService:
         settings: Settings,
         memories: MemoryFactService,
         audit: AdminAuditService,
+        memory_context: MemoryContextService | None = None,
+        memory_index: SQLiteMemoryFTSIndex | None = None,
+        runtime_config: RuntimeConfigService | None = None,
     ) -> None:
         self._settings = settings
         self._memories = memories
         self._audit = audit
+        database = memories.repository.database
+        self._memory_index = memory_index or SQLiteMemoryFTSIndex(database)
+        self._memory_context = memory_context or MemoryContextService(
+            query_builder=MemoryQueryBuilder(MemoryTargetResolver(PeopleRepository(database))),
+            retriever=MemoryRetriever(
+                repository=memories.repository,
+                lexical_index=self._memory_index,
+            ),
+            facts=memories,
+        )
+        self._runtime_config = runtime_config or RuntimeConfigService(
+            settings=settings,
+            database=database,
+        )
 
     async def list_memories(
         self,
@@ -229,3 +261,77 @@ class MemoryAdminService:
                 session=session,
             )
         return deleted
+
+    async def search_person(
+        self,
+        actor: AdminActor,
+        user_id: str,
+        query: str,
+        *,
+        limit: int = 20,
+    ) -> MemoryRetrievalResult:
+        require_self_or_superuser(actor, user_id, self._settings)
+        runtime = await self._runtime_config.snapshot(user_id=user_id)
+        target = MemoryEntityTarget(
+            role=MemoryTargetRole.CURRENT_PERSON,
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id=user_id,
+            block_id="admin_person",
+        )
+        return await self._memory_context.search(
+            text=query,
+            mode=MemoryRetrievalMode.RELEVANT,
+            targets=(target,),
+            runtime=runtime,
+            limit=limit,
+        )
+
+    async def search_group(
+        self,
+        actor: AdminActor,
+        group_id: str,
+        query: str,
+        *,
+        limit: int = 20,
+    ) -> MemoryRetrievalResult:
+        if not actor.is_superuser or actor.user_id not in self._settings.superusers:
+            raise PermissionError("只有超级管理员可以诊断群记忆")
+        runtime = await self._runtime_config.snapshot(group_id=group_id)
+        target = MemoryEntityTarget(
+            role=MemoryTargetRole.CURRENT_GROUP,
+            scope_type=MemoryScopeType.GROUP,
+            group_id=group_id,
+            block_id="admin_group",
+        )
+        return await self._memory_context.search(
+            text=query,
+            mode=MemoryRetrievalMode.RELEVANT,
+            targets=(target,),
+            runtime=runtime,
+            limit=limit,
+        )
+
+    async def index_status(self, actor: AdminActor) -> MemoryIndexHealth:
+        self._require_superuser(actor)
+        return await self._memory_index.health()
+
+    async def rebuild_index(self, actor: AdminActor) -> MemoryIndexHealth:
+        self._require_superuser(actor)
+        started = time.perf_counter()
+        health = await self._memory_index.rebuild()
+        await self._audit.record(
+            actor=actor,
+            capability="memory",
+            operation="index_rebuild",
+            target_type="derived_index",
+            target_id="memory_facts_fts",
+            before=None,
+            after=health.model_dump(),
+            success=True,
+            duration_seconds=time.perf_counter() - started,
+        )
+        return health
+
+    def _require_superuser(self, actor: AdminActor) -> None:
+        if not actor.is_superuser or actor.user_id not in self._settings.superusers:
+            raise PermissionError("只有超级管理员可以诊断记忆索引")
