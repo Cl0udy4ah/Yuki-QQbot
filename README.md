@@ -110,10 +110,25 @@ Yuki-QQbot 2.1.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 
 ```json
 "toolBundles": {
+  "order_planning": {
+    "scope": "mcp.mcd.order_planning",
+    "summary": "只读规划订单：查询地址与门店、菜单详情和价格，但不创建订单",
+    "includeTools": [
+      "delivery-query-addresses",
+      "delivery-query-stores",
+      "query-nearby-stores",
+      "query-meals",
+      "query-meal-detail",
+      "calculate-price"
+    ]
+  },
   "order": {
     "scope": "mcp.mcd.order",
-    "summary": "查询菜单与详情、校价、创建待支付订单并查询订单",
+    "summary": "查询地址与门店、菜单详情和价格，创建待支付订单并查询订单",
     "includeTools": [
+      "delivery-query-addresses",
+      "delivery-query-stores",
+      "query-nearby-stores",
       "query-meals",
       "query-meal-detail",
       "calculate-price",
@@ -128,6 +143,10 @@ Planner 只需选择 Bundle scope，成员就会整体进入候选与 Agent Sche
 不能拆散它。若完整 Bundle 超过 Schema Token 预算，本轮会明确失败并指出 scope，不会静默
 留下半条工具链。`mcp_gateway` 的 search 只搜索、describe 只返回定义，call 仍按目标工具的
 真实风险经过统一 CapabilityPolicy，不能借只读 Gateway 绕过 scope、read-only、图片或联网限制。
+若 Agent 在执行过程中发现所需工具未加载，可调用 `request_tools` 按能力描述从统一目录请求；
+后端只会加载当前真实事件原本有权使用的完整工具 Schema，下一步仍由目标工具自身执行和审计。
+成功的 MCP 调用同时返回 `structuredContent` 和兼容文本时，Yuki 以结构化结果为准并丢弃重复
+文本，避免菜单等大结果被字符预算截断成无名称的 ID 摘要；图片和资源块仍会保留。
 
 需要让持久化任务调用某个 MCP 时，在该 Server 的 `yuki` 下显式配置自动化允许列表：
 
@@ -424,8 +443,18 @@ uv run qq-ai-bot-cli plugin test plugins/com.example.echo
 仓库内置 [`io.github.yuanyeyoutao.netease-music-card`](plugins/io.github.yuanyeyoutao.netease-music-card/README.md)
 插件。网易云查询仍由独立的
 [`YuanYeYouTao/netease-music-mcp`](https://github.com/YuanYeYouTao/netease-music-mcp)
-提供，插件只负责“搜索/消歧 → 当前 QQ 会话原生音乐卡片”的编排，不会把 NapCat 依赖写进
-通用 MCP Server。
+提供，插件只负责“搜索/消歧 → 读取详情 → 当前 QQ 会话卡片”的编排，不会把 NapCat 依赖写进
+通用 MCP Server。歌曲使用网易云原生 ID 卡片；专辑会在一次工具调用内保存搜索得到的
+`album_id`、读取曲目，并生成 QQ 支持的自定义音乐卡片。卡片内容、封面和跳转链接来自网易云，
+但 QQ 客户端可能以 QQ 音乐样式显示。插件会以当前真实消息里的《专辑名》校验模型参数；
+同一条消息即使 Agent 重复调用，也只会发送一次。用户随后要求“抽第一首”时，Agent 可按需
+加载单曲分享工具并使用专辑结果中的 `song_id` 发送。
+
+当前预设适配 `netease-music-mcp 1.0.0`：服务端共提供 15 个工具，Yuki 默认开放其中 12 个
+只读工具，包括搜索、推荐、相似歌曲、新歌、榜单、歌曲/专辑/歌手/歌单、歌词、用户音乐库和
+歌单统计。`create_playlist`、`update_playlist_tracks`、`set_song_like` 三个账号写工具默认不
+加入允许列表；如以后确实需要，应先为独立服务配置认证并显式启用
+`NETEASE_WRITE_OPERATIONS_ENABLED=true`，再单独审阅后加入 `includeTools`。
 
 先在相邻目录启动 MCP Server，并确认宿主机 `8766` 端口可用：
 
@@ -449,10 +478,13 @@ docker compose exec bot qq-ai-bot-cli plugin enable io.github.yuanyeyoutao.netea
 docker compose restart bot
 ```
 
-然后可直接对 Yuki 说“给我发一张周杰伦《晴天》的网易云音乐卡片”。结果唯一时会直接发送
-QQ 原生网易云分享卡片；重名时 Yuki 先列候选，用户选定后才发送。仅询问歌曲、歌词或歌手
-资料不会触发卡片发送。`get_user_library` 仍需要外部 MCP Server 配置网易云 Cookie/用户 ID，
-公开歌曲搜索和卡片发送不依赖该登录态。
+然后可直接对 Yuki 说“给我发一张周杰伦《晴天》的网易云音乐卡片”，或“发一张
+MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发送；重名时 Yuki 先列出包含
+`song_id`/`album_id` 的候选，用户选定后再发送，不需要手动寻找链接。收到别人分享的网易云
+歌曲或专辑 JSON 卡片时，Yuki 也会读取其中的标题、来源、稳定 ID 和链接，而不是走旧的
+“媒体尚未理解”固定回复。仅询问歌曲、歌词、歌手或专辑资料不会触发卡片发送。
+`get_user_library` 仍需要外部 MCP Server 配置网易云 Cookie/用户 ID，公开搜索和卡片发送不
+依赖该登录态。
 
 ## 1.x 数据模型
 

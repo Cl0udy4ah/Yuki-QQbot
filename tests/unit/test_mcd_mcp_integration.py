@@ -47,15 +47,34 @@ def test_checked_in_mcp_presets_are_standalone_and_secret_free() -> None:
     assert "create-order" in server.yuki.automation.include_tools
     assert server.yuki.automation.permission == "superuser"
     assert "mall-order-detail" in display
+    planning_bundle = server.yuki.tool_bundles["order_planning"]
+    assert planning_bundle.scope == "mcp.mcd.order_planning"
+    assert set(planning_bundle.include_tools) == {
+        "delivery-query-addresses",
+        "delivery-query-stores",
+        "query-nearby-stores",
+        "query-meals",
+        "query-meal-detail",
+        "calculate-price",
+    }
+    assert "create-order" not in planning_bundle.include_tools
     order_bundle = server.yuki.tool_bundles["order"]
     assert order_bundle.scope == "mcp.mcd.order"
     assert set(order_bundle.include_tools) == {
+        "delivery-query-addresses",
+        "delivery-query-stores",
+        "query-nearby-stores",
         "query-meals",
         "query-meal-detail",
         "calculate-price",
         "create-order",
         "query-order",
     }
+    assert {
+        "delivery-query-addresses",
+        "delivery-query-stores",
+        "query-nearby-stores",
+    }.issubset(server.yuki.automation.include_tools)
 
     music = loaded.servers["netease_music"]
     assert music.disabled is True
@@ -63,6 +82,10 @@ def test_checked_in_mcp_presets_are_standalone_and_secret_free() -> None:
     assert music.yuki.scope == "mcp.netease_music"
     assert set(music.include_tools) == {
         "music_search",
+        "get_recommendations",
+        "get_similar_songs",
+        "get_new_songs",
+        "get_rankings",
         "get_songs",
         "get_album",
         "get_artist",
@@ -71,6 +94,11 @@ def test_checked_in_mcp_presets_are_standalone_and_secret_free() -> None:
         "get_user_library",
         "get_playlist_statistics",
     }
+    assert {
+        "create_playlist",
+        "update_playlist_tracks",
+        "set_song_like",
+    }.isdisjoint(music.include_tools)
     music_display = json.dumps(redacted_server_config(music), ensure_ascii=False)
     assert "Authorization" not in music_display
 

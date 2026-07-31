@@ -29,6 +29,11 @@ revision。模型工具名全局去重；远程 MCP 名称规范为 `mcp__<serve
 精排只能处理非必需工具，不能拆散已选 Bundle；完整 Schema 超预算时由 Budgeter 明确拒绝。
 Schema Token 统一按工具名、描述、参数和 function-calling 外层估算。
 
+当候选选择或 Schema 预算省略了后续真正需要的工具时，Agent 可调用小型
+`request_tools` 网关，以自然语言描述能力。Host 只在当前真实事件经过权限、来源、只读模式、
+图片与联网隔离后仍可用的统一目录中匹配；匹配项会在下一次模型请求中以完整原始 Schema
+加载，再由 Agent 正常调用。网关只改变本轮暴露集合，不代替目标工具执行，也不授予新权限。
+
 同一模型响应里的连续 `parallel_safe` 工具可并发执行。修改状态、平台修改、非幂等或语义未知的
 工具默认串行；工具结果始终按模型原始 call 顺序回传。调用总数只取运行时
 `agent.max_tool_calls`、`agent.max_model_requests` 和 `tooling.max_parallel_calls`。

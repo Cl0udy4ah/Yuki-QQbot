@@ -2321,6 +2321,63 @@ class _OneBotFacade:
             runner=send,
         )
 
+    async def send_custom_music_card(
+        self,
+        *,
+        url: str,
+        image: str,
+        title: str,
+        singer: str = "",
+        content: str = "",
+    ) -> PluginResult:
+        """Send one bounded custom music-style card to the current real scene."""
+
+        invocation = self._host._invocation()
+        assert invocation is not None
+
+        async def send() -> PluginResult:
+            checked = self._host._require(PluginPermission.ONEBOT_SEND, send=True)
+            assert checked is not None
+            if checked.inbound is None or checked.origin not in {
+                TurnOrigin.USER_MESSAGE,
+                TurnOrigin.AUTONOMOUS_GROUP,
+            }:
+                raise PluginPermissionError("music cards require a current real message scene")
+            card_data = {
+                "type": "custom",
+                "url": normalize_public_url(url),
+                "image": normalize_public_url(image),
+                "title": _bounded_text(title, maximum=200, field_name="title"),
+                "singer": _bounded_optional_text(singer, maximum=200),
+                "content": _bounded_optional_text(content, maximum=500),
+            }
+            message = [{"type": "music", "data": card_data}]
+            outbound_segments = ({"type": "music", "data": dict(card_data)},)
+            if checked.current_group_id is not None:
+                target = self._host._require_group_scope(checked, checked.current_group_id)
+                return await _send_onebot(
+                    self._host,
+                    checked,
+                    "send_group_msg",
+                    {"group_id": target, "message": message},
+                    outbound=_group_music_outbound(target, outbound_segments),
+                )
+            target = self._host._require_user_scope(checked, checked.actor_user_id)
+            return await _send_onebot(
+                self._host,
+                checked,
+                "send_private_msg",
+                {"user_id": target, "message": message},
+                outbound=_private_music_outbound(target, outbound_segments),
+            )
+
+        return await self._host._run_audited(
+            invocation,
+            operation="onebot.send_custom_music_card",
+            permission=PluginPermission.ONEBOT_SEND,
+            runner=send,
+        )
+
     async def send_private(self, user_id: str, text: str) -> PluginResult:
         invocation = self._host._invocation()
         assert invocation is not None

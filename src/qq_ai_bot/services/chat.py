@@ -38,6 +38,11 @@ from qq_ai_bot.capabilities import (
     UnifiedToolCatalogEntry,
     resolve_mutation_commit,
 )
+from qq_ai_bot.capabilities.request import (
+    REQUEST_TOOLS_NAME,
+    match_requestable_tools,
+    request_tools_definition,
+)
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import (
@@ -204,7 +209,10 @@ class _ChatAgentBackend(AgentToolBackend):
         self._automation_persisted = False
         self._batch: list[ToolCall] = []
         self._catalog: UnifiedToolCatalog | None = None
+        self._requestable_catalog: UnifiedToolCatalog | None = None
         self._provider_registry: ToolProviderRegistry | None = None
+        self._requested_tool_names: set[str] = set()
+        self._callable_tool_names: set[str] = set()
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         self._web_was_used = self._web_was_used or web_was_used
@@ -216,6 +224,31 @@ class _ChatAgentBackend(AgentToolBackend):
             web_was_used=self._web_was_used,
         )
         self._catalog = self._provider_registry.catalog(request_runtime)
+        unrestricted_visible = CapabilityPolicyEngine().visible(
+            tuple(entry.descriptor for entry in self._catalog.entries),
+            CapabilityPolicyContext(
+                authority=AuthorityContext(
+                    actor_user_id=self._runtime.actor_user_id,
+                    is_superuser=self._runtime.actor_is_superuser,
+                ),
+                origin=self._runtime.origin,
+                tool_selection=ToolSelection(mode=self._runtime.tool_mode),
+                contains_images=bool(
+                    self._runtime.inbound.attachments
+                    or self._runtime.inbound.reply_attachments
+                ),
+                web_was_used=self._web_was_used,
+            ),
+        )
+        unrestricted_names = {descriptor.model_name for descriptor in unrestricted_visible}
+        self._requestable_catalog = replace(
+            self._catalog,
+            entries=tuple(
+                entry
+                for entry in self._catalog.entries
+                if entry.descriptor.model_name in unrestricted_names
+            ),
+        )
         policy_scopes = tuple(sorted(self._runtime.tool_groups))
         if any(scope.startswith("mcp.") for scope in policy_scopes) and "mcp" not in policy_scopes:
             policy_scopes = (*policy_scopes, "mcp")
@@ -263,7 +296,27 @@ class _ChatAgentBackend(AgentToolBackend):
                     entry
                     for entry in filtered_catalog.entries
                     if entry.descriptor.model_name in self._runtime.selected_tool_names
+                    or entry.descriptor.model_name in self._requested_tool_names
                     or entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
+                ),
+            )
+        if self._requested_tool_names:
+            # A model-requested tool must survive the same schema/count budgets
+            # that caused it to be omitted initially. Policy filtering happened
+            # above, so this changes exposure priority rather than authority.
+            filtered_catalog = replace(
+                filtered_catalog,
+                entries=tuple(
+                    replace(
+                        entry,
+                        descriptor=replace(
+                            entry.descriptor,
+                            exposure=CapabilityExposure.DIRECT_ALWAYS,
+                        ),
+                    )
+                    if entry.descriptor.model_name in self._requested_tool_names
+                    else entry
+                    for entry in filtered_catalog.entries
                 ),
             )
         config = self._runtime.runtime_config
@@ -323,6 +376,22 @@ class _ChatAgentBackend(AgentToolBackend):
             query=f"{self._runtime.selection_query} {self._runtime.planner_intent}",
         )
         definitions = tuple(entry.descriptor.as_chat_tool() for entry in budgeted.entries)
+        exposed_names = {tool.name for tool in definitions}
+        may_request_more = bool(
+            not self._runtime.scheduled_automation_intent
+            and self._runtime.tool_mode is not ToolMode.NONE
+            and not (
+                self._runtime.planner_scopes_explicit and not self._runtime.tool_groups
+            )
+            and self._requestable_catalog is not None
+            and any(
+                entry.descriptor.model_name not in exposed_names
+                for entry in self._requestable_catalog.entries
+            )
+        )
+        if may_request_more:
+            definitions = (*definitions, request_tools_definition())
+        self._callable_tool_names = {tool.name for tool in definitions}
         for entry in budgeted.entries:
             self._service._tool_metrics.record_selection(
                 entry.provider_id,
@@ -361,6 +430,30 @@ class _ChatAgentBackend(AgentToolBackend):
                 {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
             )
         call = self._batch.pop(call_index)
+        if name == REQUEST_TOOLS_NAME:
+            return self._request_tools(arguments_json)
+        if name not in self._callable_tool_names:
+            requestable = (
+                self._requestable_catalog.by_model_name(name)
+                if self._requestable_catalog is not None
+                else None
+            )
+            if requestable is None:
+                return json.dumps(
+                    {"ok": False, "error": "unknown_capability"},
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "capability_not_loaded",
+                    "detail": (
+                        "该工具未在本轮正式加载；请先调用 request_tools 按能力描述请求，"
+                        "再使用返回的真实工具名"
+                    ),
+                },
+                ensure_ascii=False,
+            )
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         descriptor = entry.descriptor if entry is not None else None
         if descriptor is None or descriptor.binding is None:
@@ -637,8 +730,88 @@ class _ChatAgentBackend(AgentToolBackend):
 
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
         del runtime
+        if name == REQUEST_TOOLS_NAME:
+            return False
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         return bool(entry is not None and entry.descriptor.parallel_safe)
+
+    def _request_tools(self, arguments_json: str) -> str:
+        try:
+            arguments = json.loads(arguments_json)
+        except json.JSONDecodeError:
+            arguments = None
+        if not isinstance(arguments, dict):
+            return json.dumps(
+                {"ok": False, "error": "invalid_arguments", "detail": "参数必须是对象"},
+                ensure_ascii=False,
+            )
+        query = arguments.get("query")
+        max_results = arguments.get("max_results", 4)
+        if (
+            not isinstance(query, str)
+            or len(query.strip()) < 2
+            or not isinstance(max_results, int)
+            or isinstance(max_results, bool)
+            or not 1 <= max_results <= 8
+        ):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "invalid_arguments",
+                    "detail": "query 至少 2 个字符，max_results 必须为 1 到 8",
+                },
+                ensure_ascii=False,
+            )
+        if self._requestable_catalog is None:
+            return json.dumps(
+                {"ok": False, "error": "capability_catalog_unavailable"},
+                ensure_ascii=False,
+            )
+        matches = match_requestable_tools(
+            self._requestable_catalog,
+            query=query,
+            limit=max_results,
+            excluded_names=frozenset(self._callable_tool_names),
+        )
+        if not matches:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "capability_not_found",
+                    "detail": "当前真实用户和场景允许的工具目录中没有匹配能力",
+                },
+                ensure_ascii=False,
+            )
+        loaded_names = {match.entry.descriptor.model_name for match in matches}
+        loaded_scopes = {
+            scope for match in matches for scope in match.entry.descriptor.scope_ids
+        }
+        self._requested_tool_names.update(loaded_names)
+        selected = self._runtime.selected_tool_names
+        self._runtime = replace(
+            self._runtime,
+            tool_groups=frozenset((*self._runtime.tool_groups, *loaded_scopes)),
+            selected_tool_names=(
+                None if selected is None else frozenset((*selected, *loaded_names))
+            ),
+        )
+        return json.dumps(
+            {
+                "ok": True,
+                "data": {
+                    "loaded_tools": [
+                        {
+                            "name": match.entry.descriptor.model_name,
+                            "capability": match.entry.descriptor.canonical_name,
+                            "description": match.entry.compact_description,
+                        }
+                        for match in matches
+                    ],
+                    "instruction": "下一步直接调用 loaded_tools 中的真实工具",
+                },
+            },
+            ensure_ascii=False,
+        )
 
     def _retry_identity(self, call: ToolCall) -> tuple[str, str] | None:
         if not self._is_mutating_call(call):

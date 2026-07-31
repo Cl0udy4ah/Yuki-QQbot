@@ -140,7 +140,8 @@ class AgentToolService:
                     "当用户问‘我能改什么’‘有哪些设置’‘权限范围’‘能改多少参数’"
                     "或类似问题时必须调用。结果不得原样复制给用户，也不会写入长期上下文；"
                     "默认 summary，具体问题用 focused+category/query，只有明确要求完整清单"
-                    "才用 full。不能查询他人。"
+                    "才用 full。不能查询他人。它不是工具发现接口；需要当前未加载的操作工具时"
+                    "应调用 request_tools，不要从权限目录猜测工具名。"
                 ),
                 parameters=_object_schema(
                     {

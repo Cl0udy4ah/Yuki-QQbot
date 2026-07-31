@@ -1,5 +1,7 @@
 """OneBot event normalization and unsupported-content tests."""
 
+import json
+
 from nonebot.adapters.onebot.v11 import (
     GroupMessageEvent,
     Message,
@@ -139,3 +141,31 @@ def test_unsupported_attachment_is_metadata_only() -> None:
     assert not normalized.text
     assert normalized.attachments[0].kind is AttachmentKind.IMAGE
     assert normalized.attachments[0].label == "image"
+
+
+def test_netease_album_share_card_becomes_bounded_chat_context() -> None:
+    payload = {
+        "app": "com.tencent.tuwen.lua",
+        "meta": {
+            "news": {
+                "desc": "by MC啊显/MC赵小六",
+                "jumpUrl": "https://y.music.163.com/m/album?id=242154493&userid=1001",
+                "tag": "网易云音乐",
+                "title": "分享专辑: 中国有弹舌",
+            }
+        },
+        "prompt": "[分享]分享专辑: 中国有弹舌",
+        "view": "news",
+    }
+    normalized = normalize_event(
+        private_event(Message(MessageSegment.json(json.dumps(payload, ensure_ascii=False))))
+    )
+
+    assert normalized.attachments[0].kind is AttachmentKind.CARD
+    assert normalized.attachments[0].summary == "分享专辑: 中国有弹舌"
+    assert normalized.attachments[0].url == (
+        "https://y.music.163.com/m/album?id=242154493&userid=1001"
+    )
+    assert "用户分享了一个网易云专辑" in normalized.text
+    assert "网易云专辑 ID：242154493" in normalized.text
+    assert "中国有弹舌" in normalized.text

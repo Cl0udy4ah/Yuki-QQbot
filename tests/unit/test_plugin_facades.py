@@ -28,6 +28,7 @@ from qq_ai_bot.plugin_host.facades import (
     PluginInvocation,
 )
 from qq_ai_bot.plugin_host.repository import PluginAuditRepository
+from qq_ai_bot.web.base import WebSearchValidationError
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -184,10 +185,24 @@ async def test_music_card_facade_targets_only_the_current_real_scene() -> None:
             resource_id="123456",
         )
         assert result.ok
+        custom = await context.onebot.send_custom_music_card(
+            url="https://y.music.163.com/m/album?id=242154493",
+            image="https://example.com/album.jpg",
+            title="中国有弹舌",
+            singer="MC赵小六",
+            content="网易云专辑 · 2 首",
+        )
+        assert custom.ok
         with pytest.raises(ValueError, match="provider"):
             await context.onebot.send_music_card(provider="custom", resource_id="123456")
         with pytest.raises(ValueError, match="resource id"):
             await context.onebot.send_music_card(provider="netease", resource_id="https://bad")
+        with pytest.raises(WebSearchValidationError, match="本地或私有 IP"):
+            await context.onebot.send_custom_music_card(
+                url="http://127.0.0.1/private",
+                image="https://example.com/album.jpg",
+                title="private",
+            )
 
     assert gateway.calls == [
         (
@@ -201,7 +216,26 @@ async def test_music_card_facade_targets_only_the_current_real_scene() -> None:
                     }
                 ],
             },
-        )
+        ),
+        (
+            "send_private_msg",
+            {
+                "user_id": "10001",
+                "message": [
+                    {
+                        "type": "music",
+                        "data": {
+                            "type": "custom",
+                            "url": "https://y.music.163.com/m/album?id=242154493",
+                            "image": "https://example.com/album.jpg",
+                            "title": "中国有弹舌",
+                            "singer": "MC赵小六",
+                            "content": "网易云专辑 · 2 首",
+                        },
+                    }
+                ],
+            },
+        ),
     ]
 
 
@@ -239,6 +273,13 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
             media_reference="event-file-secret",
         )
         await context.onebot.send_music_card(provider="netease", resource_id="123456")
+        await context.onebot.send_custom_music_card(
+            url="https://y.music.163.com/m/album?id=242154493",
+            image="https://example.com/album.jpg",
+            title="中国有弹舌",
+            singer="MC赵小六",
+            content="网易云专辑 · 2 首",
+        )
         await context.onebot.send_private("10001", "onebot-private-body-secret")
         await context.onebot.send_group("20001", "onebot-group-body-secret")
 
@@ -253,6 +294,7 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
         "group-body-secret",
         "",
         "",
+        "",
         "onebot-group-body-secret",
     ]
     assert all(row.direction == "outbound" for row in group_events)
@@ -262,6 +304,19 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
     assert group_events[2].segments == ({"type": "image", "data": {}},)
     assert group_events[3].segments == (
         {"type": "music", "data": {"provider": "163", "id": "123456"}},
+    )
+    assert group_events[4].segments == (
+        {
+            "type": "music",
+            "data": {
+                "type": "custom",
+                "url": "https://y.music.163.com/m/album?id=242154493",
+                "image": "https://example.com/album.jpg",
+                "title": "中国有弹舌",
+                "singer": "MC赵小六",
+                "content": "网易云专辑 · 2 首",
+            },
+        },
     )
 
     private_events = await ledger.list_recent(
@@ -287,6 +342,7 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
         "message.send_group",
         "message.send_image",
         "onebot.send_music_card",
+        "onebot.send_custom_music_card",
         "onebot.send_private",
         "onebot.send_group",
     }
@@ -295,6 +351,7 @@ async def test_plugin_sends_are_audited_and_persist_confirmed_outbound_events(
     assert by_operation["message.send_text"].permission == "message.group.send"
     assert by_operation["message.send_image"].permission == "message.media.send"
     assert by_operation["onebot.send_music_card"].permission == "onebot.send"
+    assert by_operation["onebot.send_custom_music_card"].permission == "onebot.send"
     assert by_operation["onebot.send_private"].permission == "onebot.send"
     assert all(row.detail == {} for row in audit_rows)
     serialized_audit = json.dumps(

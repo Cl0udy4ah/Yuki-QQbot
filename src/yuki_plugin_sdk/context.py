@@ -316,6 +316,16 @@ class SchedulerFacade(Protocol):
 class OneBotFacade(Protocol):
     async def send_music_card(self, *, provider: str, resource_id: str) -> PluginResult: ...
 
+    async def send_custom_music_card(
+        self,
+        *,
+        url: str,
+        image: str,
+        title: str,
+        singer: str = "",
+        content: str = "",
+    ) -> PluginResult: ...
+
     async def send_private(self, user_id: str, text: str) -> PluginResult: ...
 
     async def send_group(self, group_id: str, text: str) -> PluginResult: ...

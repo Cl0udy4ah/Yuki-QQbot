@@ -5,12 +5,13 @@ from __future__ import annotations
 import importlib.util
 import sys
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
 
 from yuki_plugin_sdk.context import MCPFacade
-from yuki_plugin_sdk.models import JsonValue
+from yuki_plugin_sdk.models import CurrentMessage, JsonValue
 from yuki_plugin_sdk.plugin import Plugin
 from yuki_plugin_sdk.registrar import ToolRegistration
 from yuki_plugin_sdk.results import PluginResult
@@ -99,6 +100,70 @@ async def _running_tool(
     )
     await plugin.start(context)
     return plugin, registrar.tools[0], context, mcp
+
+
+async def _running_named_tool(
+    tool_name: str,
+    responses: list[PluginResult],
+) -> tuple[Plugin, ToolRegistration, FakePluginContext, StubMCP]:
+    plugin = cast(Plugin, _load_module().NetEaseMusicCardPlugin())
+    registrar = RecordingRegistrar()
+    await plugin.register(cast(Any, registrar))
+    mcp = StubMCP(responses)
+    context = FakePluginContext(
+        "io.github.yuanyeyoutao.netease-music-card",
+        mcp=cast(MCPFacade, mcp),
+    )
+    await plugin.start(context)
+    tool = next(item for item in registrar.tools if item.metadata.name == tool_name)
+    return plugin, tool, context, mcp
+
+
+def _album(
+    album_id: str,
+    title: str,
+    artist: str,
+    *,
+    cover_url: str = "https://example.com/album.jpg",
+) -> dict[str, Any]:
+    return {
+        "id": album_id,
+        "name": title,
+        "artists": [{"id": "9", "name": artist}],
+        "cover_url": cover_url,
+        "publish_date": "2018-03-21",
+        "canonical_url": f"https://music.163.com/#/album?id={album_id}",
+    }
+
+
+def _album_detail_result(
+    album: dict[str, Any],
+    *,
+    tracks: list[dict[str, Any]],
+) -> PluginResult:
+    return PluginResult(
+        data={
+            "result": {
+                "ok": True,
+                "data": cast(
+                    JsonValue,
+                    {
+                        **album,
+                        "size": len(tracks),
+                        "tracks": tracks,
+                        "track_page": {
+                            "page": 1,
+                            "page_size": 50,
+                            "total": len(tracks),
+                            "has_more": False,
+                        },
+                    },
+                ),
+                "provider_id": "mcp.netease_music",
+                "tool_name": "get_album",
+            }
+        }
+    )
 
 
 async def test_plugin_passes_host_contract() -> None:
@@ -197,4 +262,161 @@ async def test_mcp_failure_never_sends_a_card() -> None:
     assert result.ok is False
     assert result.error_code == "music_card.mcp_failed"
     assert context.onebot.music_cards == []
+    await plugin.stop()
+
+
+async def test_album_search_fetches_tracks_and_sends_current_scene_card() -> None:
+    album = _album("242154493", "中国有弹舌", "MC赵小六")
+    plugin, tool, context, mcp = await _running_named_tool(
+        "share_netease_album",
+        [
+            _mcp_result([album]),
+            _album_detail_result(
+                album,
+                tracks=[
+                    _song("1001", "弹舌第一式", "MC赵小六"),
+                    _song("1002", "弹舌第二式", "MC赵小六"),
+                ],
+            ),
+        ],
+    )
+
+    result = await tool.handler(
+        tool.input_model.model_validate(
+            {"query": "中国有弹舌", "artist": "MC赵小六"}
+        )
+    )
+    output = _share_output(result, tool.output_model)
+
+    assert output.status == "sent"
+    assert output.selected is not None
+    assert output.selected.album_id == "242154493"
+    assert output.track_count == 2
+    assert [track.song_id for track in output.tracks] == ["1001", "1002"]
+    assert context.onebot.custom_music_cards == [
+        {
+            "url": "https://y.music.163.com/m/album?id=242154493",
+            "image": "https://example.com/album.jpg",
+            "title": "中国有弹舌",
+            "singer": "MC赵小六",
+            "content": "网易云专辑 · 2 首 · 2018-03-21",
+        }
+    ]
+    assert mcp.calls == [
+        (
+            "netease_music",
+            "music_search",
+            {
+                "query": "中国有弹舌 MC赵小六",
+                "category": "album",
+                "page": 1,
+                "page_size": 10,
+                "detail_level": "summary",
+            },
+        ),
+        (
+            "netease_music",
+            "get_album",
+            {
+                "album_id": "242154493",
+                "include_tracks": True,
+                "track_page": 1,
+                "track_page_size": 50,
+            },
+        ),
+    ]
+    await plugin.stop()
+
+
+async def test_ambiguous_album_search_returns_ids_without_sending() -> None:
+    plugin, tool, context, _mcp = await _running_named_tool(
+        "share_netease_album",
+        [
+            _mcp_result(
+                [
+                    _album("101", "弹舌合集", "MC赵小六"),
+                    _album("102", "弹舌合集", "另一位歌手"),
+                ]
+            )
+        ],
+    )
+
+    result = await tool.handler(tool.input_model.model_validate({"query": "弹舌合集"}))
+    output = _share_output(result, tool.output_model)
+
+    assert output.status == "selection_required"
+    assert [item.album_id for item in output.candidates] == ["101", "102"]
+    assert isinstance(result, PluginResult) and result.mutation_committed is False
+    assert context.onebot.custom_music_cards == []
+    await plugin.stop()
+
+
+async def test_album_id_skips_search_but_still_fetches_details() -> None:
+    album = _album("241937735", "弹舌合集", "MC赵小六")
+    plugin, tool, context, mcp = await _running_named_tool(
+        "share_netease_album",
+        [_album_detail_result(album, tracks=[_song("2001", "弹舌", "MC赵小六")])],
+    )
+
+    result = await tool.handler(
+        tool.input_model.model_validate({"album_id": "241937735"})
+    )
+    output = _share_output(result, tool.output_model)
+
+    assert output.status == "sent"
+    assert output.selected is not None
+    assert output.selected.album_id == "241937735"
+    assert [call[1] for call in mcp.calls] == ["get_album"]
+    assert len(context.onebot.custom_music_cards) == 1
+    await plugin.stop()
+
+
+async def test_current_quoted_title_overrides_hallucinated_id_and_is_idempotent() -> None:
+    album = _album("242154493", "中国有弹舌", "MC赵小六")
+    plugin, tool, context, mcp = await _running_named_tool(
+        "share_netease_album",
+        [
+            _mcp_result([album]),
+            _album_detail_result(
+                album,
+                tracks=[_song("2608077229", "中国有弹舌", "MC赵小六")],
+            ),
+        ],
+    )
+    context.messages.current = CurrentMessage(
+        message_id="1768884190",
+        sender_user_id="2186567848",
+        scope_type="private",
+        text="发一张 MC赵小六《中国有弹舌》的专辑卡片",
+        received_at=datetime.now(UTC),
+    )
+    arguments = tool.input_model.model_validate({"album_id": "144008945"})
+
+    first = _share_output(await tool.handler(arguments), tool.output_model)
+    second = _share_output(await tool.handler(arguments), tool.output_model)
+
+    assert first.status == "sent"
+    assert first.selected is not None and first.selected.album_id == "242154493"
+    assert second.status == "sent"
+    assert "已经发送成功" in second.message
+    assert [call[1] for call in mcp.calls] == ["music_search", "get_album"]
+    assert len(context.onebot.custom_music_cards) == 1
+    await plugin.stop()
+
+
+async def test_single_fuzzy_album_result_is_not_sent_as_an_exact_match() -> None:
+    plugin, tool, context, mcp = await _running_named_tool(
+        "share_netease_album",
+        [_mcp_result([_album("144008945", "夜空", "赵小北")])],
+    )
+
+    result = await tool.handler(
+        tool.input_model.model_validate({"query": "中国有弹舌"})
+    )
+    output = _share_output(result, tool.output_model)
+
+    assert output.status == "selection_required"
+    assert output.candidates[0].title == "夜空"
+    assert [call[1] for call in mcp.calls] == ["music_search"]
+    assert context.onebot.custom_music_cards == []
     await plugin.stop()

@@ -15,10 +15,25 @@
         "summary": "麦当劳官方菜单、门店、活动、优惠券、订单和积分服务",
         "tags": ["麦当劳", "点餐", "菜单", "优惠券", "门店", "积分"],
         "toolBundles": {
+          "order_planning": {
+            "scope": "mcp.mcd.order_planning",
+            "summary": "只读规划麦当劳到店或外送订单：查询地址与门店、菜单详情和价格，但不创建订单；缺少位置时先向用户询问",
+            "includeTools": [
+              "delivery-query-addresses",
+              "delivery-query-stores",
+              "query-nearby-stores",
+              "query-meals",
+              "query-meal-detail",
+              "calculate-price"
+            ]
+          },
           "order": {
             "scope": "mcp.mcd.order",
-            "summary": "查询菜单与详情、校价、创建待支付订单并查询订单",
+            "summary": "查询地址与门店、菜单详情和价格，创建待支付订单并查询订单",
             "includeTools": [
+              "delivery-query-addresses",
+              "delivery-query-stores",
+              "query-nearby-stores",
               "query-meals",
               "query-meal-detail",
               "calculate-price",
@@ -37,6 +52,9 @@
             "query-my-coupons",
             "auto-bind-coupons",
             "query-my-account",
+            "delivery-query-addresses",
+            "delivery-query-stores",
+            "query-nearby-stores",
             "query-meals",
             "query-meal-detail",
             "calculate-price",
@@ -80,6 +98,10 @@
       "reconnectDelaySeconds": 5,
       "includeTools": [
         "music_search",
+        "get_recommendations",
+        "get_similar_songs",
+        "get_new_songs",
+        "get_rankings",
         "get_songs",
         "get_album",
         "get_artist",
@@ -90,10 +112,14 @@
       ],
       "yuki": {
         "scope": "mcp.netease_music",
-        "summary": "网易云音乐的歌曲、歌手、专辑、歌单、歌词和用户音乐库只读查询",
-        "tags": ["音乐", "网易云", "歌曲", "歌手", "专辑", "歌单", "歌词"],
+        "summary": "网易云音乐的搜索、推荐、相似歌曲、新歌、榜单、资料、歌词和用户音乐库只读查询",
+        "tags": ["音乐", "网易云", "搜索", "推荐", "新歌", "榜单", "歌曲", "歌手", "专辑", "歌单", "歌词"],
         "toolAnnotations": {
           "music_search": {"readOnlyHint": true, "idempotentHint": true},
+          "get_recommendations": {"readOnlyHint": true, "idempotentHint": true},
+          "get_similar_songs": {"readOnlyHint": true, "idempotentHint": true},
+          "get_new_songs": {"readOnlyHint": true, "idempotentHint": true},
+          "get_rankings": {"readOnlyHint": true, "idempotentHint": true},
           "get_songs": {"readOnlyHint": true, "idempotentHint": true},
           "get_album": {"readOnlyHint": true, "idempotentHint": true},
           "get_artist": {"readOnlyHint": true, "idempotentHint": true},

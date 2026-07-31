@@ -14,6 +14,7 @@ from nonebot.adapters.onebot.v11 import (
     PrivateMessageEvent,
 )
 
+from qq_ai_bot.adapters.onebot.card_parser import parse_card_segment
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
     AttachmentKind,
@@ -73,6 +74,8 @@ def _attachment_from_segment(
     *,
     segment_index: int,
     source: str,
+    summary: str | None = None,
+    url: str | None = None,
 ) -> MessageAttachment:
     data = segment.data
     return MessageAttachment(
@@ -81,8 +84,8 @@ def _attachment_from_segment(
         segment_index=segment_index,
         source=source,
         file=_optional_string(data.get("file")),
-        url=_optional_string(data.get("url")),
-        summary=_optional_string(data.get("summary")),
+        url=url or _optional_string(data.get("url")),
+        summary=summary or _optional_string(data.get("summary")),
         sub_type=_optional_string(data.get("sub_type")),
         file_size=_optional_integer(data.get("file_size")),
         emoji_id=_optional_string(data.get("emoji_id")),
@@ -125,11 +128,16 @@ def _extract_segments(
         elif segment_type == "reply":
             continue
         else:
+            card = parse_card_segment(segment_type, data)
+            if card is not None:
+                text_parts.append(card.text)
             attachments.append(
                 _attachment_from_segment(
                     segment,
                     segment_index=segment_index,
                     source=source,
+                    summary=card.summary if card is not None else None,
+                    url=card.url if card is not None else None,
                 )
             )
     return (

@@ -106,7 +106,6 @@ class PlannerSignalProvider(Protocol):
     ) -> tuple[PlannerSignal, ...]: ...
 
 
-UNSUPPORTED_MESSAGE = "当前版本会保存媒体消息元数据，但尚未实现图片、语音或视频理解。"
 RATE_LIMIT_MESSAGE = "请求过于频繁，请稍后再试。"
 IMAGE_WRITE_ISOLATION_MESSAGE = "图片或回复图片所在的轮次不会执行写入操作，请改用纯文本消息。"
 IMAGE_FAILURE_MESSAGE = "这张图片暂时没有识别成功，可以重新发送一张更清晰的版本。"
@@ -121,6 +120,29 @@ IMAGE_PROVIDER_TIMEOUT_MESSAGE = "图片已取得，但视觉模型响应超时�
 IMAGE_PROVIDER_FAILED_MESSAGE = "图片已取得，但视觉模型暂时不可用，请稍后再试。"
 REPLY_IMAGE_UNAVAILABLE_MESSAGE = "回复中的图片资源已过期或无法读取，请重新发送原图。"
 MENTION_ONLY_CONTEXT = "[用户在群聊中只 @ 了你，没有附带文字；请自然地回应这次招呼。]"
+
+
+def _attachment_only_context(message: InboundMessage) -> str:
+    """Describe an unparsed non-visual attachment to the Agent instead of replying from a stub."""
+
+    labels = tuple(
+        dict.fromkeys(attachment.kind.value for attachment in message.attachments)
+    )
+    if not labels:
+        return ""
+    readable = {
+        "audio": "语音",
+        "video": "视频",
+        "file": "文件",
+        "forward": "合并转发",
+        "card": "分享卡片",
+        "unknown": "暂未识别的消息段",
+    }
+    descriptions = "、".join(readable.get(label, label) for label in labels)
+    return (
+        f"[用户发送了{descriptions}，但该消息没有可解析的正文。"
+        "请结合当前对话自然回应；不要假装已经读取未提供的内容。]"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -608,13 +630,10 @@ class MessageProcessor:
                 sent = await self._send_text(message, sender, text)
                 return ProcessResult(True, int(sent), f"vision_{visual.error_code or 'failed'}")
             else:
-                text = UNSUPPORTED_MESSAGE if message.attachments else "请输入要发送给 AI 的内容。"
-                sent = await self._send_text(message, sender, text)
-                return ProcessResult(
-                    True,
-                    int(sent),
-                    "unsupported" if message.attachments else "empty",
-                )
+                content = _attachment_only_context(message)
+                if not content:
+                    sent = await self._send_text(message, sender, "请输入要发送给 AI 的内容。")
+                    return ProcessResult(True, int(sent), "empty")
         if len(content) > self._settings.max_input_characters:
             sent = await self._send_text(
                 message,

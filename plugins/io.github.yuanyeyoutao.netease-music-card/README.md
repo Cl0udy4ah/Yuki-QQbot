@@ -1,25 +1,36 @@
 # 网易云音乐卡片插件
 
 该插件不直接连接网易云，也不把 QQ 发送能力放进 MCP Server。它通过 Yuki 的
-`ctx.mcp` 调用 `netease_music` 的只读搜索接口，再通过 `ctx.onebot.send_music_card`
-向当前真实私聊或群聊发送 OneBot `music` 消息段。
+`ctx.mcp` 调用 `netease_music` 的只读接口，再通过当前会话受限的
+`ctx.onebot` Facade 发送受限的 OneBot 卡片消息。
 
-这样划分后，MCP Server 仍可被其他客户端复用；插件没有任意 OneBot action 权限，
-不能指定任意发送目标，只能在用户当前触发的会话内发送卡片。
+这种职责划分让 MCP Server 可以被其他客户端复用；插件没有任意 OneBot action
+权限，也不能指定任意发送目标，只能响应当前真实私聊或群聊。
+
+## 工具
+
+- `share_netease_music`：搜索歌曲，处理重名候选，发送网易云原生歌曲卡片。
+- `share_netease_album`：在一次工具调用内搜索专辑、保留 `album_id`、读取详情和
+  曲目，并发送 QQ 客户端支持的自定义音乐卡片。卡片内容和跳转链接来自网易云；
+  QQ 可能将自定义卡片显示为 QQ 音乐样式。
+
+当搜索结果不唯一时，工具返回带稳定 ID 的候选且不发送。用户选定后，Agent 可用
+`song_id` 或 `album_id` 再次调用，不需要用户手动寻找网易云链接。
+专辑工具返回的曲目带 `song_id`；用户随后说“抽第一首”或“发其中一首”时，Agent 应加载并
+调用单曲分享工具，而不是再次调用专辑工具。
 
 ## 权限
 
-- `tool.register`：向主 Agent 注册 `share_netease_music`
-- `mcp.call`：调用已由 Host 配置的 `netease_music`
-- `onebot.send`：通过当前会话限定的音乐卡片 Facade 发送
+- `tool.register`：向主 Agent 注册两个分享工具。
+- `message.current.read`：只读取本轮真实消息，用《专辑名》校验模型参数并实现发送幂等。
+- `mcp.call`：调用 Host 已配置的 `netease_music`。
+- `onebot.send`：只向本轮真实触发消息所在的当前会话发送卡片。
 
 ## 使用示例
 
 - “给我发一张周杰伦《晴天》的网易云音乐卡片”
-- “分享一下《夜曲》”
-- “发一首玉置浩二的歌”（仅指定歌手时发送网易云排序首位的匹配歌曲）
-- 重名时先选择 Yuki 给出的候选，Yuki 再按 `song_id` 精确发送
+- “发一首玉置浩二的歌”
+- “发一张 MC赵小六《中国有弹舌》的专辑卡片”
+- “把刚才候选里 album_id 为 242154493 的专辑发出来”
 
-插件不会在仅询问歌曲信息、歌词或歌手资料时主动发送卡片。
-查询候选或未命中不会被计为已发送，因此 Yuki 可以在同一轮补充歌手、修正关键词或使用候选
-`song_id` 继续完成发送。
+只查询歌手、歌词、专辑列表或曲目时不应调用分享工具。
