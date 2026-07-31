@@ -20,10 +20,10 @@ from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.admin import EmojiAdminService
 from qq_ai_bot.mcp.admin import MCPCommandHandler
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.persistence.repositories import (
     ConversationRepository,
-    MemoryRepository,
     PeopleRepository,
 )
 from qq_ai_bot.planner.observability import PlannerObservability
@@ -67,7 +67,7 @@ class CommandService:
         settings: Settings,
         conversations: ConversationRepository,
         people: PeopleRepository,
-        memories: MemoryRepository,
+        memories: MemoryFactService,
         concurrency: ConcurrencyManager,
         onebot_connected: Callable[[], bool],
         runtime_config: RuntimeConfigService,
@@ -495,7 +495,7 @@ class CommandService:
         return (
             "QQ AI 助手命令：\n"
             "/ai help | new | status | stop | ping | whoami | forgetme\n"
-            "/ai memory list|add|update|delete\n"
+            "/ai memory list|add|update|delete|evidence\n"
             "/ai preference list|set|delete\n"
             "/ai affection show|history\n"
             "/ai affection set|adjust|trust user <QQ号> <数值>（超级管理员）\n"

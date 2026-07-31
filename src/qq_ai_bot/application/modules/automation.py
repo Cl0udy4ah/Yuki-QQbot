@@ -24,12 +24,12 @@ from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.mcp.automation import MCPAutomationBridge
 from qq_ai_bot.mcp.manager import MCPManager
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
     EventLedgerRepository,
-    MemoryRepository,
     RelationshipRepository,
 )
 from qq_ai_bot.services.concurrency import ConcurrencyManager
@@ -61,7 +61,7 @@ class AutomationModule:
         runtime_config: RuntimeConfigService,
         time_service: TimeContextService,
         ledger: EventLedgerRepository,
-        memories: MemoryRepository,
+        memories: MemoryFactService,
         relationships: RelationshipRepository,
         admin_actions: AdminActionService,
         admin_audit: AdminAuditService,

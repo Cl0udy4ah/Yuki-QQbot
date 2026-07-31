@@ -113,7 +113,4 @@ def test_agentic_task_uses_model_safe_id_and_exact_minimum_delegation() -> None:
 
 def test_capability_resolution_tolerates_hyphen_underscore_difference() -> None:
     registry = _registry()
-    assert (
-        registry.resolve_agent_reference("mcp.mcd.create_order")
-        == "mcp.mcd.create-order"
-    )
+    assert registry.resolve_agent_reference("mcp.mcd.create_order") == "mcp.mcd.create-order"

@@ -12,6 +12,8 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import OutboundMessage
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
@@ -20,7 +22,6 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
     MediaAnalysisRepository,
-    MemoryRepository,
     PrivateUserSettingsRepository,
     ProcessedEventRepository,
     RelationshipJobRepository,
@@ -125,7 +126,7 @@ def build_harness(
     user_profiles = UserProfileService(profiles)
     processed_events = ProcessedEventRepository(database)
     ledger = EventLedgerRepository(database)
-    memories = MemoryRepository(database)
+    memories = MemoryFactService(MemoryFactRepository(database))
     relationships = RelationshipRepository(
         database,
         initial_affection=settings.relationship_initial_affection,

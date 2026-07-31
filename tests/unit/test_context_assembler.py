@@ -10,8 +10,12 @@ from tests.conftest import MemorySender, build_harness, make_settings
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
+from qq_ai_bot.memory.models import MemoryFactCreate
+from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repositories import MemoryRepository, PeopleRepository
+from qq_ai_bot.persistence.repositories import PeopleRepository
 
 
 @pytest.mark.asyncio
@@ -20,22 +24,34 @@ async def test_context_assembler_enforces_one_dynamic_character_budget(
 ) -> None:
     settings = make_settings(database.url, max_context_characters=1200)
     harness = build_harness(database, settings)
-    memories = MemoryRepository(database)
+    memories = MemoryFactService(MemoryFactRepository(database))
     for index in range(30):
-        await memories.upsert(
-            scope="person",
-            user_id="1001",
-            memory_key=f"person-{index}",
-            content=f"人物事实 {index} " + "很长的内容" * 80,
-            importance=5 if index == 0 else 1,
+        await memories.remember(
+            MemoryFactCreate(
+                scope_type=MemoryScopeType.PERSON,
+                subject_user_id="1001",
+                kind="fact",
+                category="fact",
+                source_type=MemorySourceType.AUTOMATIC,
+                confidence=0.9,
+                memory_key=f"person-{index}",
+                content=f"人物事实 {index} " + "很长的内容" * 80,
+                importance=5 if index == 0 else 1,
+            ),
             limit=100,
         )
-        await memories.upsert(
-            scope="group",
-            group_id="2001",
-            memory_key=f"group-{index}",
-            content=f"群事实 {index} " + "另一段很长的内容" * 80,
-            importance=5 if index == 0 else 1,
+        await memories.remember(
+            MemoryFactCreate(
+                scope_type=MemoryScopeType.GROUP,
+                group_id="2001",
+                kind="fact",
+                category="fact",
+                source_type=MemorySourceType.AUTOMATIC,
+                confidence=0.9,
+                memory_key=f"group-{index}",
+                content=f"群事实 {index} " + "另一段很长的内容" * 80,
+                importance=5 if index == 0 else 1,
+            ),
             limit=100,
         )
     await harness.groups.set_enabled("2001", True)
@@ -72,8 +88,10 @@ async def test_context_assembler_enforces_one_dynamic_character_budget(
     assert len(payload_text) + history_characters <= settings.max_context_characters
     assert request.messages[-1].content == "[QQ 1001] 请根据已有信息简短回答"
     assert payload_items["current_person"]["user_id"] == "1001"
-    assert len(payload_items["current_person"].get("memories", [])) < 30
-    assert len(payload_items.get("group_memories", [])) < 30
+    assert len(payload_items["current_person"]["facts"]) < 30
+    assert len(payload_items["current_group"]["facts"]) < 30
+    assert not any(key.startswith("person_memory.") for key in payload_items)
+    assert not any(key.startswith("current_group.fact.") for key in payload_items)
 
 
 @pytest.mark.asyncio

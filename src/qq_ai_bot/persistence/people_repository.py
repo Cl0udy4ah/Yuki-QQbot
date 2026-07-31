@@ -14,13 +14,12 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     AdminOperationEventModel,
     ChatEventModel,
-    GroupMemoryModel,
     GroupModel,
     MembershipModel,
+    MemoryEvidenceModel,
+    MemoryFactModel,
     MemoryJobModel,
     PersonAliasModel,
-    PersonGroupMemoryModel,
-    PersonMemoryModel,
     PersonModel,
     RuntimeConfigOverrideModel,
     WebSearchRunModel,
@@ -307,6 +306,11 @@ class PeopleRepository:
                 now = datetime.now(UTC)
                 job_statement = insert(MemoryJobModel).values(
                     event_id=event.id,
+                    conversation_key=(
+                        f"group:{event.group_id}:user:{event.sender_user_id}"
+                        if event.group_id
+                        else f"private:{event.private_peer_user_id or event.sender_user_id}"
+                    ),
                     status="pending",
                     attempts=0,
                     next_attempt_at=now,
@@ -320,42 +324,27 @@ class PeopleRepository:
                         set_={
                             "status": "pending",
                             "attempts": 0,
+                            "conversation_key": (
+                                f"group:{event.group_id}:user:{event.sender_user_id}"
+                                if event.group_id
+                                else f"private:{event.private_peer_user_id or event.sender_user_id}"
+                            ),
                             "next_attempt_at": now,
                             "updated_at": now,
                             "error_category": None,
                         },
                     )
                 )
-            await session.execute(
-                delete(PersonMemoryModel).where(
-                    PersonMemoryModel.source_type != "explicit",
-                    or_(
-                        PersonMemoryModel.content.contains(user_id),
-                        PersonMemoryModel.source_event_id.in_(attributable_event_ids),
-                    ),
-                )
+            affected_fact_ids = select(MemoryEvidenceModel.fact_id).where(
+                MemoryEvidenceModel.event_id.in_(attributable_event_ids)
             )
             await session.execute(
-                delete(PersonGroupMemoryModel).where(
-                    PersonGroupMemoryModel.source_type != "explicit",
+                delete(MemoryFactModel).where(
+                    MemoryFactModel.source_type != "explicit",
                     or_(
-                        PersonGroupMemoryModel.content.contains(user_id),
-                        PersonGroupMemoryModel.source_event_id.in_(attributable_event_ids),
+                        MemoryFactModel.content.contains(user_id),
+                        MemoryFactModel.id.in_(affected_fact_ids),
                     ),
-                )
-            )
-            await session.execute(
-                delete(GroupMemoryModel).where(
-                    or_(
-                        GroupMemoryModel.subject_user_id == user_id,
-                        (
-                            (GroupMemoryModel.source_type != "explicit")
-                            & or_(
-                                GroupMemoryModel.content.contains(user_id),
-                                GroupMemoryModel.source_event_id.in_(attributable_event_ids),
-                            )
-                        ),
-                    )
                 )
             )
             await session.execute(

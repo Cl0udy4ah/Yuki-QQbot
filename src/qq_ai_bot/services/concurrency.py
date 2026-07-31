@@ -40,6 +40,8 @@ class ConcurrencyManager:
         self,
         conversation_key: str,
         operation: Callable[[], Coroutine[Any, Any, T]],
+        *,
+        translate_cancellation: bool = True,
     ) -> T:
         """Run one cancellable provider call under the global semaphore."""
 
@@ -50,6 +52,8 @@ class ConcurrencyManager:
             try:
                 return await task
             except asyncio.CancelledError as exc:
+                if not translate_cancellation:
+                    raise
                 raise RequestCancelledError("request cancelled") from exc
             finally:
                 async with self._active_guard:

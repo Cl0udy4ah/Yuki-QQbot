@@ -558,9 +558,7 @@ def _select_unambiguous(
     if len(exact_titles) == 1:
         return exact_titles[0]
     artist_query_matches = [
-        item
-        for item in candidates
-        if any(_search_key(name) == query_key for name in item.artists)
+        item for item in candidates if any(_search_key(name) == query_key for name in item.artists)
     ]
     if artist_query_matches:
         return artist_query_matches[0]

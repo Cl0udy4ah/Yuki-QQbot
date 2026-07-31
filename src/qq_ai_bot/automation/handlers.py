@@ -33,11 +33,11 @@ from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.llm.base import LLMError
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
-    MemoryRepository,
     RelationshipRepository,
 )
 from qq_ai_bot.services.agent_runner import (
@@ -73,7 +73,7 @@ class AutomationCapabilityHandlers:
         runtime_config: RuntimeConfigService,
         time_service: TimeContextService,
         ledger: EventLedgerRepository,
-        memories: MemoryRepository,
+        memories: MemoryFactService,
         relationships: RelationshipRepository,
         admin_actions: AdminActionService,
         web_provider: WebSearchProvider | None,

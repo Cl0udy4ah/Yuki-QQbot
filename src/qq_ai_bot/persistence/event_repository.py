@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
@@ -169,6 +169,42 @@ class EventLedgerRepository:
                         query.order_by(
                             ChatEventModel.occurred_at.desc(), ChatEventModel.id.desc()
                         ).limit(limit)
+                    )
+                ).all()
+            )
+        rows.reverse()
+        return tuple(_event_record(row) for row in rows)
+
+    async def list_before(
+        self,
+        event: EventRecord,
+        *,
+        limit: int,
+    ) -> tuple[EventRecord, ...]:
+        """Return only earlier events from the primary event's exact conversation."""
+
+        query = select(ChatEventModel).where(
+            ChatEventModel.bot_user_id == event.bot_user_id,
+            or_(
+                ChatEventModel.occurred_at < event.occurred_at,
+                (
+                    (ChatEventModel.occurred_at == event.occurred_at)
+                    & (ChatEventModel.id < event.id)
+                ),
+            ),
+        )
+        if event.scope_type is ScopeType.GROUP:
+            query = query.where(ChatEventModel.group_id == event.group_id)
+        else:
+            query = query.where(ChatEventModel.private_peer_user_id == event.private_peer_user_id)
+        async with self._database.sessions() as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        query.order_by(
+                            ChatEventModel.occurred_at.desc(),
+                            ChatEventModel.id.desc(),
+                        ).limit(max(1, limit))
                     )
                 ).all()
             )

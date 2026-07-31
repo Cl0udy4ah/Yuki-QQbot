@@ -12,6 +12,7 @@ from qq_ai_bot.application.modules.persistence import PersistenceBundle
 from qq_ai_bot.capabilities import ToolArtifactWriter
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
+from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.planner.context import PlannerContextBuilder
 from qq_ai_bot.planner.observability import PlannerObservability
@@ -22,7 +23,6 @@ from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService, ToolInvocationRecorder
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
-from qq_ai_bot.services.memory_worker import MemoryWorker
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.services.prompt_registry import PromptRegistry
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
@@ -185,7 +185,8 @@ class ConversationModule:
         memory_worker = MemoryWorker(
             settings=settings,
             jobs=persistence.memory_jobs,
-            memories=persistence.memories,
+            facts=persistence.memories,
+            ledger=persistence.ledger,
             model_executor=models,
             concurrency=self._concurrency,
         )

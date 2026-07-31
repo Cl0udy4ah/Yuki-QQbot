@@ -34,11 +34,14 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
+from qq_ai_bot.memory.models import MemoryFactCreate
+from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import PersonMemoryModel
+from qq_ai_bot.persistence.models import MemoryFactModel
 from qq_ai_bot.persistence.repositories import (
     GroupSettingsRepository,
-    MemoryRepository,
     RelationshipRepository,
     UserProfileRepository,
 )
@@ -1003,14 +1006,11 @@ async def test_single_chat_agent_tolerates_repeated_capability_lookup_then_sets_
 async def test_single_chat_agent_can_list_then_delete_memory_in_one_turn(
     database: Database,
 ) -> None:
-    memory = await MemoryRepository(database).upsert(
-        scope="person",
-        user_id="9000",
+    memory_service = MemoryFactService(MemoryFactRepository(database))
+    memory = await memory_service.add_explicit_person(
+        "9000",
+        "自动插话上限设置为每小时10条",
         memory_key="old-auto-limit",
-        content="自动插话上限设置为每小时10条",
-        category="explicit",
-        importance=5,
-        source_type="explicit",
         limit=100,
     )
     calls = 0
@@ -1093,7 +1093,7 @@ async def test_single_chat_agent_can_list_then_delete_memory_in_one_turn(
 
     assert result.reason == "chat"
     assert sender.messages[0].text == "已经删掉那条旧记忆啦。"
-    remaining = await MemoryRepository(database).list_person("9000", limit=100)
+    remaining = await memory_service.list_person("9000", limit=100)
     assert all(item.id != memory.id for item in remaining)
     assert calls == 3
 
@@ -1165,7 +1165,9 @@ async def test_single_chat_agent_executes_multiple_distinct_mutations_in_order(
 
     assert result.reason == "chat"
     assert (await runtime.get_effective("planner.max_pending_messages")).value == 10
-    memories = await MemoryRepository(database).list_person("9000", limit=100)
+    memories = await MemoryFactService(MemoryFactRepository(database)).list_person(
+        "9000", limit=100
+    )
     assert any(row.content == "允许顺序执行不同修改" for row in memories)
 
 
@@ -1275,39 +1277,44 @@ async def test_failed_automation_creation_cannot_be_reported_as_success(
 async def test_memory_prune_action_deletes_only_old_low_automatic_memories(
     database: Database,
 ) -> None:
-    memories = MemoryRepository(database)
-    old = await memories.upsert(
-        scope="person",
-        user_id="9000",
-        memory_key="old-low",
-        content="过时低重要度记忆",
-        importance=2,
-        source_type="automatic",
+    memories = MemoryFactService(MemoryFactRepository(database))
+    old = await memories.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="9000",
+            kind="fact",
+            memory_key="old-low",
+            category="fact",
+            content="过时低重要度记忆",
+            importance=2,
+            source_type=MemorySourceType.AUTOMATIC,
+        ),
         limit=100,
     )
-    recent = await memories.upsert(
-        scope="person",
-        user_id="9000",
-        memory_key="recent-low",
-        content="近期低重要度记忆",
-        importance=1,
-        source_type="automatic",
+    recent = await memories.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="9000",
+            kind="fact",
+            memory_key="recent-low",
+            category="fact",
+            content="近期低重要度记忆",
+            importance=1,
+            source_type=MemorySourceType.AUTOMATIC,
+        ),
         limit=100,
     )
-    explicit = await memories.upsert(
-        scope="person",
-        user_id="9000",
+    explicit = await memories.add_explicit_person(
+        "9000",
+        "显式记忆永不由自动清理删除",
         memory_key="explicit-low",
-        content="显式记忆永不由自动清理删除",
-        importance=1,
-        source_type="explicit",
         limit=100,
     )
     stale_at = datetime.now(UTC) - timedelta(days=8)
     async with database.sessions() as session, session.begin():
         await session.execute(
-            update(PersonMemoryModel)
-            .where(PersonMemoryModel.id.in_([old.id, explicit.id]))
+            update(MemoryFactModel)
+            .where(MemoryFactModel.id.in_([old.id, explicit.id]))
             .values(updated_at=stale_at)
         )
 

@@ -8,6 +8,8 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.repository import EmojiRepository
+from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
@@ -16,8 +18,6 @@ from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
     MediaAnalysisRepository,
-    MemoryJobRepository,
-    MemoryRepository,
     PrivateUserSettingsRepository,
     ProcessedEventRepository,
     RelationshipJobRepository,
@@ -40,7 +40,7 @@ class PersistenceBundle:
     people: UserProfileRepository
     processed_events: ProcessedEventRepository
     ledger: EventLedgerRepository
-    memories: MemoryRepository
+    memories: MemoryFactService
     memory_jobs: MemoryJobRepository
     agent_actions: AgentActionRepository
     web_sources: WebSearchSourceRepository
@@ -81,6 +81,7 @@ class PersistenceModule:
             "initial_affection": settings.relationship_initial_affection,
             "initial_trust": settings.relationship_initial_trust,
         }
+        memory_repository = MemoryFactRepository(database)
         return PersistenceBundle(
             database=database,
             runtime_config=runtime_config,
@@ -90,7 +91,7 @@ class PersistenceModule:
             people=UserProfileRepository(database, **initial),
             processed_events=ProcessedEventRepository(database),
             ledger=EventLedgerRepository(database),
-            memories=MemoryRepository(database),
+            memories=MemoryFactService(memory_repository),
             memory_jobs=MemoryJobRepository(database),
             agent_actions=AgentActionRepository(database),
             web_sources=WebSearchSourceRepository(database),

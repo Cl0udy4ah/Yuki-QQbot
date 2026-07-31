@@ -10,7 +10,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.conftest import make_settings
 
+from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
@@ -19,6 +21,8 @@ from qq_ai_bot.domain.messages import (
     MessageAttachment,
     SenderIdentity,
 )
+from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.plugin_host.audit import PluginAuditService
@@ -28,6 +32,7 @@ from qq_ai_bot.plugin_host.facades import (
     PluginInvocation,
 )
 from qq_ai_bot.plugin_host.repository import PluginAuditRepository
+from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.web.base import WebSearchValidationError
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
@@ -122,6 +127,68 @@ async def test_contextvar_binding_is_required_scoped_and_task_local() -> None:
         "10002",
     )
     assert context.current is None
+
+
+@pytest.mark.asyncio
+async def test_plugin_memory_facade_writes_v2_fact_with_current_event_evidence_only(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    message = inbound(user_id="10001")
+    event, _ = await ledger.append_inbound(message, bot_user_id="99999")
+    facts = MemoryFactService(MemoryFactRepository(database))
+    audit = AdminAuditService(database)
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(
+            PluginPermission.MEMORY_WRITE,
+            PluginPermission.MEMORY_PERSON_READ,
+        ),
+        services=PluginFacadeServices(
+            memories=facts,
+            memory_admin=MemoryAdminService(
+                settings=make_settings(database.url),
+                memories=facts,
+                audit=audit,
+            ),
+        ),
+    )
+    trusted = PluginInvocation(
+        plugin_id="example.plugin",
+        origin=TurnOrigin.USER_MESSAGE,
+        actor_user_id="10001",
+        bot_user_id="99999",
+        inbound=message,
+        source_event_id=event.id,
+    )
+    with context.bind(trusted):
+        created = await context.memory.add(
+            scope_type="person",
+            subject_id="10001",
+            content="喜欢桌游",
+            source_type="plugin",
+            confidence=0.9,
+            source_event_ids=(str(event.id),),
+        )
+        rows = await context.memory.list_person("10001")
+        with pytest.raises(PluginPermissionError, match="source events"):
+            await context.memory.add(
+                scope_type="person",
+                subject_id="10001",
+                content="伪造证据",
+                source_type="plugin",
+                confidence=0.9,
+                source_event_ids=("999999",),
+            )
+
+    assert created.ok
+    assert rows[0]["fact_id"] == created.data["memory"]["fact_id"]
+    assert rows[0]["status"] == "active"
+    assert rows[0]["source_type"] == "explicit"
+    assert rows[0]["evidence_count"] == 1
+    evidence = await facts.list_evidence(int(rows[0]["fact_id"]))
+    assert evidence[0].event_id == event.id
+    assert evidence[0].source_speaker_user_id == "10001"
 
 
 def test_public_context_does_not_expose_core_objects_or_raw_media() -> None:

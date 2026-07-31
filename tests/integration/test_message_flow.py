@@ -104,9 +104,7 @@ async def test_future_mcd_query_is_persisted_instead_of_executed_immediately(
                                         ),
                                         "trigger": {"type": "after", "seconds": 120},
                                         "strategy": "agentic",
-                                        "capabilities": [
-                                            capability_ids["query_meals"]
-                                        ],
+                                        "capabilities": [capability_ids["query_meals"]],
                                     }
                                 },
                                 ensure_ascii=False,

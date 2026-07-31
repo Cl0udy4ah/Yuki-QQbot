@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 3.0.0a1 - 2026-07-31
+
+### Memory V2 不可逆切换
+
+- 新增 Alembic `0020`，永久删除旧人物记忆、群记忆、群内人物记忆、偏好与旧记忆任务，
+  建立空的 `memory_facts`、`memory_evidence` 和新版 `memory_jobs`；聊天事件账本、人物、群、
+  关系、自动化和插件数据不迁移也不删除。该迁移不可 downgrade，回退必须恢复升级前数据库。
+- 新增长期事实的 person、person_group、group 三种严格作用域，以及 fact、preference、episode
+  类型、active/superseded/invalidated 状态、来源、置信度、有效期与真实消息证据链。
+- 同一主体、类型和 key 的相同内容复用 active fact 并追加证据；内容变化建立新版本并替代旧
+  版本；自动提取不能覆盖显式事实；事实与证据在同一事务中提交。
+
+### 身份安全提取与上下文隔离
+
+- 每个真实入站非 Bot 事件对应一个持久任务，逐事件调用 `ModelTask.MEMORY_EXTRACTION` 的
+  Flash 路由并逐事件提交；不同人物、群或会话不共享结构化输出，取消会原样传播。
+- 模型只看到 `primary_event`、同会话少量前文和后端生成的 `speaker/group` 引用，不能提交
+  QQ 号、群号、事件号、证据发送者、状态或版本字段；未知主体与私聊 group claim 直接拒绝。
+- 聊天上下文只注入当前人物、当前人物在本群和当前群的 active facts；相关群友只保留当前群
+  身份元数据，不再默认加载其关系或长期记忆。Prompt 明确禁止跨 entity block 归因和猜测。
+
+### 接口与工程化
+
+- Core 记忆工具、管理员记忆/偏好命令、自动化与 Plugin API v1 的 MemoryFacade 全部切换到
+  Memory V2；列表输出增加 `fact_id`、置信度、状态和证据数，并新增管理员证据查看命令。
+- 删除旧记忆模型、Repository、Worker、记录类型和旧表测试，不保留双写、兼容读取、导入器
+  或启动时历史 backfill；第一阶段没有加入 FTS、Embedding 或向量数据库。
+- 新增 Memory V2 架构、路线与不可逆升级文档，并将项目版本提升到 `3.0.0a1`。
+
 ## 2.1.2 - 2026-07-31
 
 ### MCP 与 Tool Kernel 一致性

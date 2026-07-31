@@ -660,7 +660,7 @@ async def test_bonded_non_superuser_keeps_normal_tools_without_admin_tool(
 
 
 @pytest.mark.asyncio
-async def test_relationship_context_contains_current_and_related_people_without_public_reply(
+async def test_relationship_context_contains_only_current_relationship_for_related_people(
     database: Database,
 ) -> None:
     provider = ToolDefinitionProvider()
@@ -690,5 +690,5 @@ async def test_relationship_context_contains_current_and_related_people_without_
         if item.role == "system" and '"id":"context.people_and_scene"' in (item.content or "")
     )
     assert '"stage":"friendly"' in context
-    assert '"stage":"distant"' in context
+    assert '"stage":"distant"' not in context
     assert "好感度" not in sender.messages[0].text

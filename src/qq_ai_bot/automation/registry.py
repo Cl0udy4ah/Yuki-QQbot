@@ -253,15 +253,11 @@ class AutomationCapabilityRegistry:
 
         if reference in self._items:
             return reference
-        matches = [
-            name for name in self._items if self.agent_tool_name(name) == reference
-        ]
+        matches = [name for name in self._items if self.agent_tool_name(name) == reference]
         if len(matches) == 1:
             return matches[0]
         normalized = _loose_capability_key(reference)
-        loose_matches = [
-            name for name in self._items if _loose_capability_key(name) == normalized
-        ]
+        loose_matches = [name for name in self._items if _loose_capability_key(name) == normalized]
         if len(loose_matches) == 1:
             return loose_matches[0]
         if len(loose_matches) > 1:

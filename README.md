@@ -2,14 +2,13 @@
 
 ## 启动项目
 
-> **升级提示：**2.1.2 是 MCP 与 Tool Kernel 一致性补丁，沿用 2.1.0 的非破坏性
-> Alembic `0019`；
-> 现有人物、事件、记忆、关系、插件、自动化、表情和语音数据均保留。
-> 升级前仍建议备份 `data/`，并以最新 `.env.example` 检查本地 `.env`。
-> 本版本修复 MCP Gateway 权限绕过与修改提交语义，并提供不可截断的通用 Tool Bundle；
-> 麦当劳中国官方 MCP 仍默认关闭，配置 Token 后才会连接官方服务。
+> **3.0.0a1 破坏性升级警告：**Alembic `0020` 会永久删除全部旧人物记忆、群记忆、
+> 群内人物记忆、偏好和旧记忆任务。聊天事件账本、人物、群、关系、自动化和插件数据会保留；
+> 新记忆库从空库开始，也不会自动扫描历史聊天重建。升级前必须完整备份 `data/`，唯一回退
+> 方法是恢复该备份。详细步骤见 [Memory V2 升级指南](docs/upgrade-memory-v2.md)。
 
-Plugin API 仍为 `1.0`。第三方插件如果把 `yuki_requires` 上限写成 `<2.0`，需要在确认兼容后改为 `<3.0` 才能在 2.0.0 加载；插件代码和 manifest 的 `plugin_api` 无需因本次升级改版。
+Plugin API 仍为 `1.0`。第三方插件如果把 `yuki_requires` 上限写成 `<3.0`，需要在确认兼容后
+改为 `<4.0` 才能在 3.0.0a1 加载；插件代码和 manifest 的 `plugin_api` 无需因本次升级改版。
 
 已经配置好 `.env` 并完成 NapCat 扫码时，在仓库根目录执行：
 
@@ -41,14 +40,17 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 2.1.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 3.0.0a1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
 - 同一 QQ 的私聊、不同群成员关系和人物记忆关联到同一个人。
+- Memory V2 将长期信息存为带作用域、版本状态和真实消息证据的事实；自动提取只能选择当前
+  发送者 `speaker` 或当前群 `group`，不能让模型填写 QQ 号、群号或事件号。
 - 群号区分群；已启用群的全部消息都会被观察并永久写入事件账本。
 - 私聊默认向所有 QQ 开放；`/ai private <QQ> off` 用于阻止指定用户。
-- 个人记忆可以在私聊与群聊间自然复用，群记忆和群成员记忆仍按群隔离。
+- 当前人物事实可以在私聊与群聊间自然复用，群事实和当前人物的群内事实严格按群隔离；
+  其他群友的长期事实默认不进入当前上下文。
 - 机器人支持 DeepSeek 普通/思考模式的多轮工具调用。
 - 内置 Tool Kernel 将 Core、Admin、Automation、Plugin 与 MCP 工具统一为同一目录、
   Planner scope、Binding、结果预算和 AgentRunner 执行链。
@@ -83,7 +85,9 @@ Yuki-QQbot 2.1.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 正常聊天、管理员自然语言操作、联网和自动化创建继续使用同一个聊天 Agent；Planner 只规划，不能执行工具或产生权限。插件独立 AI 会话只服务插件任务，不是第二套管理员人格或主聊天路由。
 - `ContextAssembler` 统一装配人物、群、关系和近期事件，并用 `MAX_CONTEXT_CHARACTERS` 限制动态上下文总量；当前消息优先保留，低优先级旧资料先裁剪。
 - `PromptComposer` 集中生成后端可信的时间、权限、关系、视觉和联网规则，业务服务不再各自拼接一套运行说明。
-- 持久化仓储按人物与访问、事件账本、记忆、关系、媒体和联网来源分域实现；`persistence.repositories` 仅作为稳定兼容门面，不再承载全部 SQL 逻辑。
+- 持久化仓储按人物与访问、事件账本、Memory V2、关系、媒体和联网来源分域实现；
+  `qq_ai_bot.memory` 负责事实、证据、身份映射、提取和上下文投影，Repository 不包含 Prompt；
+  `persistence.repositories` 仅作为其余仓储的稳定门面。
 - `/ai` 确定性命令由 `CommandService` 调度并绕过 Planner；普通聊天由 `ReplyNecessityScorer → PlannerService → AgentRunner → ReplySequenceManager` 协作，`MessageProcessor` 继续负责准入、观察、账本、视觉和最终异常边界。
 - 运行时配置注册表只负责查找、别名和类型转换；热更新、仅影响未来、需重启、受保护/密钥配置分别维护在独立声明目录中。
 - 相关人物按批次读取，避免群聊中按 QQ 串行查询多组资料；群名片仍严格按当前群号隔离。
@@ -486,9 +490,9 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 `get_user_library` 仍需要外部 MCP Server 配置网易云 Cookie/用户 ID，公开搜索和卡片发送不
 依赖该登录态。
 
-## 1.x 数据模型
+## 3.0 数据模型
 
-`0005` 会创建以下主要数据：
+`0005` 建立人物中心账本，`0020` 将旧记忆子系统不可逆切换到以下 Memory V2 数据模型：
 
 | 表 | 作用 |
 |---|---|
@@ -498,11 +502,9 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 | `memberships` | `(user_id, group_id)` 当前群名片与活跃时间 |
 | `chat_events` | 永久保存收发消息、消息段、回复关系和时间；`0010` 增加图片摘要，`0012` 增加自动化来源、任务和运行 ID |
 | `chat_events_fts` | FTS5 `trigram` 全文索引 |
-| `person_memories` | 跨私聊和群聊的人物事实，最多 100 条 |
-| `group_memories` | 群共同事实，最多 100 条 |
-| `person_group_memories` | 某人在某群的称呼、关系和习惯，最多 50 条 |
-| `person_preferences` | 机器人交互偏好，最多 30 条 |
-| `memory_jobs` | 持久化后台记忆任务 |
+| `memory_facts` | person/person_group/group 三种作用域的版本化事实与偏好 |
+| `memory_evidence` | 事实对应的真实聊天事件、真实发送者、关系类型与短摘录 |
+| `memory_jobs` | 每个真实入站非 Bot 事件一个、最多重试 3 次的持久提取任务 |
 | `person_relationships` | 每个 QQ 当前好感度、信任度和自动变化时间 |
 | `relationship_events` | 自动及管理员手动关系变化审计，不重复保存聊天正文 |
 | `relationship_jobs` | 可在重启后继续处理的关系评价任务 |
@@ -554,11 +556,11 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 
 `/ai forgetme` 不会把命令和确认回复重新写回账本，并删除：
 
-- 人物、别名、偏好、个人记忆、成员群记忆和成员关系；
+- 人物、别名、人物事实/偏好、人物群内事实和成员关系；
 - 好感度、信任度、关系变化审计和待处理关系任务；
 - 该 QQ 发送的群事件；
 - 该 QQ 私聊中的双方事件；
-- 以该 QQ 为主体的群记忆、检索索引和后台任务；
+- 以该 QQ 为主体的 Memory V2 事实、证据和后台任务；
 - 该 QQ 私聊及各群成员会话中的联网来源记录；
 - 该 QQ 的用户级运行时配置覆盖；保留的管理员审计和其他作用域配置会把精确 QQ 替换为删除标记；
 - 与被删除事件关联的视觉分析缓存；
@@ -568,13 +570,15 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 
 每次普通回答会装配：
 
-- 当前用户 QQ、昵称、别名、个人记忆、偏好和关系状态；
-- 当前群号、群记忆以及当前用户的成员群记忆；
-- 被提及者和最近发言者中最多 5 人的相关记忆与关系状态；
+- 当前用户 QQ、昵称、别名、person facts 和关系状态；
+- 当前群号、group facts 以及当前用户在该群的 person_group facts；
+- 被提及者和最近发言者中最多 5 人的当前群身份元数据，不附带其长期事实或关系；
 - 当前私聊或当前群最近 30 条本地事件；
 - 只有模型主动调用搜索工具时，才加入更早历史。
 
-新事件立即进入账本。后台记忆任务每 30 秒或累计 10 条时唤醒，每批最多 20 条，失败最多重试 3 次。明确添加的记忆标记为 `explicit`，自动提炼不能覆盖它。
+新事件立即进入账本。后台记忆任务每 30 秒或累计 10 条时唤醒，每批最多 claim 20 条，随后
+逐事件独立提取和提交，失败最多重试 3 次。明确添加的事实标记为 `explicit`，自动提炼不能
+覆盖它。每条自动事实的证据只能来自当前主事件，前文只用于理解，不能单独生成事实。
 
 ## 好感度与信任度
 
@@ -862,6 +866,7 @@ Planner-first 自主参与规则：
 | `/ai memory add <内容>` | 添加明确人物记忆 |
 | `/ai memory update <ID> <内容>` | 修改本人的人物记忆 |
 | `/ai memory delete <ID>` | 删除本人的人物记忆 |
+| `/ai memory evidence <ID>` | 查看本人某条 Memory V2 事实的真实消息证据 |
 | `/ai preference list` | 查看本人的交互偏好 |
 | `/ai preference set <键> <值>` | 设置交互偏好 |
 | `/ai preference delete <键>` | 删除交互偏好 |
@@ -1141,14 +1146,15 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 
 `/ai status` 会同时显示视觉是否启用、视觉模型、是否繁忙以及当前“排队/运行”数量，不显示密钥或完整接口查询参数。
 
-## 1.6 升级步骤
+## 3.0.0a1 升级步骤
 
 1. 停止 Bot 写入但保持 NapCat 和 QQ 登录态运行：`docker compose stop bot`。
 2. 完整备份 `data/`、`napcat-data/` 和 `napcat-config/`。
-3. 将 `.env.example` 新增的 `PLANNER_*`、`REPLY_*` 和 `PLUGIN_*` 同步到 `.env`。建议首次升级保留 `PLUGIN_SYSTEM_ENABLED=false`，先验证 Planner 聊天路径后再启用插件。
-4. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 不会被替换，Bot 启动脚本会自动运行 `alembic upgrade head` 到 `0014`。
-5. 检查 `docker compose ps`、`/healthz` 和日志；确认 Planner 状态及插件运行数没有触发外部探测。
-6. 依次人工验证：私聊明确请求、群聊 @、低必要性群消息静默、新消息中断剩余分句、管理员自然语言工具、自动化、视觉、联网、关系和旧命令。
-7. 需要插件时再复制已审阅目录，通过 CLI 发现、查看权限、批准并启用；不要直接启用未知第三方 Python 代码。
+3. 对照最新 `.env.example`；本次没有新增密钥，Memory V2 沿用现有容量与批处理配置。
+4. 执行 `uv run alembic upgrade head` 到 `0020`。该操作会永久删除全部旧记忆、偏好和旧记忆
+   任务，但保留人物、群、聊天事件、关系、自动化和插件数据。
+5. 执行 `docker compose up -d --build --no-deps bot`；只重建 Bot，NapCat 和 QQ 登录态不变。
+6. 检查 `docker compose ps`、`/healthz` 和日志，再验证私聊、群聊 @、记忆命令和插件。
 
-`0017` 是非破坏性迁移，只新增人物语音偏好和 Planner 语音决策字段；回退会删除这些新增偏好与观测字段，因此应先备份 `data/`。`0014`～`0016` 分别新增持久化表情、本地语音及双语元数据。它们都不会删除聊天正文、人物、记忆、联网来源、关系、既有视觉缓存或自动化数据。更早的 `0005` 仍是不可逆的破坏性迁移；需要回退到 1.0 之前时只能停止服务并恢复升级前备份。
+`0020` 不支持 downgrade，不会自动从 2.1.2 记忆或历史聊天重建事实。唯一回退方式是停止服务
+并恢复升级前完整数据库备份。完整说明见 [Memory V2 升级指南](docs/upgrade-memory-v2.md)。

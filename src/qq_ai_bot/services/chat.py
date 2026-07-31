@@ -57,10 +57,10 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.emoji.models import EmojiPlacement, EmojiReplyMode, PendingReplyEffect
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
-    MemoryRepository,
     PeopleRepository,
     RelationshipRepository,
     WebSearchSourceRepository,
@@ -234,8 +234,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 origin=self._runtime.origin,
                 tool_selection=ToolSelection(mode=self._runtime.tool_mode),
                 contains_images=bool(
-                    self._runtime.inbound.attachments
-                    or self._runtime.inbound.reply_attachments
+                    self._runtime.inbound.attachments or self._runtime.inbound.reply_attachments
                 ),
                 web_was_used=self._web_was_used,
             ),
@@ -380,9 +379,7 @@ class _ChatAgentBackend(AgentToolBackend):
         may_request_more = bool(
             not self._runtime.scheduled_automation_intent
             and self._runtime.tool_mode is not ToolMode.NONE
-            and not (
-                self._runtime.planner_scopes_explicit and not self._runtime.tool_groups
-            )
+            and not (self._runtime.planner_scopes_explicit and not self._runtime.tool_groups)
             and self._requestable_catalog is not None
             and any(
                 entry.descriptor.model_name not in exposed_names
@@ -783,9 +780,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 ensure_ascii=False,
             )
         loaded_names = {match.entry.descriptor.model_name for match in matches}
-        loaded_scopes = {
-            scope for match in matches for scope in match.entry.descriptor.scope_ids
-        }
+        loaded_scopes = {scope for match in matches for scope in match.entry.descriptor.scope_ids}
         self._requested_tool_names.update(loaded_names)
         selected = self._runtime.selected_tool_names
         self._runtime = replace(
@@ -857,7 +852,7 @@ class ChatService:
         concurrency: ConcurrencyManager,
         ledger: EventLedgerRepository,
         people: PeopleRepository,
-        memories: MemoryRepository,
+        memories: MemoryFactService,
         tools: AgentToolService,
         relationships: RelationshipRepository,
         web_sources: WebSearchSourceRepository,

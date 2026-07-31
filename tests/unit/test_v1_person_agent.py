@@ -21,16 +21,16 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.emoji.models import PendingReplyEffect
 from qq_ai_bot.llm.base import LLMProvider
+from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
+from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
     EventLedgerRepository,
-    MemoryJobRepository,
-    MemoryRepository,
 )
 from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
-from qq_ai_bot.services.memory_worker import MemoryWorker
 from qq_ai_bot.speech.models import VoiceMode
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 
@@ -252,7 +252,7 @@ async def test_recent_history_always_calls_napcat_and_imports_unseen_events(
     tools = AgentToolService(
         settings=settings,
         ledger=ledger,
-        memories=MemoryRepository(database),
+        memories=MemoryFactService(MemoryFactRepository(database)),
         actions=AgentActionRepository(database),
     )
     gateway = HistoryGateway()
@@ -290,7 +290,7 @@ async def test_agent_can_queue_a_path_free_voice_reply(database: Database) -> No
     tools = AgentToolService(
         settings=settings,
         ledger=EventLedgerRepository(database),
-        memories=MemoryRepository(database),
+        memories=MemoryFactService(MemoryFactRepository(database)),
         actions=AgentActionRepository(database),
         runtime_config=config,
     )
@@ -330,7 +330,7 @@ async def test_agent_voice_tool_is_hidden_without_planner_authorization(database
     tools = AgentToolService(
         settings=settings,
         ledger=EventLedgerRepository(database),
-        memories=MemoryRepository(database),
+        memories=MemoryFactService(MemoryFactRepository(database)),
         actions=AgentActionRepository(database),
         runtime_config=config,
     )
@@ -389,7 +389,7 @@ async def test_recent_history_strips_media_locations_and_inline_payloads(
     tools = AgentToolService(
         settings=settings,
         ledger=ledger,
-        memories=MemoryRepository(database),
+        memories=MemoryFactService(MemoryFactRepository(database)),
         actions=AgentActionRepository(database),
     )
     result = await tools.execute(
@@ -430,21 +430,22 @@ class MemoryExtractorProvider(LLMProvider):
         return ChatResponse(
             content=json.dumps(
                 {
-                    "operations": [
+                    "claims": [
                         {
-                            "scope": "person",
-                            "user_id": "1001",
-                            "key": "likes:tea",
+                            "subject_ref": "speaker",
+                            "scope_type": "person",
+                            "kind": "preference",
+                            "memory_key": "likes:tea",
                             "category": "preference",
                             "content": "喜欢喝红茶",
                             "importance": 4,
                             "source_type": "automatic",
                         },
                         {
-                            "scope": "person_group",
-                            "user_id": "1001",
-                            "group_id": "2001",
-                            "key": "alias:captain",
+                            "subject_ref": "speaker",
+                            "scope_type": "person_group",
+                            "kind": "fact",
+                            "memory_key": "alias:captain",
                             "category": "alias",
                             "content": "在本群被叫作队长",
                             "importance": 3,
@@ -474,12 +475,13 @@ async def test_persistent_memory_job_builds_cross_scope_memories(
         group_id="2001",
     )
     jobs = MemoryJobRepository(database)
-    await jobs.enqueue(event.id)
-    memories = MemoryRepository(database)
+    await jobs.enqueue(event.id, "group:2001:user:1001")
+    memories = MemoryFactService(MemoryFactRepository(database))
     worker = MemoryWorker(
         settings=settings,
         jobs=jobs,
-        memories=memories,
+        facts=memories,
+        ledger=ledger,
         provider=MemoryExtractorProvider(),
         concurrency=ConcurrencyManager(1),
     )

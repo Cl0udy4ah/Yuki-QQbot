@@ -19,7 +19,7 @@ from qq_ai_bot.domain.messages import (
     SenderIdentity,
 )
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.repositories import MemoryJobRepository
+from qq_ai_bot.memory.repository import MemoryJobRepository
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.vision.base import VisionError
 from qq_ai_bot.vision.fake import FakeVisionProvider

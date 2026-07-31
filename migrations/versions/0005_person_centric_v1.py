@@ -78,6 +78,13 @@ def upgrade() -> None:
             "speech_generations",
             "person_speech_preferences",
             "model_invocations",
+            "memory_facts",
+            "memory_evidence",
+            "memory_jobs",
+            "mcp_server_states",
+            "mcp_tool_cache",
+            "tool_artifacts",
+            "tool_invocations",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

@@ -133,9 +133,9 @@ async def test_bridge_registers_only_selected_mcp_tools_and_executes_through_man
         assert mutate.retry_policy is RetryPolicy.NONE
         assert query.input_schema == query_schema
         assert query.validate_arguments({"city": "上海"}) == {"city": "上海"}
-        assert query.validate_arguments(
-            {"city": "${previous.city}"}, allow_templates=True
-        ) == {"city": "${previous.city}"}
+        assert query.validate_arguments({"city": "${previous.city}"}, allow_templates=True) == {
+            "city": "${previous.city}"
+        }
         with pytest.raises(ValueError, match="JSON Schema"):
             query.validate_arguments(
                 {"city": "${previous.city}", "unexpected": True},

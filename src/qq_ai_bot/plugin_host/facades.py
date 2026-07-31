@@ -41,10 +41,13 @@ from qq_ai_bot.emoji.models import (
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.mcp.manager import MCPManager
+from qq_ai_bot.memory.enums import MemoryEvidenceRelation
+from qq_ai_bot.memory.models import MemoryEvidenceCreate
+from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.validation import normalize_memory_text
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
-    MemoryRepository,
     PeopleRepository,
     RelationshipRepository,
 )
@@ -239,7 +242,7 @@ class PluginFacadeServices:
     ledger: EventLedgerRepository | None = None
     people: PeopleRepository | None = None
     groups: GroupSettingsRepository | None = None
-    memories: MemoryRepository | None = None
+    memories: MemoryFactService | None = None
     relationships: RelationshipRepository | None = None
     memory_admin: MemoryAdminService | None = None
     relationship_admin: RelationshipAdminService | None = None
@@ -1112,6 +1115,19 @@ class _MemoryFacade:
             raise PluginPermissionError("plugins may only write the current person's memory")
         normalized = _bounded_text(content, maximum=4_000, field_name="content")
         _validate_memory_metadata(invocation, source_type, confidence, source_event_ids)
+        evidence = (
+            MemoryEvidenceCreate(
+                event_id=invocation.source_event_id,
+                source_speaker_user_id=invocation.actor_user_id,
+                relation=MemoryEvidenceRelation.EXPLICIT_COMMAND,
+                excerpt=normalize_memory_text(
+                    invocation.inbound.text if invocation.inbound is not None else "",
+                    maximum=500,
+                ),
+            )
+            if source_event_ids and invocation.source_event_id is not None
+            else None
+        )
         service = _require_service(self._host._services.memory_admin, "memory mutation")
         row = await service.add_memory(
             _admin_actor(
@@ -1120,6 +1136,7 @@ class _MemoryFacade:
             ),
             target,
             normalized,
+            evidence=evidence,
         )
         await self._host._audit(
             invocation,
@@ -2817,11 +2834,16 @@ def _group_record(row: Any) -> dict[str, JsonValue]:
 def _memory_record(row: Any, scope: str) -> dict[str, JsonValue]:
     return {
         "memory_id": f"{scope}:{row.id}",
+        "fact_id": row.id,
         "scope_type": scope,
+        "kind": row.kind.value,
         "category": row.category,
         "content": row.content,
         "importance": row.importance,
-        "source_type": row.source_type,
+        "confidence": row.confidence,
+        "source_type": row.source_type.value,
+        "status": row.status.value,
+        "evidence_count": row.evidence_count,
         "updated_at": row.updated_at.isoformat(),
         "user_id": row.user_id,
         "group_id": row.group_id,

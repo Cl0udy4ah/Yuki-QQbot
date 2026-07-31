@@ -89,42 +89,6 @@ class EmojiDescriptionRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryRecord:
-    """A memory projection shared by the three memory scopes."""
-
-    id: int
-    memory_key: str
-    category: str
-    content: str
-    importance: int
-    source_type: str
-    updated_at: datetime
-    user_id: str | None = None
-    group_id: str | None = None
-    subject_user_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class PreferenceRecord:
-    """One interaction preference."""
-
-    id: int
-    key: str
-    value: str
-    source_type: str
-    updated_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class MemoryJobRecord:
-    """A claimed background memory job with its source event."""
-
-    job_id: int
-    attempts: int
-    event: EventRecord
-
-
-@dataclass(frozen=True, slots=True)
 class RelationshipEventRecord:
     """One relationship change without duplicated chat content."""
 

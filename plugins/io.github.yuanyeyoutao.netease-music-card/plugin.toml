@@ -5,7 +5,7 @@ description = "通过只读网易云 MCP 搜索歌曲或专辑，并向当前 QQ
 entrypoint = "netease_music_card_plugin:NetEaseMusicCardPlugin"
 
 plugin_api = "1.0"
-yuki_requires = ">=2.1.1,<3.0"
+yuki_requires = ">=2.1.1,<4.0"
 
 permissions = [
   "message.current.read",

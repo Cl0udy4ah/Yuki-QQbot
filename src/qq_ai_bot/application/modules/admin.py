@@ -16,10 +16,10 @@ from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.emoji.worker import EmojiWorker
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
     GroupSettingsRepository,
-    MemoryRepository,
     PrivateUserSettingsRepository,
     RelationshipRepository,
 )
@@ -56,7 +56,7 @@ class AdminModule:
         action_registry: ActionRegistry,
         permission_catalog: PermissionCatalogService,
         relationships: RelationshipRepository,
-        memories: MemoryRepository,
+        memories: MemoryFactService,
         groups: GroupSettingsRepository,
         private_users: PrivateUserSettingsRepository,
         emoji_repository: EmojiRepository,

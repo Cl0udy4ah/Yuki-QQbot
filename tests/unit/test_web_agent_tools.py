@@ -13,12 +13,13 @@ from tests.fakes import FakeWebSearchProvider
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import WebSearchRunModel
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
     EventLedgerRepository,
-    MemoryRepository,
     WebSearchSourceRepository,
 )
 from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
@@ -73,7 +74,7 @@ def build_tools(
         AgentToolService(
             settings=settings,
             ledger=EventLedgerRepository(database),
-            memories=MemoryRepository(database),
+            memories=MemoryFactService(MemoryFactRepository(database)),
             actions=AgentActionRepository(database),
             web_provider=provider,
             web_sources=sources,

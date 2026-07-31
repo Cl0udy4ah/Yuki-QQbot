@@ -24,10 +24,10 @@ from qq_ai_bot.emoji.models import (
     EmojiReplyMode,
     PendingReplyEffect,
 )
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
     EventLedgerRepository,
-    MemoryRepository,
     WebSearchSourceRepository,
 )
 from qq_ai_bot.planner.models import ToolGroup, ToolMode
@@ -109,7 +109,7 @@ class AgentToolService:
         *,
         settings: Settings,
         ledger: EventLedgerRepository,
-        memories: MemoryRepository,
+        memories: MemoryFactService,
         actions: AgentActionRepository,
         web_provider: WebSearchProvider | None = None,
         web_sources: WebSearchSourceRepository | None = None,
@@ -733,11 +733,14 @@ class AgentToolService:
                 "user_id": user_id,
                 "memories": [
                     {
-                        "id": row.id,
+                        "fact_id": row.id,
+                        "kind": row.kind.value,
                         "category": row.category,
                         "content": row.content,
                         "importance": row.importance,
-                        "source_type": row.source_type,
+                        "confidence": row.confidence,
+                        "source_type": row.source_type.value,
+                        "status": row.status.value,
                     }
                     for row in rows
                 ],
@@ -756,10 +759,14 @@ class AgentToolService:
                 "group_id": group_id,
                 "memories": [
                     {
-                        "id": row.id,
+                        "fact_id": row.id,
+                        "kind": row.kind.value,
                         "category": row.category,
                         "content": row.content,
-                        "subject_user_id": row.subject_user_id,
+                        "importance": row.importance,
+                        "confidence": row.confidence,
+                        "source_type": row.source_type.value,
+                        "status": row.status.value,
                     }
                     for row in rows
                 ],

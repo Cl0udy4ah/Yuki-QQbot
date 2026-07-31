@@ -14,13 +14,12 @@ from qq_ai_bot.domain.conversations import ConversationIdentity
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.domain.relationships import RelationshipSnapshot
+from qq_ai_bot.memory.context import fact_context
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     EventRecord,
-    MemoryRecord,
-    MemoryRepository,
     PeopleRepository,
-    PreferenceRecord,
     RelationshipRepository,
 )
 from qq_ai_bot.prompting import ContextBudgeter, ContextContribution
@@ -65,7 +64,7 @@ class ContextAssembler:
         settings: Settings,
         ledger: EventLedgerRepository,
         people: PeopleRepository,
-        memories: MemoryRepository,
+        memories: MemoryFactService,
         relationships: RelationshipRepository,
         time_service: TimeContextService,
     ) -> None:
@@ -99,10 +98,6 @@ class ContextAssembler:
             inbound.sender.user_id,
             limit=self._settings.person_memory_max_entries,
         )
-        preferences = await self._memories.list_preferences(
-            inbound.sender.user_id,
-            limit=self._settings.preference_max_entries,
-        )
         aliases = await self._people.aliases(inbound.sender.user_id)
         current_time = await self._time.current(inbound.sender.user_id)
         current_relationship = (
@@ -121,8 +116,7 @@ class ContextAssembler:
                 "nickname": profile.nickname,
                 "display_name": profile.display_name,
                 "aliases": list(aliases),
-                "memories": [self._memory_json(row) for row in person_memories],
-                "preferences": [self._preference_json(row) for row in preferences],
+                "facts": [fact_context(row) for row in person_memories],
                 **(
                     {"relationship": self.relationship_json(current_relationship)}
                     if current_relationship is not None
@@ -147,10 +141,15 @@ class ContextAssembler:
                 inbound.group_id,
                 limit=self._settings.person_group_memory_max_entries,
             )
-            context["group_memories"] = [self._memory_json(row) for row in group_memories]
-            context["current_person_group_memories"] = [
-                self._memory_json(row) for row in member_memories
-            ]
+            context["current_person_in_group"] = {
+                "user_id": inbound.sender.user_id,
+                "group_id": inbound.group_id,
+                "facts": [fact_context(row) for row in member_memories],
+            }
+            context["current_group"] = {
+                "group_id": inbound.group_id,
+                "facts": [fact_context(row) for row in group_memories],
+            }
             related_ids = self._related_ids(inbound, recent, runtime.context.related_people_limit)
             related_count = len(related_ids)
             context["related_people"] = await self._related_people(
@@ -206,35 +205,14 @@ class ContextAssembler:
         group_id: str,
     ) -> list[dict[str, Any]]:
         profiles = await self._people.get_many(user_ids, group_id=group_id)
-        facts = await self._memories.list_people(
-            user_ids,
-            limit_per_user=self._settings.person_memory_max_entries,
-        )
-        scoped = await self._memories.list_people_group(
-            user_ids,
-            group_id,
-            limit_per_user=self._settings.person_group_memory_max_entries,
-        )
-        relationships = (
-            await self._relationships.get_many(user_ids)
-            if self._settings.relationship_enabled
-            else {}
-        )
         related: list[dict[str, Any]] = []
         for user_id in user_ids:
             person = profiles.get(user_id)
-            relationship = relationships.get(user_id)
             related.append(
                 {
                     "user_id": user_id,
                     "display_name": person.display_name if person else "当前群成员",
-                    "memories": [self._memory_json(row) for row in facts.get(user_id, ())],
-                    "group_memories": [self._memory_json(row) for row in scoped.get(user_id, ())],
-                    **(
-                        {"relationship": self.relationship_json(relationship)}
-                        if relationship is not None
-                        else {}
-                    ),
+                    "group_card": person.group_card if person else "",
                 }
             )
         return related
@@ -259,24 +237,6 @@ class ContextAssembler:
         return tuple(related)
 
     @staticmethod
-    def _memory_json(row: MemoryRecord) -> dict[str, Any]:
-        return {
-            "id": row.id,
-            "category": row.category,
-            "content": row.content,
-            "importance": row.importance,
-            "source_type": row.source_type,
-            "subject_user_id": row.subject_user_id,
-        }
-
-    @staticmethod
-    def _preference_json(row: PreferenceRecord) -> dict[str, str]:
-        return {
-            "key": row.key,
-            "value": row.value,
-        }
-
-    @staticmethod
     def relationship_json(snapshot: RelationshipSnapshot) -> dict[str, Any]:
         return {
             "affection_score": snapshot.affection_score,
@@ -295,7 +255,34 @@ class ContextAssembler:
             contributions,
             character_budget=limit,
         )
-        return {"items": [{"id": item.id, "data": item.payload} for item in selection.selected]}
+        selected = {item.id: item.payload for item in selection.selected}
+        items: list[dict[str, object]] = []
+        for item in selection.selected:
+            if item.id.startswith(
+                ("person_memory.", "current_group.fact.", "current_person_in_group.fact.")
+            ):
+                continue
+            payload = item.payload
+            if item.id == "current_person" and isinstance(payload, dict):
+                payload = {
+                    **payload,
+                    "facts": [
+                        value for key, value in selected.items() if key.startswith("person_memory.")
+                    ],
+                }
+            elif item.id in {"current_group", "current_person_in_group"} and isinstance(
+                payload, dict
+            ):
+                payload = {
+                    **payload,
+                    "facts": [
+                        value
+                        for key, value in selected.items()
+                        if key.startswith(f"{item.id}.fact.")
+                    ],
+                }
+            items.append({"id": item.id, "data": payload})
+        return {"items": items}
 
     @staticmethod
     def _context_contributions(
@@ -332,15 +319,11 @@ class ContextAssembler:
 
         current = context.get("current_person")
         if isinstance(current, dict):
-            base = {
-                key: value
-                for key, value in current.items()
-                if key not in {"aliases", "memories", "preferences"}
-            }
+            base = {key: value for key, value in current.items() if key not in {"aliases", "facts"}}
             add("current_person", base, priority=100, relevance=1, required=True)
             for index, alias in enumerate(current.get("aliases", ())):
                 add(f"current_alias.{index}", alias, priority=45, relevance=0.7)
-            for index, memory in enumerate(current.get("memories", ())):
+            for index, memory in enumerate(current.get("facts", ())):
                 importance = memory.get("importance", 1) if isinstance(memory, dict) else 1
                 add(
                     f"person_memory.{index}",
@@ -348,15 +331,15 @@ class ContextAssembler:
                     priority=60 + int(importance),
                     relevance=0.9,
                 )
-            for index, preference in enumerate(current.get("preferences", ())):
-                add(f"preference.{index}", preference, priority=70, relevance=0.9)
         add("scene", context.get("scene", {}), priority=100, relevance=1, required=True)
-        for key, priority in (
-            ("group_memories", 55),
-            ("current_person_group_memories", 65),
-        ):
-            for index, value in enumerate(context.get(key, ())):
-                add(f"{key}.{index}", value, priority=priority, relevance=0.8)
+        for key, priority in (("current_group", 55), ("current_person_in_group", 65)):
+            block = context.get(key)
+            if not isinstance(block, dict):
+                continue
+            identity = {name: value for name, value in block.items() if name != "facts"}
+            add(key, identity, priority=95, relevance=1, required=True)
+            for index, value in enumerate(block.get("facts", ())):
+                add(f"{key}.fact.{index}", value, priority=priority, relevance=0.8)
         for index, person in enumerate(context.get("related_people", ())):
             add(f"related_person.{index}", person, priority=40, relevance=0.6)
         return tuple(items)

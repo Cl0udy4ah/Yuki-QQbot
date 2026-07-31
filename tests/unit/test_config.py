@@ -79,7 +79,7 @@ def test_daily_chat_delay_range_must_be_ordered() -> None:
 
 
 def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps() -> None:
-    settings = Settings()
+    settings = Settings(_env_file=None)
     assert settings.planner_group_debounce_seconds == 3
     assert settings.planner_preferred_messages == 3
     assert settings.planner_confidence_threshold == 0.2

@@ -23,11 +23,14 @@ def test_information_about_time_is_not_mistaken_for_a_scheduled_action() -> None
 
 
 def test_success_claim_requires_persisted_confirmation() -> None:
-    assert enforce_creation_claim(
-        "设好了，明天准时查询",
-        scheduled_intent=True,
-        persisted=False,
-    ) == "这个定时任务还没有写入任务列表，不能算创建成功。"
+    assert (
+        enforce_creation_claim(
+            "设好了，明天准时查询",
+            scheduled_intent=True,
+            persisted=False,
+        )
+        == "这个定时任务还没有写入任务列表，不能算创建成功。"
+    )
     assert (
         enforce_creation_claim(
             "设好了，明天准时查询",

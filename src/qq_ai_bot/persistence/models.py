@@ -10,7 +10,6 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
-    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -43,16 +42,6 @@ class PersonModel(Base):
         passive_deletes=True,
     )
     memberships: Mapped[list[MembershipModel]] = relationship(
-        back_populates="person",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
-    memories: Mapped[list[PersonMemoryModel]] = relationship(
-        back_populates="person",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
-    preferences: Mapped[list[PersonPreferenceModel]] = relationship(
         back_populates="person",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -113,11 +102,6 @@ class GroupModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     memberships: Mapped[list[MembershipModel]] = relationship(
-        back_populates="group",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
-    memories: Mapped[list[GroupMemoryModel]] = relationship(
         back_populates="group",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -271,139 +255,146 @@ class EmojiDescriptionModel(Base):
     last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class PersonMemoryModel(Base):
-    """A durable cross-scope memory about one QQ identity."""
+class MemoryFactModel(Base):
+    """A versioned fact with a backend-owned person/group scope."""
 
-    __tablename__ = "person_memories"
+    __tablename__ = "memory_facts"
     __table_args__ = (
-        UniqueConstraint("user_id", "memory_key", name="uq_person_memories_user_key"),
-        Index("ix_person_memories_user_updated", "user_id", "updated_at"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
-        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
-    )
-    memory_key: Mapped[str] = mapped_column(String(128), nullable=False)
-    category: Mapped[str] = mapped_column(String(32), nullable=False, default="fact")
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    importance: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
-    source_type: Mapped[str] = mapped_column(String(16), nullable=False, default="automatic")
-    source_event_id: Mapped[int | None] = mapped_column(
-        ForeignKey("chat_events.id", ondelete="SET NULL"), nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    person: Mapped[PersonModel] = relationship(back_populates="memories")
-
-
-class GroupMemoryModel(Base):
-    """A durable shared memory about one group."""
-
-    __tablename__ = "group_memories"
-    __table_args__ = (
-        UniqueConstraint("group_id", "memory_key", name="uq_group_memories_group_key"),
-        Index("ix_group_memories_group_updated", "group_id", "updated_at"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    group_id: Mapped[str] = mapped_column(
-        ForeignKey("groups.group_id", ondelete="CASCADE"), nullable=False
-    )
-    subject_user_id: Mapped[str | None] = mapped_column(
-        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=True
-    )
-    memory_key: Mapped[str] = mapped_column(String(128), nullable=False)
-    category: Mapped[str] = mapped_column(String(32), nullable=False, default="fact")
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    importance: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
-    source_type: Mapped[str] = mapped_column(String(16), nullable=False, default="automatic")
-    source_event_id: Mapped[int | None] = mapped_column(
-        ForeignKey("chat_events.id", ondelete="SET NULL"), nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    group: Mapped[GroupModel] = relationship(back_populates="memories")
-
-
-class PersonGroupMemoryModel(Base):
-    """A durable memory about one person's identity inside one group."""
-
-    __tablename__ = "person_group_memories"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["user_id", "group_id"],
-            ["memberships.user_id", "memberships.group_id"],
-            ondelete="CASCADE",
+        CheckConstraint(
+            "scope_type IN ('person', 'person_group', 'group')",
+            name="ck_memory_facts_scope_type",
         ),
-        UniqueConstraint(
-            "user_id",
-            "group_id",
-            "memory_key",
-            name="uq_person_group_memories_scope_key",
+        CheckConstraint(
+            "kind IN ('fact', 'preference', 'episode')",
+            name="ck_memory_facts_kind",
+        ),
+        CheckConstraint(
+            "source_type IN ('automatic', 'explicit', 'rebuild')",
+            name="ck_memory_facts_source_type",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'superseded', 'invalidated')",
+            name="ck_memory_facts_status",
+        ),
+        CheckConstraint("importance BETWEEN 1 AND 5", name="ck_memory_facts_importance"),
+        CheckConstraint("confidence BETWEEN 0 AND 1", name="ck_memory_facts_confidence"),
+        CheckConstraint(
+            "(scope_type = 'person' AND subject_user_id IS NOT NULL AND group_id IS NULL) OR "
+            "(scope_type = 'person_group' AND subject_user_id IS NOT NULL "
+            "AND group_id IS NOT NULL) OR "
+            "(scope_type = 'group' AND subject_user_id IS NULL AND group_id IS NOT NULL)",
+            name="ck_memory_facts_scope_identity",
         ),
         Index(
-            "ix_person_group_memories_scope_updated",
-            "user_id",
+            "uq_memory_facts_active_person_key",
+            "subject_user_id",
+            "kind",
+            "memory_key",
+            unique=True,
+            sqlite_where=text("status = 'active' AND scope_type = 'person'"),
+        ),
+        Index(
+            "uq_memory_facts_active_person_group_key",
+            "subject_user_id",
             "group_id",
+            "kind",
+            "memory_key",
+            unique=True,
+            sqlite_where=text("status = 'active' AND scope_type = 'person_group'"),
+        ),
+        Index(
+            "uq_memory_facts_active_group_key",
+            "group_id",
+            "kind",
+            "memory_key",
+            unique=True,
+            sqlite_where=text("status = 'active' AND scope_type = 'group'"),
+        ),
+        Index(
+            "ix_memory_facts_scope_status_updated",
+            "scope_type",
+            "subject_user_id",
+            "group_id",
+            "status",
             "updated_at",
         ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    group_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    memory_key: Mapped[str] = mapped_column(String(128), nullable=False)
-    category: Mapped[str] = mapped_column(String(32), nullable=False, default="fact")
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    importance: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
-    source_type: Mapped[str] = mapped_column(String(16), nullable=False, default="automatic")
-    source_event_id: Mapped[int | None] = mapped_column(
-        ForeignKey("chat_events.id", ondelete="SET NULL"), nullable=True
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    subject_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=True
     )
+    group_id: Mapped[str | None] = mapped_column(
+        ForeignKey("groups.group_id", ondelete="CASCADE"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    memory_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_content: Mapped[str] = mapped_column(Text, nullable=False)
+    importance: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    source_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    supersedes_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="SET NULL"), nullable=True
+    )
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class PersonPreferenceModel(Base):
-    """An explicit or inferred interaction preference for one person."""
+class MemoryEvidenceModel(Base):
+    """One immutable chat event supporting a Memory V2 fact."""
 
-    __tablename__ = "person_preferences"
+    __tablename__ = "memory_evidence"
     __table_args__ = (
-        UniqueConstraint("user_id", "preference_key", name="uq_person_preferences_user_key"),
+        UniqueConstraint("fact_id", "event_id", name="uq_memory_evidence_fact_event"),
+        CheckConstraint(
+            "relation IN ('self_statement', 'explicit_command', 'correction', 'rebuild')",
+            name="ck_memory_evidence_relation",
+        ),
+        Index("ix_memory_evidence_fact", "fact_id"),
+        Index("ix_memory_evidence_event", "event_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[str] = mapped_column(
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    )
+    source_speaker_user_id: Mapped[str] = mapped_column(
         ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
     )
-    preference_key: Mapped[str] = mapped_column(String(64), nullable=False)
-    value: Mapped[str] = mapped_column(Text, nullable=False)
-    source_type: Mapped[str] = mapped_column(String(16), nullable=False, default="explicit")
+    relation: Mapped[str] = mapped_column(String(24), nullable=False)
+    excerpt: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-    person: Mapped[PersonModel] = relationship(back_populates="preferences")
 
 
 class MemoryJobModel(Base):
-    """A persistent background job that derives memories from one event."""
+    """A restart-safe Memory V2 job for exactly one inbound event."""
 
     __tablename__ = "memory_jobs"
     __table_args__ = (
         UniqueConstraint("event_id", name="uq_memory_jobs_event"),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'done', 'failed')",
+            name="ck_memory_jobs_status",
+        ),
         Index("ix_memory_jobs_status_next", "status", "next_attempt_at"),
+        Index("ix_memory_jobs_conversation", "conversation_key", "id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     event_id: Mapped[int] = mapped_column(
         ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
     )
+    conversation_key: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -7,7 +7,8 @@ import time
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.config import Settings
-from qq_ai_bot.persistence.repositories import MemoryRepository, PreferenceRecord
+from qq_ai_bot.memory.models import MemoryFact
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.services.admin.common import require_self_or_superuser
 
 
@@ -18,7 +19,7 @@ class PreferenceAdminService:
         self,
         *,
         settings: Settings,
-        memories: MemoryRepository,
+        memories: MemoryFactService,
         audit: AdminAuditService,
     ) -> None:
         self._settings = settings
@@ -29,7 +30,7 @@ class PreferenceAdminService:
         self,
         actor: AdminActor,
         target: str,
-    ) -> tuple[PreferenceRecord, ...]:
+    ) -> tuple[MemoryFact, ...]:
         require_self_or_superuser(actor, target, self._settings)
         return await self._memories.list_preferences(
             target,
@@ -42,7 +43,7 @@ class PreferenceAdminService:
         target: str,
         key: str,
         value: str,
-    ) -> PreferenceRecord:
+    ) -> MemoryFact:
         require_self_or_superuser(actor, target, self._settings)
         normalized_key = key.strip()
         normalized_value = " ".join(value.split()).strip()

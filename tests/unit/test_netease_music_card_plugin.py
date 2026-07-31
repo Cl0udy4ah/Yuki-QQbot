@@ -17,9 +17,7 @@ from yuki_plugin_sdk.registrar import ToolRegistration
 from yuki_plugin_sdk.results import PluginResult
 from yuki_plugin_sdk.testing import FakePluginContext, run_plugin_contract_tests
 
-PLUGIN_ROOT = (
-    Path(__file__).parents[2] / "plugins" / "io.github.yuanyeyoutao.netease-music-card"
-)
+PLUGIN_ROOT = Path(__file__).parents[2] / "plugins" / "io.github.yuanyeyoutao.netease-music-card"
 
 
 class RecordingRegistrar:
@@ -282,9 +280,7 @@ async def test_album_search_fetches_tracks_and_sends_current_scene_card() -> Non
     )
 
     result = await tool.handler(
-        tool.input_model.model_validate(
-            {"query": "中国有弹舌", "artist": "MC赵小六"}
-        )
+        tool.input_model.model_validate({"query": "中国有弹舌", "artist": "MC赵小六"})
     )
     output = _share_output(result, tool.output_model)
 
@@ -358,9 +354,7 @@ async def test_album_id_skips_search_but_still_fetches_details() -> None:
         [_album_detail_result(album, tracks=[_song("2001", "弹舌", "MC赵小六")])],
     )
 
-    result = await tool.handler(
-        tool.input_model.model_validate({"album_id": "241937735"})
-    )
+    result = await tool.handler(tool.input_model.model_validate({"album_id": "241937735"}))
     output = _share_output(result, tool.output_model)
 
     assert output.status == "sent"
@@ -410,9 +404,7 @@ async def test_single_fuzzy_album_result_is_not_sent_as_an_exact_match() -> None
         [_mcp_result([_album("144008945", "夜空", "赵小北")])],
     )
 
-    result = await tool.handler(
-        tool.input_model.model_validate({"query": "中国有弹舌"})
-    )
+    result = await tool.handler(tool.input_model.model_validate({"query": "中国有弹舌"}))
     output = _share_output(result, tool.output_model)
 
     assert output.status == "selection_required"

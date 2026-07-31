@@ -95,9 +95,7 @@ class AutomationToolService:
                 "delivery": {"target": "auto", "text": "该喝水啦～"},
             }
         ]
-        catalog_hint = "；".join(
-            f"{item['id']}={item['description']}" for item in catalog
-        )
+        catalog_hint = "；".join(f"{item['id']}={item['description']}" for item in catalog)
         id_schema = {"automation_id": {"type": "integer", "minimum": 1}}
         definitions = (
             ChatTool(

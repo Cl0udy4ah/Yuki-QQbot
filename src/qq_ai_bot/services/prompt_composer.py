@@ -7,6 +7,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.relationships import RelationshipSnapshot, style_policy
+from qq_ai_bot.memory.context import ENTITY_MEMORY_RULE
 from qq_ai_bot.planner.models import PlannedTurn
 from qq_ai_bot.prompting import (
     CORE_CONTRACT,
@@ -74,6 +75,12 @@ class PromptComposer:
                 CORE_CONTRACT,
                 channel=PromptChannel.INVARIANT,
                 priority=90,
+            ),
+            static_text(
+                "memory.entity_contract",
+                ENTITY_MEMORY_RULE,
+                channel=PromptChannel.INVARIANT,
+                priority=95,
             ),
             PromptContribution(
                 id="runtime.time",

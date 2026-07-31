@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import time
-import uuid
 from datetime import UTC, datetime, timedelta
 
 from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.config import Settings
-from qq_ai_bot.persistence.repositories import MemoryRecord, MemoryRepository
+from qq_ai_bot.memory.models import MemoryEvidence, MemoryEvidenceCreate, MemoryFact
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.services.admin.common import require_self_or_superuser
 
 
@@ -20,7 +20,7 @@ class MemoryAdminService:
         self,
         *,
         settings: Settings,
-        memories: MemoryRepository,
+        memories: MemoryFactService,
         audit: AdminAuditService,
     ) -> None:
         self._settings = settings
@@ -31,7 +31,7 @@ class MemoryAdminService:
         self,
         actor: AdminActor,
         target: str,
-    ) -> tuple[MemoryRecord, ...]:
+    ) -> tuple[MemoryFact, ...]:
         require_self_or_superuser(actor, target, self._settings)
         return await self._memories.list_person(
             target,
@@ -43,7 +43,9 @@ class MemoryAdminService:
         actor: AdminActor,
         target: str,
         content: str,
-    ) -> MemoryRecord:
+        *,
+        evidence: MemoryEvidenceCreate | None = None,
+    ) -> MemoryFact:
         require_self_or_superuser(actor, target, self._settings)
         normalized = " ".join(content.split()).strip()
         if not normalized:
@@ -55,15 +57,11 @@ class MemoryAdminService:
                 >= self._settings.person_memory_max_entries
             ):
                 raise ValueError("人物记忆已达到上限，请先删除或合并旧记忆")
-            row = await self._memories.upsert(
-                scope="person",
-                user_id=target,
-                memory_key=f"explicit-{uuid.uuid4()}",
-                content=normalized,
-                category="explicit",
-                importance=5,
-                source_type="explicit",
+            row = await self._memories.add_explicit_person(
+                target,
+                normalized,
                 limit=self._settings.person_memory_max_entries,
+                evidence=evidence,
                 session=session,
             )
             await self._audit.record(
@@ -105,12 +103,13 @@ class MemoryAdminService:
                 ),
                 None,
             )
-            updated = await self._memories.update_explicit(
+            updated_row = await self._memories.update_explicit_person(
                 memory_id,
                 user_id=target,
                 content=normalized,
                 session=session,
             )
+            updated = updated_row is not None
             await self._audit.record(
                 actor=actor,
                 capability="memory",
@@ -147,7 +146,7 @@ class MemoryAdminService:
                 ),
                 None,
             )
-            deleted = await self._memories.delete_person_memory(
+            deleted = await self._memories.invalidate_person(
                 memory_id,
                 user_id=target,
                 session=session,
@@ -166,6 +165,28 @@ class MemoryAdminService:
                 session=session,
             )
         return deleted
+
+    async def list_evidence(
+        self,
+        actor: AdminActor,
+        target: str,
+        memory_id: int,
+    ) -> tuple[MemoryEvidence, ...]:
+        require_self_or_superuser(actor, target, self._settings)
+        fact = next(
+            (
+                row
+                for row in await self._memories.list_person(
+                    target,
+                    limit=self._settings.person_memory_max_entries,
+                )
+                if row.id == memory_id
+            ),
+            None,
+        )
+        if fact is None:
+            return ()
+        return await self._memories.list_evidence(memory_id)
 
     async def prune_memories(
         self,

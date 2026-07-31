@@ -36,9 +36,7 @@ def test_successful_structured_result_drops_duplicated_text_fallback() -> None:
 
     assert result.ok is True
     assert result.data == structured
-    assert result.content == (
-        {"type": "image", "data": "base64-image", "mimeType": "image/png"},
-    )
+    assert result.content == ({"type": "image", "data": "base64-image", "mimeType": "image/png"},)
 
 
 def test_unstructured_or_error_text_content_is_preserved() -> None:

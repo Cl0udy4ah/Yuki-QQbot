@@ -8,7 +8,8 @@ from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.persistence.repositories import MemoryRepository, PeopleRepository
+from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.persistence.repositories import PeopleRepository
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
 from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
@@ -23,7 +24,7 @@ class ProfileCommandHandler:
         self,
         *,
         people: PeopleRepository,
-        memories: MemoryRepository,
+        memories: MemoryFactService,
         memory_admin: MemoryAdminService,
         preference_admin: PreferenceAdminService,
         relationship_admin: RelationshipAdminService,
@@ -76,7 +77,16 @@ class ProfileCommandHandler:
                 int(rest[0]),
             )
             return "记忆已删除。" if deleted else "没有找到该记忆。"
-        return "可用操作：list、add、update、delete。"
+        if operation == "evidence":
+            if len(rest) != 1 or not rest[0].isdigit():
+                return "格式：/ai memory evidence <记忆ID>"
+            evidence_rows = await self._memory_admin.list_evidence(actor, target, int(rest[0]))
+            if not evidence_rows:
+                return "没有找到该记忆的证据。"
+            return "\n".join(
+                f"事件 {row.event_id} [{row.relation}] {row.excerpt}" for row in evidence_rows
+            )
+        return "可用操作：list、add、update、delete、evidence。"
 
     async def preference(self, *, actor: AdminActor, argument: str) -> str:
         parsed = self._parse_scoped_operation(

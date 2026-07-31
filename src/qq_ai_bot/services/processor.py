@@ -31,12 +31,13 @@ from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.collector import EmojiCollector
 from qq_ai_bot.emoji.worker import EmojiWorker
 from qq_ai_bot.llm.base import LLMConfigurationError, LLMEmptyResponseError, LLMError
+from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
+from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.persistence.repositories import (
     ConversationRepository,
     EventLedgerRepository,
     GroupSettingsRepository,
-    MemoryJobRepository,
-    MemoryRepository,
     PeopleRepository,
     PrivateUserSettingsRepository,
     RelationshipJobRepository,
@@ -58,7 +59,6 @@ from qq_ai_bot.services.command_service import CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager, RequestCancelledError
 from qq_ai_bot.services.deduplication import DeduplicationService, build_event_key
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
-from qq_ai_bot.services.memory_worker import MemoryWorker
 from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
     publish_notification,
@@ -125,9 +125,7 @@ MENTION_ONLY_CONTEXT = "[用户在群聊中只 @ 了你，没有附带文字；�
 def _attachment_only_context(message: InboundMessage) -> str:
     """Describe an unparsed non-visual attachment to the Agent instead of replying from a stub."""
 
-    labels = tuple(
-        dict.fromkeys(attachment.kind.value for attachment in message.attachments)
-    )
+    labels = tuple(dict.fromkeys(attachment.kind.value for attachment in message.attachments))
     if not labels:
         return ""
     readable = {
@@ -236,7 +234,7 @@ class MessageProcessor:
         planner_service: PlannerService,
         ledger: EventLedgerRepository | None = None,
         people: PeopleRepository | None = None,
-        memories: MemoryRepository | None = None,
+        memories: MemoryFactService | None = None,
         memory_worker: MemoryWorker | None = None,
         relationships: RelationshipRepository | None = None,
         relationship_worker: RelationshipWorker | None = None,
@@ -274,11 +272,12 @@ class MessageProcessor:
         self._onebot_connected = onebot_connected
         self._ledger = ledger or EventLedgerRepository(database)
         self._people = people or PeopleRepository(database)
-        self._memories = memories or MemoryRepository(database)
+        self._memories = memories or MemoryFactService(MemoryFactRepository(database))
         self._memory_worker = memory_worker or MemoryWorker(
             settings=settings,
             jobs=MemoryJobRepository(database),
-            memories=self._memories,
+            facts=self._memories,
+            ledger=self._ledger,
             model_executor=chat._models,
             concurrency=concurrency,
         )
@@ -530,7 +529,7 @@ class MessageProcessor:
             message, bot_user_id=message.bot_user_id or "unknown-bot"
         )
         if created:
-            await self._memory_worker.enqueue(record.id)
+            await self._memory_worker.enqueue(record.id, identity.key)
         is_explicit_emoji_import = bool(
             decision.command is CommandName.EMOJI
             and decision.content.strip().casefold().startswith("import")

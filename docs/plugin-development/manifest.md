@@ -11,7 +11,7 @@ version = "0.1.0"
 description = "天气查询和提醒插件"
 entrypoint = "weather_plugin:WeatherPlugin"
 plugin_api = "1.0"
-yuki_requires = ">=1.6.0,<3.0"
+yuki_requires = ">=1.6.0,<4.0"
 
 permissions = [
   "message.current.read",
