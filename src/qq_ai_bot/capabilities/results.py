@@ -6,6 +6,8 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
+from qq_ai_bot.capabilities.models import CapabilityDescriptor, CapabilityEffect
+
 
 @dataclass(frozen=True, slots=True)
 class CapabilityResult:
@@ -14,7 +16,7 @@ class CapabilityResult:
     error: str | None = None
     public_message: str | None = None
     retryable: bool = False
-    mutation_committed: bool = False
+    mutation_committed: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +29,7 @@ class ToolExecutionResult:
     error_code: str | None = None
     public_message: str | None = None
     retryable: bool = False
-    mutation_committed: bool = False
+    mutation_committed: bool | None = None
     provider_id: str = ""
     tool_name: str = ""
     metadata: dict[str, Any] | None = None
@@ -108,6 +110,9 @@ class ToolResultBudgeter:
                 retention_seconds=self._artifact_retention_seconds,
             )
         summary = _bounded_payload(payload, item_limit=self._item_limit)
+        important = _important_fields(payload)
+        if important:
+            summary["important_fields"] = important
         summary["truncated"] = True
         summary["original_characters"] = len(text)
         if artifact_id:
@@ -120,6 +125,7 @@ class ToolResultBudgeter:
                 "original_characters": len(text),
                 "artifact_handle": artifact_id,
                 "public_message": result.public_message,
+                "important_fields": important or None,
             }
             rendered = json.dumps(
                 {key: value for key, value in minimal.items() if value is not None},
@@ -157,15 +163,16 @@ def normalize_legacy_result(
         error = raw.pop("error_code", raw.pop("error", None))
         public = raw.pop("public_message", raw.pop("detail", None))
         committed_value = raw.pop("mutation_committed", None)
-        committed = ok if committed_value is None else bool(committed_value)
+        committed = None if committed_value is None else bool(committed_value)
+        retryable = bool(raw.pop("retryable", False))
         data = raw.pop("data", raw if raw else None)
         return ToolExecutionResult(
             ok=ok,
             data=data,
             error_code=str(error) if error is not None else None,
             public_message=str(public) if public is not None else None,
-            retryable=bool(raw.pop("retryable", False)) if isinstance(raw, dict) else False,
-            mutation_committed=committed,
+            retryable=retryable,
+            mutation_committed=False if not ok else committed,
             provider_id=provider_id,
             tool_name=tool_name,
         )
@@ -175,6 +182,31 @@ def normalize_legacy_result(
         provider_id=provider_id,
         tool_name=tool_name,
     )
+
+
+def resolve_mutation_commit(
+    result: ToolExecutionResult,
+    descriptor: CapabilityDescriptor,
+) -> bool:
+    """Resolve one provider-neutral commit state from result and capability effect."""
+
+    if not result.ok:
+        return False
+    if result.mutation_committed is not None:
+        return result.mutation_committed
+    if descriptor.effect in {
+        CapabilityEffect.READ_STATE,
+        CapabilityEffect.EXTERNAL_READ,
+        CapabilityEffect.REPLY_EFFECT,
+    }:
+        return False
+    if descriptor.effect in {
+        CapabilityEffect.WRITE_STATE,
+        CapabilityEffect.PLATFORM_MUTATE,
+        CapabilityEffect.PLATFORM_SEND,
+    }:
+        return True
+    return False
 
 
 def _largest_collection(value: object) -> int:
@@ -208,3 +240,35 @@ def _bounded_payload(value: object, *, item_limit: int | None) -> dict[str, Any]
         return item
 
     return {str(key): bounded(item) for key, item in value.items()}
+
+
+def _important_fields(value: object) -> dict[str, object]:
+    """Project identifiers, status, errors, and URLs before lossy truncation."""
+
+    important: dict[str, object] = {}
+
+    def visit(item: object, path: tuple[str, ...]) -> None:
+        if len(important) >= 64:
+            return
+        if isinstance(item, dict):
+            for raw_key, child in item.items():
+                key = str(raw_key)
+                visit(child, (*path, key))
+            return
+        if isinstance(item, (list, tuple)):
+            for index, child in enumerate(item[:20]):
+                visit(child, (*path, str(index)))
+            return
+        if not path:
+            return
+        key = path[-1].casefold()
+        is_important = (
+            "url" in key or key == "id" or key.endswith("id") or "status" in key or "error" in key
+        )
+        if not is_important:
+            return
+        field_path = ".".join(path)
+        important[field_path] = item[:2000] if isinstance(item, str) else item
+
+    visit(value, ())
+    return important

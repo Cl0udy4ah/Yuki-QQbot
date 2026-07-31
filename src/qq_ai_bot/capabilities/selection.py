@@ -9,6 +9,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from qq_ai_bot.capabilities.catalog import UnifiedToolCatalog, UnifiedToolCatalogEntry
+from qq_ai_bot.capabilities.models import CapabilityExposure
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
@@ -23,6 +24,10 @@ class ToolSelectionMode(StrEnum):
 
 class UnknownToolScopeError(ValueError):
     pass
+
+
+class ToolBundleBudgetError(ValueError):
+    """A selected bundle cannot be represented without dropping required tools."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +64,11 @@ class ToolCandidateSelector:
         terms = _query_terms(f"{user_request} {planner_intent}")
         ranked: list[tuple[int, UnifiedToolCatalogEntry]] = []
         for entry in catalog.entries:
-            if scopes and not any(scope in entry.scope_ids for scope in scopes):
+            if (
+                scopes
+                and not any(scope in entry.scope_ids for scope in scopes)
+                and entry.descriptor.exposure is not CapabilityExposure.DIRECT_ALWAYS
+            ):
                 continue
             score = sum(_term_score(term, entry) for term in terms)
             if any(scope in entry.scope_ids for scope in scopes):
@@ -67,7 +76,16 @@ class ToolCandidateSelector:
             ranked.append((score, entry))
         ranked.sort(key=lambda item: (-item[0], item[1].descriptor.model_name))
         if limit is not None:
-            ranked = ranked[:limit]
+            required = _required_entries(
+                tuple(item[1] for item in ranked),
+                scopes=scopes,
+            )
+            selected = [item for item in ranked[:limit]]
+            selected_names = {item.descriptor.model_name for _score, item in selected}
+            selected.extend(
+                (0, item) for item in required if item.descriptor.model_name not in selected_names
+            )
+            ranked = selected
         return ToolCandidateResult(
             entries=tuple(item[1] for item in ranked),
             scores=tuple((item.descriptor.model_name, score) for score, item in ranked),
@@ -93,6 +111,7 @@ class FlashToolReranker:
         user_request: str,
         planner_intent: str,
         limit: int | None,
+        required_scope_ids: tuple[str, ...] = (),
     ) -> tuple[UnifiedToolCatalogEntry, ...]:
         if not candidates:
             return ()
@@ -123,14 +142,14 @@ class FlashToolReranker:
                 allow_text_json=True,
             )
         except (StructuredTaskError, ValueError, TimeoutError):
-            return candidates[:limit] if limit is not None else candidates
+            return _retain_required(candidates, candidates, required_scope_ids, limit)
         by_name = {item.descriptor.canonical_name: item for item in candidates}
         validated = tuple(
             by_name[name] for name in dict.fromkeys(selected.canonical_names) if name in by_name
         )
         if not validated:
-            return candidates[:limit] if limit is not None else candidates
-        return validated[:limit] if limit is not None else validated
+            return _retain_required(candidates, candidates, required_scope_ids, limit)
+        return _retain_required(validated, candidates, required_scope_ids, limit)
 
 
 class ToolSchemaBudgeter:
@@ -163,8 +182,28 @@ class ToolSchemaBudgeter:
         entries = [
             item
             for item in catalog.entries
-            if not scopes or any(scope in item.scope_ids for scope in scopes)
+            if not scopes
+            or any(scope in item.scope_ids for scope in scopes)
+            or item.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
         ]
+        required = _required_entries(tuple(entries), scopes=scopes)
+        required_names = {item.descriptor.model_name for item in required}
+        required_tokens = sum(item.estimated_schema_tokens for item in required)
+        if self._schema_token_budget is not None and required_tokens > self._schema_token_budget:
+            bundle_names = ", ".join(
+                sorted(
+                    {
+                        scope
+                        for item in required
+                        for scope in item.bundle_scope_ids
+                        if scope in scopes
+                    }
+                )
+            )
+            raise ToolBundleBudgetError(
+                "selected tool bundle exceeds schema token budget"
+                + (f": {bundle_names}" if bundle_names else "")
+            )
         terms = tuple(token for token in query.casefold().split() if token)
         if terms:
             entries.sort(
@@ -173,10 +212,14 @@ class ToolSchemaBudgeter:
                     item.descriptor.model_name,
                 )
             )
-        selected: list[UnifiedToolCatalogEntry] = []
-        used = 0
+        selected: list[UnifiedToolCatalogEntry] = list(required)
+        used = required_tokens
         for item in entries:
-            if self._selected_tool_limit is not None and len(selected) >= self._selected_tool_limit:
+            if item.descriptor.model_name in required_names:
+                continue
+            if self._selected_tool_limit is not None and len(selected) >= max(
+                self._selected_tool_limit, len(required)
+            ):
                 break
             next_used = used + item.estimated_schema_tokens
             if self._schema_token_budget is not None and next_used > self._schema_token_budget:
@@ -184,6 +227,35 @@ class ToolSchemaBudgeter:
             selected.append(item)
             used = next_used
         return SchemaBudgetResult(tuple(selected), used, len(entries) - len(selected))
+
+
+def _required_entries(
+    entries: tuple[UnifiedToolCatalogEntry, ...],
+    *,
+    scopes: tuple[str, ...],
+) -> tuple[UnifiedToolCatalogEntry, ...]:
+    selected_scopes = set(scopes)
+    return tuple(
+        item
+        for item in entries
+        if item.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
+        or bool(selected_scopes.intersection(item.bundle_scope_ids))
+    )
+
+
+def _retain_required(
+    selected: tuple[UnifiedToolCatalogEntry, ...],
+    available: tuple[UnifiedToolCatalogEntry, ...],
+    scopes: tuple[str, ...],
+    limit: int | None,
+) -> tuple[UnifiedToolCatalogEntry, ...]:
+    retained = list(selected if limit is None else selected[:limit])
+    names = {item.descriptor.model_name for item in retained}
+    for item in _required_entries(available, scopes=scopes):
+        if item.descriptor.model_name not in names:
+            retained.append(item)
+            names.add(item.descriptor.model_name)
+    return tuple(retained)
 
 
 def _query_terms(value: str) -> tuple[str, ...]:

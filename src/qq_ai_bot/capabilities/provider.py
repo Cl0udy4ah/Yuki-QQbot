@@ -13,6 +13,7 @@ from qq_ai_bot.capabilities.invocation import ToolInvocationContext
 from qq_ai_bot.capabilities.models import (
     CapabilityDescriptor,
     CapabilityEffect,
+    CapabilityExposure,
     CapabilityIdempotency,
     CapabilityRisk,
     CapabilityTrustSource,
@@ -23,7 +24,7 @@ _ALL_ORIGINS = frozenset(TurnOrigin)
 _DIRECT_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE})
 
 _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
-    "get_my_capabilities": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "get_my_capabilities": ("capability", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "get_recent_chat_history": ("memory", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "search_chat_history": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "get_person_memories": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
@@ -35,7 +36,7 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "send_voice": ("speech", CapabilityEffect.REPLY_EFFECT, CapabilityRisk.READ),
 }
 
-_ADMIN_READ = frozenset({"admin_list_capabilities", "admin_get_config", "admin_get_history"})
+_ADMIN_READ = frozenset({"admin_get_config", "admin_get_history"})
 _AUTOMATION_READ = frozenset(
     {
         "automation_list",
@@ -97,6 +98,11 @@ class ChatToolCapabilityProvider:
                 CapabilityIdempotency.IDEMPOTENT
                 if risk is CapabilityRisk.READ
                 else CapabilityIdempotency.CONDITIONAL
+            ),
+            exposure=(
+                CapabilityExposure.DIRECT_ALWAYS
+                if tool.name == "get_my_capabilities"
+                else CapabilityExposure.PLANNED
             ),
         )
 

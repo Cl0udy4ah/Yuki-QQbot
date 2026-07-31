@@ -24,7 +24,8 @@ def normalize_mcp_result(value: Any, *, server_id: str, tool_name: str) -> ToolE
         error_code="mcp_tool_error" if is_error else None,
         public_message="MCP 工具返回错误" if is_error else None,
         retryable=False,
-        mutation_committed=False,
+        mutation_committed=False if is_error else None,
         provider_id=f"mcp.{server_id}",
         tool_name=tool_name,
+        metadata={"mcp_is_error": is_error},
     )

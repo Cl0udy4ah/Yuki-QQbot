@@ -59,6 +59,7 @@ class ToolGroup(StrEnum):
     EMOJI = "emoji"
     SPEECH = "speech"
     PLUGIN = "plugin"
+    CAPABILITY = "capability"
 
 
 class ToolSelection(_StrictPlannerModel):

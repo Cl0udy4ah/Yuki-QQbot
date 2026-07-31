@@ -1544,11 +1544,30 @@ class _MCPFacade:
         invocation = self._host._require(PluginPermission.MCP_CALL)
         assert invocation is not None
         manager = _require_service(self._host._services.mcp_manager, "MCP")
-        result = await manager.call_tool(
+        from qq_ai_bot.capabilities.invocation import ToolInvocationContext
+        from qq_ai_bot.mcp.binding import MCPPolicyRuntime, MCPToolBinding
+
+        runtime = MCPPolicyRuntime(
+            origin=invocation.origin,
+            actor_user_id=invocation.actor_user_id,
+            actor_is_superuser=self._host._is_real_superuser(invocation),
+        )
+        result = await MCPToolBinding(
+            manager,
             _bounded_text(server_id, maximum=64, field_name="server_id"),
             _bounded_text(tool_name, maximum=255, field_name="tool_name"),
+            record_invocation=True,
+        ).invoke(
             {str(key): cast(object, value) for key, value in arguments.items()},
-            conversation_key=invocation.conversation_key,
+            ToolInvocationContext(
+                runtime=runtime,
+                conversation_key=invocation.conversation_key,
+                actor_user_id=invocation.actor_user_id,
+                provider_metadata={
+                    "contains_images": invocation.has_visual_input,
+                    "web_was_used": invocation.web_was_used,
+                },
+            ),
         )
         return PluginResult(
             ok=result.ok,

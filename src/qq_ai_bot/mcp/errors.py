@@ -1,4 +1,4 @@
-"""Stable, secret-free diagnostics for MCP transport failures."""
+"""Stable, secret-free diagnostics for MCP failures."""
 
 from __future__ import annotations
 
@@ -9,53 +9,88 @@ import httpx
 
 
 @dataclass(frozen=True, slots=True)
-class MCPErrorDetails:
+class MCPFailureDisposition:
     code: str
     public_message: str
     retryable: bool
+    disconnect: bool
 
 
-def classify_mcp_exception(exc: BaseException) -> MCPErrorDetails:
-    """Collapse SDK task groups and HTTP errors into operator-facing categories."""
+# Compatibility for integrations that imported the 2.1 name.
+MCPErrorDetails = MCPFailureDisposition
+
+
+def classify_mcp_exception(exc: Exception) -> MCPFailureDisposition:
+    """Classify a call failure separately from connection invalidation."""
 
     errors = tuple(_walk_exceptions(exc))
-    status: int | None = None
-    for item in errors:
-        status = _http_status(item)
-        if status is not None:
-            break
+    status = next(
+        (candidate for item in errors if (candidate := _http_status(item)) is not None),
+        None,
+    )
     if status in {401, 403}:
-        return MCPErrorDetails(
+        return MCPFailureDisposition(
             "mcp_authentication_failed",
             "MCP 鉴权失败，请检查 Token 是否有效",
             False,
+            False,
         )
     if status == 429:
-        return MCPErrorDetails(
+        return MCPFailureDisposition(
             "mcp_rate_limited",
             "MCP 服务请求过于频繁，请稍后重试",
             True,
+            False,
         )
     if status is not None and status >= 500:
-        return MCPErrorDetails(
+        return MCPFailureDisposition(
             "mcp_server_unavailable",
             "MCP 服务暂时不可用",
             True,
+            False,
         )
     if status is not None:
-        return MCPErrorDetails(
+        return MCPFailureDisposition(
             f"mcp_http_{status}",
             "MCP 服务拒绝了请求",
             False,
+            False,
         )
     if any(isinstance(item, (TimeoutError, httpx.TimeoutException)) for item in errors):
-        return MCPErrorDetails("mcp_timeout", "MCP 工具调用超时", True)
+        return MCPFailureDisposition(
+            "mcp_timeout",
+            "MCP 工具调用超时",
+            True,
+            False,
+        )
     if any(isinstance(item, (OSError, httpx.TransportError)) for item in errors):
-        return MCPErrorDetails("mcp_transport_unavailable", "MCP 服务暂时不可用", True)
-    return MCPErrorDetails(type(exc).__name__, "MCP 工具暂时不可用", False)
+        return MCPFailureDisposition(
+            "mcp_transport_unavailable",
+            "MCP 服务暂时不可用",
+            True,
+            True,
+        )
+    combined = " ".join(str(item).casefold() for item in errors)
+    disconnect = any(
+        marker in combined
+        for marker in (
+            "invalid session",
+            "session expired",
+            "protocol error",
+            "protocol failure",
+            "initialization failed",
+            "not initialized",
+        )
+    )
+    return MCPFailureDisposition(
+        type(exc).__name__,
+        "MCP 工具暂时不可用",
+        False,
+        disconnect,
+    )
 
 
-def _walk_exceptions(exc: BaseException) -> Iterator[BaseException]:
+def _walk_exceptions(exc: Exception) -> Iterator[Exception]:
     pending = [exc]
     seen: set[int] = set()
     while pending:
@@ -65,14 +100,16 @@ def _walk_exceptions(exc: BaseException) -> Iterator[BaseException]:
             continue
         seen.add(marker)
         yield current
-        if isinstance(current, BaseExceptionGroup):
-            pending.extend(reversed(current.exceptions))
+        if isinstance(current, ExceptionGroup):
+            pending.extend(
+                item for item in reversed(current.exceptions) if isinstance(item, Exception)
+            )
         cause = current.__cause__ or current.__context__
-        if cause is not None:
+        if isinstance(cause, Exception):
             pending.append(cause)
 
 
-def _http_status(exc: BaseException) -> int | None:
+def _http_status(exc: Exception) -> int | None:
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code
     response = getattr(exc, "response", None)

@@ -2,10 +2,12 @@
 
 ## 启动项目
 
-> **升级提示：**2.1.1 是自动化可靠性补丁，沿用 2.1.0 的非破坏性 Alembic `0019`；
+> **升级提示：**2.1.2 是 MCP 与 Tool Kernel 一致性补丁，沿用 2.1.0 的非破坏性
+> Alembic `0019`；
 > 现有人物、事件、记忆、关系、插件、自动化、表情和语音数据均保留。
 > 升级前仍建议备份 `data/`，并以最新 `.env.example` 检查本地 `.env`。
-> 本版本同时提供麦当劳中国官方 MCP 预设；该能力默认关闭，配置 Token 后才会连接官方服务。
+> 本版本修复 MCP Gateway 权限绕过与修改提交语义，并提供不可截断的通用 Tool Bundle；
+> 麦当劳中国官方 MCP 仍默认关闭，配置 Token 后才会连接官方服务。
 
 Plugin API 仍为 `1.0`。第三方插件如果把 `yuki_requires` 上限写成 `<2.0`，需要在确认兼容后改为 `<3.0` 才能在 2.0.0 加载；插件代码和 manifest 的 `plugin_api` 无需因本次升级改版。
 
@@ -39,7 +41,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 2.1.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 2.1.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -103,6 +105,29 @@ Yuki-QQbot 2.1.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 档案对紧凑候选精排；Flash 不会看到工具 Schema。大量工具部署可设置
 `TOOLING_SELECTED_TOOL_LIMIT`、`TOOLING_SCHEMA_TOKEN_BUDGET`、
 `MCP_SELECTED_TOOL_LIMIT` 与 `MCP_SCHEMA_TOKEN_BUDGET`。留空表示不增加对应限制。
+
+多步骤工具链可在 Server 的 `yuki.toolBundles` 中声明为通用 Bundle：
+
+```json
+"toolBundles": {
+  "order": {
+    "scope": "mcp.mcd.order",
+    "summary": "查询菜单与详情、校价、创建待支付订单并查询订单",
+    "includeTools": [
+      "query-meals",
+      "query-meal-detail",
+      "calculate-price",
+      "create-order",
+      "query-order"
+    ]
+  }
+}
+```
+
+Planner 只需选择 Bundle scope，成员就会整体进入候选与 Agent Schema；Flash 和工具数量限制
+不能拆散它。若完整 Bundle 超过 Schema Token 预算，本轮会明确失败并指出 scope，不会静默
+留下半条工具链。`mcp_gateway` 的 search 只搜索、describe 只返回定义，call 仍按目标工具的
+真实风险经过统一 CapabilityPolicy，不能借只读 Gateway 绕过 scope、read-only、图片或联网限制。
 
 需要让持久化任务调用某个 MCP 时，在该 Server 的 `yuki` 下显式配置自动化允许列表：
 
@@ -709,7 +734,6 @@ Worker 默认每 2 秒轮询，用租约防止多实例重复执行，并以 `(a
 
 1.3 的自然语言管理员能力直接并入上述同一个正常聊天 Agent，不创建第二套路由、隐藏会话或客服人格。只有当前真实发送者 QQ 属于 `SUPERUSERS` 时，该 Agent 的当前工具列表才会额外获得：
 
-- `admin_list_capabilities`
 - `admin_get_config`
 - `admin_set_config`
 - `admin_delete_config_override`
@@ -719,7 +743,14 @@ Worker 默认每 2 秒轮询，用租约防止多实例重复执行，并以 `(a
 
 管理员操作与日常聊天共享同一份系统提示词、人物关系、记忆和最近消息，因此 Yuki 在执行任务前后保持同一个人格，也能自然理解“先问目标 QQ、下一条再补 QQ”这样的多轮请求。权限不会从上下文继承：每次真正执行工具时，后端仍重新核对当前 OneBot 事件的真实发送者 QQ；普通用户即使看到管理员历史也得不到 `admin_*` 工具。
 
-管理员提出具体操作时，Yuki 会内部查找配置键/action、读取参数约束，然后继续调用 `admin_set_config` 或 `admin_execute_action`，不会把查询页当作最终回复。业务 action 的 `target`、`user_id`、`group_id`、`value`、`delta`、`memory_id`、`content` 和 `key` 都有显式 schema；安全的参数格式错误允许在同一轮修正后重试。同一轮可以按需多次查询能力目录，也可以先执行 `memory.list` 等只读 action 找到 ID，再继续执行对应修改；它们共同受每轮工具总次数限制。能力查询默认返回内部摘要，具体操作使用 `focused + category/query` 获取局部参数；原始工具 JSON 只存在于当前模型调用中，后端还会拦截误回显，不写入聊天账本。若只缺一个参数，Yuki 直接用正常语气追问，不建立额外待办。
+管理员提出具体操作时，Yuki 可用同一个 `get_my_capabilities` 内部查找配置键/action、读取参数
+约束，然后继续调用 `admin_set_config` 或 `admin_execute_action`，不会把查询页当作最终回复。
+业务 action 的 `target`、`user_id`、`group_id`、`value`、`delta`、`memory_id`、`content` 和
+`key` 都有显式 schema；安全的参数格式错误允许在同一轮修正后重试。同一轮可以按需多次查询
+能力目录，也可以先执行 `memory.list` 等只读 action 找到 ID，再继续执行对应修改；它们共同受
+每轮工具总次数限制。能力查询默认返回内部摘要，具体操作使用 `focused + category/query`
+获取局部参数；原始工具 JSON 只存在于当前模型调用中，后端还会拦截误回显，不写入聊天账本。
+若只缺一个参数，Yuki 直接用正常语气追问，不建立额外待办。
 
 实现依据：
 
@@ -841,7 +872,11 @@ Planner-first 自主参与规则：
 
 ### 统一权限能力目录
 
-当用户问“我能修改什么”“有哪些设置”“我的权限范围”或“能改多少参数”时，Yuki 必须调用后端能力目录，不能根据提示词或聊天记忆猜测。普通用户的正常 Agent 使用只读工具 `get_my_capabilities`，超级管理员的同一个 Agent 使用 `admin_list_capabilities`；确定性诊断入口为 `/ai capabilities [类别]`。三个入口读取同一个 `PermissionCatalogService`，但自然语言工具结果只给当前模型轮内部使用。
+当用户问“我能修改什么”“有哪些设置”“我的权限范围”或“能改多少参数”时，Yuki 必须调用
+后端能力目录，不能根据提示词或聊天记忆猜测。普通用户和超级管理员的同一个 Agent 都使用只读
+工具 `get_my_capabilities`；它属于独立 `capability` scope，并在真实用户聊天且 ToolMode 非
+NONE 时保留，但不会额外授予任何权限。确定性诊断入口为 `/ai capabilities [类别]`。两种入口
+读取同一个 `PermissionCatalogService`，自然语言工具结果只给当前模型轮内部使用。
 
 权限只从当前真实 OneBot 事件的 `sender.user_id` 解析：
 

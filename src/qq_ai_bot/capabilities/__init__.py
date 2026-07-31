@@ -7,6 +7,7 @@ from qq_ai_bot.capabilities.catalog import (
     ToolScopeSummary,
     UnifiedToolCatalog,
     UnifiedToolCatalogEntry,
+    estimate_chat_tool_tokens,
     safe_model_tool_name,
 )
 from qq_ai_bot.capabilities.coordinator import (
@@ -19,6 +20,7 @@ from qq_ai_bot.capabilities.models import (
     AuthorityContext,
     CapabilityDescriptor,
     CapabilityEffect,
+    CapabilityExposure,
     CapabilityIdempotency,
     CapabilityRisk,
     CapabilityTrustSource,
@@ -35,9 +37,11 @@ from qq_ai_bot.capabilities.results import (
     ToolArtifactWriter,
     ToolExecutionResult,
     ToolResultBudgeter,
+    resolve_mutation_commit,
 )
 from qq_ai_bot.capabilities.selection import (
     FlashToolReranker,
+    ToolBundleBudgetError,
     ToolCandidateResult,
     ToolCandidateSelector,
     ToolSchemaBudgeter,
@@ -49,6 +53,7 @@ __all__ = [
     "AuthorityContext",
     "CapabilityDescriptor",
     "CapabilityEffect",
+    "CapabilityExposure",
     "CapabilityIdempotency",
     "CapabilityPolicyContext",
     "CapabilityPolicyEngine",
@@ -64,6 +69,7 @@ __all__ = [
     "InProcessToolProvider",
     "ToolArtifactWriter",
     "ToolBinding",
+    "ToolBundleBudgetError",
     "ToolCandidateResult",
     "ToolCandidateSelector",
     "ToolExecutionResult",
@@ -79,5 +85,7 @@ __all__ = [
     "UnifiedToolCatalog",
     "UnifiedToolCatalogEntry",
     "UnknownToolScopeError",
+    "estimate_chat_tool_tokens",
+    "resolve_mutation_commit",
     "safe_model_tool_name",
 ]

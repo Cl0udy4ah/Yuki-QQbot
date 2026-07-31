@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+## 2.1.2 - 2026-07-31
+
+### MCP 与 Tool Kernel 一致性
+
+- 修复 `mcp_gateway` 以只读外壳直接执行任意远端工具的策略绕过：Gateway 的 `call` 现在必须先
+  经 `MCPManager.resolve_tool` 解析当前已启用、已发现且通过 include/exclude 过滤的元数据，
+  再按目标工具真实的 scope、effect、risk、当前轮 ToolMode、图片和联网状态通过同一个
+  `CapabilityPolicyEngine`，最后才进入 `MCPToolBinding`。未查看/未选择、未发现、被排除或
+  当前策略拒绝的工具均不能执行。
+- `ToolExecutionResult.mutation_committed` 改为 `True / False / None` 三态，新增统一
+  `resolve_mutation_commit()`：失败固定为 false，Provider 显式结果优先，只读成功推断 false，
+  写入或平台修改成功推断 true。MCP 不再把所有成功结果硬编码为 false，成功下单能进入本轮
+  重复修改保护；重复调用不会覆盖此前成功结果的最终摘要。
+- MCP annotation 新增 `destructiveHint → CapabilityRisk.DESTRUCTIVE`，并在 Descriptor 元数据中
+  保留 `openWorldHint`；远端声明只描述风险，最终执行权仍由 Yuki 的统一策略决定。
+- 新增通用 `yuki.toolBundles`。一个工具可属于多个 scope；Planner 选中 Bundle scope 后，
+  本地候选、Flash 精排、全局/MCP 工具数量限制都不能删掉 Bundle 必需成员，完整 Schema
+  超出预算时返回明确错误，不实现 Workflow DSL，也没有麦当劳品牌分支。
+- `get_my_capabilities` 移到独立 `capability` scope，并以 `DIRECT_ALWAYS` 在真实用户聊天且
+  ToolMode 非 NONE 时保留；普通用户和超级管理员统一调用该工具。模型目录不再暴露
+  `admin_list_capabilities`，真实权限仍按当前 OneBot 事件在后端解析。
+- 新增 `MCPFailureDisposition`，将工具/业务失败与连接失效分开。普通 4xx、429、MCP
+  `isError` 和业务错误不再断开连接；仅会话失效、网络断开、协议或初始化失败触发断开。
+  `CancelledError` 原样传播，不写失败调用、不更新错误状态，也不触发重连。
+- Schema Token 估算统一覆盖函数名、描述、参数与 function-calling 外层；超长工具结果优先
+  保留 URL、ID、状态和错误。`payH5Url` 会留在模型上下文及最终 QQ 回复中，但不会被自动打开
+  或支付。
+
+### 离线验收
+
+- 新增 Fake MCP、Planner、Model、Sender 的完整下单集成测试，覆盖查询门店、菜单、详情、
+  校价和创建待支付订单；验证下单只执行一次、提交状态为 true、重复调用被拦截、支付链接
+  可见、无麦当劳插件、无联网调用且不泄露 Token。
+- 增加 Gateway 只读/排除/未发现/未选择回归，Bundle 整体选择与预算回归，能力自省普通用户/
+  管理员一致性、MCP 业务错误不断线、取消不重连，以及关键 URL/ID 裁剪保留测试。
+
 ### 网易云音乐卡片插件
 
 - 修复当前 Host 中插件仍在运行、但持久化展示状态被短生命周期诊断进程回写后出现“工具可见却无法执行”的状态分裂；工具发现与执行现在统一以当前 Host 的内存生命周期为准，避免错误返回 `plugin_tool_denied`。

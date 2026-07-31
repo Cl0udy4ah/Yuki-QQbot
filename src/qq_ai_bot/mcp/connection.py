@@ -98,7 +98,14 @@ class SDKMCPConnection:
             try:
                 async with asyncio.timeout(self._connect_timeout):
                     await asyncio.shield(ready)
-            except BaseException:
+            except asyncio.CancelledError:
+                task, self._owner_task = self._owner_task, None
+                if task is not None:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                self._operations = None
+                raise
+            except Exception:
                 task, self._owner_task = self._owner_task, None
                 if task is not None:
                     task.cancel()
@@ -140,13 +147,15 @@ class SDKMCPConnection:
                         operation.future.set_result(None)
                     break
                 await self._serve_operation(operation, session)
-        except BaseException as exc:
+        except asyncio.CancelledError:
             if not ready.done():
-                if isinstance(exc, asyncio.CancelledError):
-                    ready.cancel()
-                else:
-                    ready.set_exception(exc)
-            elif not isinstance(exc, asyncio.CancelledError):
+                ready.cancel()
+            self._cancel_queued_operations()
+            raise
+        except Exception as exc:
+            if not ready.done():
+                ready.set_exception(exc)
+            else:
                 self._fail_queued_operations(exc)
         finally:
             self._session = None
@@ -212,7 +221,7 @@ class SDKMCPConnection:
         finally:
             self._active_request = None
 
-    def _fail_queued_operations(self, exc: BaseException) -> None:
+    def _fail_queued_operations(self, exc: Exception) -> None:
         operations = self._operations
         if operations is None:
             return
@@ -220,10 +229,16 @@ class SDKMCPConnection:
             operation = operations.get_nowait()
             if operation.future.done():
                 continue
-            if isinstance(exc, asyncio.CancelledError):
+            operation.future.set_exception(exc)
+
+    def _cancel_queued_operations(self) -> None:
+        operations = self._operations
+        if operations is None:
+            return
+        while not operations.empty():
+            operation = operations.get_nowait()
+            if not operation.future.done():
                 operation.future.cancel()
-            else:
-                operation.future.set_exception(exc)
 
     async def _handle_message(self, message: Any) -> None:
         root = getattr(message, "root", message)

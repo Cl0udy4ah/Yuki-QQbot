@@ -9,8 +9,29 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from qq_ai_bot.capabilities.models import CapabilityDescriptor
+from qq_ai_bot.domain.messages import ChatTool
 
 _MODEL_NAME = re.compile(r"[^a-zA-Z0-9_-]+")
+
+
+def estimate_chat_tool_tokens(tool: ChatTool) -> int:
+    """Estimate the complete function-calling envelope with one stable heuristic."""
+
+    envelope = {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.parameters,
+        },
+    }
+    encoded = json.dumps(
+        envelope,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return max(1, (len(encoded) + 3) // 4)
 
 
 def safe_model_tool_name(*parts: str, maximum: int = 64) -> str:
@@ -46,6 +67,7 @@ class UnifiedToolCatalogEntry:
     estimated_schema_tokens: int
     available: bool
     revision: str
+    bundle_scope_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,39 +131,44 @@ class ToolProviderRegistry:
                     raise ValueError(f"duplicate canonical capability: {descriptor.canonical_name}")
                 names.add(descriptor.model_name)
                 canonical_names.add(descriptor.canonical_name)
-                encoded = json.dumps(descriptor.input_schema, ensure_ascii=False, sort_keys=True)
                 description = descriptor.compact_description or descriptor.description
                 entries.append(
                     UnifiedToolCatalogEntry(
                         descriptor=descriptor,
                         provider_id=descriptor.provider_id or provider.provider_id,
-                        scope_ids=(descriptor.scope_id,),
+                        scope_ids=descriptor.scope_ids,
                         compact_description=description,
                         tags=descriptor.tags,
                         searchable_text=" ".join(
                             (
                                 descriptor.model_name,
                                 descriptor.canonical_name,
-                                descriptor.scope_id,
+                                *descriptor.scope_ids,
                                 description,
                                 *descriptor.tags,
                             )
                         ).casefold(),
-                        estimated_schema_tokens=max(1, len(encoded) // 4),
+                        estimated_schema_tokens=estimate_chat_tool_tokens(
+                            descriptor.as_chat_tool()
+                        ),
                         available=True,
                         revision=descriptor.schema_version,
+                        bundle_scope_ids=descriptor.bundle_scopes,
                     )
                 )
         entries.sort(key=lambda item: (item.scope_ids, item.descriptor.model_name))
         scopes: list[ToolScopeSummary] = []
         for scope_id in sorted({scope for entry in entries for scope in entry.scope_ids}):
             selected = [entry for entry in entries if scope_id in entry.scope_ids]
+            summaries = dict(
+                pair for entry in selected for pair in entry.descriptor.scope_summaries
+            )
             scopes.append(
                 ToolScopeSummary(
                     scope_id=scope_id,
                     parent=scope_id.rpartition(".")[0] or None,
                     display_name=scope_id,
-                    description=f"{scope_id} tools",
+                    description=summaries.get(scope_id, f"{scope_id} tools"),
                     tool_count=len(selected),
                     provider_ids=tuple(sorted({item.provider_id for item in selected})),
                     tags=tuple(sorted({tag for item in selected for tag in item.tags})),

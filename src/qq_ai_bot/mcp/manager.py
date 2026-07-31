@@ -26,9 +26,7 @@ from qq_ai_bot.mcp.repository import MCPRepository
 from qq_ai_bot.mcp.result_normalizer import normalize_mcp_result
 
 logger = logging.getLogger(__name__)
-MCPToolsChangedListener = Callable[
-    [str, tuple[MCPToolMetadata, ...]], Awaitable[None]
-]
+MCPToolsChangedListener = Callable[[str, tuple[MCPToolMetadata, ...]], Awaitable[None]]
 
 
 class MCPManager:
@@ -224,7 +222,9 @@ class MCPManager:
                 )
                 await self._notify_tools_changed(server_id, tools)
                 return tools
-            except BaseException as exc:
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
                 await self._save_error(server_id, config, exc)
                 raise
 
@@ -233,26 +233,48 @@ class MCPManager:
 
         return await self.refresh(server_id, force=False)
 
-    async def call_tool(
+    async def resolve_tool(
         self,
         server_id: str,
         tool_name: str,
+        *,
+        discover: bool = True,
+    ) -> MCPToolMetadata:
+        """Resolve only an enabled, discovered, config-filtered current tool."""
+
+        self._require_enabled(server_id)
+        if discover and not self._tools.get(server_id):
+            await self.ensure_metadata(server_id)
+        item = self.describe_tool(server_id, tool_name)
+        if item is None:
+            raise ValueError(f"unknown or unavailable MCP tool: {server_id}/{tool_name}")
+        return item
+
+    async def _call_resolved_tool(
+        self,
+        metadata: MCPToolMetadata,
         arguments: dict[str, object],
         *,
         conversation_key: str = "",
         record_invocation: bool = True,
     ) -> ToolExecutionResult:
+        """Execute metadata that was resolved and policy-checked by a ToolBinding."""
+
         if self._closing:
             raise RuntimeError("MCP manager is shutting down")
+        server_id = metadata.server_id
+        tool_name = metadata.remote_tool_name
         config = self._require_enabled(server_id)
         started = time.perf_counter()
         result = ToolExecutionResult(
             ok=False,
             error_code="mcp_tool_failed",
             public_message="MCP 工具调用失败",
+            mutation_committed=False,
             provider_id=f"mcp.{server_id}",
             tool_name=tool_name,
         )
+        cancelled = False
         semaphore = self._semaphores.setdefault(
             self._max_parallel_calls,
             asyncio.Semaphore(self._max_parallel_calls),
@@ -260,23 +282,15 @@ class MCPManager:
         async with semaphore:
             self._active_calls += 1
             try:
+                current = await self.resolve_tool(server_id, tool_name)
+                tool_name = current.remote_tool_name
                 connection = await self._ensure_connection(server_id, config)
                 raw = await connection.call_tool(tool_name, arguments)
                 result = normalize_mcp_result(raw, server_id=server_id, tool_name=tool_name)
                 return result
-            except TimeoutError:
-                result = ToolExecutionResult(
-                    ok=False,
-                    error_code="mcp_timeout",
-                    public_message="MCP 工具调用超时",
-                    retryable=True,
-                    provider_id=f"mcp.{server_id}",
-                    tool_name=tool_name,
-                )
-                self._last_error_category = result.error_code
-                await self.disconnect(server_id)
-                self._schedule_reconnect_if_persistent(server_id, config)
-                return result
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
             except Exception as exc:
                 failure = classify_mcp_exception(exc)
                 result = ToolExecutionResult(
@@ -284,19 +298,22 @@ class MCPManager:
                     error_code=failure.code,
                     public_message=failure.public_message,
                     retryable=failure.retryable,
+                    mutation_committed=False,
                     provider_id=f"mcp.{server_id}",
                     tool_name=tool_name,
                 )
                 self._last_error_category = result.error_code
-                await self.disconnect(server_id)
-                self._schedule_reconnect_if_persistent(server_id, config)
+                if failure.disconnect:
+                    await self.disconnect(server_id)
+                    self._schedule_reconnect_if_persistent(server_id, config)
                 return result
             finally:
                 self._active_calls -= 1
-                self._last_call_at = datetime.now(UTC)
-                if result.ok:
-                    self._last_error_category = None
-                if record_invocation:
+                if not cancelled:
+                    self._last_call_at = datetime.now(UTC)
+                    if result.ok:
+                        self._last_error_category = None
+                if record_invocation and not cancelled:
                     serialized = json.dumps(result.model_payload(), ensure_ascii=False, default=str)
                     await self._repository.record_invocation(
                         conversation_key=conversation_key,
@@ -308,7 +325,7 @@ class MCPManager:
                         artifact_created=False,
                         error_category=result.error_code,
                     )
-                if config.lifecycle is MCPLifecycle.LAZY:
+                if config.lifecycle is MCPLifecycle.LAZY and not cancelled:
                     await self.disconnect(server_id)
 
     def search_tools(
@@ -316,7 +333,10 @@ class MCPManager:
     ) -> tuple[MCPToolMetadata, ...]:
         terms = tuple(part for part in query.casefold().split() if part)
         items = [
-            item for item in self.cached_tools if server_id is None or item.server_id == server_id
+            item
+            for item in self.cached_tools
+            if self.server_enabled(item.server_id)
+            and (server_id is None or item.server_id == server_id)
         ]
         items.sort(
             key=lambda item: (
@@ -450,7 +470,10 @@ class MCPManager:
             setter(lambda: self._queue_tools_refresh(server_id))
         try:
             await connection.connect()
-        except BaseException as exc:
+        except asyncio.CancelledError:
+            await connection.close()
+            raise
+        except Exception as exc:
             await connection.close()
             await self._save_error(server_id, config, exc)
             raise
@@ -530,7 +553,7 @@ class MCPManager:
         self,
         server_id: str,
         config: MCPServerConfig,
-        exc: BaseException,
+        exc: Exception,
     ) -> None:
         failure = classify_mcp_exception(exc)
         await self._repository.save_state(

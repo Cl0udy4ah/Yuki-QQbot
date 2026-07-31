@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 
+from qq_ai_bot.automation.models import TurnOrigin
+from qq_ai_bot.capabilities.invocation import ToolInvocationContext
 from qq_ai_bot.capabilities.results import ToolArtifactWriter, ToolResultBudgeter
+from qq_ai_bot.mcp.binding import MCPPolicyRuntime, MCPToolBinding
 from qq_ai_bot.mcp.errors import classify_mcp_exception
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.mcp.models import MCPHealthSnapshot
@@ -99,11 +102,23 @@ class MCPCommandHandler:
                 raw = json.loads(parts[3])
                 if not isinstance(raw, dict):
                     return "MCP 调用参数必须是 JSON 对象"
-                result = await self._manager.call_tool(
+                runtime = MCPPolicyRuntime(
+                    origin=TurnOrigin.USER_MESSAGE,
+                    actor_user_id="deterministic-superuser",
+                    actor_is_superuser=True,
+                )
+                result = await MCPToolBinding(
+                    self._manager,
                     server_id,
                     tool_name,
+                    record_invocation=True,
+                ).invoke(
                     {str(key): value for key, value in raw.items()},
-                    conversation_key="deterministic-command",
+                    ToolInvocationContext(
+                        runtime=runtime,
+                        conversation_key="deterministic-command",
+                        actor_user_id=runtime.actor_user_id,
+                    ),
                 )
                 rendered = await ToolResultBudgeter(
                     max_characters=self._result_max,

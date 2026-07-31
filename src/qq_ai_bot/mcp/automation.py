@@ -20,7 +20,9 @@ from qq_ai_bot.automation.registry import (
     CapabilityExecutionContext,
     CapabilityResult,
 )
+from qq_ai_bot.capabilities.invocation import ToolInvocationContext
 from qq_ai_bot.capabilities.results import ToolResultBudgeter
+from qq_ai_bot.mcp.binding import MCPPolicyRuntime, MCPToolBinding
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.mcp.models import MCPToolMetadata
 
@@ -184,17 +186,30 @@ class MCPAutomationBridge:
             arguments: dict[str, Any],
             context: CapabilityExecutionContext,
         ) -> CapabilityResult:
-            result = await self._manager.call_tool(
+            runtime = MCPPolicyRuntime(
+                origin=context.authority.origin,
+                actor_user_id=context.authority.actor_user_id,
+                actor_is_superuser=context.authority.actor_is_superuser,
+            )
+            result = await MCPToolBinding(
+                self._manager,
                 tool.server_id,
                 tool.remote_tool_name,
+                record_invocation=True,
+            ).invoke(
                 arguments,
-                conversation_key=context.conversation_key,
+                ToolInvocationContext(
+                    runtime=runtime,
+                    conversation_key=context.conversation_key,
+                    actor_user_id=runtime.actor_user_id,
+                    provider_metadata={"web_was_used": context.web_was_used},
+                ),
             )
             if not result.ok:
                 raise AutomationExecutionError(
                     result.error_code or "mcp_tool_failed",
                     transient=result.retryable and read_only,
-                    uncertain=result.mutation_committed,
+                    uncertain=bool(result.mutation_committed),
                 )
             rendered = await self._result_budgeter.render(result)
             try:
@@ -215,9 +230,7 @@ class MCPAutomationBridge:
             required_permission=permission,
             risk_class=risk,
             retry_policy=(RetryPolicy.TRANSIENT_ONCE if read_only else RetryPolicy.NONE),
-            allowed_origins=frozenset(
-                {TurnOrigin.SCHEDULED_AUTOMATION, TurnOrigin.SYSTEM_TASK}
-            ),
+            allowed_origins=frozenset({TurnOrigin.SCHEDULED_AUTOMATION, TurnOrigin.SYSTEM_TASK}),
             schema_version=tool.metadata_hash,
             handler=execute,
         )
@@ -281,17 +294,14 @@ def _template_relaxed_schema(schema: dict[str, object]) -> dict[str, object]:
     for key, value in schema.items():
         if key in mapped_keywords and isinstance(value, dict):
             transformed[key] = {
-                str(name): _template_relaxed_schema(child)
-                if isinstance(child, dict)
-                else child
+                str(name): _template_relaxed_schema(child) if isinstance(child, dict) else child
                 for name, child in value.items()
             }
         elif key in single_keywords and isinstance(value, dict):
             transformed[key] = _template_relaxed_schema(value)
         elif key in sequence_keywords and isinstance(value, list):
             transformed[key] = [
-                _template_relaxed_schema(item) if isinstance(item, dict) else item
-                for item in value
+                _template_relaxed_schema(item) if isinstance(item, dict) else item for item in value
             ]
         else:
             transformed[key] = value

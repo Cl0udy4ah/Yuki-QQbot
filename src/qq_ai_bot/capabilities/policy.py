@@ -9,6 +9,7 @@ from qq_ai_bot.capabilities.models import (
     AuthorityContext,
     CapabilityDescriptor,
     CapabilityEffect,
+    CapabilityExposure,
     CapabilityRisk,
 )
 from qq_ai_bot.planner.models import ToolMode, ToolSelection
@@ -40,7 +41,11 @@ class CapabilityPolicyEngine:
             granted.add("superuser")
         visible: list[CapabilityDescriptor] = []
         for descriptor in descriptors:
-            if selected_scopes and descriptor.scope_id not in selected_scopes:
+            if (
+                selected_scopes
+                and not selected_scopes.intersection(descriptor.scope_ids)
+                and descriptor.exposure is not CapabilityExposure.DIRECT_ALWAYS
+            ):
                 continue
             if context.origin not in descriptor.allowed_origins:
                 continue

@@ -17,6 +17,8 @@ from qq_ai_bot.automation.intent import enforce_creation_claim, is_scheduled_aut
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities import (
     AuthorityContext,
+    CapabilityDescriptor,
+    CapabilityExposure,
     CapabilityPolicyContext,
     CapabilityPolicyEngine,
     CapabilityRisk,
@@ -33,6 +35,8 @@ from qq_ai_bot.capabilities import (
     ToolResultBudgeter,
     ToolSchemaBudgeter,
     UnifiedToolCatalog,
+    UnifiedToolCatalogEntry,
+    resolve_mutation_commit,
 )
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
@@ -244,7 +248,14 @@ class _ChatAgentBackend(AgentToolBackend):
             ),
         )
         if self._runtime.planner_scopes_explicit and not self._runtime.tool_groups:
-            return ()
+            filtered_catalog = replace(
+                filtered_catalog,
+                entries=tuple(
+                    entry
+                    for entry in filtered_catalog.entries
+                    if entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
+                ),
+            )
         if self._runtime.selected_tool_names is not None:
             filtered_catalog = replace(
                 filtered_catalog,
@@ -252,31 +263,13 @@ class _ChatAgentBackend(AgentToolBackend):
                     entry
                     for entry in filtered_catalog.entries
                     if entry.descriptor.model_name in self._runtime.selected_tool_names
+                    or entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
                 ),
             )
         config = self._runtime.runtime_config
         assert config is not None
         tooling = config.tooling
         mcp = config.mcp
-        if mcp is not None:
-            mcp_count = 0
-            mcp_schema_tokens = 0
-            limited_entries = []
-            for entry in filtered_catalog.entries:
-                if entry.descriptor.trust_source is not CapabilityTrustSource.MCP:
-                    limited_entries.append(entry)
-                    continue
-                if mcp.selected_tool_limit is not None and mcp_count >= mcp.selected_tool_limit:
-                    continue
-                if (
-                    mcp.schema_token_budget is not None
-                    and mcp_schema_tokens + entry.estimated_schema_tokens > mcp.schema_token_budget
-                ):
-                    continue
-                limited_entries.append(entry)
-                mcp_count += 1
-                mcp_schema_tokens += entry.estimated_schema_tokens
-            filtered_catalog = replace(filtered_catalog, entries=tuple(limited_entries))
         known_scopes = {scope.scope_id for scope in filtered_catalog.scopes}
         selected_scopes = tuple(
             scope for scope in sorted(self._runtime.tool_groups) if scope in known_scopes
@@ -287,7 +280,39 @@ class _ChatAgentBackend(AgentToolBackend):
             and "mcp" not in selected_scopes
         ):
             selected_scopes = (*selected_scopes, "mcp")
-        if self._runtime.tool_groups and not selected_scopes:
+        if mcp is not None:
+            mcp_entries = tuple(
+                entry
+                for entry in filtered_catalog.entries
+                if entry.descriptor.trust_source is CapabilityTrustSource.MCP
+            )
+            if mcp_entries:
+                mcp_budgeted = ToolSchemaBudgeter(
+                    selected_tool_limit=mcp.selected_tool_limit,
+                    schema_token_budget=mcp.schema_token_budget,
+                ).select(
+                    replace(filtered_catalog, entries=mcp_entries),
+                    scopes=selected_scopes,
+                    query=f"{self._runtime.selection_query} {self._runtime.planner_intent}",
+                )
+                allowed_mcp = {entry.descriptor.model_name for entry in mcp_budgeted.entries}
+                filtered_catalog = replace(
+                    filtered_catalog,
+                    entries=tuple(
+                        entry
+                        for entry in filtered_catalog.entries
+                        if entry.descriptor.trust_source is not CapabilityTrustSource.MCP
+                        or entry.descriptor.model_name in allowed_mcp
+                    ),
+                )
+        if (
+            self._runtime.tool_groups
+            and not selected_scopes
+            and not any(
+                entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
+                for entry in filtered_catalog.entries
+            )
+        ):
             return ()
         budgeted = ToolSchemaBudgeter(
             selected_tool_limit=tooling.selected_tool_limit if tooling is not None else None,
@@ -340,7 +365,8 @@ class _ChatAgentBackend(AgentToolBackend):
         descriptor = entry.descriptor if entry is not None else None
         if descriptor is None or descriptor.binding is None:
             return json.dumps({"ok": False, "error": "unknown_capability"})
-        is_web_tool = descriptor.scope_id == ToolGroup.WEB.value
+        effective_descriptor = self._effective_descriptor(call, descriptor)
+        is_web_tool = ToolGroup.WEB.value in effective_descriptor.scope_ids
         config = self._runtime.runtime_config
         assert config is not None
         mutation_identity = (
@@ -349,7 +375,7 @@ class _ChatAgentBackend(AgentToolBackend):
         mutation_committed = False
         if (
             self._runtime.scheduled_automation_intent
-            and descriptor.trust_source is not CapabilityTrustSource.AUTOMATION
+            and effective_descriptor.trust_source is not CapabilityTrustSource.AUTOMATION
         ):
             result = json.dumps(
                 {
@@ -380,7 +406,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 },
                 ensure_ascii=False,
             )
-        elif descriptor.group == ToolGroup.ONEBOT.value and self._web_was_used:
+        elif ToolGroup.ONEBOT.value in effective_descriptor.scope_ids and self._web_was_used:
             result = json.dumps(
                 {
                     "ok": False,
@@ -428,6 +454,13 @@ class _ChatAgentBackend(AgentToolBackend):
                             conversation_key=execution_runtime.conversation_key,
                             actor_user_id=execution_runtime.actor_user_id,
                             trigger_message_id=execution_runtime.trigger_message_id,
+                            provider_metadata={
+                                "contains_images": bool(
+                                    self._runtime.inbound.attachments
+                                    or self._runtime.inbound.reply_attachments
+                                ),
+                                "web_was_used": self._web_was_used,
+                            },
                         ),
                     )
                 except asyncio.CancelledError:
@@ -441,10 +474,17 @@ class _ChatAgentBackend(AgentToolBackend):
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
                     )
-                mutation_committed = outcome.mutation_committed
+                mutation_committed = resolve_mutation_commit(
+                    outcome,
+                    effective_descriptor,
+                )
+                outcome = replace(
+                    outcome,
+                    mutation_committed=mutation_committed,
+                )
                 tooling = config.tooling
                 mcp = config.mcp
-                is_mcp = descriptor.trust_source is CapabilityTrustSource.MCP
+                is_mcp = effective_descriptor.trust_source is CapabilityTrustSource.MCP
                 result_tokens = (
                     mcp.result_token_budget
                     if is_mcp and mcp is not None and mcp.result_token_budget is not None
@@ -518,6 +558,11 @@ class _ChatAgentBackend(AgentToolBackend):
                 self._admin_terminal_failure = None
                 if mutation_identity is not None and mutation_committed:
                     self._completed_admin_mutations.add(mutation_identity)
+            elif (decoded.get("error") or decoded.get("error_code")) == "duplicate_mutation":
+                # A prior identical call already committed in this turn. Keep
+                # the successful result available so the model can summarize it.
+                self._admin_retry_constraint = None
+                self._admin_terminal_failure = None
             elif (decoded.get("error") or decoded.get("error_code")) in _ADMIN_RETRYABLE_ERRORS:
                 self._admin_terminal_failure = decoded
                 self._admin_retry_constraint = self._retry_identity(call)
@@ -566,7 +611,29 @@ class _ChatAgentBackend(AgentToolBackend):
             self._catalog.by_model_name(call.function.name) if self._catalog is not None else None
         )
         descriptor = entry.descriptor if entry is not None else None
-        return bool(descriptor is not None and descriptor.risk is not CapabilityRisk.READ)
+        return bool(
+            descriptor is not None
+            and self._effective_descriptor(call, descriptor).risk is not CapabilityRisk.READ
+        )
+
+    @staticmethod
+    def _effective_descriptor(
+        call: ToolCall,
+        descriptor: CapabilityDescriptor,
+    ) -> CapabilityDescriptor:
+        """Use a gateway target descriptor for risk/commit coordination."""
+
+        resolver = getattr(descriptor.binding, "target_descriptor", None)
+        if not callable(resolver):
+            return descriptor
+        try:
+            arguments = json.loads(call.function.arguments)
+        except json.JSONDecodeError:
+            return descriptor
+        if not isinstance(arguments, dict):
+            return descriptor
+        target = resolver({str(key): value for key, value in arguments.items()})
+        return target or descriptor
 
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
         del runtime
@@ -774,10 +841,6 @@ class ChatService:
 
         def core_definitions(context: ToolRuntime) -> tuple[ChatTool, ...]:
             definitions = self._tools.definitions(context)
-            if context.allow_admin_actions and self._admin_tools is not None:
-                definitions = tuple(
-                    tool for tool in definitions if tool.name != "get_my_capabilities"
-                )
             return definitions
 
         async def core_execute(name: str, arguments: str, context: ToolRuntime) -> object:
@@ -1046,9 +1109,7 @@ class ChatService:
                     planned_turn is not None
                     and planned_turn.plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
                 ),
-                planner_scopes_explicit=(
-                    scheduled_automation_intent or planned_turn is not None
-                ),
+                planner_scopes_explicit=(scheduled_automation_intent or planned_turn is not None),
                 selection_query=content,
                 planner_intent=(
                     "创建未来触发的持久化自动化任务"
@@ -1381,9 +1442,17 @@ class ChatService:
                         continue
                     mcp_used += 1
                 limited.append(candidate)
-            candidates = limited
+            candidates = self._retain_required_tools(
+                limited,
+                catalog.entries,
+                candidate_scopes,
+            )
         if global_limit is not None:
-            candidates = candidates[:global_limit]
+            candidates = self._retain_required_tools(
+                candidates[:global_limit],
+                catalog.entries,
+                candidate_scopes,
+            )
         if mode == "hybrid" and candidates:
             candidates = list(
                 await self._tool_reranker.rerank(
@@ -1391,12 +1460,30 @@ class ChatService:
                     user_request=runtime.selection_query,
                     planner_intent=runtime.planner_intent,
                     limit=global_limit,
+                    required_scope_ids=candidate_scopes,
                 )
             )
         return replace(
             runtime,
             selected_tool_names=frozenset(item.descriptor.model_name for item in candidates),
         )
+
+    @staticmethod
+    def _retain_required_tools(
+        selected: list[UnifiedToolCatalogEntry],
+        available: tuple[UnifiedToolCatalogEntry, ...],
+        scopes: tuple[str, ...],
+    ) -> list[UnifiedToolCatalogEntry]:
+        selected_names = {item.descriptor.model_name for item in selected}
+        required_scopes = set(scopes)
+        for item in available:
+            required = item.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS or bool(
+                required_scopes.intersection(item.bundle_scope_ids)
+            )
+            if required and item.descriptor.model_name not in selected_names:
+                selected.append(item)
+                selected_names.add(item.descriptor.model_name)
+        return selected
 
     @staticmethod
     def _decode_tool_result(value: str) -> dict[str, object]:

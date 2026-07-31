@@ -13,21 +13,30 @@ from typing import Any
 import httpx
 import pytest
 
+from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.capabilities import (
     CapabilityDescriptor,
+    CapabilityEffect,
+    CapabilityExposure,
+    CapabilityRisk,
     CapabilityTrustSource,
+    ChatToolCapabilityProvider,
     FlashToolReranker,
     InProcessToolProvider,
+    ToolBundleBudgetError,
     ToolCandidateSelector,
     ToolExecutionResult,
     ToolInvocationCoordinator,
     ToolProviderRegistry,
     ToolResultBudgeter,
     ToolSchemaBudgeter,
+    estimate_chat_tool_tokens,
+    resolve_mutation_commit,
 )
 from qq_ai_bot.capabilities.invocation import ToolInvocationContext
 from qq_ai_bot.capabilities.results import normalize_legacy_result
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ChatTool, ToolCall, ToolFunction
+from qq_ai_bot.mcp.binding import MCPPolicyRuntime, MCPToolBinding
 from qq_ai_bot.mcp.config import MCPConfigurationError, load_mcp_config, redacted_server_config
 from qq_ai_bot.mcp.connection import SDKMCPConnection
 from qq_ai_bot.mcp.fake import FakeMCPConnection
@@ -38,6 +47,7 @@ from qq_ai_bot.mcp.provider import MCPToolProvider
 from qq_ai_bot.mcp.repository import MCPRepository, ToolArtifactRepository
 from qq_ai_bot.model_runtime.models import ModelTask, StructuredOutputMode
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.planner.models import ToolMode
 
 
 def _tool(name: str, description: str = "") -> ChatTool:
@@ -50,6 +60,34 @@ def _tool(name: str, description: str = "") -> ChatTool:
             "additionalProperties": False,
         },
     )
+
+
+async def _call_mcp(
+    manager: MCPManager,
+    server_id: str,
+    tool_name: str,
+    arguments: dict[str, object],
+) -> ToolExecutionResult:
+    runtime = MCPPolicyRuntime(
+        origin=TurnOrigin.USER_MESSAGE,
+        actor_user_id="test-user",
+        actor_is_superuser=False,
+    )
+    return await MCPToolBinding(manager, server_id, tool_name).invoke(
+        arguments,
+        ToolInvocationContext(
+            runtime=runtime,
+            conversation_key="test:mcp",
+            actor_user_id=runtime.actor_user_id,
+        ),
+    )
+
+
+def test_schema_token_estimate_includes_function_envelope() -> None:
+    short = _tool("x")
+    described = _tool("x", "long description " * 20)
+    assert estimate_chat_tool_tokens(described) > estimate_chat_tool_tokens(short)
+    assert estimate_chat_tool_tokens(short) > len(json.dumps(short.parameters)) // 4
 
 
 def test_conditional_mutation_result_preserves_explicit_commit_state() -> None:
@@ -65,7 +103,37 @@ def test_conditional_mutation_result_preserves_explicit_commit_state() -> None:
     )
 
     assert lookup_only.mutation_committed is False
-    assert legacy_success.mutation_committed is True
+    assert legacy_success.mutation_committed is None
+
+
+def test_mutation_commit_resolution_uses_explicit_result_then_descriptor_effect() -> None:
+    descriptors = ChatToolCapabilityProvider(
+        (_tool("get_person_memories"), _tool("get_my_capabilities")),
+        source=CapabilityTrustSource.CORE,
+    ).descriptors()
+    read, capability = descriptors
+    assert capability.scope_id == "capability"
+    assert capability.exposure is CapabilityExposure.DIRECT_ALWAYS
+    write = replace(
+        read,
+        effect=CapabilityEffect.WRITE_STATE,
+        risk=CapabilityRisk.MUTATE,
+    )
+
+    assert not resolve_mutation_commit(ToolExecutionResult(ok=True), read)
+    assert resolve_mutation_commit(ToolExecutionResult(ok=True), write)
+    assert not resolve_mutation_commit(
+        ToolExecutionResult(ok=True, mutation_committed=False),
+        write,
+    )
+    assert resolve_mutation_commit(
+        ToolExecutionResult(ok=True, mutation_committed=True),
+        read,
+    )
+    assert not resolve_mutation_commit(
+        ToolExecutionResult(ok=False, mutation_committed=True),
+        write,
+    )
 
 
 @dataclass(slots=True)
@@ -185,6 +253,72 @@ async def test_catalog_selection_schema_budget_and_binding_are_provider_neutral(
         collision_registry.catalog(object())
 
 
+@pytest.mark.asyncio
+async def test_bundle_members_survive_candidate_flash_and_schema_limits() -> None:
+    async def execute(name: str, arguments: str, _context: object) -> object:
+        del arguments
+        return {"ok": True, "data": name}
+
+    base = InProcessToolProvider(
+        provider_id="bundle-test",
+        source=CapabilityTrustSource.CORE,
+        definitions=lambda _context: tuple(
+            _tool(name, f"{name} description") for name in ("lookup", "detail", "commit")
+        ),
+        execute=execute,
+    ).descriptors(object())
+    bundle_scope = "example.order"
+    bundled = tuple(
+        replace(
+            descriptor,
+            additional_scopes=(bundle_scope,),
+            bundle_scopes=(bundle_scope,),
+            scope_summaries=((bundle_scope, "complete order flow"),),
+        )
+        for descriptor in base
+    )
+    registry = ToolProviderRegistry()
+    registry.register(_StaticProvider("bundle-test", bundled))
+    catalog = registry.catalog(object())
+
+    candidates = ToolCandidateSelector().select(
+        catalog,
+        scopes=(bundle_scope,),
+        user_request="lookup",
+        limit=1,
+    )
+    assert {item.descriptor.model_name for item in candidates.entries} == {
+        "lookup",
+        "detail",
+        "commit",
+    }
+
+    flash = _FlashExecutor(selected=("core.lookup",))
+    reranked = await FlashToolReranker(flash).rerank(
+        candidates.entries,
+        user_request="complete order",
+        planner_intent="commit",
+        limit=1,
+        required_scope_ids=(bundle_scope,),
+    )
+    assert {item.descriptor.model_name for item in reranked} == {
+        "lookup",
+        "detail",
+        "commit",
+    }
+
+    budgeted = ToolSchemaBudgeter(
+        selected_tool_limit=1,
+        schema_token_budget=None,
+    ).select(catalog, scopes=(bundle_scope,))
+    assert len(budgeted.entries) == 3
+    with pytest.raises(ToolBundleBudgetError, match=r"example\.order"):
+        ToolSchemaBudgeter(
+            selected_tool_limit=None,
+            schema_token_budget=1,
+        ).select(catalog, scopes=(bundle_scope,))
+
+
 @dataclass(slots=True)
 class _BatchBackend:
     active: int = 0
@@ -267,6 +401,27 @@ async def test_result_budget_keeps_valid_summary_and_pages_full_artifact(
     assert "content" in page
 
 
+@pytest.mark.asyncio
+async def test_result_budget_prioritizes_payment_url_and_order_identifier() -> None:
+    result = ToolExecutionResult(
+        ok=True,
+        data={
+            "catalog": [{"description": "x" * 2000} for _ in range(20)],
+            "order": {
+                "orderId": "ORDER-001",
+                "status": "pending_payment",
+                "payH5Url": "https://example.com/pay",
+            },
+        },
+        provider_id="fake",
+        tool_name="create-order",
+    )
+    rendered = await ToolResultBudgeter(max_characters=600, item_limit=1).render(result)
+    assert "https://example.com/pay" in rendered.text
+    assert "ORDER-001" in rendered.text
+    assert "pending_payment" in rendered.text
+
+
 def test_mcp_config_supports_both_transports_aliases_and_central_env_expansion(
     tmp_path: Path,
 ) -> None:
@@ -331,6 +486,19 @@ class _SlowConnection(FakeMCPConnection):
             raise
 
 
+@dataclass(slots=True)
+class _BusinessFailureConnection(FakeMCPConnection):
+    async def call_tool(self, name: str, arguments: dict[str, object]) -> Any:
+        self.calls.append((name, arguments))
+        request = httpx.Request("POST", "https://example.invalid/mcp")
+        response = httpx.Response(400, request=request)
+        raise httpx.HTTPStatusError(
+            "invalid business input",
+            request=request,
+            response=response,
+        )
+
+
 @pytest.mark.asyncio
 async def test_lazy_mcp_discovery_same_name_is_collision_free_and_calls_fake_transports(
     database: Database,
@@ -382,7 +550,7 @@ async def test_lazy_mcp_discovery_same_name_is_collision_free_and_calls_fake_tra
     assert "mcp__music__search" in names
     assert "mcp__mcd__search" in names
     assert len(names) == len(set(names))
-    outcome = await manager.call_tool("music", "search", {"query": "Yuki"})
+    outcome = await _call_mcp(manager, "music", "search", {"query": "Yuki"})
     assert outcome.ok and outcome.data == {"found": True}
     gateway = MCPGatewayBinding(manager)
     context = ToolInvocationContext(runtime=object(), conversation_key="test:gateway")
@@ -447,6 +615,147 @@ async def test_lazy_mcp_discovery_same_name_is_collision_free_and_calls_fake_tra
     await cached_manager.reload_config()
     assert [item.server_id for item in cached_manager.cached_tools] == ["mcd"]
     await cached_manager.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_cannot_bypass_scope_selection_filters_or_read_only_policy(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "gateway-policy.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "shop": {
+                        "command": "fake",
+                        "excludeTools": ["hidden"],
+                        "yuki": {
+                            "scope": "mcp.shop",
+                            "toolAnnotations": {
+                                "read": {"readOnlyHint": True},
+                                "create": {"readOnlyHint": False},
+                            },
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    tools = tuple(
+        SimpleNamespace(
+            name=name,
+            description=name,
+            inputSchema={"type": "object", "properties": {}},
+            outputSchema=None,
+            annotations=None,
+        )
+        for name in ("read", "create", "hidden")
+    )
+    connection = FakeMCPConnection(
+        tools=tools,
+        results={
+            "read": SimpleNamespace(
+                content=(),
+                structuredContent={"value": 1},
+                isError=False,
+            ),
+            "create": SimpleNamespace(
+                content=(),
+                structuredContent={"created": True},
+                isError=False,
+            ),
+        },
+    )
+    manager = MCPManager(
+        enabled=True,
+        config_path=config_path,
+        cache_enabled=False,
+        metadata_cache_ttl_seconds=60,
+        connect_timeout_seconds=1,
+        request_timeout_seconds=1,
+        max_parallel_calls=2,
+        repository=MCPRepository(database),
+        connection_factory=lambda *_args, **_kwargs: connection,
+    )
+    await manager.start()
+    await manager.ensure_metadata("shop")
+    gateway = MCPGatewayBinding(manager)
+
+    def context(
+        key: str,
+        *,
+        mode: ToolMode = ToolMode.INHERIT,
+        scopes: frozenset[str] = frozenset({"mcp.shop"}),
+        trigger: str | None = None,
+    ) -> ToolInvocationContext:
+        runtime = SimpleNamespace(
+            tool_mode=mode,
+            tool_groups=scopes,
+            planner_scopes_explicit=True,
+            selected_tool_names=None,
+            actor_user_id="1001",
+            actor_is_superuser=False,
+            origin=TurnOrigin.USER_MESSAGE,
+        )
+        return ToolInvocationContext(
+            runtime=runtime,
+            conversation_key=key,
+            trigger_message_id=trigger or key,
+        )
+
+    unseen = await gateway.invoke(
+        {
+            "operation": "call",
+            "server": "shop",
+            "tool": "read",
+            "arguments": {},
+        },
+        context("unseen"),
+    )
+    assert unseen.error_code == "mcp_tool_not_selected"
+
+    excluded = await gateway.invoke(
+        {"operation": "describe", "server": "shop", "tool": "hidden"},
+        context("excluded"),
+    )
+    assert excluded.error_code == "unknown_mcp_tool"
+
+    wrong_scope = await gateway.invoke(
+        {"operation": "describe", "server": "shop", "tool": "read"},
+        context("wrong-scope", scopes=frozenset({"mcp.other"})),
+    )
+    assert wrong_scope.error_code == "mcp_scope_not_selected"
+
+    readonly_context = context("readonly", mode=ToolMode.READ_ONLY)
+    described = await gateway.invoke(
+        {"operation": "describe", "server": "shop", "tool": "create"},
+        readonly_context,
+    )
+    assert described.ok
+    denied = await gateway.invoke(
+        {
+            "operation": "call",
+            "server": "shop",
+            "tool": "create",
+            "arguments": {},
+        },
+        readonly_context,
+    )
+    assert denied.error_code == "mcp_tool_policy_denied"
+    next_turn = await gateway.invoke(
+        {
+            "operation": "call",
+            "server": "shop",
+            "tool": "create",
+            "arguments": {},
+        },
+        context("readonly", trigger="readonly-next-turn"),
+    )
+    assert next_turn.error_code == "mcp_tool_not_selected"
+    assert connection.calls == []
+    await manager.close()
 
 
 @pytest.mark.asyncio
@@ -578,6 +887,15 @@ async def test_mcp_connection_failure_is_real_and_next_call_can_recover(
     )
     sdk_result = SimpleNamespace(content=(), structuredContent={"ready": True}, isError=False)
     connection = FakeMCPConnection(
+        tools=(
+            SimpleNamespace(
+                name="health",
+                description="health",
+                inputSchema={"type": "object", "properties": {}},
+                outputSchema=None,
+                annotations=None,
+            ),
+        ),
         results={"health": sdk_result},
         fail_connect=True,
     )
@@ -594,11 +912,85 @@ async def test_mcp_connection_failure_is_real_and_next_call_can_recover(
     )
     await manager.start()
 
-    failed = await manager.call_tool("recoverable", "health", {})
+    failed = await _call_mcp(manager, "recoverable", "health", {})
     assert not failed.ok and failed.error_code == "mcp_transport_unavailable"
     connection.fail_connect = False
-    recovered = await manager.call_tool("recoverable", "health", {})
+    recovered = await _call_mcp(manager, "recoverable", "health", {})
     assert recovered.ok and recovered.data == {"ready": True}
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_and_business_errors_do_not_disconnect(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "business-errors.json"
+    path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "business": {
+                        "command": "python",
+                        "lifecycle": "keep_alive",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    tool = SimpleNamespace(
+        name="order",
+        description="order",
+        inputSchema={"type": "object", "properties": {}},
+        outputSchema=None,
+        annotations=None,
+    )
+    tool_error = FakeMCPConnection(
+        tools=(tool,),
+        results={
+            "order": SimpleNamespace(
+                content=(),
+                structuredContent={"reason": "not found"},
+                isError=True,
+            )
+        },
+    )
+    manager = MCPManager(
+        enabled=True,
+        config_path=path,
+        cache_enabled=False,
+        metadata_cache_ttl_seconds=60,
+        connect_timeout_seconds=1,
+        request_timeout_seconds=1,
+        max_parallel_calls=1,
+        repository=MCPRepository(database),
+        connection_factory=lambda *_args, **_kwargs: tool_error,
+    )
+    await manager.start()
+    await manager.ensure_metadata("business")
+    result = await _call_mcp(manager, "business", "order", {})
+    assert not result.ok and result.mutation_committed is False
+    assert tool_error.connected
+    await manager.close()
+
+    business_error = _BusinessFailureConnection(tools=(tool,))
+    manager = MCPManager(
+        enabled=True,
+        config_path=path,
+        cache_enabled=False,
+        metadata_cache_ttl_seconds=60,
+        connect_timeout_seconds=1,
+        request_timeout_seconds=1,
+        max_parallel_calls=1,
+        repository=MCPRepository(database),
+        connection_factory=lambda *_args, **_kwargs: business_error,
+    )
+    await manager.start()
+    await manager.ensure_metadata("business")
+    result = await _call_mcp(manager, "business", "order", {})
+    assert result.error_code == "mcp_http_400"
+    assert business_error.connected
     await manager.close()
 
 
@@ -656,7 +1048,17 @@ async def test_mcp_call_cancellation_propagates_to_transport(
         json.dumps({"mcpServers": {"slow": {"command": "python"}}}),
         encoding="utf-8",
     )
-    connection = _SlowConnection()
+    connection = _SlowConnection(
+        tools=(
+            SimpleNamespace(
+                name="wait",
+                description="wait",
+                inputSchema={"type": "object", "properties": {}},
+                outputSchema=None,
+                annotations=None,
+            ),
+        )
+    )
     manager = MCPManager(
         enabled=True,
         config_path=path,
@@ -669,10 +1071,13 @@ async def test_mcp_call_cancellation_propagates_to_transport(
         connection_factory=lambda *_args, **_kwargs: connection,
     )
     await manager.start()
-    task = asyncio.create_task(manager.call_tool("slow", "wait", {}))
+    task = asyncio.create_task(_call_mcp(manager, "slow", "wait", {}))
     await connection.call_started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert connection.call_cancelled
+    assert connection.connected
+    assert manager.health().last_error_category is None
+    assert manager.health().last_call_at is None
     await manager.close()

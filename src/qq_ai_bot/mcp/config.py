@@ -95,6 +95,14 @@ def redacted_server_config(server: MCPServerConfig) -> dict[str, object]:
         "include_tools": list(server.include_tools),
         "exclude_tools": list(server.exclude_tools),
         "tool_annotation_overrides": sorted(server.yuki.tool_annotations),
+        "tool_bundles": {
+            name: {
+                "scope": bundle.scope,
+                "summary": bundle.summary,
+                "include_tools": list(bundle.include_tools),
+            }
+            for name, bundle in server.yuki.tool_bundles.items()
+        },
         "automation": {
             "enabled": server.yuki.automation.enabled,
             "permission": server.yuki.automation.permission,

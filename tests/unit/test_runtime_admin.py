@@ -903,7 +903,8 @@ async def test_single_chat_agent_tolerates_repeated_capability_lookup_then_sets_
         calls += 1
         tool_names = {tool.name for tool in request.tools}
         if calls == 1:
-            assert "admin_list_capabilities" in tool_names
+            assert "get_my_capabilities" in tool_names
+            assert "admin_list_capabilities" not in tool_names
             return ChatResponse(
                 content="",
                 latency_seconds=0,
@@ -911,7 +912,7 @@ async def test_single_chat_agent_tolerates_repeated_capability_lookup_then_sets_
                     ToolCall(
                         id="lookup-max-per-hour",
                         function=ToolFunction(
-                            name="admin_list_capabilities",
+                            name="get_my_capabilities",
                             arguments=json.dumps(
                                 {"mode": "focused", "query": "max pending messages"}
                             ),
@@ -920,7 +921,8 @@ async def test_single_chat_agent_tolerates_repeated_capability_lookup_then_sets_
                 ),
             )
         if calls == 2:
-            assert "admin_list_capabilities" in tool_names
+            assert "get_my_capabilities" in tool_names
+            assert "admin_list_capabilities" not in tool_names
             assert "admin_set_config" in tool_names
             return ChatResponse(
                 content="",
@@ -929,7 +931,7 @@ async def test_single_chat_agent_tolerates_repeated_capability_lookup_then_sets_
                     ToolCall(
                         id="accidental-repeat-lookup",
                         function=ToolFunction(
-                            name="admin_list_capabilities",
+                            name="get_my_capabilities",
                             arguments=json.dumps(
                                 {"mode": "focused", "query": "max pending messages"}
                             ),

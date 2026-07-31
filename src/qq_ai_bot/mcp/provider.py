@@ -12,7 +12,7 @@ from qq_ai_bot.capabilities.models import (
     CapabilityRisk,
     CapabilityTrustSource,
 )
-from qq_ai_bot.mcp.binding import MCPToolBinding
+from qq_ai_bot.mcp.descriptors import descriptor_from_mcp_tool
 from qq_ai_bot.mcp.gateway import MCPGatewayBinding
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.planner.models import ToolScopeSummary
@@ -31,6 +31,7 @@ class MCPToolProvider:
         self._manager = manager
         self._gateway_enabled = gateway_enabled
         self._selection_mode = selection_mode
+        self._gateway_binding = MCPGatewayBinding(manager)
 
     def descriptors(self, context: Any) -> tuple[CapabilityDescriptor, ...]:
         runtime = getattr(context, "runtime_config", None)
@@ -73,7 +74,13 @@ class MCPToolProvider:
             config = self._manager.server_config(server_id)
             assert config is not None
             scope = config.yuki.scope or f"mcp.{server_id}"
-            if scopes and scope not in scopes and "mcp" not in scopes:
+            bundle_scopes = {bundle.scope for bundle in config.yuki.tool_bundles.values()}
+            if (
+                scopes
+                and scope not in scopes
+                and "mcp" not in scopes
+                and not bundle_scopes.intersection(scopes)
+            ):
                 continue
             try:
                 await self._manager.ensure_metadata(server_id)
@@ -106,6 +113,18 @@ class MCPToolProvider:
                     tags=config.yuki.tags,
                 )
             )
+            summaries.extend(
+                ToolScopeSummary(
+                    scope_id=bundle.scope,
+                    parent=bundle.scope.rpartition(".")[0] or None,
+                    display_name=name,
+                    description=bundle.summary,
+                    tool_count=len(bundle.include_tools),
+                    provider_ids=(f"mcp.{server_id}",),
+                    tags=(*config.yuki.tags, "tool-bundle"),
+                )
+                for name, bundle in config.yuki.tool_bundles.items()
+            )
         if gateway_enabled and summaries:
             summaries.append(
                 ToolScopeSummary(
@@ -121,41 +140,7 @@ class MCPToolProvider:
         return tuple(summaries)
 
     def _descriptor(self, item: Any) -> CapabilityDescriptor:
-        annotations = item.annotations
-        read_only = bool(annotations.get("readOnlyHint", False))
-        idempotent_hint = annotations.get("idempotentHint")
-        idempotent = read_only if idempotent_hint is None else bool(idempotent_hint)
-        config = self._manager.server_config(item.server_id)
-        assert config is not None
-        scope = config.yuki.scope or f"mcp.{item.server_id}"
-        return CapabilityDescriptor(
-            canonical_name=f"mcp:{item.server_id}:{item.remote_tool_name}",
-            model_name=item.model_name,
-            group=scope,
-            input_schema=item.input_schema,
-            output_schema=item.output_schema or {"type": "object"},
-            effect=CapabilityEffect.EXTERNAL_READ if read_only else CapabilityEffect.WRITE_STATE,
-            risk=CapabilityRisk.READ if read_only else CapabilityRisk.MUTATE,
-            trust_source=CapabilityTrustSource.MCP,
-            allowed_origins=frozenset(TurnOrigin),
-            required_permissions=frozenset(),
-            uses_external_data=True,
-            cancellable=True,
-            idempotency=(
-                CapabilityIdempotency.IDEMPOTENT
-                if idempotent
-                else CapabilityIdempotency.CONDITIONAL
-            ),
-            provider_id=f"mcp.{item.server_id}",
-            provider_tool_name=item.remote_tool_name,
-            description=item.description,
-            compact_description=item.compact_description,
-            tags=tuple(config.yuki.tags),
-            binding=MCPToolBinding(self._manager, item.server_id, item.remote_tool_name),
-            parallel_safe=read_only,
-            result_kind="mcp_content",
-            schema_version=item.metadata_hash,
-        )
+        return descriptor_from_mcp_tool(self._manager, item)
 
     def _gateway_descriptor(self) -> CapabilityDescriptor:
         return CapabilityDescriptor(
@@ -191,7 +176,7 @@ class MCPToolProvider:
             description="搜索、描述或调用已配置 MCP Server 的工具",
             compact_description="MCP 工具目录与调用网关",
             tags=("mcp", "gateway"),
-            binding=MCPGatewayBinding(self._manager),
+            binding=self._gateway_binding,
             parallel_safe=False,
         )
 

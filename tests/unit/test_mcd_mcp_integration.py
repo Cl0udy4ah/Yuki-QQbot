@@ -47,6 +47,15 @@ def test_checked_in_mcp_presets_are_standalone_and_secret_free() -> None:
     assert "create-order" in server.yuki.automation.include_tools
     assert server.yuki.automation.permission == "superuser"
     assert "mall-order-detail" in display
+    order_bundle = server.yuki.tool_bundles["order"]
+    assert order_bundle.scope == "mcp.mcd.order"
+    assert set(order_bundle.include_tools) == {
+        "query-meals",
+        "query-meal-detail",
+        "calculate-price",
+        "create-order",
+        "query-order",
+    }
 
     music = loaded.servers["netease_music"]
     assert music.disabled is True
@@ -86,7 +95,11 @@ async def test_mcd_preset_overrides_query_semantics_without_hardcoding_provider(
                                 "query-meals": {
                                     "readOnlyHint": True,
                                     "idempotentHint": True,
-                                }
+                                },
+                                "create-order": {
+                                    "destructiveHint": True,
+                                    "openWorldHint": True,
+                                },
                             },
                         },
                     }
@@ -125,7 +138,13 @@ async def test_mcd_preset_overrides_query_semantics_without_hardcoding_provider(
     assert query.risk is CapabilityRisk.READ
     assert query.idempotency is CapabilityIdempotency.IDEMPOTENT
     assert query.parallel_safe
-    assert create.risk is CapabilityRisk.MUTATE
+    assert create.risk is CapabilityRisk.DESTRUCTIVE
+    assert create.provider_metadata == {
+        "mcp_annotations": {
+            "destructiveHint": True,
+            "openWorldHint": True,
+        }
+    }
     assert create.idempotency is CapabilityIdempotency.CONDITIONAL
     assert not create.parallel_safe
     await manager.close()
@@ -209,4 +228,5 @@ def test_mcd_http_failures_have_actionable_secret_free_diagnostics(
     details = classify_mcp_exception(ExceptionGroup("SDK transport", [failure]))
     assert details.code == code
     assert details.retryable is retryable
+    assert details.disconnect is False
     assert "offline-token" not in details.public_message

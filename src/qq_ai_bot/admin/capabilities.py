@@ -52,26 +52,6 @@ class CapabilityRegistry:
         }
         return (
             ChatTool(
-                name="admin_list_capabilities",
-                description=(
-                    "给 Yuki 当前正常 Agent 轮内部查询注册能力，不直接展示给用户，也不写入"
-                    "长期聊天上下文。具体操作只在不知道配置键/action 时按 category 窄查；"
-                    "无参数全量查询仅用于用户明确询问权限总览。查询后必须继续完成具体操作，"
-                    "不能把能力清单本身当作操作结果。"
-                ),
-                parameters=_object_schema(
-                    {
-                        "mode": {
-                            "type": "string",
-                            "enum": ["summary", "focused", "full"],
-                            "description": "默认 summary；局部查找用 focused；明确全量才用 full",
-                        },
-                        "category": {"type": "string"},
-                        "query": {"type": "string", "maxLength": 64},
-                    }
-                ),
-            ),
-            ChatTool(
                 name="admin_get_config",
                 description="读取一个或多个注册配置的真实有效值；凭证只返回是否已配置。",
                 parameters=_object_schema(

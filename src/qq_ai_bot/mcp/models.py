@@ -53,6 +53,22 @@ class MCPAutomationMetadata(_StrictModel):
         return self
 
 
+class MCPToolBundle(_StrictModel):
+    """A named, indivisible tool-selection unit within one MCP server."""
+
+    scope: str = Field(min_length=1, max_length=128)
+    summary: str = Field(min_length=1, max_length=500)
+    include_tools: tuple[str, ...] = Field(alias="includeTools", min_length=1)
+
+    @model_validator(mode="after")
+    def _valid_tools(self) -> MCPToolBundle:
+        if any(not name.strip() or len(name) > 255 for name in self.include_tools):
+            raise ValueError("toolBundles includeTools values must be remote tool names")
+        if len(set(self.include_tools)) != len(self.include_tools):
+            raise ValueError("toolBundles includeTools contains duplicate tool names")
+        return self
+
+
 class MCPServerMetadata(_StrictModel):
     scope: str = ""
     summary: str = Field(default="", max_length=500)
@@ -62,11 +78,20 @@ class MCPServerMetadata(_StrictModel):
         alias="toolAnnotations",
     )
     automation: MCPAutomationMetadata = MCPAutomationMetadata()
+    tool_bundles: dict[str, MCPToolBundle] = Field(
+        default_factory=dict,
+        alias="toolBundles",
+    )
 
     @model_validator(mode="after")
     def _tool_names(self) -> MCPServerMetadata:
         if any(not name.strip() or len(name) > 255 for name in self.tool_annotations):
             raise ValueError("toolAnnotations keys must be non-empty remote tool names")
+        if any(not name.strip() or len(name) > 64 for name in self.tool_bundles):
+            raise ValueError("toolBundles keys must be non-empty names")
+        scopes = [bundle.scope for bundle in self.tool_bundles.values()]
+        if len(scopes) != len(set(scopes)):
+            raise ValueError("toolBundles scopes must be unique within a server")
         return self
 
 

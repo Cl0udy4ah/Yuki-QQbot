@@ -146,7 +146,18 @@ async def test_bridge_registers_only_selected_mcp_tools_and_executes_through_man
         assert query.handler is not None
         outcome = await query.handler(
             {"city": "上海"},
-            cast(Any, SimpleNamespace(conversation_key="automation:9")),
+            cast(
+                Any,
+                SimpleNamespace(
+                    conversation_key="automation:9",
+                    authority=SimpleNamespace(
+                        origin=TurnOrigin.SCHEDULED_AUTOMATION,
+                        actor_user_id="10001",
+                        actor_is_superuser=True,
+                    ),
+                    web_was_used=False,
+                ),
+            ),
         )
         assert outcome.data["data"] == {"campaigns": ["周一会员日"]}
         assert connection.calls == [("campaign-calendar", {"city": "上海"})]

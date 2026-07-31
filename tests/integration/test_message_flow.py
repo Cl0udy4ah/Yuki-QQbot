@@ -27,6 +27,17 @@ from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, ToolCall, ToolF
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from qq_ai_bot.planner.fake import FakePlannerProvider
+from qq_ai_bot.planner.models import (
+    DeliveryMode,
+    PlannerDecision,
+    PlannerReasonCode,
+    ToolMode,
+    ToolSelection,
+    TurnPlan,
+)
+from qq_ai_bot.planner.observability import PlannerObservability
+from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
 from qq_ai_bot.time.service import TimeContextService
 
@@ -71,7 +82,10 @@ async def test_future_mcd_query_is_persisted_instead_of_executed_immediately(
     def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
         calls += 1
-        assert {tool.name for tool in request.tools} == {"automation_create"}
+        assert {tool.name for tool in request.tools} == {
+            "automation_create",
+            "get_my_capabilities",
+        }
         if calls == 1:
             return ChatResponse(
                 content="",
@@ -149,7 +163,10 @@ async def test_future_task_success_claim_is_blocked_without_create_tool_result(
     settings = make_settings(database.url, automation_enabled=True)
 
     def responder(request: ChatRequest) -> ChatResponse:
-        assert {tool.name for tool in request.tools} == {"automation_create"}
+        assert {tool.name for tool in request.tools} == {
+            "automation_create",
+            "get_my_capabilities",
+        }
         return ChatResponse(content="设好了，明天九点四十五分准时查", latency_seconds=0)
 
     harness = build_harness(database, settings, FakeLLMProvider(responder))
@@ -265,6 +282,42 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
     persisted = "\n".join(event.content for event in events)
     assert "transient_internal_reference" not in persisted
     assert "permission_levels" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_explicit_empty_planner_scopes_keep_only_direct_capability_tool(
+    database: Database,
+) -> None:
+    def responder(request: ChatRequest) -> ChatResponse:
+        assert {tool.name for tool in request.tools} == {"get_my_capabilities"}
+        return ChatResponse(content="可以，告诉我你想了解哪一类能力", latency_seconds=0)
+
+    harness = build_harness(
+        database,
+        make_settings(database.url),
+        FakeLLMProvider(responder),
+    )
+    plan = TurnPlan(
+        decision=PlannerDecision.REPLY,
+        intent="回答当前用户",
+        target_user_ids=("1001",),
+        delivery_mode=DeliveryMode.SINGLE,
+        desired_messages=1,
+        tool_selection=ToolSelection(mode=ToolMode.INHERIT, scopes=()),
+        confidence=1.0,
+        reason_code=PlannerReasonCode.DIRECT_REQUEST,
+    )
+    harness.processor._planner = PlannerService(
+        provider=FakePlannerProvider(plan),
+        observability=PlannerObservability(),
+    )
+
+    result = await harness.processor.handle(
+        normalize_event(private_event(Message("你能做什么"), message_id=106)),
+        MemorySender(),
+    )
+
+    assert result.reason == "chat"
 
 
 @pytest.mark.asyncio

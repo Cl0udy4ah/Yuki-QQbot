@@ -14,6 +14,19 @@
         "scope": "mcp.mcd",
         "summary": "麦当劳官方菜单、门店、活动、优惠券、订单和积分服务",
         "tags": ["麦当劳", "点餐", "菜单", "优惠券", "门店", "积分"],
+        "toolBundles": {
+          "order": {
+            "scope": "mcp.mcd.order",
+            "summary": "查询菜单与详情、校价、创建待支付订单并查询订单",
+            "includeTools": [
+              "query-meals",
+              "query-meal-detail",
+              "calculate-price",
+              "create-order",
+              "query-order"
+            ]
+          }
+        },
         "automation": {
           "enabled": true,
           "permission": "superuser",

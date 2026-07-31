@@ -43,6 +43,13 @@ class CapabilityIdempotency(StrEnum):
     NON_IDEMPOTENT = "non_idempotent"
 
 
+class CapabilityExposure(StrEnum):
+    """How a capability enters a model turn after backend policy checks."""
+
+    PLANNED = "planned"
+    DIRECT_ALWAYS = "direct_always"
+
+
 CapabilityHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 
 
@@ -71,12 +78,23 @@ class CapabilityDescriptor:
     parallel_safe: bool = False
     result_kind: str = "json"
     schema_version: str = "1"
+    exposure: CapabilityExposure = CapabilityExposure.PLANNED
+    additional_scopes: tuple[str, ...] = ()
+    bundle_scopes: tuple[str, ...] = ()
+    scope_summaries: tuple[tuple[str, str], ...] = ()
+    provider_metadata: dict[str, Any] | None = None
 
     @property
     def scope_id(self) -> str:
         """Return the dynamic Planner scope used by this capability."""
 
         return self.group
+
+    @property
+    def scope_ids(self) -> tuple[str, ...]:
+        """Return every Planner scope without duplicates."""
+
+        return tuple(dict.fromkeys((self.group, *self.additional_scopes)))
 
     def as_chat_tool(self, description: str | None = None) -> ChatTool:
         return ChatTool(
