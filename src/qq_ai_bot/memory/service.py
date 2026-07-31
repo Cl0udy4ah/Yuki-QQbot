@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
+from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,12 +25,39 @@ from qq_ai_bot.memory.models import (
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.validation import normalize_memory_text
 
+logger = logging.getLogger(__name__)
+
+
+class MemoryEmbeddingScheduler(Protocol):
+    async def schedule(self, fact_id: int) -> None: ...
+
 
 class MemoryFactService:
     """Apply deduplication, versioning, explicit protection, and evidence atomically."""
 
-    def __init__(self, repository: MemoryFactRepository) -> None:
+    def __init__(
+        self,
+        repository: MemoryFactRepository,
+        *,
+        embedding_scheduler: MemoryEmbeddingScheduler | None = None,
+    ) -> None:
         self._repository = repository
+        self._embedding_scheduler = embedding_scheduler
+
+    def set_embedding_scheduler(self, scheduler: MemoryEmbeddingScheduler | None) -> None:
+        self._embedding_scheduler = scheduler
+
+    async def schedule_embedding(self, fact_id: int) -> None:
+        if self._embedding_scheduler is None:
+            return
+        try:
+            await self._embedding_scheduler.schedule(fact_id)
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning(
+                "memory_embedding_schedule_failed fact_id=%d error_category=%s",
+                fact_id,
+                type(exc).__name__,
+            )
 
     @property
     def repository(self) -> MemoryFactRepository:
@@ -44,12 +73,14 @@ class MemoryFactService:
     ) -> MemoryFact:
         if session is None:
             async with self._repository.transaction() as owned:
-                return await self.remember(
+                owned_result = await self.remember(
                     fact,
                     evidence=evidence,
                     limit=limit,
                     session=owned,
                 )
+            await self.schedule_embedding(owned_result.id)
+            return owned_result
         content = normalize_memory_text(fact.content, maximum=4000)
         key = normalize_memory_text(fact.memory_key, maximum=128)
         category = normalize_memory_text(fact.category, maximum=64)
@@ -69,17 +100,17 @@ class MemoryFactService:
             )
             if evidence is not None:
                 await self._repository.add_evidence(existing.id, evidence, session=session)
-            result = await self._repository.get_fact(existing.id, session=session)
-            assert result is not None
-            return result
+            repeated = await self._repository.get_fact(existing.id, session=session)
+            assert repeated is not None
+            return repeated
         if (
             existing is not None
             and existing.source_type == MemorySourceType.EXPLICIT.value
             and prepared.source_type is not MemorySourceType.EXPLICIT
         ):
-            result = await self._repository.get_fact(existing.id, session=session)
-            assert result is not None
-            return result
+            protected = await self._repository.get_fact(existing.id, session=session)
+            assert protected is not None
+            return protected
         if existing is None and limit is not None:
             query = MemoryFactQuery(
                 scope_type=prepared.scope_type,
@@ -103,9 +134,9 @@ class MemoryFactService:
         )
         if evidence is not None:
             await self._repository.add_evidence(created.id, evidence, session=session)
-        result = await self._repository.get_fact(created.id, session=session)
-        assert result is not None
-        return result
+        projected = await self._repository.get_fact(created.id, session=session)
+        assert projected is not None
+        return projected
 
     async def list_person(
         self,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from qq_ai_bot.memory.embedding.models import MemorySemanticCandidate
 from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
     MemoryFact,
@@ -66,6 +67,92 @@ class MemoryRanker:
             )
         return tuple(hits)
 
+    def rank_hybrid(
+        self,
+        *,
+        facts: tuple[MemoryFact, ...],
+        lexical_candidates: tuple[MemoryLexicalCandidate, ...],
+        semantic_candidates: tuple[MemorySemanticCandidate, ...],
+        target: MemoryEntityTarget,
+        normalized_query: str,
+        lexical_weight: float,
+        semantic_weight: float,
+        rrf_k: int,
+        limit: int,
+    ) -> tuple[MemoryRetrievalHit, ...]:
+        """Fuse incomparable retrieval scores by rank, then apply stable tie breaks."""
+
+        lexical_fact_ids = {candidate.fact_id for candidate in lexical_candidates}
+        lexical_hits = self.rank_lexical(
+            facts=tuple(fact for fact in facts if fact.id in lexical_fact_ids),
+            candidates=lexical_candidates,
+            target=target,
+            normalized_query=normalized_query,
+            limit=len(lexical_candidates),
+        )
+        lexical = {hit.fact.id: hit for hit in lexical_hits}
+        semantic = {candidate.fact_id: candidate for candidate in semantic_candidates}
+
+        def fusion(fact: MemoryFact) -> float:
+            lexical_hit = lexical.get(fact.id)
+            semantic_hit = semantic.get(fact.id)
+            return (lexical_weight / (rrf_k + lexical_hit.rank) if lexical_hit else 0) + (
+                semantic_weight / (rrf_k + semantic_hit.semantic_rank) if semantic_hit else 0
+            )
+
+        def exact(fact: MemoryFact) -> bool:
+            hit = lexical.get(fact.id)
+            return bool(hit and hit.selection_reason.endswith("_exact"))
+
+        ordered = sorted(
+            facts,
+            key=lambda fact: (
+                0 if exact(fact) else 1,
+                -fusion(fact),
+                -fact.importance,
+                -fact.confidence,
+                -fact.updated_at.timestamp(),
+                fact.id,
+            ),
+        )[:limit]
+        hits: list[MemoryRetrievalHit] = []
+        for rank, fact in enumerate(ordered, start=1):
+            lexical_hit = lexical.get(fact.id)
+            semantic_hit = semantic.get(fact.id)
+            if lexical_hit and lexical_hit.selection_reason.endswith("_exact"):
+                reason = lexical_hit.selection_reason
+            elif lexical_hit and semantic_hit:
+                reason = "hybrid_match"
+            elif semantic_hit:
+                reason = "semantic_match"
+            else:
+                reason = "lexical_match"
+            sources = tuple(
+                source
+                for source, present in (
+                    ("lexical", lexical_hit is not None),
+                    ("semantic", semantic_hit is not None),
+                )
+                if present
+            )
+            hits.append(
+                MemoryRetrievalHit(
+                    fact=fact,
+                    target=target,
+                    rank=rank,
+                    lexical_score=lexical_hit.lexical_score if lexical_hit else None,
+                    semantic_score=(semantic_hit.cosine_similarity if semantic_hit else None),
+                    fusion_score=fusion(fact),
+                    lexical_rank=lexical_hit.rank if lexical_hit else None,
+                    semantic_rank=semantic_hit.semantic_rank if semantic_hit else None,
+                    exact_match=bool(lexical_hit and lexical_hit.exact_match),
+                    matched_terms=lexical_hit.matched_terms if lexical_hit else (),
+                    sources=sources,
+                    selection_reason=reason,
+                )
+            )
+        return tuple(hits)
+
     @staticmethod
     def rank_overview(
         facts: tuple[MemoryFact, ...],
@@ -89,6 +176,7 @@ class MemoryRanker:
                 target=target,
                 rank=rank,
                 lexical_score=0,
+                sources=(reason,),
                 selection_reason=reason,
             )
             for rank, fact in enumerate(ordered, start=1)

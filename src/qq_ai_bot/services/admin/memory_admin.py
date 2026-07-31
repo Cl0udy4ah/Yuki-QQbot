@@ -10,6 +10,8 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.context import MemoryContextService
+from qq_ai_bot.memory.embedding.models import MemoryEmbeddingHealth
+from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.enums import MemoryRetrievalMode, MemoryScopeType, MemoryTargetRole
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.models import (
@@ -40,6 +42,7 @@ class MemoryAdminService:
         memory_context: MemoryContextService | None = None,
         memory_index: SQLiteMemoryFTSIndex | None = None,
         runtime_config: RuntimeConfigService | None = None,
+        memory_embeddings: MemoryEmbeddingRuntime | None = None,
     ) -> None:
         self._settings = settings
         self._memories = memories
@@ -58,6 +61,7 @@ class MemoryAdminService:
             settings=settings,
             database=database,
         )
+        self._memory_embeddings = memory_embeddings
 
     async def list_memories(
         self,
@@ -108,6 +112,7 @@ class MemoryAdminService:
                 duration_seconds=time.perf_counter() - started,
                 session=session,
             )
+        await self._memories.schedule_embedding(row.id)
         return row
 
     async def update_memory(
@@ -155,6 +160,8 @@ class MemoryAdminService:
                 duration_seconds=time.perf_counter() - started,
                 session=session,
             )
+        if updated_row is not None:
+            await self._memories.schedule_embedding(updated_row.id)
         return updated
 
     async def delete_memory(
@@ -331,6 +338,36 @@ class MemoryAdminService:
             duration_seconds=time.perf_counter() - started,
         )
         return health
+
+    async def embedding_status(self, actor: AdminActor) -> MemoryEmbeddingHealth:
+        self._require_superuser(actor)
+        if self._memory_embeddings is None:
+            raise RuntimeError("memory embedding runtime is unavailable")
+        return await self._memory_embeddings.health()
+
+    async def embedding_doctor(self, actor: AdminActor) -> int:
+        self._require_superuser(actor)
+        if self._memory_embeddings is None:
+            raise RuntimeError("memory embedding runtime is unavailable")
+        return await self._memory_embeddings.doctor()
+
+    async def embedding_retry(self, actor: AdminActor) -> int:
+        self._require_superuser(actor)
+        if self._memory_embeddings is None:
+            raise RuntimeError("memory embedding runtime is unavailable")
+        return await self._memory_embeddings.retry()
+
+    async def embedding_rebuild(self, actor: AdminActor) -> int:
+        self._require_superuser(actor)
+        if self._memory_embeddings is None:
+            raise RuntimeError("memory embedding runtime is unavailable")
+        return await self._memory_embeddings.rebuild()
+
+    async def embedding_purge_old(self, actor: AdminActor) -> int:
+        self._require_superuser(actor)
+        if self._memory_embeddings is None:
+            raise RuntimeError("memory embedding runtime is unavailable")
+        return await self._memory_embeddings.purge_old()
 
     def _require_superuser(self, actor: AdminActor) -> None:
         if not actor.is_superuser or actor.user_id not in self._settings.superusers:

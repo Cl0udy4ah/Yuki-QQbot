@@ -85,6 +85,9 @@ def upgrade() -> None:
             "mcp_tool_cache",
             "tool_artifacts",
             "tool_invocations",
+            "memory_embedding_profiles",
+            "memory_embeddings",
+            "memory_embedding_jobs",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

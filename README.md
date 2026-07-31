@@ -9,6 +9,10 @@
 >
 > **3.0.0a2：**Alembic `0021` 只新增可重建的 Memory V2 FTS5 派生索引，不删除事实、
 > 证据或聊天账本。普通聊天现在按当前问题检索相关事实，不再固定加载大量长期事实。
+>
+> **3.0.0b1：**Alembic `0022` 非破坏性新增 Memory V2 Embedding 派生表和持久任务表。
+> Embedding 默认关闭；开启后使用 Qwen DashScope 生成 1024 维向量，并与 FTS 通过 RRF
+> 融合。外部服务不可用时自动退回词法检索，不影响聊天和事实写入。
 
 Plugin API 仍为 `1.0`。第三方插件如果把 `yuki_requires` 上限写成 `<3.0`，需要在确认兼容后
 改为 `<4.0` 才能在 3.0.0a1 加载；插件代码和 manifest 的 `plugin_api` 无需因本次升级改版。
@@ -43,13 +47,15 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.0.0a2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 3.0.0b1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
 - 同一 QQ 的私聊、不同群成员关系和人物记忆关联到同一个人。
 - Memory V2 将长期信息存为带作用域、版本状态和真实消息证据的事实；自动提取只能选择当前
   发送者 `speaker` 或当前群 `group`，不能让模型填写 QQ 号、群号或事件号。
+- 可选 Memory V2 混合 RAG 在 SQL 完成人物/群硬过滤后，融合 FTS/BM25 与 Qwen 语义召回；
+  向量只是可重建派生数据，不会决定事实属于谁，也不会替代关系数据库事实源。
 - 群号区分群；已启用群的全部消息都会被观察并永久写入事件账本。
 - 私聊默认向所有 QQ 开放；`/ai private <QQ> off` 用于阻止指定用户。
 - 当前人物事实可以在私聊与群聊间自然复用，群事实和当前人物的群内事实严格按群隔离；
@@ -507,6 +513,9 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 | `chat_events_fts` | FTS5 `trigram` 全文索引 |
 | `memory_facts` | person/person_group/group 三种作用域的版本化事实与偏好 |
 | `memory_facts_fts` | `0021` 新增的可重建 FTS5 `trigram` 派生索引，只索引事实正文、key 和类别 |
+| `memory_embedding_profiles` | `0022` 新增的非密钥模型/维度/模板指纹，配置变化时隔离旧向量 |
+| `memory_embeddings` | 当前事实与 profile 对应的 little-endian float32 向量派生数据 |
+| `memory_embedding_jobs` | 事实提交后异步生成、重试或重建向量的持久任务 |
 | `memory_evidence` | 事实对应的真实聊天事件、真实发送者、关系类型与短摘录 |
 | `memory_jobs` | 每个真实入站非 Bot 事件一个、最多重试 3 次的持久提取任务 |
 | `person_relationships` | 每个 QQ 当前好感度、信任度和自动变化时间 |
@@ -583,10 +592,14 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 - 只有模型主动调用搜索工具时，才加入更早历史。
 
 相关记忆检索不会调用 LLM。后端先按 QQ、群号和作用域在同一 SQL 中硬过滤，再使用 SQLite
-FTS5 `trigram` 选候选并确定性排序。两字以内查询只在已经限定的主体范围内使用 `LIKE`；无
-匹配时不会加载全部事实，只保留有界的显式交互偏好。“你记得我什么”等概览请求使用有界的
-`overview` 模式。FTS 是可删除、可重建的派生索引，`memory_facts` 仍是唯一事实源；当前尚未
-实现 Embedding、向量数据库或历史重建。详见 [Memory V2 架构](docs/architecture/memory-v2.md)。
+FTS5 `trigram` 与可选 Qwen Embedding 分别选候选，再以确定性 RRF 融合。两字以内查询只在
+已经限定的主体范围内使用 `LIKE`；向量相似度也只能在 SQL 已按目标人物/群硬过滤的候选中计算。
+一次相关检索最多生成一次 query embedding，并在本轮多个合法目标间复用；概览模式不调用
+Embedding。Provider 超时、限流、认证或响应异常时，本轮自动退回词法检索。所有索引都是可删除、
+可重建的派生数据，`memory_facts` 仍是唯一事实源；当前仍不实现向量数据库、LLM rerank 或历史
+重建。详见 [Memory V2 架构](docs/architecture/memory-v2.md)、
+[检索与融合](docs/architecture/memory-v2-retrieval.md) 与
+[Embedding 运维说明](docs/architecture/memory-v2-embedding.md)。
 
 新事件立即进入账本。后台记忆任务每 30 秒或累计 10 条时唤醒，每批最多 claim 20 条，随后
 逐事件独立提取和提交，失败最多重试 3 次。明确添加的事实标记为 `explicit`，自动提炼不能
@@ -883,6 +896,11 @@ Planner-first 自主参与规则：
 | `/ai memory search group <群号> <query>` | 超级管理员诊断指定群的词法召回 |
 | `/ai memory index status` | 超级管理员查看 Memory V2 FTS 健康状态 |
 | `/ai memory index rebuild` | 超级管理员只重建派生 FTS 索引 |
+| `/ai memory embedding status` | 超级管理员查看向量覆盖率、任务与当前 profile |
+| `/ai memory embedding doctor` | 超级管理员用固定无隐私文本执行一次 Provider 远程诊断 |
+| `/ai memory embedding retry` | 超级管理员重新排队当前 profile 的失败任务 |
+| `/ai memory embedding rebuild` | 超级管理员为全部当前 active facts 重建当前 profile 向量 |
+| `/ai memory embedding purge-old` | 超级管理员清理非当前 profile 的旧派生向量和任务 |
 | `/ai preference list` | 查看本人的交互偏好 |
 | `/ai preference set <键> <值>` | 设置交互偏好 |
 | `/ai preference delete <键>` | 删除交互偏好 |
@@ -938,7 +956,7 @@ NONE 时保留，但不会额外授予任何权限。确定性诊断入口为 `/
 | `user` | 已启用，所有普通 QQ | 29 项本人自助接口，其中 14 项可修改本人上下文、记忆、偏好、时区或自动化任务；不能修改运行时配置 |
 | `trusted` | 仅预留，当前不可分配 | 供未来介于普通用户与管理员之间的权限扩展 |
 | `moderator` | 仅预留，当前不可分配 | 供未来群管理能力扩展 |
-| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 131 项可修改配置、12 项受保护配置、44 项管理员业务接口（33 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
+| `superuser` | 已启用，来自 `.env` 的 `SUPERUSERS` | 163 项可修改配置、12 项受保护配置、44 项管理员业务接口（33 项修改型），以及 1 个可调用全部 NapCat/OneBot 公开 action 的通用网关 |
 
 能力目录直接遍历现有 `ConfigRegistry` 和 `ActionRegistry`，不会另复制配置键或业务 action。`summary` 只提供计数与类别，`focused` 提供命中项的 ID、别名、说明、类型、范围、作用域和生效方式，`full` 才提供全部 ID。`call_onebot_api(action, params)` 作为独立的 `onebot` 权限类别列出：真实超级管理员在直接触发、非自主群聊的普通 Agent 轮次中可调用全部公开 action，不设 action denylist，也不二次确认；使用网页工具后本轮会撤销网关，但不会缩减 action 范围。目录不读取配置值、API Key、凭证状态或他人权限。`trusted`、`moderator` 只有枚举和展示元数据，在执行层接入相同权限校验前不会被实际授予。
 
@@ -1021,6 +1039,19 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `MEMORY_ALWAYS_ON_EXPLICIT_PREFERENCE_LIMIT` | `3` |
 | `MEMORY_QUERY_TERM_LIMIT` | `12` |
 | `MEMORY_SHORT_QUERY_FALLBACK_ENABLED` | `true` |
+| `MEMORY_SEMANTIC_ENABLED` | `true` |
+| `MEMORY_SEMANTIC_CANDIDATE_LIMIT` | `50` |
+| `MEMORY_SEMANTIC_MIN_SIMILARITY` | `0.35` |
+| `MEMORY_HYBRID_LEXICAL_WEIGHT` | `1.0` |
+| `MEMORY_HYBRID_SEMANTIC_WEIGHT` | `1.0` |
+| `MEMORY_HYBRID_RRF_K` | `60` |
+| `MEMORY_EMBEDDING_ENABLED` | `false` |
+| `MEMORY_EMBEDDING_PROVIDER` | `qwen_dashscope` |
+| `MEMORY_EMBEDDING_MODEL` | `qwen3.7-text-embedding` |
+| `MEMORY_EMBEDDING_DIMENSIONS` | `1024` |
+| `MEMORY_EMBEDDING_WORKER_ENABLED` | `true` |
+| `MEMORY_EMBEDDING_WORKER_CLAIM_LIMIT` | `100` |
+| `MEMORY_EMBEDDING_HTTP_CONCURRENCY` | `2` |
 | `LLM_TIMEOUT_SECONDS` | `120` |
 | `LLM_MAX_RETRIES` | `2` |
 | `LLM_MAX_OUTPUT_TOKENS` | `8192` |
@@ -1191,3 +1222,17 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 
 本次 downgrade 只会删除 FTS 表和触发器，不删除 Memory V2 facts 或 evidence。索引异常时使用
 `/ai memory index rebuild` 重建派生数据，不需要删除数据库。
+
+## 3.0.0b1 升级步骤
+
+1. 停止 Bot 写入但保持 NapCat 登录态：`docker compose stop bot`。
+2. 备份 `data/` 后执行 `uv run alembic upgrade head`，升级到 `0022`。
+3. 若暂不使用语义检索，保持 `MEMORY_EMBEDDING_ENABLED=false` 即可；行为与 3.0.0a2 一致。
+4. 若要启用，在 `.env` 设置 `MEMORY_EMBEDDING_ENABLED=true`、DashScope 兼容端点和
+   `MEMORY_EMBEDDING_API_KEY`。密钥只从环境读取，不会进入数据库或诊断输出。
+5. 执行 `docker compose up -d --build --no-deps bot`，再运行
+   `/ai memory embedding status` 和 `/ai memory embedding doctor`。
+
+`0022` 不修改 Memory V2 事实、证据、FTS 或聊天账本。首次启用后由持久后台任务渐进补齐当前
+事实；不会扫描历史聊天。模型、维度或模板改变会建立新 profile，旧派生数据可在新 profile
+覆盖完成后用 `/ai memory embedding purge-old` 清理。

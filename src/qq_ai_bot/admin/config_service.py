@@ -1073,6 +1073,18 @@ class RuntimeConfigService:
                 ),
                 query_term_limit=int(cast(int, value("memory.query_term_limit"))),
                 short_query_fallback_enabled=bool(value("memory.short_query_fallback_enabled")),
+                semantic_enabled=bool(value("memory.semantic_enabled")),
+                semantic_candidate_limit=int(cast(int, value("memory.semantic_candidate_limit"))),
+                semantic_min_similarity=float(
+                    cast(float | int, value("memory.semantic_min_similarity"))
+                ),
+                hybrid_lexical_weight=float(
+                    cast(float | int, value("memory.hybrid_lexical_weight"))
+                ),
+                hybrid_semantic_weight=float(
+                    cast(float | int, value("memory.hybrid_semantic_weight"))
+                ),
+                hybrid_rrf_k=int(cast(int, value("memory.hybrid_rrf_k"))),
             ),
             reply=ReplyRuntimeConfig(
                 daily_split_enabled=bool(value("reply.daily_split_enabled")),

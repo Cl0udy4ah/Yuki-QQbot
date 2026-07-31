@@ -49,9 +49,11 @@ relationship.adjust(user_id, *, affection_delta=0, trust_delta=0,
 ```
 
 `memory.search()` 在 Plugin API v1 内部复用主程序的 `MemoryRetriever`：插件作用域校验先确定
-真实人物或群，随后同一条 SQL 同时执行身份硬过滤与安全 FTS5 匹配。插件不能提交 FTS 语法，
-不能通过关键词改变 `subject_id`，也不会在无匹配时回退加载全部事实。返回记录包含有界的
-`retrieval_reason`；`list_person()` / `list_group()` 仍用于确定性列表。
+真实人物或群，随后 FTS 与可选 Embedding 都只在该 SQL 硬过滤范围内召回，并由确定性 RRF
+融合。插件不能选择 Provider/profile、获取原始向量、提交 FTS 语法、通过关键词改变
+`subject_id`，也不会在无匹配时回退加载全部事实。返回记录只包含有界的
+`retrieval_reason`；`list_person()` / `list_group()` 仍用于确定性列表。Embedding 关闭或故障时
+自动保持词法行为，Plugin API 版本仍为 `1.0`。
 
 ## LLM / Agent / AgentSession
 

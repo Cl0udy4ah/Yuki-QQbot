@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 3.0.0b1 - 2026-08-01
+
+### Qwen Embedding 与混合 RAG
+
+- 新增 DashScope `qwen3.7-text-embedding` Provider、1024 维 little-endian float32 BLOB 编解码、
+  profile 指纹和持久化后台任务；事实事务先提交，Embedding 失败不会回滚或阻断聊天。
+- 相关检索每轮最多生成一次 query embedding，在全部合法目标间复用；人物、人物群内和群作用域
+  先由 SQL 硬过滤，再计算余弦相似度，并用确定性 RRF 融合 FTS 与语义候选。
+- Provider 超时、限流、认证、响应格式或向量异常时自动降级为词法检索；overview 不调用外部
+  Embedding。数据库、日志、指标和诊断均不保存 API Key、查询正文或事实正文。
+
+### 数据库、运维与兼容
+
+- 新增非破坏性 Alembic `0022`，建立 `memory_embedding_profiles`、`memory_embeddings` 和
+  `memory_embedding_jobs`；事实删除级联清理派生向量，不扫描或重建历史聊天。
+- 新增 `/ai memory embedding status|doctor|retry|rebuild|purge-old`、健康指标、热更新混合检索
+  参数和完整 `.env.example`。Embedding 默认关闭，故障时保持 3.0.0a2 的词法行为。
+- 补充迁移、Provider、批处理、重试、内容哈希、身份隔离、混合排序与降级测试；Plugin API
+  继续保持 `1.0`，版本提升为 `3.0.0b1`。
+
 ## 3.0.0a2 - 2026-08-01
 
 ### 查询驱动的 Memory V2

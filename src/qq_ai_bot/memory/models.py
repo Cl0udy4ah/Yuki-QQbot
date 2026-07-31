@@ -183,6 +183,12 @@ class MemoryQuery(_MemoryModel):
     always_on_explicit_preference_limit: int = Field(ge=0)
     query_term_limit: int = Field(gt=0)
     short_query_fallback_enabled: bool = True
+    semantic_enabled: bool = True
+    semantic_candidate_limit: int = Field(default=50, gt=0)
+    semantic_min_similarity: float = Field(default=0.35, ge=-1, le=1)
+    hybrid_lexical_weight: float = Field(default=1.0, ge=0)
+    hybrid_semantic_weight: float = Field(default=1.0, ge=0)
+    hybrid_rrf_k: int = Field(default=60, gt=0)
 
 
 class MemoryLexicalCandidate(_MemoryModel):
@@ -197,7 +203,12 @@ class MemoryRetrievalHit(_MemoryModel):
     fact: MemoryFact
     target: MemoryEntityTarget
     rank: int = Field(gt=0)
-    lexical_score: float
+    lexical_score: float | None = None
+    semantic_score: float | None = None
+    fusion_score: float = 0
+    lexical_rank: int | None = Field(default=None, gt=0)
+    semantic_rank: int | None = Field(default=None, gt=0)
+    sources: tuple[str, ...] = ()
     exact_match: bool = False
     matched_terms: tuple[str, ...] = ()
     selection_reason: str
@@ -215,6 +226,9 @@ class MemoryRetrievalResult(_MemoryModel):
     selected_count: int = Field(ge=0)
     query_hash: str
     mode: MemoryRetrievalMode
+    semantic_status: str = "disabled"
+    semantic_degraded: bool = False
+    embedding_profile: str | None = None
 
 
 class MemoryIndexHealth(_MemoryModel):

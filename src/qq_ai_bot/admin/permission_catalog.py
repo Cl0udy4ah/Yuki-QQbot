@@ -217,8 +217,9 @@ class CapabilityReport:
                 item["scopes"] = list(descriptor.target_scopes)
             if descriptor.apply_mode is not None:
                 item["apply_mode"] = descriptor.apply_mode
-            if descriptor.value_type is not None:
-                item["value_type"] = descriptor.value_type
+            # Detailed type/range metadata is available from the focused view. Repeating
+            # it for every configuration makes the complete capability index exceed the
+            # bounded tool-result budget as the registry grows.
             group.setdefault(kind, []).append(item)
 
         full = self.to_dict()

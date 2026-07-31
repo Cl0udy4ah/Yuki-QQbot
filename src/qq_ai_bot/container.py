@@ -36,6 +36,7 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.mcp.admin import MCPCommandHandler
+from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.plugin_host.config import BoundConfigFacade
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind
@@ -126,6 +127,12 @@ class ApplicationContainer:
         self.memory_context = persistence.memory_context
         self.memory_index = persistence.memory_index
         self.memory_jobs = persistence.memory_jobs
+        self.memory_embeddings = MemoryEmbeddingRuntime(
+            settings=settings,
+            database=self.database,
+            facts=self.memories,
+            retriever=self.memory_context.retriever,
+        )
         self.agent_actions = persistence.agent_actions
         self.web_sources = persistence.web_sources
         self.media_analyses = persistence.media_analyses
@@ -259,6 +266,7 @@ class ApplicationContainer:
             memories=self.memories,
             memory_context=self.memory_context,
             memory_index=self.memory_index,
+            memory_embeddings=self.memory_embeddings,
             groups=self.groups,
             private_users=self.private_users,
             emoji_repository=self.emoji_repository,
@@ -635,6 +643,12 @@ class ApplicationContainer:
         return any(str(getattr(bot, "self_id", "")) == bot_user_id for bot in get_bots().values())
 
     def _register_lifecycle(self) -> None:
+        self.lifecycle.register(
+            "memory_embeddings",
+            start=self.memory_embeddings.start,
+            close=self.memory_embeddings.close,
+            health=self.memory_embeddings.health,
+        )
         self.lifecycle.register("autonomous_groups", close=self.autonomous_groups.close)
         self.plugin_module.register_lifecycle(self.plugins, self.lifecycle)
         self.lifecycle.register("application_event", start=self._publish_started)

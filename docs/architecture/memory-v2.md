@@ -1,8 +1,8 @@
 # Memory V2 架构
 
-Memory V2 将长期记忆拆为事实、证据、逐事件提取任务和可重建词法索引。关系数据库中的
-`memory_facts` 始终是真相来源；`memory_facts_fts` 只负责从当前问题召回候选，删除后可以由
-事实表完整重建。
+Memory V2 将长期记忆拆为事实、证据、逐事件提取任务和可重建检索索引。关系数据库中的
+`memory_facts` 始终是真相来源；`memory_facts_fts` 与 `memory_embeddings` 只负责从当前问题
+召回候选，删除后可以由事实表完整重建。
 
 ## 数据边界
 
@@ -13,6 +13,8 @@ Memory V2 将长期记忆拆为事实、证据、逐事件提取任务和可重�
 - `memory_jobs` 一行只对应一个真人入站事件。任务可以批量领取，但提取和提交始终逐事件进行。
 - `memory_facts_fts` 是 Alembic `0021` 创建的 FTS5 `trigram` 外部内容表，只索引
   `content`、`memory_key` 和 `category`，由 INSERT/DELETE/UPDATE 触发器同步。
+- `memory_embedding_profiles`、`memory_embeddings` 和 `memory_embedding_jobs` 是 Alembic
+  `0022` 创建的派生语义索引。向量按 profile 隔离，事实删除时级联删除。
 - 三个 partial unique index 保证每个主体、kind、memory_key 最多一个 active fact。
 
 ## 可信身份映射
@@ -47,8 +49,15 @@ FTS 查询先做 NFKC、casefold、空白压缩和有界词项提取，再由后
 “你记得我什么”等集中定义的概览表达使用 `overview`，在每个实体内按重要度、置信度、更新时间
 和事实 ID 返回有界结果。
 
-排序依次考虑 `memory_key` 精确匹配、内容精确匹配、类别精确匹配、BM25、重要度、置信度、
-更新时间和稳定事实 ID。普通检索完全由后端确定性完成，不增加 LLM 调用。
+词法与语义候选以确定性 RRF 融合，再结合精确匹配、重要度、置信度、更新时间和稳定事实 ID
+确定顺序。一次 relevant 检索只生成一个 query embedding 并复用于全部合法目标；overview 不
+生成向量。Provider 故障时只降级当前轮为词法检索，不中断聊天，也不改变事实。完整排序和
+降级状态见 [Memory V2 检索](memory-v2-retrieval.md)。
+
+语义候选必须先在 SQL 中按 `scope_type`、`subject_user_id`、`group_id`、active 状态、有效期和
+当前 profile 过滤，再在内存中计算余弦相似度。严禁全库向量搜索后反推身份。文档向量异步生成，
+正文模板只包含有界的 kind、category、memory_key 和 content，不包含 QQ、群号、昵称、证据、
+聊天历史或系统提示词。详细设计与运维见 [Embedding 与混合 RAG](memory-v2-embedding.md)。
 
 ## 上下文和已使用时间
 
@@ -79,6 +88,11 @@ FTS 查询先做 NFKC、casefold、空白压缩和有界词项提取，再由后
 /ai memory search group <群号> <query>
 /ai memory index status
 /ai memory index rebuild
+/ai memory embedding status
+/ai memory embedding doctor
+/ai memory embedding retry
+/ai memory embedding rebuild
+/ai memory embedding purge-old
 ```
 
 健康检查仅返回事实数、物理索引行数、缺失数和孤儿数，不记录查询或事实正文。重建只执行
@@ -86,5 +100,5 @@ FTS 派生索引 rebuild，不修改事实、证据或状态，也不会在每�
 
 ## 尚未实现
 
-当前没有 Embedding、向量数据库、语义分数、模型重排、模糊昵称人物识别、第三方人物自动
-写入或历史聊天重建。后续阶段见 [Memory V2 路线](memory-v2-roadmap.md)。
+当前没有向量数据库、模型重排、模糊昵称人物识别、第三方人物自动写入或历史聊天重建。
+后续阶段见 [Memory V2 路线](memory-v2-roadmap.md)。

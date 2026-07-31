@@ -89,11 +89,11 @@ class ProfileCommandHandler:
             return "\n".join(
                 f"事件 {row.event_id} [{row.relation}] {row.excerpt}" for row in evidence_rows
             )
-        return "可用操作：list、add、update、delete、evidence、search、index。"
+        return "可用操作：list、add、update、delete、evidence、search、index、embedding。"
 
     async def _memory_diagnostics(self, actor: AdminActor, argument: str) -> str | None:
         parts = argument.split()
-        if not parts or parts[0].casefold() not in {"search", "index"}:
+        if not parts or parts[0].casefold() not in {"search", "index", "embedding"}:
             return None
         if not actor.is_superuser:
             return "权限不足：记忆检索诊断仅限超级管理员。"
@@ -120,17 +120,57 @@ class ProfileCommandHandler:
                     f"{hit.fact.id}. [{hit.selection_reason}] {hit.fact.content}"
                     for hit in result.hits
                 )
+            if operation == "embedding":
+                if len(parts) != 1 or parts[0].casefold() not in {
+                    "status",
+                    "doctor",
+                    "retry",
+                    "rebuild",
+                    "purge-old",
+                }:
+                    return "格式：/ai memory embedding status|doctor|retry|rebuild|purge-old"
+                action = parts[0].casefold()
+                if action == "status":
+                    embedding_health = await self._memory_admin.embedding_status(actor)
+                    profile = (
+                        embedding_health.current_profile[:12]
+                        if embedding_health.current_profile
+                        else "无"
+                    )
+                    return (
+                        f"Embedding 状态：启用 {embedding_health.enabled}，"
+                        f"配置 {embedding_health.provider_configured}，"
+                        f"Profile {profile}，覆盖 {embedding_health.ready_embedding_count}/"
+                        f"{embedding_health.active_fact_count} "
+                        f"({embedding_health.coverage_ratio:.1%})，"
+                        f"等待 {embedding_health.pending_job_count}，"
+                        f"处理中 {embedding_health.processing_job_count}，"
+                        f"失败 {embedding_health.failed_job_count}，"
+                        f"旧 Profile {embedding_health.old_profile_count}。"
+                    )
+                if action == "doctor":
+                    dimensions = await self._memory_admin.embedding_doctor(actor)
+                    return f"Embedding Provider 检查通过：{dimensions} 维 dense vector。"
+                if action == "retry":
+                    count = await self._memory_admin.embedding_retry(actor)
+                    return f"已重新激活 {count} 个失败任务。"
+                if action == "rebuild":
+                    count = await self._memory_admin.embedding_rebuild(actor)
+                    return f"已为当前 Profile 重新排队 {count} 条 active facts。"
+                count = await self._memory_admin.embedding_purge_old(actor)
+                return f"已清理 {count} 个非当前 Embedding Profile。"
             if len(parts) != 1 or parts[0].casefold() not in {"status", "rebuild"}:
                 return "格式：/ai memory index status|rebuild"
-            health = (
+            index_health = (
                 await self._memory_admin.index_status(actor)
                 if parts[0].casefold() == "status"
                 else await self._memory_admin.rebuild_index(actor)
             )
             prefix = "记忆索引已重建" if parts[0].casefold() == "rebuild" else "记忆索引状态"
             return (
-                f"{prefix}：事实 {health.fact_count}，索引 {health.indexed_row_count}，"
-                f"缺失 {health.missing_row_count}，孤儿 {health.orphan_row_count}。"
+                f"{prefix}：事实 {index_health.fact_count}，索引 {index_health.indexed_row_count}，"
+                f"缺失 {index_health.missing_row_count}，"
+                f"孤儿 {index_health.orphan_row_count}。"
             )
         except (PermissionError, RuntimeError, ValueError) as exc:
             return str(exc)

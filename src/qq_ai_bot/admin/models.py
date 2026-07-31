@@ -143,6 +143,12 @@ class MemoryRetrievalRuntimeConfig:
     always_on_explicit_preference_limit: int
     query_term_limit: int
     short_query_fallback_enabled: bool
+    semantic_enabled: bool = True
+    semantic_candidate_limit: int = 50
+    semantic_min_similarity: float = 0.35
+    hybrid_lexical_weight: float = 1.0
+    hybrid_semantic_weight: float = 1.0
+    hybrid_rrf_k: int = 60
 
 
 @dataclass(frozen=True, slots=True)

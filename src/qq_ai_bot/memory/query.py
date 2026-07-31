@@ -121,6 +121,12 @@ class MemoryQueryBuilder:
                 always_on_explicit_preference_limit=(memory.always_on_explicit_preference_limit),
                 query_term_limit=memory.query_term_limit,
                 short_query_fallback_enabled=memory.short_query_fallback_enabled,
+                semantic_enabled=memory.semantic_enabled,
+                semantic_candidate_limit=memory.semantic_candidate_limit,
+                semantic_min_similarity=memory.semantic_min_similarity,
+                hybrid_lexical_weight=memory.hybrid_lexical_weight,
+                hybrid_semantic_weight=memory.hybrid_semantic_weight,
+                hybrid_rrf_k=memory.hybrid_rrf_k,
             )
         except ValidationError as exc:
             raise MemoryRetrievalError("memory_query_invalid") from exc

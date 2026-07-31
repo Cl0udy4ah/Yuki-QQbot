@@ -1,4 +1,4 @@
-# 升级到 Memory V2（3.0.0a1）
+# 升级到 Memory V2（3.0.0b1）
 
 ## 必须理解的不可逆变化
 
@@ -16,6 +16,12 @@ Alembic `0020` 不提供 downgrade，也不迁移、导入或双写旧记忆。�
 4. 执行 `uv run alembic upgrade head`，确认版本为 `0020`。
 5. 执行 `docker compose up -d --build bot`，只重建 bot 可保留 NapCat 登录状态。
 6. 检查 `/healthz`、bot 日志和一轮私聊/群聊；新记忆应从空库开始产生。
+
+## 3.0.0b1 增量升级
+
+从 `3.0.0a2` 升级时，Alembic `0022` 只增加 Embedding profile、向量和持久任务表，不删除或
+改写事实、证据、FTS 与聊天账本。Embedding 默认关闭；启用方式、故障降级和维护命令见
+[Embedding 与混合 RAG](architecture/memory-v2-embedding.md)。迁移不会扫描历史聊天。
 
 如果必须回退，请停止服务并恢复升级前的完整数据库备份。不要尝试执行 Alembic downgrade，
 也不要把旧表手工复制到 Memory V2。

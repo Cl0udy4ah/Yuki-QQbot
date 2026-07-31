@@ -81,6 +81,7 @@ class PreferenceAdminService:
                 duration_seconds=time.perf_counter() - started,
                 session=session,
             )
+        await self._memories.schedule_embedding(row.id)
         return row
 
     async def delete_preference(

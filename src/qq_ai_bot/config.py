@@ -113,6 +113,32 @@ class Settings(BaseSettings):
     memory_always_on_explicit_preference_limit: int = 3
     memory_query_term_limit: int = 12
     memory_short_query_fallback_enabled: bool = True
+    memory_semantic_enabled: bool = True
+    memory_semantic_candidate_limit: int = 50
+    memory_semantic_min_similarity: float = 0.35
+    memory_hybrid_lexical_weight: float = 1.0
+    memory_hybrid_semantic_weight: float = 1.0
+    memory_hybrid_rrf_k: int = 60
+
+    memory_embedding_enabled: bool = False
+    memory_embedding_provider: str = "qwen_dashscope"
+    memory_embedding_base_url: str = ""
+    memory_embedding_api_key: str = Field(default="", repr=False)
+    memory_embedding_model: str = "qwen3.7-text-embedding"
+    memory_embedding_dimensions: int = 1024
+    memory_embedding_output_type: str = "dense"
+    memory_embedding_document_template_version: int = 1
+    memory_embedding_query_instruct: str = (
+        "Retrieve personal memory facts relevant to the conversational query."
+    )
+    memory_embedding_request_timeout_seconds: float = 20.0
+    memory_embedding_max_text_characters: int = 4000
+    memory_embedding_worker_enabled: bool = True
+    memory_embedding_worker_interval_seconds: float = 5.0
+    memory_embedding_worker_claim_limit: int = 100
+    memory_embedding_retry_attempts: int = 5
+    memory_embedding_retry_initial_seconds: float = 30.0
+    memory_embedding_http_concurrency: int = 2
     agent_max_tool_calls: int = 12
     agent_max_model_requests: int = 12
     agent_tool_result_max_characters: int = 32000
@@ -427,6 +453,25 @@ class Settings(BaseSettings):
         )
         return self
 
+    @model_validator(mode="after")
+    def _validate_embedding_settings(self) -> Self:
+        if self.memory_embedding_provider != "qwen_dashscope":
+            raise ValueError("MEMORY_EMBEDDING_PROVIDER must be qwen_dashscope")
+        if self.memory_embedding_output_type != "dense":
+            raise ValueError("MEMORY_EMBEDDING_OUTPUT_TYPE must be dense")
+        if self.memory_embedding_dimensions != 1024:
+            raise ValueError("qwen_dashscope currently supports 1024 dimensions")
+        if self.memory_embedding_document_template_version != 1:
+            raise ValueError("unsupported MEMORY_EMBEDDING_DOCUMENT_TEMPLATE_VERSION")
+        if self.memory_embedding_enabled and not (
+            self.memory_embedding_base_url.strip() and self.memory_embedding_api_key
+        ):
+            raise ValueError(
+                "MEMORY_EMBEDDING_BASE_URL and MEMORY_EMBEDDING_API_KEY are required "
+                "when MEMORY_EMBEDDING_ENABLED=true"
+            )
+        return self
+
     @cached_property
     def app(self) -> AppSettings:
         return AppSettings.model_validate(self)
@@ -538,3 +583,11 @@ class Settings(BaseSettings):
         """Whether the mandatory Planner has a configured model provider."""
 
         return self.llm_configured
+
+    @property
+    def memory_embedding_configured(self) -> bool:
+        return bool(
+            self.memory_embedding_enabled
+            and self.memory_embedding_base_url.strip()
+            and self.memory_embedding_api_key
+        )

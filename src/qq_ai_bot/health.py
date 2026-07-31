@@ -44,6 +44,11 @@ class HealthPayload(TypedDict):
     mcp_automation_tools: int
     mcp_automation_missing_tools: int
     mcp_active_calls: int
+    memory_embedding_enabled: bool
+    memory_embedding_configured: bool
+    memory_embedding_coverage: float
+    memory_embedding_pending_jobs: int
+    memory_embedding_failed_jobs: int
     uptime_seconds: int
 
 
@@ -58,6 +63,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     speech_health = await container.speech.health()
     speech_metrics = await container.speech.metrics()
     mcp_health = container.mcp_manager.health()
+    embedding_health = await container.memory_embeddings.health()
     return HealthPayload(
         status="ok" if database_ok else "degraded",
         version=__version__,
@@ -98,5 +104,10 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         mcp_automation_tools=container.mcp_automation_bridge.registered_tool_count,
         mcp_automation_missing_tools=container.mcp_automation_bridge.missing_tool_count,
         mcp_active_calls=mcp_health.active_calls,
+        memory_embedding_enabled=embedding_health.enabled,
+        memory_embedding_configured=embedding_health.provider_configured,
+        memory_embedding_coverage=embedding_health.coverage_ratio,
+        memory_embedding_pending_jobs=embedding_health.pending_job_count,
+        memory_embedding_failed_jobs=embedding_health.failed_job_count,
         uptime_seconds=max(0, int(time.monotonic() - container.started_at)),
     )

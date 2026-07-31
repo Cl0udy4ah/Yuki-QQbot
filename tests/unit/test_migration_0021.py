@@ -77,7 +77,7 @@ def test_0021_backfills_preserves_and_tracks_fact_lifecycle(
     with sqlite3.connect(path) as connection:
         _seed_v2(connection)
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0021")
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0021",)
         assert connection.execute("SELECT COUNT(*) FROM memory_facts").fetchone() == (1,)

@@ -78,6 +78,46 @@ def test_daily_chat_delay_range_must_be_ordered() -> None:
         )
 
 
+def test_memory_embedding_disabled_needs_no_secret_but_enabled_does() -> None:
+    disabled = Settings.model_validate(
+        {
+            "memory_embedding_enabled": False,
+            "memory_embedding_base_url": "",
+            "memory_embedding_api_key": "",
+        }
+    )
+    assert disabled.memory_embedding_configured is False
+
+    with pytest.raises(ValidationError, match="MEMORY_EMBEDDING_BASE_URL"):
+        Settings.model_validate({"memory_embedding_enabled": True})
+
+    enabled = Settings.model_validate(
+        {
+            "memory_embedding_enabled": True,
+            "memory_embedding_base_url": "https://workspace.example/api/v1",
+            "memory_embedding_api_key": "test-only-key",
+        }
+    )
+    assert enabled.memory_embedding_configured is True
+    assert "test-only-key" not in repr(enabled)
+
+
+@pytest.mark.parametrize(
+    ("override", "error"),
+    [
+        ({"memory_embedding_provider": "other"}, "must be qwen_dashscope"),
+        ({"memory_embedding_dimensions": 768}, "supports 1024 dimensions"),
+        ({"memory_embedding_output_type": "sparse"}, "must be dense"),
+        ({"memory_embedding_document_template_version": 2}, "unsupported"),
+    ],
+)
+def test_memory_embedding_rejects_unsupported_profiles(
+    override: dict[str, object], error: str
+) -> None:
+    with pytest.raises(ValidationError, match=error):
+        Settings.model_validate(override)
+
+
 def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps() -> None:
     settings = Settings(_env_file=None)
     assert settings.planner_group_debounce_seconds == 3

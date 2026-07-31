@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -395,6 +396,86 @@ class MemoryJobModel(Base):
         ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
     )
     conversation_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class MemoryEmbeddingProfileModel(Base):
+    """Immutable, non-secret identity for one embedding representation."""
+
+    __tablename__ = "memory_embedding_profiles"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_memory_embedding_profiles_fingerprint"),
+        CheckConstraint("dimensions > 0", name="ck_memory_embedding_profiles_dimensions"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    dimensions: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    document_template_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    endpoint_identity: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryEmbeddingModel(Base):
+    """Rebuildable float32 vector for one fact and one immutable profile."""
+
+    __tablename__ = "memory_embeddings"
+    __table_args__ = (
+        UniqueConstraint("fact_id", "profile_id", name="uq_memory_embeddings_fact_profile"),
+        CheckConstraint(
+            "length(content_hash) = 64", name="ck_memory_embeddings_content_hash_length"
+        ),
+        CheckConstraint("length(vector_blob) > 0", name="ck_memory_embeddings_vector_nonempty"),
+        Index("ix_memory_embeddings_profile_fact", "profile_id", "fact_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    profile_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_embedding_profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    vector_blob: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryEmbeddingJobModel(Base):
+    """Persistent document-indexing work without fact text or provider payloads."""
+
+    __tablename__ = "memory_embedding_jobs"
+    __table_args__ = (
+        UniqueConstraint("fact_id", "profile_id", name="uq_memory_embedding_jobs_fact_profile"),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'done', 'failed')",
+            name="ck_memory_embedding_jobs_status",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_memory_embedding_jobs_attempts"),
+        CheckConstraint(
+            "length(content_hash) = 64", name="ck_memory_embedding_jobs_content_hash_length"
+        ),
+        Index("ix_memory_embedding_jobs_status_next", "status", "next_attempt_at"),
+        Index("ix_memory_embedding_jobs_profile_status", "profile_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    profile_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_embedding_profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -139,6 +139,29 @@ class MemorySettings(DomainSettings):
     memory_always_on_explicit_preference_limit: int = Field(ge=0)
     memory_query_term_limit: int = Field(gt=0)
     memory_short_query_fallback_enabled: bool
+    memory_semantic_enabled: bool
+    memory_semantic_candidate_limit: int = Field(gt=0)
+    memory_semantic_min_similarity: float = Field(ge=-1, le=1)
+    memory_hybrid_lexical_weight: float = Field(ge=0)
+    memory_hybrid_semantic_weight: float = Field(ge=0)
+    memory_hybrid_rrf_k: int = Field(gt=0)
+    memory_embedding_enabled: bool
+    memory_embedding_provider: str
+    memory_embedding_base_url: str
+    memory_embedding_api_key: str
+    memory_embedding_model: str
+    memory_embedding_dimensions: int = Field(gt=0)
+    memory_embedding_output_type: str
+    memory_embedding_document_template_version: int = Field(gt=0)
+    memory_embedding_query_instruct: str
+    memory_embedding_request_timeout_seconds: float = Field(gt=0)
+    memory_embedding_max_text_characters: int = Field(gt=0)
+    memory_embedding_worker_enabled: bool
+    memory_embedding_worker_interval_seconds: float = Field(gt=0)
+    memory_embedding_worker_claim_limit: int = Field(gt=0)
+    memory_embedding_retry_attempts: int = Field(gt=0)
+    memory_embedding_retry_initial_seconds: float = Field(gt=0)
+    memory_embedding_http_concurrency: int = Field(gt=0)
 
 
 class RelationshipSettings(DomainSettings):
