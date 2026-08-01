@@ -20,6 +20,7 @@ from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.admin import EmojiAdminService
 from qq_ai_bot.mcp.admin import MCPCommandHandler
+from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.persistence.repositories import (
@@ -90,6 +91,7 @@ class CommandService:
         speech_admin: SpeechAdminService | None = None,
         model_invocations: ModelInvocationRepository | None = None,
         mcp_commands: MCPCommandHandler | None = None,
+        memory_rebuild: MemoryRebuildService | None = None,
     ) -> None:
         self._settings = settings
         self._conversations = conversations
@@ -110,12 +112,14 @@ class CommandService:
         self._speech_admin = speech_admin
         self._model_invocations = model_invocations
         self._mcp_commands = mcp_commands
+        self._memory_rebuild = memory_rebuild
         self._profile_commands = ProfileCommandHandler(
             people=people,
             memories=memories,
             memory_admin=memory_admin,
             preference_admin=preference_admin,
             relationship_admin=relationship_admin,
+            memory_rebuild=memory_rebuild,
         )
         self._config_commands = ConfigCommandHandler(
             config_admin=config_admin,
@@ -361,6 +365,8 @@ class CommandService:
             if argument:
                 text = "该命令不接受参数，只能删除发送者本人数据。"
             else:
+                if self._memory_rebuild is not None:
+                    await self._memory_rebuild.forget_person(message.sender.user_id)
                 deleted = await self._people.delete_person(message.sender.user_id)
                 text = (
                     "已彻底删除与你 QQ 号关联的人物、关系分数、记忆、成员关系和可归属聊天事件。"

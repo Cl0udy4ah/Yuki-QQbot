@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -65,6 +66,7 @@ def _claim(**overrides: object) -> MemoryClaim:
         "memory_key": "education:plan",
         "category": "education",
         "content": "准备考研",
+        "evidence_quote": "我准备考研",
         "importance": 4,
         "confidence": 0.9,
         "source_type": "automatic",
@@ -129,6 +131,33 @@ def test_validator_rejects_unknown_subject_and_private_group_claims() -> None:
         )
         is None
     )
+
+
+def test_validator_rejects_context_only_or_semantically_different_claims() -> None:
+    event = _event()
+    validator = MemoryClaimValidator()
+    assert validator.validate(_claim(evidence_quote="上下文里有人准备考研"), event) is None
+    assert (
+        validator.validate(
+            _claim(content="准备出国", evidence_quote="我准备考研"),
+            event,
+        )
+        is None
+    )
+
+
+def test_interaction_preferences_are_not_stored_as_person_facts() -> None:
+    event = _event()
+    event = replace(event, content="以后回复我时请简短一点")
+    validated = MemoryClaimValidator().validate_claim(
+        _claim(
+            content="回复时简短一点",
+            evidence_quote="以后回复我时请简短一点",
+        ),
+        event,
+    )
+    assert validated is not None
+    assert validated.fact.kind is MemoryKind.PREFERENCE
 
 
 async def _append_event(
@@ -269,12 +298,14 @@ async def test_jobs_accept_only_real_inbound_non_bot_events(database: Database) 
         user_id="7000",
         sender_is_bot=True,
     )
+    blank = await _append_event(ledger, message_id="job-blank", content="   ")
     jobs = MemoryJobRepository(database)
 
     assert await jobs.enqueue(inbound.id, "private:1001")
     assert not await jobs.enqueue(inbound.id, "private:1001")
     assert not await jobs.enqueue(outbound.id, "private:1001")
     assert not await jobs.enqueue(bot_inbound.id, "private:7000")
+    assert not await jobs.enqueue(blank.id, "private:1001")
 
 
 class _PerEventProvider(LLMProvider):
@@ -296,6 +327,7 @@ class _PerEventProvider(LLMProvider):
                             "memory_key": "primary-event",
                             "category": "test",
                             "content": content,
+                            "evidence_quote": content,
                             "importance": 3,
                             "confidence": 0.9,
                             "source_type": "automatic",

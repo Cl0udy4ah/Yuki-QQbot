@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pydantic import BaseModel, ConfigDict
 
 from qq_ai_bot.memory.models import (
@@ -22,6 +24,14 @@ coexists、unrelated 或 retracts。
 不要决定数据库动作、状态、权限或 authority，不要输出事实 ID、QQ号、群号、SQL、解释或工具调用。
 不确定时输出 unrelated，并给出保守置信度。\
 """
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryRelationClassificationResult:
+    classification: MemoryRelationClassification
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    latency_seconds: float = 0.0
 
 
 class _ClassifierClaim(BaseModel):
@@ -75,8 +85,23 @@ class MemoryRelationClassifier:
         *,
         max_output_tokens: int | None = None,
     ) -> MemoryRelationClassification:
+        return (
+            await self.classify_with_usage(
+                claim,
+                candidates,
+                max_output_tokens=max_output_tokens,
+            )
+        ).classification
+
+    async def classify_with_usage(
+        self,
+        claim: ValidatedMemoryClaim,
+        candidates: tuple[MemoryCandidate, ...],
+        *,
+        max_output_tokens: int | None = None,
+    ) -> MemoryRelationClassificationResult:
         if not candidates:
-            return MemoryRelationClassification()
+            return MemoryRelationClassificationResult(MemoryRelationClassification())
         payload = _ClassifierInput(
             new_claim=_ClassifierClaim(
                 operation=claim.operation.value,
@@ -101,9 +126,9 @@ class MemoryRelationClassifier:
                 for row in candidates
             ),
         )
-        result = await self._concurrency.run_llm(
+        result, response = await self._concurrency.run_llm(
             "memory-v2-consolidation",
-            lambda: self._structured.run(
+            lambda: self._structured.run_with_response(
                 task=ModelTask.MEMORY_CONSOLIDATION,
                 temperature=0.0,
                 max_output_tokens=max_output_tokens or self._max_output_tokens,
@@ -117,4 +142,9 @@ class MemoryRelationClassifier:
         allowed = {row.candidate_ref for row in candidates}
         if any(row.candidate_ref not in allowed for row in result.relations):
             raise ValueError("memory classifier returned an unknown candidate_ref")
-        return result
+        return MemoryRelationClassificationResult(
+            result,
+            input_tokens=response.prompt_tokens,
+            output_tokens=response.completion_tokens,
+            latency_seconds=response.latency_seconds,
+        )

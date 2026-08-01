@@ -7,7 +7,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatTool
+from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse, ChatTool
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import ModelTask, StructuredOutputMode
 
@@ -36,6 +36,32 @@ class StructuredTaskRunner:
         mode: StructuredOutputMode | None = None,
         allow_text_json: bool = False,
     ) -> OutputT:
+        result, _response = await self.run_with_response(
+            task=task,
+            instruction=instruction,
+            structured_input=structured_input,
+            output_model=output_model,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            mode=mode,
+            allow_text_json=allow_text_json,
+        )
+        return result
+
+    async def run_with_response(
+        self,
+        *,
+        task: ModelTask,
+        instruction: str,
+        structured_input: BaseModel | dict[str, Any] | list[Any],
+        output_model: type[OutputT],
+        temperature: float | None = None,
+        max_output_tokens: int | None = None,
+        mode: StructuredOutputMode | None = None,
+        allow_text_json: bool = False,
+    ) -> tuple[OutputT, ChatResponse]:
+        """Return validated data together with provider-safe usage metadata."""
+
         if not instruction.strip():
             raise ValueError("structured task instruction must not be empty")
         effective_mode = mode or self._models.structured_output_mode(task)
@@ -110,6 +136,6 @@ class StructuredTaskRunner:
                 decoded = json.loads(response.content.strip())
                 if not isinstance(decoded, dict):
                     raise StructuredTaskError("structured text result must be one object")
-            return output_model.model_validate(decoded)
+            return output_model.model_validate(decoded), response
         except (json.JSONDecodeError, ValidationError) as exc:
             raise StructuredTaskError("structured task returned an invalid result") from exc

@@ -15,6 +15,10 @@
 > downgrade。升级前仍建议备份 `data/`。
 > Embedding 默认关闭；开启后使用 Qwen DashScope 生成 1024 维向量，并与 FTS 通过 RRF
 > 融合。外部服务不可用时自动退回词法检索，不影响聊天和事实写入。
+>
+> **3.0.0rc1：**Alembic `0024` 非破坏性增加受控历史记忆重建。升级和启动不会扫描历史；
+> 只有当前真实 `SUPERUSERS` 发送者显式 plan/start、人工审阅并 commit 后才会写入事实。
+> 进程重启会暂停而不会自动恢复。操作前仍应备份 `data/`。
 
 Plugin API 仍为 `1.0`。第三方插件如果把 `yuki_requires` 上限写成 `<3.0`，需要在确认兼容后
 改为 `<4.0` 才能在 3.0.0a1 加载；插件代码和 manifest 的 `plugin_api` 无需因本次升级改版。
@@ -49,7 +53,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.0.0b2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 3.0.0rc1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -946,6 +950,15 @@ Planner-first 自主参与规则：
 | `/ai memory embedding retry` | 超级管理员重新排队当前 profile 的失败任务 |
 | `/ai memory embedding rebuild` | 超级管理员为全部当前 active facts 重建当前 profile 向量 |
 | `/ai memory embedding purge-old` | 超级管理员清理非当前 profile 的旧派生向量和任务 |
+| `/ai memory rebuild list` | 超级管理员列出受控历史重建任务 |
+| `/ai memory rebuild plan <selection-json>` | 固定事件快照并统计范围，不调用模型 |
+| `/ai memory rebuild start <run_id>` | 显式开始逐事件提取，只暂存 proposal |
+| `/ai memory rebuild status <run_id>` | 查看无正文状态、checkpoint 与统计 |
+| `/ai memory rebuild pause\|resume\|cancel <run_id>` | 暂停、显式恢复或取消后续处理 |
+| `/ai memory rebuild review <run_id> [page]` | 分页审阅有界 proposal 摘要 |
+| `/ai memory rebuild approve\|reject <run_id> <all\|ids\|filter-json>` | 批准或拒绝 claim |
+| `/ai memory rebuild commit <run_id>` | 所有 claim 审阅后按历史顺序提交 |
+| `/ai memory rebuild retry\|purge <run_id>` | 显式恢复失败任务或清理终态暂存数据 |
 | `/ai preference list` | 查看本人的交互偏好 |
 | `/ai preference set <键> <值>` | 设置交互偏好 |
 | `/ai preference delete <键>` | 删除交互偏好 |
@@ -1295,3 +1308,19 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 `0023` 会保留全部现有事实、证据、FTS、Embedding 和聊天账本。无 contested fact 时可降回
 `0022`；一旦存在 contested 状态，downgrade 会明确拒绝，必须先在新版本解决冲突或恢复升级前
 备份，不能通过手工删表绕过。
+
+## 3.0.0rc1 升级步骤
+
+1. 只停止 Bot：`docker compose stop bot`，不要停止或重建 NapCat。
+2. 完整备份 `data/`，执行 `uv run alembic upgrade head`，确认 head 为 `0024`。
+3. 默认保持 `MEMORY_REBUILD_ENABLED=false`；这不会创建、启动或恢复任何重建任务。
+4. 需要重建时再设为 `true` 并只重建 Bot：`docker compose up -d --build --no-deps bot`。
+5. 由当前真实超级管理员先执行 plan，确认统计后 start；提取完成必须 review 并逐项批准或拒绝，
+   pending 为 0 后才可 commit。
+
+`0024` 保留事实、证据、关系、状态事件、FTS、Embedding 与聊天账本。重启会将 extracting/
+committing 任务改为 paused，必须显式 resume；cancel 和 purge 都不会删除已提交事实。存在非终态
+重建任务时 downgrade 会拒绝。完整说明见
+[受控历史重建](docs/architecture/memory-v2-rebuild.md) 与
+[Memory V2 升级指南](docs/upgrade-memory-v2.md)。完整质量结果见
+[3.0.0rc1 实施报告](docs/releases/v3.0.0rc1.md)。

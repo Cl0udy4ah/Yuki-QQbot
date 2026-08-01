@@ -4,21 +4,29 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import delete, or_, select, text, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
+from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
+from qq_ai_bot.memory.rebuild.models import (
+    MemoryRebuildPlanStatistics,
+    MemoryRebuildSelection,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     AgentActionModel,
     ChatEventModel,
     ContextResetModel,
+    MemoryJobModel,
+    PersonModel,
     ProcessedEventModel,
 )
 from qq_ai_bot.persistence.repository_helpers import (
@@ -36,6 +44,158 @@ class EventLedgerRepository:
 
     def __init__(self, database: Database) -> None:
         self._database = database
+        self._memory_eligibility = MemoryEventEligibilityPolicy()
+
+    async def maximum_event_id(self) -> int:
+        async with self._database.sessions() as session:
+            return int(await session.scalar(select(func.max(ChatEventModel.id))) or 0)
+
+    def _rebuild_conditions(
+        self,
+        selection: MemoryRebuildSelection,
+        *,
+        snapshot_max_event_id: int,
+        eligible_only: bool,
+    ) -> tuple[Any, ...]:
+        conditions: list[Any] = [ChatEventModel.id <= snapshot_max_event_id]
+        if selection.bot_user_ids:
+            conditions.append(ChatEventModel.bot_user_id.in_(selection.bot_user_ids))
+        if selection.scope_types:
+            conditions.append(
+                ChatEventModel.scope_type.in_(tuple(scope.value for scope in selection.scope_types))
+            )
+        if selection.sender_user_ids:
+            conditions.append(ChatEventModel.sender_user_id.in_(selection.sender_user_ids))
+        if selection.group_ids:
+            conditions.append(ChatEventModel.group_id.in_(selection.group_ids))
+        if selection.after is not None:
+            conditions.append(ChatEventModel.occurred_at >= selection.after)
+        if selection.before is not None:
+            conditions.append(ChatEventModel.occurred_at <= selection.before)
+        if selection.minimum_event_id is not None:
+            conditions.append(ChatEventModel.id >= selection.minimum_event_id)
+        if selection.maximum_event_id is not None:
+            conditions.append(ChatEventModel.id <= selection.maximum_event_id)
+        if eligible_only:
+            conditions.extend(
+                self._memory_eligibility.sql_conditions(
+                    include_failed_live_jobs=selection.include_failed_live_jobs
+                )
+            )
+        return tuple(conditions)
+
+    async def count_rebuild_candidates(
+        self,
+        selection: MemoryRebuildSelection,
+        *,
+        snapshot_max_event_id: int,
+    ) -> MemoryRebuildPlanStatistics:
+        base = self._rebuild_conditions(
+            selection,
+            snapshot_max_event_id=snapshot_max_event_id,
+            eligible_only=False,
+        )
+        eligible = self._rebuild_conditions(
+            selection,
+            snapshot_max_event_id=snapshot_max_event_id,
+            eligible_only=True,
+        )
+        candidate = (
+            select(
+                ChatEventModel.id,
+                ChatEventModel.scope_type,
+                ChatEventModel.content,
+                ChatEventModel.occurred_at,
+            )
+            .where(*eligible)
+            .order_by(ChatEventModel.occurred_at.asc(), ChatEventModel.id.asc())
+        )
+        if selection.maximum_events is not None:
+            candidate = candidate.limit(selection.maximum_events)
+        candidate_rows = candidate.subquery()
+        async with self._database.sessions() as session:
+            matched = int(
+                await session.scalar(select(func.count()).select_from(ChatEventModel).where(*base))
+                or 0
+            )
+            summary = (
+                await session.execute(
+                    select(
+                        func.count(candidate_rows.c.id),
+                        func.sum(func.length(candidate_rows.c.content)),
+                        func.sum(func.iif(candidate_rows.c.scope_type == "private", 1, 0)),
+                        func.sum(func.iif(candidate_rows.c.scope_type == "group", 1, 0)),
+                        func.min(candidate_rows.c.occurred_at),
+                        func.max(candidate_rows.c.occurred_at),
+                    )
+                )
+            ).one()
+            status_result = (
+                await session.execute(
+                    select(MemoryJobModel.status, func.count())
+                    .join(ChatEventModel, ChatEventModel.id == MemoryJobModel.event_id)
+                    .where(*base)
+                    .group_by(MemoryJobModel.status)
+                )
+            ).all()
+            status_rows: dict[str, int] = {
+                str(status): int(count) for status, count in status_result
+            }
+        eligible_count = int(summary[0] or 0)
+        return MemoryRebuildPlanStatistics(
+            matched_events=matched,
+            eligible_events=eligible_count,
+            already_processed=int(status_rows.get("done", 0)),
+            live_pending_processing=int(status_rows.get("pending", 0))
+            + int(status_rows.get("processing", 0)),
+            failed_live_jobs=int(status_rows.get("failed", 0)),
+            private_events=int(summary[2] or 0),
+            group_events=int(summary[3] or 0),
+            input_characters=int(summary[1] or 0),
+            earliest_event=summary[4],
+            latest_event=summary[5],
+            estimated_extraction_requests=eligible_count,
+        )
+
+    async def list_rebuild_candidates(
+        self,
+        selection: MemoryRebuildSelection,
+        *,
+        snapshot_max_event_id: int,
+        after_occurred_at: datetime | None,
+        after_event_id: int | None,
+        limit: int,
+    ) -> tuple[EventRecord, ...]:
+        conditions = list(
+            self._rebuild_conditions(
+                selection,
+                snapshot_max_event_id=snapshot_max_event_id,
+                eligible_only=True,
+            )
+        )
+        if after_occurred_at is not None and after_event_id is not None:
+            conditions.append(
+                or_(
+                    ChatEventModel.occurred_at > after_occurred_at,
+                    and_(
+                        ChatEventModel.occurred_at == after_occurred_at,
+                        ChatEventModel.id > after_event_id,
+                    ),
+                )
+            )
+        bounded_limit = limit
+        if selection.maximum_events is not None:
+            bounded_limit = min(limit, selection.maximum_events)
+        async with self._database.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(ChatEventModel)
+                    .where(*conditions)
+                    .order_by(ChatEventModel.occurred_at.asc(), ChatEventModel.id.asc())
+                    .limit(bounded_limit)
+                )
+            ).all()
+        return tuple(_event_record(row) for row in rows)
 
     async def append(
         self,
@@ -224,6 +384,60 @@ class EventLedgerRepository:
             )
         rows.reverse()
         return tuple(_event_record(row) for row in rows)
+
+    async def hydrate_rebuild_subjects(self, event: EventRecord) -> EventRecord:
+        """Recover only deterministic legacy mention/reply metadata in the exact conversation."""
+
+        if event.scope_type is not ScopeType.GROUP or not event.group_id:
+            return replace(event, mentioned_user_ids=(), reply_sender_user_id=None)
+        mentions = list(event.mentioned_user_ids)
+        if not mentions:
+            for segment in event.segments:
+                if segment.get("type") != "at" or not isinstance(segment.get("data"), dict):
+                    continue
+                raw = str(segment["data"].get("qq", "")).strip()
+                if raw.isdigit():
+                    mentions.append(raw)
+        reply_sender = event.reply_sender_user_id
+        if reply_sender is None and event.reply_to_message_id:
+            referenced = await self.find_by_platform_message(
+                bot_user_id=event.bot_user_id,
+                platform_message_id=event.reply_to_message_id,
+            )
+            if (
+                referenced is not None
+                and referenced.scope_type is ScopeType.GROUP
+                and referenced.group_id == event.group_id
+                and referenced.sender_user_id != event.bot_user_id
+            ):
+                reply_sender = referenced.sender_user_id
+        blocked = {"", event.sender_user_id, event.bot_user_id}
+        return replace(
+            event,
+            mentioned_user_ids=tuple(
+                dict.fromkeys(user_id for user_id in mentions if user_id not in blocked)
+            ),
+            reply_sender_user_id=(
+                reply_sender if reply_sender is not None and reply_sender not in blocked else None
+            ),
+        )
+
+    async def memory_job_status(self, event_id: int) -> str | None:
+        async with self._database.sessions() as session:
+            return cast(
+                str | None,
+                await session.scalar(
+                    select(MemoryJobModel.status).where(MemoryJobModel.event_id == event_id)
+                ),
+            )
+
+    async def sender_is_bot(self, user_id: str) -> bool:
+        async with self._database.sessions() as session:
+            return bool(
+                await session.scalar(
+                    select(PersonModel.is_bot).where(PersonModel.user_id == user_id)
+                )
+            )
 
     async def search(
         self,

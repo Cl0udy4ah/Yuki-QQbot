@@ -12,11 +12,14 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.enums import (
     MemoryConflictState,
     MemoryFactRelationType,
     MemoryInvalidationReason,
     MemoryJobStatus,
+    MemoryProcessingSource,
+    MemoryRebuildJobOutcome,
     MemoryStateAction,
     MemoryStatus,
 )
@@ -63,6 +66,17 @@ class MemoryFactRepository:
     async def transaction(self) -> AsyncIterator[AsyncSession]:
         async with self._database.sessions() as session, session.begin():
             yield session
+
+    async def count_active_for_create(self, fact: MemoryFactCreate) -> int:
+        """Count current active facts in the exact target without mutating capacity."""
+
+        return await self.count_active(
+            MemoryFactQuery(
+                scope_type=fact.scope_type,
+                subject_user_id=fact.subject_user_id,
+                group_id=fact.group_id,
+            )
+        )
 
     async def list_facts(
         self,
@@ -338,9 +352,10 @@ class MemoryFactRepository:
         *,
         normalized_content: str,
         supersedes_id: int | None,
+        recorded_at: datetime | None = None,
         session: AsyncSession,
     ) -> MemoryFactModel:
-        now = datetime.now(UTC)
+        now = recorded_at or datetime.now(UTC)
         if fact.subject_user_id:
             await _ensure_person(session, fact.subject_user_id, now=now)
         if fact.group_id:
@@ -381,7 +396,9 @@ class MemoryFactRepository:
             created_at=now,
             updated_at=now,
             last_confirmed_at=now,
-            invalidated_reason=None,
+            invalidated_reason=(
+                fact.invalidated_reason.value if fact.invalidated_reason is not None else None
+            ),
             last_used_at=None,
         )
         session.add(row)
@@ -469,13 +486,21 @@ class MemoryFactRepository:
         confirmed_at: datetime,
         session: AsyncSession,
     ) -> None:
+        current = await session.get(MemoryFactModel, fact_id)
+        if current is None:
+            return
+        previous = current.last_confirmed_at
+        if previous.tzinfo is None:
+            previous = previous.replace(tzinfo=UTC)
+        if confirmed_at.tzinfo is None:
+            confirmed_at = confirmed_at.replace(tzinfo=UTC)
         await session.execute(
             update(MemoryFactModel)
             .where(MemoryFactModel.id == fact_id)
             .values(
                 authority=authority,
                 confidence=confidence,
-                last_confirmed_at=confirmed_at,
+                last_confirmed_at=max(previous, confirmed_at),
                 updated_at=datetime.now(UTC),
             )
         )
@@ -872,17 +897,25 @@ class MemoryFactRepository:
 class MemoryJobRepository:
     """Durable one-event extraction queue with bounded retries."""
 
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self,
+        database: Database,
+        *,
+        eligibility: MemoryEventEligibilityPolicy | None = None,
+    ) -> None:
         self._database = database
+        self._eligibility = eligibility or MemoryEventEligibilityPolicy()
 
     async def enqueue(self, event_id: int, conversation_key: str) -> bool:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
             event = await session.get(ChatEventModel, event_id)
-            if event is None or event.direction != "inbound":
+            if event is None:
                 return False
             sender = await session.get(PersonModel, event.sender_user_id)
-            if sender is None or sender.is_bot:
+            if sender is None or not self._eligibility.is_eligible(
+                _event_record(event), sender_is_bot=sender.is_bot
+            ):
                 return False
             statement = insert(MemoryJobModel).values(
                 event_id=event_id,
@@ -893,6 +926,9 @@ class MemoryJobRepository:
                 created_at=now,
                 updated_at=now,
                 error_category=None,
+                processing_source=MemoryProcessingSource.LIVE.value,
+                outcome=None,
+                completed_at=None,
             )
             result = await session.execute(
                 statement.on_conflict_do_nothing(index_elements=[MemoryJobModel.event_id])
@@ -951,20 +987,32 @@ class MemoryJobRepository:
                         created_at=row.created_at,
                         updated_at=row.updated_at,
                         error_category=row.error_category,
+                        processing_source=row.processing_source,
+                        rebuild_run_id=row.rebuild_run_id,
+                        outcome=row.outcome,
+                        completed_at=row.completed_at,
                         event=_event_record(event),
                     )
                 )
             return tuple(jobs)
 
-    async def complete(self, job_id: int) -> None:
+    async def complete(
+        self,
+        job_id: int,
+        *,
+        outcome: MemoryRebuildJobOutcome = MemoryRebuildJobOutcome.CLAIMS_APPLIED,
+    ) -> None:
+        now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
             await session.execute(
                 update(MemoryJobModel)
                 .where(MemoryJobModel.id == job_id)
                 .values(
                     status=MemoryJobStatus.DONE.value,
-                    updated_at=datetime.now(UTC),
+                    updated_at=now,
                     error_category=None,
+                    outcome=outcome.value,
+                    completed_at=now,
                 )
             )
 

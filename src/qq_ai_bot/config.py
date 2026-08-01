@@ -161,6 +161,17 @@ class Settings(BaseSettings):
     memory_embedding_retry_attempts: int = 5
     memory_embedding_retry_initial_seconds: float = 30.0
     memory_embedding_http_concurrency: int = 2
+    memory_rebuild_enabled: bool = False
+    memory_rebuild_worker_interval_seconds: float = 5.0
+    memory_rebuild_scan_batch_size: int = 100
+    memory_rebuild_extraction_concurrency: int = 2
+    memory_rebuild_commit_batch_size: int = 20
+    memory_rebuild_context_event_limit: int = 8
+    memory_rebuild_retry_attempts: int = 5
+    memory_rebuild_retry_initial_seconds: float = 30.0
+    memory_rebuild_review_page_size: int = 20
+    memory_rebuild_source_excerpt_characters: int = 500
+    memory_rebuild_max_events_per_run: int | None = None
     agent_max_tool_calls: int = 12
     agent_max_model_requests: int = 12
     agent_tool_result_max_characters: int = 32000
@@ -388,6 +399,18 @@ class Settings(BaseSettings):
         converted = int(value) if isinstance(value, str) else value
         if not isinstance(converted, int) or converted <= 0:
             raise ValueError("speech limit must be a positive integer or empty")
+        return converted
+
+    @field_validator("memory_rebuild_max_events_per_run", mode="before")
+    @classmethod
+    def _optional_memory_rebuild_limit(cls, value: object) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if isinstance(value, bool):
+            raise ValueError("MEMORY_REBUILD_MAX_EVENTS_PER_RUN must be positive or empty")
+        converted = int(value) if isinstance(value, str) else value
+        if not isinstance(converted, int) or converted <= 0:
+            raise ValueError("MEMORY_REBUILD_MAX_EVENTS_PER_RUN must be positive or empty")
         return converted
 
     @field_validator("speech_provider")

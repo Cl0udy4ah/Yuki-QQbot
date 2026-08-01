@@ -9,6 +9,8 @@ from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
+from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.repositories import PeopleRepository
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
@@ -29,14 +31,18 @@ class ProfileCommandHandler:
         memory_admin: MemoryAdminService,
         preference_admin: PreferenceAdminService,
         relationship_admin: RelationshipAdminService,
+        memory_rebuild: MemoryRebuildService | None = None,
     ) -> None:
         self._people = people
         self._memories = memories
         self._memory_admin = memory_admin
         self._preference_admin = preference_admin
         self._relationship_admin = relationship_admin
+        self._memory_rebuild = memory_rebuild
 
     async def memory(self, *, actor: AdminActor, argument: str) -> str:
+        if argument.strip().casefold().startswith("rebuild"):
+            return await self._memory_rebuild_command(actor, argument.strip()[7:].strip())
         special = await self._memory_diagnostics(actor, argument)
         if special is not None:
             return special
@@ -91,6 +97,82 @@ class ProfileCommandHandler:
                 f"事件 {row.event_id} [{row.relation}] {row.excerpt}" for row in evidence_rows
             )
         return "可用操作：list、add、update、delete、evidence、search、index、embedding。"
+
+    async def _memory_rebuild_command(self, actor: AdminActor, argument: str) -> str:
+        if self._memory_rebuild is None:
+            return "历史记忆重建服务未装配。"
+        if not actor.is_superuser:
+            raise PermissionError("仅当前真实超级管理员可使用历史记忆重建。")
+        operation, _, rest = argument.partition(" ")
+        operation = operation.casefold()
+        rest = rest.strip()
+        try:
+            if operation == "list":
+                rows = await self._memory_rebuild.list(actor_user_id=actor.user_id)
+                return (
+                    "\n".join(
+                        f"{row.public_id} [{row.status.value}] "
+                        f"{row.plan_statistics.eligible_events} events"
+                        for row in rows
+                    )
+                    or "暂无历史记忆重建任务。"
+                )
+            if operation == "plan":
+                selection = MemoryRebuildSelection.model_validate_json(rest)
+                run = await self._memory_rebuild.plan(selection, actor_user_id=actor.user_id)
+                return (
+                    f"已规划 {run.public_id}：匹配 {run.plan_statistics.matched_events}，"
+                    f"可提取 {run.plan_statistics.eligible_events}；plan 未调用模型。"
+                )
+            if operation in {
+                "start",
+                "status",
+                "pause",
+                "resume",
+                "cancel",
+                "commit",
+                "retry",
+                "purge",
+            }:
+                if not rest:
+                    return f"格式：/ai memory rebuild {operation} <run_id>"
+                if operation == "status":
+                    data = await self._memory_rebuild.status(rest, actor_user_id=actor.user_id)
+                    return json.dumps(data, ensure_ascii=False, indent=2)
+                method = getattr(self._memory_rebuild, operation)
+                result = await method(rest, actor_user_id=actor.user_id)
+                if isinstance(result, bool):
+                    return "重建暂存数据已清理。" if result else "没有找到该重建任务。"
+                return f"{result.public_id} -> {result.status.value}"
+            if operation == "review":
+                run_id, _, raw_page = rest.partition(" ")
+                review_entries = await self._memory_rebuild.review(
+                    run_id,
+                    actor_user_id=actor.user_id,
+                    page=int(raw_page or "1"),
+                )
+                return json.dumps(
+                    [row.model_dump(mode="json") for row in review_entries],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            if operation in {"approve", "reject"}:
+                run_id, _, selector = rest.partition(" ")
+                if not run_id or not selector:
+                    return f"格式：/ai memory rebuild {operation} <run_id> <all|ids|filter-json>"
+                count = await self._memory_rebuild.set_review(
+                    run_id,
+                    selector,
+                    approved=operation == "approve",
+                    actor_user_id=actor.user_id,
+                )
+                return f"已{('批准' if operation == 'approve' else '拒绝')} {count} 条 proposal。"
+        except (ValueError, RuntimeError, PermissionError, json.JSONDecodeError) as exc:
+            return f"操作未完成：{exc}"
+        return (
+            "可用操作：list、plan、start、status、pause、resume、cancel、review、"
+            "approve、reject、commit、retry、purge。"
+        )
 
     async def _memory_diagnostics(self, actor: AdminActor, argument: str) -> str | None:
         parts = argument.split()

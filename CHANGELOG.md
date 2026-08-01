@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## 3.0.0rc1 - 2026-08-01
+
+### 从事件账本受控重建
+
+- 新增显式 `plan → start → review → approve/reject → commit` 历史重建流程，只读取固定快照内的
+  `chat_events`。plan 不调用模型，提取阶段只暂存 proposal；升级、启动和 Worker 启动均不会
+  自动创建、开始或恢复任务，进程重启会把执行中任务持久暂停。
+- 实时记忆与历史重建共用 `MemoryEventExtractor`、`MemoryClaimProcessor`、`SubjectResolver`、
+  Claim Validator、冲突候选和 `MemoryFactService`。空消息不提取，证据必须逐字来自当前事件，
+  上下文只按 `current_speaker / other_member / bot` 辅助消歧，交互偏好不再混入人物事实。
+- 历史提交会重新加载和校验源事件、身份与 live receipt；旧事实不能覆盖较新的 active 事实，
+  相同历史证据不会把 `last_confirmed_at` 改早，过期事实只能跳过或保存为 invalidated，容量已满
+  时不会淘汰当前事实。
+
+### 持久状态、管理与运维
+
+- 非破坏性 Alembic `0024` 新增 `memory_rebuild_runs/items/proposals`，并扩展
+  `memory_jobs` 为 live/rebuild 共用的逐事件 receipt。扫描采用 `occurred_at + event_id` keyset，
+  支持配置化提取并发、持久退避重试、暂停、恢复、取消、审阅分页和暂存清理；run 同时持久
+  累计真实模型请求、供应商 usage token 与延迟统计。
+- 新增 `/ai memory rebuild ...` 超级管理员命令和十个同服务 Tool Kernel 工具；`/ai forgetme`
+  会删除人物暂存 proposal、取消仅针对该人物的非终态任务并脱敏 selection。Plugin API 仍为
+  `1.0`，没有暴露历史重建接口。
+- 新增无正文健康状态与指标、完整配置示例、架构/升级/隐私/故障排查文档，并将版本提升为
+  `3.0.0rc1`。Run 完成只表示事实提交完成，不等待可重建的 Embedding 派生任务。
+
 ## 3.0.0b2 - 2026-08-01
 
 ### Memory V2 冲突治理与可信修正

@@ -123,6 +123,63 @@ class MemoryJobStatus(StrEnum):
     FAILED = "failed"
 
 
+class MemoryProcessingSource(StrEnum):
+    LIVE = "live"
+    REBUILD = "rebuild"
+
+
+class MemoryRebuildRunStatus(StrEnum):
+    PLANNED = "planned"
+    EXTRACTING = "extracting"
+    EXTRACTION_PAUSED = "extraction_paused"
+    REVIEW = "review"
+    COMMITTING = "committing"
+    COMMIT_PAUSED = "commit_paused"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+class MemoryRebuildItemStatus(StrEnum):
+    PENDING = "pending"
+    EXTRACTING = "extracting"
+    STAGED = "staged"
+    NO_CLAIMS = "no_claims"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+    COMMITTED = "committed"
+
+
+class MemoryRebuildReviewStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class MemoryRebuildCommitStatus(StrEnum):
+    PENDING = "pending"
+    COMMITTED = "committed"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+class MemoryRebuildJobOutcome(StrEnum):
+    CLAIMS_APPLIED = "claims_applied"
+    NO_CLAIMS = "no_claims"
+    ALL_REJECTED = "all_rejected"
+    ALREADY_PROCESSED = "already_processed"
+
+
+class MemoryRebuildThirdPartyMode(StrEnum):
+    DISABLED = "disabled"
+    TRUSTED_METADATA = "trusted_metadata"
+
+
+class MemoryRebuildExpiredClaimPolicy(StrEnum):
+    SKIP = "skip"
+    STAGE_INVALIDATED = "stage_invalidated"
+
+
 class MemoryRetrievalMode(StrEnum):
     RELEVANT = "relevant"
     OVERVIEW = "overview"

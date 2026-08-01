@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,6 +16,11 @@ from qq_ai_bot.memory.enums import (
     MemorySourceType,
     MemoryTemporalMode,
 )
+from qq_ai_bot.persistence.repository_records import EventRecord
+
+EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v2"
+EXTRACTION_SCHEMA_VERSION = "2"
+SOURCE_ADAPTATION_VERSION = "2"
 
 
 class _ExtractionModel(BaseModel):
@@ -26,6 +33,11 @@ class PrimaryEvent(_ExtractionModel):
     occurred_at: datetime
 
 
+class ConversationContextEvent(_ExtractionModel):
+    speaker_role: str = Field(pattern=r"^(current_speaker|other_member|bot)$")
+    content: str
+
+
 class AvailableSubject(_ExtractionModel):
     subject_ref: str
     display_label: str
@@ -36,7 +48,7 @@ class AvailableSubject(_ExtractionModel):
 class MemoryExtractionInput(_ExtractionModel):
     primary_event: PrimaryEvent
     available_subjects: tuple[AvailableSubject, ...]
-    conversation_context: tuple[str, ...] = ()
+    conversation_context: tuple[ConversationContextEvent, ...] = ()
 
 
 class MemoryClaim(_ExtractionModel):
@@ -47,6 +59,7 @@ class MemoryClaim(_ExtractionModel):
     memory_key: str = Field(min_length=1, max_length=128)
     category: str = Field(min_length=1, max_length=64)
     content: str = Field(min_length=1, max_length=4000)
+    evidence_quote: str = Field(min_length=1, max_length=500)
     importance: int = Field(default=3, ge=1, le=5)
     confidence: float = Field(default=0.8, ge=0, le=1)
     source_type: MemorySourceType = MemorySourceType.AUTOMATIC
@@ -57,3 +70,27 @@ class MemoryClaim(_ExtractionModel):
 
 class MemoryExtractionOutput(_ExtractionModel):
     claims: tuple[MemoryClaim, ...] = ()
+
+
+def source_event_fingerprint(event: EventRecord) -> str:
+    """Hash immutable source semantics; derived visual text is deliberately excluded."""
+
+    payload = {
+        "event_id": event.id,
+        "bot_user_id": event.bot_user_id,
+        "platform_message_id": event.platform_message_id,
+        "scope_type": event.scope_type.value,
+        "sender_user_id": event.sender_user_id,
+        "group_id": event.group_id,
+        "private_peer_user_id": event.private_peer_user_id,
+        "direction": event.direction,
+        "content": event.content,
+        "segments": event.segments,
+        "reply_to_message_id": event.reply_to_message_id,
+        "mentioned_user_ids": event.mentioned_user_ids,
+        "reply_sender_user_id": event.reply_sender_user_id,
+        "origin": event.origin,
+        "occurred_at": event.occurred_at.isoformat(),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

@@ -14,6 +14,8 @@ from qq_ai_bot.memory.enums import (
     MemoryInvalidationReason,
     MemoryJobStatus,
     MemoryKind,
+    MemoryProcessingSource,
+    MemoryRebuildJobOutcome,
     MemoryResolutionAction,
     MemoryRetrievalMode,
     MemoryScopeType,
@@ -136,6 +138,7 @@ class MemoryFactCreate(_MemoryModel):
     authority: MemoryAuthority = MemoryAuthority.SELF_REPORT
     status: MemoryStatus = MemoryStatus.ACTIVE
     conflict_state: MemoryConflictState = MemoryConflictState.CLEAR
+    invalidated_reason: MemoryInvalidationReason | None = None
     valid_from: datetime | None = None
     valid_until: datetime | None = None
 
@@ -159,7 +162,7 @@ class MemoryFactCreate(_MemoryModel):
         _validate_fact_lifecycle(
             status=self.status,
             conflict_state=self.conflict_state,
-            invalidated_reason=None,
+            invalidated_reason=self.invalidated_reason,
         )
         if (
             self.valid_from is not None
@@ -287,6 +290,10 @@ class MemoryJob(_MemoryModel):
     created_at: datetime
     updated_at: datetime
     error_category: str | None = None
+    processing_source: MemoryProcessingSource = MemoryProcessingSource.LIVE
+    rebuild_run_id: int | None = None
+    outcome: MemoryRebuildJobOutcome | None = None
+    completed_at: datetime | None = None
     event: EventRecord
 
 

@@ -88,6 +88,11 @@ def upgrade() -> None:
             "memory_embedding_profiles",
             "memory_embeddings",
             "memory_embedding_jobs",
+            "memory_fact_relations",
+            "memory_fact_state_events",
+            "memory_rebuild_runs",
+            "memory_rebuild_items",
+            "memory_rebuild_proposals",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

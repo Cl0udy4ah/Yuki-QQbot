@@ -1,4 +1,4 @@
-# 升级到 Memory V2（3.0.0b2）
+# 升级到 Memory V2（3.0.0rc1）
 
 ## 必须理解的不可逆变化
 
@@ -43,3 +43,20 @@ docker compose up -d --build --no-deps bot
 升级后运行 `/ai memory doctor` 与 `/ai memory maintenance status`。没有 contested fact 时，
 `0023 → 0022` downgrade 会删除本阶段新增关系/状态表和元数据列，但保留原 facts/evidence；
 存在 contested fact 时 downgrade 会拒绝，以免无声丢失冲突语义。
+
+## 3.0.0rc1 增量升级
+
+从 `3.0.0b2` 升级时，Alembic `0024` 只增加历史重建 staging 和 `memory_jobs` receipt 元数据，
+不会修改或删除已有 facts、evidence、relations、state events、FTS、Embedding 或 chat_events。
+
+```powershell
+docker compose stop bot
+Copy-Item data data-backup-before-3.0.0rc1 -Recurse
+uv run alembic upgrade head
+docker compose up -d --build --no-deps bot
+```
+
+默认 `MEMORY_REBUILD_ENABLED=false`。即使设为 true，也只表示管理员可以使用该功能：迁移、启动、
+重启和 Worker 都不会自行 plan/start/resume。执行中任务遇到进程重启会进入 paused，必须由当前
+真实超级管理员显式恢复。降级前必须先让所有 run 进入 completed/cancelled/failed；downgrade
+只删除 staging 与新增 receipt 列，不删除已经提交的事实和证据。

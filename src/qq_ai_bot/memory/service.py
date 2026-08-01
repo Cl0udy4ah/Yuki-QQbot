@@ -322,6 +322,7 @@ class MemoryFactService:
             supersedes_id=(
                 existing_id if plan.action is MemoryResolutionAction.SUPERSEDE else None
             ),
+            recorded_at=claim.occurred_at,
             session=session,
         )
         if await self._repository.add_evidence(row.id, evidence, session=session):

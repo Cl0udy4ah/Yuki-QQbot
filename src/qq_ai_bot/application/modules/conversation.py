@@ -14,6 +14,8 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
+from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
+from qq_ai_bot.memory.rebuild.worker import MemoryRebuildWorker
 from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.planner.context import PlannerContextBuilder
@@ -60,6 +62,8 @@ class ConversationBundle:
     plugin_agent_tools: PluginAgentToolBackend
     chat: ChatService
     memory_worker: MemoryWorker
+    memory_rebuild_service: MemoryRebuildService
+    memory_rebuild_worker: MemoryRebuildWorker
     memory_maintenance_worker: MemoryMaintenanceWorker
     relationship_worker: RelationshipWorker
 
@@ -202,6 +206,17 @@ class ConversationModule:
             ),
             metrics=persistence.memory_metrics,
         )
+        memory_rebuild_service = MemoryRebuildService(
+            settings=settings,
+            repository=persistence.memory_rebuilds,
+            ledger=persistence.ledger,
+            extractor=memory_worker.extractor,
+            processor=memory_worker.processor,
+        )
+        memory_rebuild_worker = MemoryRebuildWorker(
+            memory_rebuild_service,
+            interval_seconds=settings.memory_rebuild_worker_interval_seconds,
+        )
         memory_maintenance_worker = MemoryMaintenanceWorker(
             settings=settings,
             facts=persistence.memories,
@@ -229,6 +244,8 @@ class ConversationModule:
             plugin_agent_tools,
             chat,
             memory_worker,
+            memory_rebuild_service,
+            memory_rebuild_worker,
             memory_maintenance_worker,
             relationship_worker,
         )
@@ -239,6 +256,11 @@ class ConversationModule:
             "memory_worker",
             start=bundle.memory_worker.start,
             close=bundle.memory_worker.close,
+        )
+        lifecycle.register(
+            "memory_rebuild_worker",
+            start=bundle.memory_rebuild_worker.start,
+            close=bundle.memory_rebuild_worker.close,
         )
         lifecycle.register(
             "memory_maintenance_worker",

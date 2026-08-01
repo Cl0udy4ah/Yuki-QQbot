@@ -14,6 +14,7 @@ from qq_ai_bot.memory.evidence import MemoryEvidencePolicy, MemoryEvidenceWeight
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.query import MemoryQueryBuilder
+from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
 from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
@@ -54,6 +55,7 @@ class PersistenceBundle:
     memory_jobs: MemoryJobRepository
     memory_audit: MemoryAuditService
     memory_metrics: MemoryLifecycleMetrics
+    memory_rebuilds: MemoryRebuildRepository
     agent_actions: AgentActionRepository
     web_sources: WebSearchSourceRepository
     media_analyses: MediaAnalysisRepository
@@ -143,6 +145,7 @@ class PersistenceModule:
                 runtime_config=runtime_config,
             ),
             memory_metrics=memory_metrics,
+            memory_rebuilds=MemoryRebuildRepository(database),
             agent_actions=AgentActionRepository(database),
             web_sources=WebSearchSourceRepository(database),
             media_analyses=MediaAnalysisRepository(database),

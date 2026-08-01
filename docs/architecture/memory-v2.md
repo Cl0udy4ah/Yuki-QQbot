@@ -17,6 +17,8 @@ Memory V2 将长期记忆拆为事实、证据、逐事件提取任务和可重�
   `0022` 创建的派生语义索引。向量按 profile 隔离，事实删除时级联删除。
 - `memory_fact_relations` 与 `memory_fact_state_events` 是 Alembic `0023` 创建的冲突关系和
   内容无关状态审计；`memory_facts` / `memory_evidence` 同时增加 authority、冲突和聚合元数据。
+- `memory_rebuild_runs`、`memory_rebuild_items` 和 `memory_rebuild_proposals` 是 Alembic `0024`
+  创建的可审阅暂存区；它们不构成第二套事实库，只有 commit 才会经共享事实服务写入。
 - 三个 partial unique index 保证每个主体、kind、memory_key 最多一个 active fact。
 
 ## 可信身份映射
@@ -117,7 +119,15 @@ explicit、高重要度或高 confidence 事实不走陈旧失效；维护不调
 健康检查仅返回事实数、物理索引行数、缺失数和孤儿数，不记录查询或事实正文。重建只执行
 FTS 派生索引 rebuild，不修改事实、证据或状态，也不会在每次启动时自动运行。
 
+## 受控历史重建
+
+3.0.0rc1 可以从固定快照内的 `chat_events` 显式重建。plan 无模型，extract 只暂存 claim，
+全部 proposal 经超级管理员 approve/reject 后才能 commit。提交时重新验证真实事件、主体、时间、
+当前事实与 live receipt；历史事实不会覆盖更新事实，也不会为腾出容量淘汰当前 active fact。
+升级、启动和 Worker 启动均不会自动开始；重启只会将执行中任务暂停。详见
+[受控历史重建](memory-v2-rebuild.md)。
+
 ## 尚未实现
 
-当前没有向量数据库、模型重排、模糊昵称人物识别、第三方跨群人物事实或历史聊天重建。
-后续阶段见 [Memory V2 路线](memory-v2-roadmap.md)。
+当前没有独立向量数据库、模型重排、模糊昵称人物识别或第三方跨群人物事实。后续阶段见
+[Memory V2 路线](memory-v2-roadmap.md)。

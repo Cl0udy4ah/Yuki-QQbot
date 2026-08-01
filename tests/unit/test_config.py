@@ -89,7 +89,13 @@ def test_memory_embedding_disabled_needs_no_secret_but_enabled_does() -> None:
     assert disabled.memory_embedding_configured is False
 
     with pytest.raises(ValidationError, match="MEMORY_EMBEDDING_BASE_URL"):
-        Settings.model_validate({"memory_embedding_enabled": True})
+        Settings.model_validate(
+            {
+                "memory_embedding_enabled": True,
+                "memory_embedding_base_url": "",
+                "memory_embedding_api_key": "",
+            }
+        )
 
     enabled = Settings.model_validate(
         {

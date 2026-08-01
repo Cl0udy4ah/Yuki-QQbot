@@ -21,6 +21,7 @@ from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
+from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
@@ -75,6 +76,7 @@ class AdminModule:
         emoji_collector: EmojiCollector,
         emoji_worker: EmojiWorker | None,
         speech_admin: SpeechAdminService,
+        memory_rebuild: MemoryRebuildService,
     ) -> None:
         self._settings = settings
         self._database = database
@@ -96,6 +98,7 @@ class AdminModule:
         self._emoji_collector = emoji_collector
         self._emoji_worker = emoji_worker
         self._speech_admin = speech_admin
+        self._memory_rebuild = memory_rebuild
 
     def build(self) -> AdminBundle:
         audit = AdminAuditService(self._database)
@@ -159,6 +162,7 @@ class AdminModule:
             actions=actions,
             audit=audit,
             permission_catalog=self._permission_catalog,
+            memory_rebuild=self._memory_rebuild,
         )
         return AdminBundle(
             audit,

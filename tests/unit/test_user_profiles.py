@@ -417,7 +417,7 @@ def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
         chat_event_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(chat_events)").fetchall()
         }
-    assert revision == ("0023",)
+    assert revision == ("0024",)
     assert "visual_summary" in chat_event_columns
     assert "conversations" not in tables
     assert {
@@ -428,6 +428,9 @@ def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
         "memory_facts",
         "memory_evidence",
         "memory_jobs",
+        "memory_rebuild_runs",
+        "memory_rebuild_items",
+        "memory_rebuild_proposals",
         "chat_events_fts",
         "person_relationships",
         "relationship_events",
@@ -439,6 +442,59 @@ def test_alembic_head_rebuilds_v1_rows_then_adds_web_and_relationship_tables(
         "automation_step_runs",
     } <= tables
     assert {"origin", "automation_id", "automation_run_id"} <= chat_event_columns
+
+
+def test_0024_downgrade_refuses_active_rebuild_then_preserves_memory_tables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "rebuild-downgrade.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    now = "2026-08-01T00:00:00+00:00"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO people (
+                user_id, nickname, enabled, is_bot, first_seen_at, last_seen_at
+            ) VALUES ('9000', '', 1, 0, ?, ?)
+            """,
+            (now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO memory_rebuild_runs (
+                public_id, status, selection_json, selection_hash,
+                snapshot_max_event_id, snapshot_created_at, created_by_user_id,
+                extraction_fingerprint, plan_statistics_json, created_at, updated_at
+            ) VALUES ('active-run', 'extracting', '{}', 'hash', 0, ?, '9000',
+                      'fingerprint', '{}', ?, ?)
+            """,
+            (now, now, now),
+        )
+        connection.commit()
+    with pytest.raises(RuntimeError, match="active"):
+        command.downgrade(config, "0023")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE memory_rebuild_runs SET status='completed' WHERE public_id='active-run'"
+        )
+        connection.commit()
+    command.downgrade(config, "0023")
+    with sqlite3.connect(database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+    assert revision == ("0023",)
+    assert "memory_facts" in tables
+    assert "memory_evidence" in tables
+    assert "memory_rebuild_runs" not in tables
 
 
 def test_0007_non_destructively_backfills_existing_people(
@@ -475,4 +531,4 @@ def test_0007_non_destructively_backfills_existing_people(
             """
         ).fetchone() == (50, 50)
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision == ("0023",)
+    assert revision == ("0024",)

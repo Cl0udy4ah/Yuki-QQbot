@@ -13,6 +13,8 @@ from qq_ai_bot.admin.models import AdminActor, ConfigChangeResult, EffectiveConf
 from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import ChatTool
+from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
+from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.services.agent_tools import ToolRuntime
 
 
@@ -50,7 +52,7 @@ class CapabilityRegistry:
                 ),
             },
         }
-        return (
+        base = (
             ChatTool(
                 name="admin_get_config",
                 description="读取一个或多个注册配置的真实有效值；凭证只返回是否已配置。",
@@ -198,6 +200,71 @@ class CapabilityRegistry:
                 ),
             ),
         )
+        run_schema = _object_schema({"run_id": {"type": "string"}}, required=("run_id",))
+        return (
+            *base,
+            ChatTool(
+                name="admin_memory_rebuild_plan",
+                description="仅规划 chat_events 历史记忆重建；不调用模型，也不写事实。",
+                parameters=_object_schema(
+                    {"selection": {"type": "object"}}, required=("selection",)
+                ),
+            ),
+            ChatTool(
+                name="admin_memory_rebuild_start",
+                description="显式开始 proposal 提取。",
+                parameters=run_schema,
+            ),
+            ChatTool(
+                name="admin_memory_rebuild_status",
+                description="读取重建状态和有界统计。",
+                parameters=run_schema,
+            ),
+            ChatTool(
+                name="admin_memory_rebuild_pause",
+                description="在批次边界暂停重建。",
+                parameters=run_schema,
+            ),
+            ChatTool(
+                name="admin_memory_rebuild_resume",
+                description="显式恢复已暂停重建。",
+                parameters=run_schema,
+            ),
+            ChatTool(
+                name="admin_memory_rebuild_cancel",
+                description="取消后续处理，不回滚已提交事实。",
+                parameters=run_schema,
+            ),
+            ChatTool(
+                name="admin_memory_rebuild_review",
+                description="分页查看待审阅的 canonical claims。",
+                parameters=_object_schema(
+                    {"run_id": {"type": "string"}, "page": {"type": "integer", "minimum": 1}},
+                    required=("run_id",),
+                ),
+            ),
+            ChatTool(
+                name="admin_memory_rebuild_approve",
+                description="批准全部或指定 proposal；不能编辑主体和内容。",
+                parameters=_object_schema(
+                    {"run_id": {"type": "string"}, "selector": {"type": "string"}},
+                    required=("run_id", "selector"),
+                ),
+            ),
+            ChatTool(
+                name="admin_memory_rebuild_reject",
+                description="拒绝全部或指定 proposal。",
+                parameters=_object_schema(
+                    {"run_id": {"type": "string"}, "selector": {"type": "string"}},
+                    required=("run_id", "selector"),
+                ),
+            ),
+            ChatTool(
+                name="admin_memory_rebuild_commit",
+                description="审阅完成后按历史顺序提交。",
+                parameters=run_schema,
+            ),
+        )
 
 
 class AdminCapabilityService:
@@ -212,6 +279,7 @@ class AdminCapabilityService:
         registry: CapabilityRegistry | None = None,
         audit: AdminAuditService | None = None,
         permission_catalog: PermissionCatalogService | None = None,
+        memory_rebuild: MemoryRebuildService | None = None,
     ) -> None:
         self._settings = settings
         self._runtime_config = runtime_config
@@ -223,6 +291,7 @@ class AdminCapabilityService:
             config_registry=runtime_config.registry,
             action_registry=actions.registry,
         )
+        self._memory_rebuild = memory_rebuild
 
     def definitions(self) -> tuple[ChatTool, ...]:
         return self.registry.definitions()
@@ -230,6 +299,8 @@ class AdminCapabilityService:
     def is_mutating_call(self, name: str, arguments_json: str) -> bool:
         """Classify a tool call from the same ActionRegistry used for execution."""
 
+        if name.startswith("admin_memory_rebuild_"):
+            return name not in {"admin_memory_rebuild_status", "admin_memory_rebuild_review"}
         if name in {
             "admin_set_config",
             "admin_delete_config_override",
@@ -267,6 +338,8 @@ class AdminCapabilityService:
         started = time.perf_counter()
         try:
             actor = self._actor(runtime)
+            if name.startswith("admin_memory_rebuild_"):
+                return self._result(data=await self._execute_memory_rebuild(name, arguments, actor))
             if name == "admin_list_capabilities":
                 return self._result(data=self._list_capabilities(arguments, actor, runtime))
             if name == "admin_get_config":
@@ -365,6 +438,50 @@ class AdminCapabilityService:
             error_category=type(exc).__name__,
             duration_seconds=time.perf_counter() - started,
         )
+
+    async def _execute_memory_rebuild(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        actor: AdminActor,
+    ) -> Any:
+        service = self._memory_rebuild
+        if service is None:
+            raise RuntimeError("memory rebuild service is unavailable")
+        operation = name.removeprefix("admin_memory_rebuild_")
+        if operation == "plan":
+            selection = arguments.get("selection")
+            if not isinstance(selection, dict):
+                raise ValueError("selection must be an object")
+            run = await service.plan(
+                MemoryRebuildSelection.model_validate(selection),
+                actor_user_id=actor.user_id,
+            )
+            return run.model_dump(mode="json")
+        run_id = _required_string(arguments, "run_id")
+        if operation == "status":
+            return await service.status(run_id, actor_user_id=actor.user_id)
+        if operation == "review":
+            page = arguments.get("page", 1)
+            if isinstance(page, bool) or not isinstance(page, int) or page <= 0:
+                raise ValueError("page must be a positive integer")
+            rows = await service.review(run_id, actor_user_id=actor.user_id, page=page)
+            return [row.model_dump(mode="json") for row in rows]
+        if operation in {"approve", "reject"}:
+            selector = _required_string(arguments, "selector")
+            return {
+                "changed": await service.set_review(
+                    run_id,
+                    selector,
+                    approved=operation == "approve",
+                    actor_user_id=actor.user_id,
+                )
+            }
+        method = getattr(service, operation, None)
+        if method is None:
+            raise ValueError(f"unknown memory rebuild operation: {operation}")
+        result = await method(run_id, actor_user_id=actor.user_id)
+        return result.model_dump(mode="json")
 
     def _actor(self, runtime: ToolRuntime) -> AdminActor:
         inbound = runtime.inbound

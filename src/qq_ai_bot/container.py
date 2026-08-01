@@ -257,6 +257,8 @@ class ApplicationContainer:
         self.chat = conversation.chat
         self.chat.register_tool_provider(self.mcp_tools)
         self.memory_worker = conversation.memory_worker
+        self.memory_rebuild_service = conversation.memory_rebuild_service
+        self.memory_rebuild_worker = conversation.memory_rebuild_worker
         self.memory_maintenance_worker = conversation.memory_maintenance_worker
         self.relationship_worker = conversation.relationship_worker
         admin = AdminModule(
@@ -280,6 +282,7 @@ class ApplicationContainer:
             emoji_collector=self.emoji_collector,
             emoji_worker=self.emoji_worker,
             speech_admin=self.speech_admin,
+            memory_rebuild=self.memory_rebuild_service,
         ).build()
         self.admin = admin
         self.admin_audit = admin.audit
@@ -407,6 +410,7 @@ class ApplicationContainer:
             speech_admin=self.speech_admin,
             model_invocations=self.model_invocations,
             mcp_commands=self.mcp_commands,
+            memory_rebuild=self.memory_rebuild_service,
         )
         self.processor = MessageProcessor(
             settings=settings,

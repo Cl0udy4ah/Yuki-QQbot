@@ -85,6 +85,7 @@ def _claim(**overrides: object) -> MemoryClaim:
         "memory_key": "profile:city",
         "category": "profile",
         "content": "现在住在上海",
+        "evidence_quote": "现在住在上海",
         "importance": 3,
         "confidence": 0.8,
         "source_type": "automatic",
@@ -223,6 +224,7 @@ async def test_third_party_contradiction_becomes_bounded_contest(database: Datab
             subject_ref="mentioned_1",
             scope_type="person_group",
             content="住在上海",
+            evidence_quote="小李现在住上海",
         ),
         event,
     )
@@ -267,6 +269,7 @@ async def test_third_party_contradiction_becomes_bounded_contest(database: Datab
             subject_ref="speaker",
             scope_type="person_group",
             content="住在上海",
+            evidence_quote="我确认自己住在上海",
         ),
         confirmation_event,
     )

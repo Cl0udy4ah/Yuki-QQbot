@@ -491,6 +491,160 @@ class MemoryFactStateEventModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MemoryRebuildRunModel(Base):
+    """Administrator-created immutable historical rebuild snapshot."""
+
+    __tablename__ = "memory_rebuild_runs"
+    __table_args__ = (
+        UniqueConstraint("public_id", name="uq_memory_rebuild_runs_public_id"),
+        CheckConstraint("snapshot_max_event_id >= 0", name="ck_memory_rebuild_snapshot"),
+        CheckConstraint(
+            "extraction_requests >= 0 AND consolidation_requests >= 0 "
+            "AND input_tokens >= 0 AND output_tokens >= 0 AND latency_milliseconds >= 0",
+            name="ck_memory_rebuild_usage_nonnegative",
+        ),
+        CheckConstraint(
+            "status IN ('planned','extracting','extraction_paused','review','committing',"
+            "'commit_paused','completed','cancelled','failed')",
+            name="ck_memory_rebuild_run_status",
+        ),
+        Index("ix_memory_rebuild_runs_status_created", "status", "created_at"),
+        Index("ix_memory_rebuild_runs_created_by", "created_by_user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    selection_json: Mapped[str] = mapped_column(Text, nullable=False)
+    selection_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_max_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    scan_checkpoint_occurred_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    scan_checkpoint_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    commit_checkpoint_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    commit_checkpoint_claim_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("people.user_id", ondelete="SET NULL"), nullable=True
+    )
+    extraction_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_statistics_json: Mapped[str] = mapped_column(Text, nullable=False)
+    extraction_requests: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    consolidation_requests: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    latency_milliseconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    commit_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MemoryRebuildItemModel(Base):
+    """Per-event extraction state inside one rebuild run."""
+
+    __tablename__ = "memory_rebuild_items"
+    __table_args__ = (
+        UniqueConstraint("run_id", "event_id", name="uq_memory_rebuild_items_run_event"),
+        CheckConstraint("attempts >= 0", name="ck_memory_rebuild_items_attempts"),
+        CheckConstraint("claim_count >= 0", name="ck_memory_rebuild_items_claim_count"),
+        CheckConstraint(
+            "status IN ('pending','extracting','staged','no_claims',"
+            "'skipped','failed','committed')",
+            name="ck_memory_rebuild_item_status",
+        ),
+        Index("ix_memory_rebuild_items_run_status_event", "run_id", "status", "event_id"),
+        Index("ix_memory_rebuild_items_event", "event_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_rebuild_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_event_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    claim_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryRebuildProposalModel(Base):
+    """Reviewed canonical claim staged before historical commit."""
+
+    __tablename__ = "memory_rebuild_proposals"
+    __table_args__ = (
+        UniqueConstraint("item_id", "claim_index", name="uq_memory_rebuild_proposal_claim"),
+        CheckConstraint("confidence BETWEEN 0 AND 1", name="ck_memory_rebuild_confidence"),
+        CheckConstraint(
+            "review_status IN ('pending','approved','rejected')",
+            name="ck_memory_rebuild_review_status",
+        ),
+        CheckConstraint(
+            "commit_status IN ('pending','committed','skipped','failed')",
+            name="ck_memory_rebuild_commit_status",
+        ),
+        Index("ix_memory_rebuild_proposals_run_review", "run_id", "review_status"),
+        Index("ix_memory_rebuild_proposals_run_commit", "run_id", "commit_status"),
+        Index("ix_memory_rebuild_proposals_subject", "subject_user_id"),
+        Index("ix_memory_rebuild_proposals_group", "group_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_rebuild_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    item_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_rebuild_items.id", ondelete="CASCADE"), nullable=False
+    )
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    )
+    claim_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    claim_json: Mapped[str] = mapped_column(Text, nullable=False)
+    claim_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    subject_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=True
+    )
+    group_id: Mapped[str | None] = mapped_column(
+        ForeignKey("groups.group_id", ondelete="CASCADE"), nullable=True
+    )
+    operation: Mapped[str] = mapped_column(String(16), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    authority: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    review_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    commit_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    actual_fact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="SET NULL"), nullable=True
+    )
+    actual_action: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    actual_reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("people.user_id", ondelete="SET NULL"), nullable=True
+    )
+    committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class MemoryJobModel(Base):
     """A restart-safe Memory V2 job for exactly one inbound event."""
 
@@ -500,6 +654,15 @@ class MemoryJobModel(Base):
         CheckConstraint(
             "status IN ('pending', 'processing', 'done', 'failed')",
             name="ck_memory_jobs_status",
+        ),
+        CheckConstraint(
+            "processing_source IN ('live', 'rebuild')",
+            name="ck_memory_jobs_processing_source",
+        ),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN "
+            "('claims_applied', 'no_claims', 'all_rejected', 'already_processed')",
+            name="ck_memory_jobs_outcome",
         ),
         Index("ix_memory_jobs_status_next", "status", "next_attempt_at"),
         Index("ix_memory_jobs_conversation", "conversation_key", "id"),
@@ -516,6 +679,14 @@ class MemoryJobModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    processing_source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="live", server_default="live"
+    )
+    rebuild_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_rebuild_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class MemoryEmbeddingProfileModel(Base):
