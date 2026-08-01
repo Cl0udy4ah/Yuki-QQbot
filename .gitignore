@@ -31,3 +31,4 @@ napcat-plugins/
 *.db
 *.db-shm
 *.db-wal
+artifacts/memory-quality/*.log

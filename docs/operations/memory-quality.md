@@ -1,0 +1,19 @@
+# Memory V2 质量运维
+
+完整操作手册见 [Memory V2 质量、审计与显式治理](memory-v2-quality.md)。本文件提供正式版
+稳定入口，避免运维脚本依赖旧文件名。
+
+发布前依次执行：
+
+```bash
+uv run qq-ai-bot-cli memory quality validate-dataset
+uv run qq-ai-bot-cli memory quality run --suite full
+uv run qq-ai-bot-cli memory quality compare
+uv run qq-ai-bot-cli memory quality performance
+uv run qq-ai-bot-cli memory release-check
+```
+
+真实数据库审计必须显式提供 `--database-url`。`memory audit` 与 `release-check` 只读；需要治理
+时先执行 `memory hygiene scan` 保存 fingerprint，再由管理员人工审阅并显式执行
+`memory hygiene apply <fingerprint>`。fingerprint 变化会拒绝执行，explicit fact、ambiguous
+evidence 与 contested conflict 永不自动处理。

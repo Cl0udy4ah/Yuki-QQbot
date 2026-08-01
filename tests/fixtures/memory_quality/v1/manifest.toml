@@ -1,0 +1,33 @@
+schema_version = "1"
+suite_version = "memory-v2-quality-v1"
+dataset_hash = "6d2711f8d3882fefcbca82a39a073fd5f8e3c22cd26ffb36f89353170b0a3f15"
+fake_model_id = "memory-quality-fake-model-v1"
+fake_embedding_id = "fake-embedding/local-test/v1"
+case_files = [
+  "identity_same_fact.json",
+  "group_isolation.json",
+  "third_party_mention.json",
+  "unknown_subject.json",
+  "evidence_mismatch.json",
+  "bot_outbound_blank.json",
+  "interaction_preference.json",
+  "explicit_memory.json",
+  "idempotent_evidence.json",
+  "correction_chain.json",
+  "contested_excluded.json",
+  "expired_excluded.json",
+  "lexical_retrieval.json",
+  "short_query.json",
+  "semantic_retrieval.json",
+  "empty_query.json",
+  "person_group_isolation.json",
+  "historical_guard.json",
+]
+
+[symbolic_identities]
+person_a = "99000001"
+person_b = "99000002"
+person_c = "99000003"
+group_a = "88000001"
+group_b = "88000002"
+bot = "77000001"

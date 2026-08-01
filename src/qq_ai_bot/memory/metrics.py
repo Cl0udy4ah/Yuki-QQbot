@@ -11,6 +11,25 @@ from qq_ai_bot.memory.enums import MemoryRetrievalMode
 
 logger = logging.getLogger(__name__)
 
+OPERATIONAL_RETRIEVAL_COUNTERS = (
+    "memory_context_fact_count",
+    "memory_context_target_count",
+    "memory_retrieval_empty_count",
+    "memory_retrieval_fts_count",
+    "memory_retrieval_hybrid_count",
+    "memory_retrieval_semantic_count",
+)
+
+OPERATIONAL_LIFECYCLE_COUNTERS = (
+    "memory_audit_issue_count",
+    "memory_contested_context_suppressed",
+    "memory_cross_target_rejections",
+    "memory_fact_state_transitions",
+    "memory_hygiene_invalidated_count",
+    "memory_live_claims",
+    "memory_unknown_subject_rejections",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class MemoryRetrievalMetric:
@@ -38,6 +57,7 @@ class MemoryRetrievalMetrics:
 
     def __init__(self) -> None:
         self._latest: MemoryRetrievalMetric | None = None
+        self._counts: Counter[str] = Counter()
 
     @property
     def latest(self) -> MemoryRetrievalMetric | None:
@@ -45,6 +65,16 @@ class MemoryRetrievalMetrics:
 
     def record(self, metric: MemoryRetrievalMetric) -> None:
         self._latest = metric
+        self._counts["context_target_count"] += metric.target_count
+        self._counts["context_fact_count"] += metric.context_selected_count
+        if metric.selected_count == 0:
+            self._counts["retrieval_empty"] += 1
+        elif metric.hybrid_selected_count:
+            self._counts["retrieval_hybrid"] += 1
+        elif metric.semantic_selected_count:
+            self._counts["retrieval_semantic"] += 1
+        else:
+            self._counts["retrieval_fts"] += 1
         logger.debug(
             "memory_retrieval mode=%s query_hash=%s targets=%d candidates=%d "
             "selected=%d context_selected=%d fts_latency=%.6f total_latency=%.6f "
@@ -70,6 +100,27 @@ class MemoryRetrievalMetrics:
             metric.hybrid_rank_latency,
         )
 
+    def operational_snapshot(self) -> dict[str, int]:
+        values = {
+            "memory_context_fact_count": self._counts["context_fact_count"],
+            "memory_context_target_count": self._counts["context_target_count"],
+            "memory_retrieval_empty_count": self._counts["retrieval_empty"],
+            "memory_retrieval_fts_count": self._counts["retrieval_fts"],
+            "memory_retrieval_hybrid_count": self._counts["retrieval_hybrid"],
+            "memory_retrieval_semantic_count": self._counts["retrieval_semantic"],
+        }
+        return {name: int(values[name]) for name in OPERATIONAL_RETRIEVAL_COUNTERS}
+
+    def record_context_selected(self, metric: MemoryRetrievalMetric) -> None:
+        """Update the latest query projection without counting the query twice."""
+
+        previous = self._latest.context_selected_count if self._latest is not None else 0
+        self._latest = metric
+        self._counts["context_fact_count"] += max(
+            0,
+            metric.context_selected_count - previous,
+        )
+
 
 class MemoryLifecycleMetrics:
     """Content-free counters and timestamps shared by consolidation and maintenance."""
@@ -84,6 +135,29 @@ class MemoryLifecycleMetrics:
 
     def count(self, name: str) -> int:
         return self._counts[name]
+
+    def operational_snapshot(self) -> dict[str, int]:
+        transitions = sum(
+            self._counts[name]
+            for name in (
+                "facts_confirmed",
+                "facts_contested",
+                "facts_invalidated",
+                "facts_merged",
+                "facts_restored",
+                "facts_superseded",
+            )
+        )
+        values = {
+            "memory_audit_issue_count": self._counts["audit_issue_count"],
+            "memory_contested_context_suppressed": self._counts["contested_context_suppressed"],
+            "memory_cross_target_rejections": self._counts["cross_target_rejections"],
+            "memory_fact_state_transitions": transitions,
+            "memory_hygiene_invalidated_count": self._counts["hygiene_invalidated_count"],
+            "memory_live_claims": self._counts["claims_extracted"],
+            "memory_unknown_subject_rejections": self._counts["unknown_subject_rejections"],
+        }
+        return {name: int(values[name]) for name in OPERATIONAL_LIFECYCLE_COUNTERS}
 
     def record_classifier_error(self) -> None:
         self.classifier_recent_errors += 1

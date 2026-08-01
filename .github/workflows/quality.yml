@@ -9,6 +9,33 @@ permissions:
   contents: read
 
 jobs:
+  memory-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.31"
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras
+      - name: Validate versioned synthetic dataset
+        run: uv run qq-ai-bot-cli memory quality validate-dataset
+      - name: Run deterministic Memory V2 benchmark
+        run: uv run qq-ai-bot-cli memory quality run --suite full
+      - name: Compare frozen baseline
+        run: uv run qq-ai-bot-cli memory quality compare
+      - name: Upload content-free quality reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-v2-quality-report
+          path: |
+            artifacts/memory-quality/report.json
+            artifacts/memory-quality/report.md
+            artifacts/memory-quality/junit.xml
+          if-no-files-found: warn
+
   python:
     runs-on: ubuntu-latest
     steps:
@@ -39,6 +66,8 @@ jobs:
         run: |
           mkdir -p data
           uv run alembic upgrade head
+      - name: Memory migration matrix
+        run: uv run pytest -q tests/unit/test_memory_migration_matrix.py
 
   docker:
     runs-on: ubuntu-latest

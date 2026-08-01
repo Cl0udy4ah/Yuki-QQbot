@@ -46,4 +46,6 @@ class MemoryRebuildMetrics:
         self._counts[name] += count
 
     def snapshot(self) -> dict[str, int]:
-        return {name: int(self._counts[name]) for name in sorted(METRIC_NAMES)}
+        result = {name: int(self._counts[name]) for name in sorted(METRIC_NAMES)}
+        result["memory_rebuild_claims"] = result["rebuild_proposals_staged"]
+        return result

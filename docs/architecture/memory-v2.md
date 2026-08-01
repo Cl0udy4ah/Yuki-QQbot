@@ -127,7 +127,13 @@ FTS 派生索引 rebuild，不修改事实、证据或状态，也不会在每�
 升级、启动和 Worker 启动均不会自动开始；重启只会将执行中任务暂停。详见
 [受控历史重建](memory-v2-rebuild.md)。
 
+## 正式质量门禁
+
+3.0.0 以版本化合成 suite、外部 TOML gates、冻结 baseline、生产只读 audit、指纹保护 hygiene
+和 contract snapshot 完成正式收敛。完整 suite 逐 case 使用独立临时 SQLite，并复用生产
+Memory V2 服务；CI 不调用真实模型。详见 [质量与治理架构](memory-v2-quality.md)。
+
 ## 尚未实现
 
-当前没有独立向量数据库、模型重排、模糊昵称人物识别或第三方跨群人物事实。后续阶段见
-[Memory V2 路线](memory-v2-roadmap.md)。
+当前没有独立向量数据库、模型重排、模糊昵称人物识别或第三方跨群人物事实。Memory V2 六个
+阶段均已完成；这些边界不是 3.0.0 的遗留发布项。

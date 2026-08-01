@@ -1,5 +1,9 @@
 # Yuki-QQbot
 
+> **3.0.0 正式版：**Memory V2 六阶段已收口。正式版不新增生产数据库迁移，Alembic head
+> 仍为 `0024`；新增版本化合成质量基准、严格污染门禁、内容无关生产审计、指纹保护的显式
+> hygiene 和契约快照。升级或启动不会运行基准、扫描历史或自动修复数据库。
+
 ## 启动项目
 
 > **3.0.0a1 破坏性升级警告：**Alembic `0020` 会永久删除全部旧人物记忆、群记忆、
@@ -53,7 +57,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.0.0rc1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 3.0.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -109,6 +113,12 @@ Yuki-QQbot 3.0.0rc1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、S
 - SQLite 使用 WAL 和有限等待支持多个后台 Worker；部署仍定位于单 Bot、小型服务器，未来需要多进程横向扩展时再迁移 PostgreSQL。
 - GitHub Actions 会在推送和 PR 时执行 Ruff、严格 mypy、pytest、Echo 示例插件契约测试、Alembic 全新安装和 Docker 构建。
 - GitHub Actions 还会单独验证 Prompt benchmark、模型路由和无真实模型下载的 Genie Worker 日语前端测试。
+- GitHub Actions 的独立 `memory-quality` job 使用合成数据、Fake Model 和 Fake Embedding 运行
+  Memory V2 全量基准、绝对门禁、冻结 baseline 比较，并上传无生产内容的 JSON/Markdown/JUnit。
+
+Memory V2 质量、合成大库性能基准与生产审计命令见
+[运维手册](docs/operations/memory-quality.md)，指标分母见
+[质量指标定义](docs/architecture/memory-v2-quality-metrics.md)。
 
 本版本不识别用户发来的语音，也不处理视频、PDF 和普通文件，不实现 ASR、实时语音通话、VAD 或 WebRTC。已启用群里未触发 Yuki 的图片可以按 `EMOJI_COLLECTION_MODE` 进入独立后台表情候选流程；这不会触发聊天回复、人物记忆、关系评价或管理员操作。普通聊天视觉理解仍只处理当前真实消息或回复中的图片。
 
@@ -1324,3 +1334,19 @@ committing 任务改为 paused，必须显式 resume；cancel 和 purge 都不�
 [受控历史重建](docs/architecture/memory-v2-rebuild.md) 与
 [Memory V2 升级指南](docs/upgrade-memory-v2.md)。完整质量结果见
 [3.0.0rc1 实施报告](docs/releases/v3.0.0rc1.md)。
+
+## 3.0.0 正式版检查
+
+正式版沿用 `0024`，无需新增迁移。更新代码并重建 Bot 后运行：
+
+```bash
+uv run qq-ai-bot-cli memory quality validate-dataset
+uv run qq-ai-bot-cli memory quality run --suite full
+uv run qq-ai-bot-cli memory quality compare
+uv run qq-ai-bot-cli memory quality performance
+uv run qq-ai-bot-cli memory release-check
+docker compose up -d --build --no-deps bot
+```
+
+需要审计真实 SQLite 时必须显式传 `--database-url`；命令只读且不自动治理。完整结果见
+[3.0.0 正式发布报告](docs/releases/v3.0.0.md)。

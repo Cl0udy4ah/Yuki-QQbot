@@ -1,0 +1,128 @@
+{
+  "enums": {
+    "MemoryAuthority": [
+      "explicit",
+      "self_report",
+      "group_report",
+      "third_party"
+    ],
+    "MemoryConflictState": [
+      "clear",
+      "contested"
+    ],
+    "MemoryEvidenceRelation": [
+      "self_statement",
+      "group_statement",
+      "third_party_statement",
+      "explicit_command",
+      "confirmation",
+      "correction",
+      "retraction",
+      "rebuild"
+    ],
+    "MemoryFactRelationType": [
+      "supports",
+      "contradicts",
+      "refines",
+      "equivalent"
+    ],
+    "MemoryInvalidationReason": [
+      "user_retracted",
+      "administrator_invalidated",
+      "expired",
+      "stale",
+      "merged",
+      "privacy_deletion",
+      "conflict_resolution",
+      "plugin_explicit_invalidation"
+    ],
+    "MemoryKind": [
+      "fact",
+      "preference",
+      "episode"
+    ],
+    "MemoryResolutionAction": [
+      "create",
+      "merge_evidence",
+      "supersede",
+      "contest",
+      "invalidate",
+      "restore",
+      "merge",
+      "noop"
+    ],
+    "MemoryScopeType": [
+      "person",
+      "person_group",
+      "group"
+    ],
+    "MemorySourceType": [
+      "automatic",
+      "explicit",
+      "rebuild"
+    ],
+    "MemoryStateAction": [
+      "created",
+      "confirmed",
+      "superseded",
+      "contested",
+      "conflict_cleared",
+      "invalidated",
+      "restored",
+      "merged",
+      "expired",
+      "stale_invalidated"
+    ],
+    "MemoryStatus": [
+      "active",
+      "contested",
+      "superseded",
+      "invalidated"
+    ]
+  },
+  "plugin_api": {
+    "forbidden_capabilities": [
+      "raw_vectors",
+      "memory_rebuild",
+      "quality_dataset",
+      "global_production_audit",
+      "other_user_evidence",
+      "provider_keys"
+    ],
+    "memory_facade_methods": [
+      "add",
+      "delete",
+      "list_group",
+      "list_person",
+      "search",
+      "update"
+    ],
+    "version": "1.0"
+  },
+  "schema_version": "1",
+  "schemas": {
+    "EmbeddingProviderProfile": "01d9ddd287565ae59d747a226abc5d68b909680f06ce3bf23588d7fb169e9d31",
+    "MemoryContextBlock": "3ba938bdf92c5d136fbb01da3d4e3c3b889c394a777be67a5bc0790198b1040a",
+    "MemoryEvidenceCreate": "39bdd5400118521c246c6bf86766a43fcf3c380f4b0d6c12cf374b1f702ddf8a",
+    "MemoryFactCreate": "98636edff59afaeb830080ec79b8ef007f368929ff662e0927c21acc71d03461",
+    "MemoryQualityCase": "164e18198531e86f029a603ee5ff716bd7c8580840ac35e8133c5a3d6c5fefaa",
+    "MemoryQualityReport": "d757579c3972dbe182aa8b711bbce98c50ec10a872ae7fdc0ab6c4861959d942",
+    "MemoryQuery": "25cb4f49a0f822bbf855c25def19bcfa52d3986029bfda8009e3b94d32c59dcf",
+    "MemoryRebuildSelection": "a59e4b20baa53ce036a30d7ab821346510c4d5cca9e6461987270125aaa8ccc2",
+    "QualityPerformanceReport": "c1be55cf27f74865792e9d26f07116ad0e6142cdca91dd9bd4d05f39ac7ee8cd"
+  },
+  "versions": {
+    "embedding_profile_schema": 1,
+    "memory_context_schema": 1,
+    "memory_evidence_schema": 2,
+    "memory_fact_schema": 2,
+    "memory_query_schema": 1,
+    "plugin_memory_facade": 1,
+    "quality_performance_schema": 1,
+    "quality_report_schema": 1,
+    "quality_suite_schema": 1,
+    "rebuild_proposal_schema": 1,
+    "rebuild_selection_schema": 1,
+    "schema_version": "1"
+  }
+}

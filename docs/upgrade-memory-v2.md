@@ -1,4 +1,4 @@
-# 升级到 Memory V2（3.0.0rc1）
+# 升级到 Memory V2（3.0.0）
 
 ## 必须理解的不可逆变化
 
@@ -13,7 +13,7 @@ Alembic `0020` 不提供 downgrade，也不迁移、导入或双写旧记忆。�
 1. 停止 bot 写入，但不必退出或重建 NapCat。
 2. 完整复制仓库的 `data/` 到仓库外或带时间戳的备份目录，并确认数据库文件已复制。
 3. 拉取代码后对照 `.env.example`；本次没有新增密钥。
-4. 执行 `uv run alembic upgrade head`，确认版本为 `0020`。
+4. 执行 `uv run alembic upgrade head`，确认版本为 `0024`。
 5. 执行 `docker compose up -d --build bot`，只重建 bot 可保留 NapCat 登录状态。
 6. 检查 `/healthz`、bot 日志和一轮私聊/群聊；新记忆应从空库开始产生。
 
@@ -60,3 +60,19 @@ docker compose up -d --build --no-deps bot
 重启和 Worker 都不会自行 plan/start/resume。执行中任务遇到进程重启会进入 paused，必须由当前
 真实超级管理员显式恢复。降级前必须先让所有 run 进入 completed/cancelled/failed；downgrade
 只删除 staging 与新增 receipt 列，不删除已经提交的事实和证据。
+
+## 3.0.0 正式版
+
+`3.0.0` 不新增生产迁移，Alembic head 继续保持 `0024`。正式版增加离线合成质量门禁、只读
+生产审计和必须显式执行的 provenance hygiene；启动、健康检查和发布检查都不会扫描历史或
+自动修改数据库。升级代码后可按以下顺序检查：
+
+```powershell
+uv run qq-ai-bot-cli memory quality validate-dataset
+uv run qq-ai-bot-cli memory quality run --suite full
+uv run qq-ai-bot-cli memory quality compare
+uv run qq-ai-bot-cli memory release-check --database-url sqlite+aiosqlite:///./data/qq_ai_bot.db
+```
+
+如审计发现可明确治理的问题，先运行 `memory hygiene scan` 查看内容无关计划；只有人工确认
+fingerprint 后才运行 `memory hygiene apply <fingerprint>`。不要把 hygiene 当作启动步骤。

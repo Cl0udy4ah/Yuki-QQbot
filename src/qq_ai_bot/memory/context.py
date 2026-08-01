@@ -153,5 +153,7 @@ class MemoryContextService:
         updated = await self._facts.mark_used(selected)
         latest = self._retriever.metrics.latest
         if latest is not None and latest.query_hash == result.query_hash:
-            self._retriever.metrics.record(replace(latest, context_selected_count=len(selected)))
+            self._retriever.metrics.record_context_selected(
+                replace(latest, context_selected_count=len(selected))
+            )
         return updated

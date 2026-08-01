@@ -61,6 +61,10 @@ superseded，不原地改写旧正文；`memory.delete()` 会以
 插件不能设置 authority、status、conflict_state、supersedes_id，也不能跨人物/群合并或解决
 冲突。Facade 签名与 Plugin API 主版本仍保持 `1.0`。
 
+Yuki 3.0.0 对 MemoryFacade 做了正式 contract freeze：稳定方法为 `list_person`、`list_group`、
+`search`、`add`、`update`、`delete`。插件不能访问原始向量、历史 rebuild、质量 fixture、全局
+生产 audit、其他人物证据或 Provider API Key；上述能力不会因插件声明额外 permission 而开放。
+
 ## LLM / Agent / AgentSession
 
 ```python

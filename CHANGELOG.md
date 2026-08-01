@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 3.0.0 - 2026-08-01
+
+### Memory V2 正式质量门禁
+
+- 新增 `memory/quality/` 独立质量包和 18 个版本化合成案例，使用真实 Memory V2 写入、FTS、
+  Fake Embedding 语义检索与上下文服务，输出严格结构化指标及 JSON/Markdown/JUnit 报告。
+- 新增外部 `memory_quality_gates.toml`、冻结 baseline 和独立 GitHub Actions job；无分母指标保持
+  `null`，CI 不调用真实模型/Qwen，不读取真实聊天数据，也不会自动降低阈值或重写 expected。
+- 新增显式合成大库性能场景：100 用户、10,000 facts、10 个群、100,000 条事件，测量 rebuild
+  plan、keyset、混合检索、上下文投影、峰值内存和请求计数；结果按机器类别写入 baseline，
+  不读取生产数据库，也不把跨硬件绝对延迟作为 CI 门禁。
+- 新增 `memory quality validate-dataset|run|compare|update-baseline`、契约目录与 Plugin API 1.0
+  快照；Memory Fact/Evidence v2、Query/Context/Embedding/Rebuild/Quality/Performance 公共契约正式冻结。
+- 当前合成数据集 hash 为
+  `6d2711f8d3882fefcbca82a39a073fd5f8e3c22cd26ffb36f89353170b0a3f15`，门禁配置 hash 为
+  `281e6f2013b93569fc059a285097b4bff4ce305f40109af89db7be7764fe6120`；18/18 case、
+  38/38 绝对门禁通过，最终回归为 722 passed、1 skipped。
+
+### 生产治理与发布收口
+
+- 新增必须显式指定数据库的内容无关 `memory audit`、fingerprint 保护的
+  `memory hygiene scan/apply` 和只读 `memory release-check`。Hygiene 只处理来源明确无效的自动
+  事实与可重建派生数据，不自动改 explicit/contested 事实，不物理删除事实或证据。
+- 新增 fresh、2.1.2、a1、a2、b1、b2、rc1 到 `0024` 的迁移矩阵；正式版没有新增生产迁移，
+  不自动 rebuild，不恢复 Memory V1，Plugin API 仍为 `1.0`。
+- 版本提升为 `3.0.0`，补齐指标分母、运维、升级、隐私、故障排查与正式发布报告。
+
 ## 3.0.0rc1 - 2026-08-01
 
 ### 从事件账本受控重建
