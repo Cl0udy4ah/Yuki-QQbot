@@ -145,6 +145,28 @@ class MemorySettings(DomainSettings):
     memory_hybrid_lexical_weight: float = Field(ge=0)
     memory_hybrid_semantic_weight: float = Field(ge=0)
     memory_hybrid_rrf_k: int = Field(gt=0)
+    memory_consolidation_enabled: bool
+    memory_consolidation_candidate_limit: int = Field(gt=0)
+    memory_consolidation_min_relevance: float = Field(ge=0, le=1)
+    memory_consolidation_model_task: str
+    memory_consolidation_max_output_tokens: int = Field(gt=0)
+    memory_evidence_weight_explicit: float = Field(ge=0, le=1)
+    memory_evidence_weight_self: float = Field(ge=0, le=1)
+    memory_evidence_weight_group: float = Field(ge=0, le=1)
+    memory_evidence_weight_third_party: float = Field(ge=0, le=1)
+    memory_evidence_weight_rebuild: float = Field(ge=0, le=1)
+    memory_authority_cap_explicit: float = Field(ge=0, le=1)
+    memory_authority_cap_self: float = Field(ge=0, le=1)
+    memory_authority_cap_group: float = Field(ge=0, le=1)
+    memory_authority_cap_third_party: float = Field(ge=0, le=1)
+    memory_maintenance_enabled: bool
+    memory_maintenance_interval_seconds: float = Field(gt=0)
+    memory_maintenance_batch_limit: int = Field(gt=0)
+    memory_automatic_stale_days: int = Field(gt=0)
+    memory_third_party_stale_days: int = Field(gt=0)
+    memory_contested_stale_days: int = Field(gt=0)
+    memory_stale_max_importance: int = Field(ge=1, le=5)
+    memory_stale_max_confidence: float = Field(ge=0, le=1)
     memory_embedding_enabled: bool
     memory_embedding_provider: str
     memory_embedding_base_url: str

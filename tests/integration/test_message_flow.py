@@ -247,9 +247,9 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
         )
         assert payload["data"]["transient_internal_reference"] is True
         assert payload["data"]["do_not_copy_verbatim_to_user"] is True
-        assert payload["data"]["counts"]["self_service_operations"] == 30
+        assert payload["data"]["counts"]["self_service_operations"] == 37
         return ChatResponse(
-            content="你目前有 30 项本人自助能力，其中 14 项会修改本人数据；不能修改系统配置。",
+            content="你目前有 37 项本人自助能力，其中 17 项会修改本人数据；不能修改系统配置。",
             latency_seconds=0,
         )
 
@@ -269,7 +269,7 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
     assert result.reason == "chat"
     assert calls == 2
     rendered = "\n".join(message.text for message in sender.messages)
-    assert rendered == "你目前有 30 项本人自助能力，其中 14 项会修改本人数据；不能修改系统配置。"
+    assert rendered == "你目前有 37 项本人自助能力，其中 17 项会修改本人数据；不能修改系统配置。"
     assert "transient_internal_reference" not in rendered
     events = await EventLedgerRepository(database).list_recent(
         scope_type=ScopeType.PRIVATE,

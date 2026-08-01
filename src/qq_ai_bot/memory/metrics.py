@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 
 from qq_ai_bot.memory.enums import MemoryRetrievalMode
 
@@ -67,3 +69,24 @@ class MemoryRetrievalMetrics:
             metric.semantic_search_latency,
             metric.hybrid_rank_latency,
         )
+
+
+class MemoryLifecycleMetrics:
+    """Content-free counters and timestamps shared by consolidation and maintenance."""
+
+    def __init__(self) -> None:
+        self._counts: Counter[str] = Counter()
+        self.classifier_recent_errors = 0
+        self.maintenance_last_success_at: datetime | None = None
+
+    def increment(self, name: str, count: int = 1) -> None:
+        self._counts[name] += count
+
+    def count(self, name: str) -> int:
+        return self._counts[name]
+
+    def record_classifier_error(self) -> None:
+        self.classifier_recent_errors += 1
+
+    def record_maintenance_success(self, occurred_at: datetime) -> None:
+        self.maintenance_last_success_at = occurred_at

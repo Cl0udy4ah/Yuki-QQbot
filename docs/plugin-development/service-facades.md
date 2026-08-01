@@ -21,6 +21,10 @@
 
 完整签名见 [Facade API Reference](api-reference/facades.md)。每次调用仍会检查当前批准权限；持有一个 Python 属性不等于拥有调用权限。
 
+Memory V2 的写入仍统一经过 Host `MemoryFactService`。插件 update 创建修正版本，delete 只做显式
+失效；插件不能直接访问 Repository、指定事实状态/authority、物理删除审计记录或绕过当前真实
+调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API v1。
+
 ## 独立 AI 会话：跑团示例
 
 插件可为骰子跑团建立与 Yuki 主聊天完全分离的连续会话：

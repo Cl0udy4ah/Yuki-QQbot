@@ -55,6 +55,12 @@ relationship.adjust(user_id, *, affection_delta=0, trust_delta=0,
 `retrieval_reason`；`list_person()` / `list_group()` 仍用于确定性列表。Embedding 关闭或故障时
 自动保持词法行为，Plugin API 版本仍为 `1.0`。
 
+从 Yuki `3.0.0b2` 开始，`memory.update()` 会创建 explicit correction 新版本并让旧 fact 进入
+superseded，不原地改写旧正文；`memory.delete()` 会以
+`plugin_explicit_invalidation` 将事实标记为 invalidated，不物理删除事实、证据或状态历史。
+插件不能设置 authority、status、conflict_state、supersedes_id，也不能跨人物/群合并或解决
+冲突。Facade 签名与 Plugin API 主版本仍保持 `1.0`。
+
 ## LLM / Agent / AgentSession
 
 ```python

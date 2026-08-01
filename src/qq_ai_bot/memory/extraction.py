@@ -7,7 +7,13 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.memory.enums import MemoryKind, MemoryScopeType, MemorySourceType
+from qq_ai_bot.memory.enums import (
+    MemoryClaimOperation,
+    MemoryKind,
+    MemoryScopeType,
+    MemorySourceType,
+    MemoryTemporalMode,
+)
 
 
 class _ExtractionModel(BaseModel):
@@ -22,7 +28,9 @@ class PrimaryEvent(_ExtractionModel):
 
 class AvailableSubject(_ExtractionModel):
     subject_ref: str
+    display_label: str
     allowed_scopes: tuple[MemoryScopeType, ...]
+    relation_to_speaker: str
 
 
 class MemoryExtractionInput(_ExtractionModel):
@@ -32,6 +40,7 @@ class MemoryExtractionInput(_ExtractionModel):
 
 
 class MemoryClaim(_ExtractionModel):
+    operation: MemoryClaimOperation = MemoryClaimOperation.ASSERT
     subject_ref: str = Field(min_length=1, max_length=32)
     scope_type: MemoryScopeType
     kind: MemoryKind = MemoryKind.FACT
@@ -41,6 +50,9 @@ class MemoryClaim(_ExtractionModel):
     importance: int = Field(default=3, ge=1, le=5)
     confidence: float = Field(default=0.8, ge=0, le=1)
     source_type: MemorySourceType = MemorySourceType.AUTOMATIC
+    temporal_mode: MemoryTemporalMode = MemoryTemporalMode.PERSISTENT
+    valid_from: str | None = None
+    valid_until: str | None = None
 
 
 class MemoryExtractionOutput(_ExtractionModel):

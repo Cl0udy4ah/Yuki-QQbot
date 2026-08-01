@@ -16,9 +16,11 @@ from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.emoji.worker import EmojiWorker
+from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
+from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
@@ -63,6 +65,8 @@ class AdminModule:
         memory_context: MemoryContextService,
         memory_index: SQLiteMemoryFTSIndex,
         memory_embeddings: MemoryEmbeddingRuntime,
+        memory_audit: MemoryAuditService,
+        memory_maintenance: MemoryMaintenanceWorker,
         groups: GroupSettingsRepository,
         private_users: PrivateUserSettingsRepository,
         emoji_repository: EmojiRepository,
@@ -82,6 +86,8 @@ class AdminModule:
         self._memory_context = memory_context
         self._memory_index = memory_index
         self._memory_embeddings = memory_embeddings
+        self._memory_audit = memory_audit
+        self._memory_maintenance = memory_maintenance
         self._groups = groups
         self._private_users = private_users
         self._emoji_repository = emoji_repository
@@ -107,6 +113,8 @@ class AdminModule:
             memory_index=self._memory_index,
             memory_embeddings=self._memory_embeddings,
             runtime_config=self._runtime_config,
+            fact_audit=self._memory_audit,
+            maintenance=self._memory_maintenance,
         )
         preferences = PreferenceAdminService(
             settings=self._settings,

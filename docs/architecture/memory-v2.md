@@ -15,13 +15,16 @@ Memory V2 将长期记忆拆为事实、证据、逐事件提取任务和可重�
   `content`、`memory_key` 和 `category`，由 INSERT/DELETE/UPDATE 触发器同步。
 - `memory_embedding_profiles`、`memory_embeddings` 和 `memory_embedding_jobs` 是 Alembic
   `0022` 创建的派生语义索引。向量按 profile 隔离，事实删除时级联删除。
+- `memory_fact_relations` 与 `memory_fact_state_events` 是 Alembic `0023` 创建的冲突关系和
+  内容无关状态审计；`memory_facts` / `memory_evidence` 同时增加 authority、冲突和聚合元数据。
 - 三个 partial unique index 保证每个主体、kind、memory_key 最多一个 active fact。
 
 ## 可信身份映射
 
 写入模型只看到一个 `primary_event`、后端生成的 `available_subjects` 和同一精确会话的少量
-上下文。自动提取只提供 `speaker` 和群聊中的 `group`；模型不能提交 QQ 号、群号、事件 ID、
-状态或替代链。
+上下文。自动提取提供 `speaker`、群聊中的 `group`，以及由当前真实消息段证明的
+`mentioned_N` / `reply_author`；第三方主体只允许当前群 `person_group`。模型不能提交 QQ 号、
+群号、事件 ID、状态、authority、冲突字段或替代链。
 
 读取时由 `MemoryTargetResolver` 根据当前真实事件生成目标：私聊只有当前人物；群聊包含当前
 人物、当前人物在本群和当前群。只有当前事件真实 `@` 的群成员或被回复消息的真实发送者，才会
@@ -79,6 +82,22 @@ FTS 查询先做 NFKC、casefold、空白压缩和有界词项提取，再由后
 列表和索引重建都不会更新它。Core Agent、管理员诊断和 Plugin API v1 的相关搜索均复用同一个
 `MemoryRetriever`。
 
+## 冲突与生命周期
+
+Memory Worker 对每个 claim 先查找同 target 的 exact key/content、FTS 和可用语义候选，再让
+独立 Flash 分类器判断语义关系。分类器只返回本地 `candidate_N` 和稳定关系枚举；
+`MemoryResolutionPolicy` 才能决定合并证据、创建版本、标记 contested、替代或失效。分类失败
+采用保守策略，第三方或低权威陈述不会覆盖本人/explicit 事实。
+
+修正创建新版本并保存 `supersedes_id`；撤回只进入 invalidated。每次创建、确认、争议、替代、
+失效、恢复、合并和过期都与事实状态在同一事务写入 `memory_fact_state_events`。支持证据按固定
+权重聚合为 confidence，并受最强 authority 的上限约束；关系分数不参与该过程。
+
+本地维护任务使用 `last_confirmed_at` 而不是 `last_used_at` 判断低价值自动事实是否陈旧。
+explicit、高重要度或高 confidence 事实不走陈旧失效；维护不调用 LLM/Embedding、不扫描历史、
+不物理删除事实或证据。详见 [冲突治理](memory-v2-conflicts.md)、
+[生命周期](memory-v2-lifecycle.md) 和 [第三方人物事实](memory-v2-third-party-facts.md)。
+
 ## 索引运维
 
 超级管理员可以使用：
@@ -100,5 +119,5 @@ FTS 派生索引 rebuild，不修改事实、证据或状态，也不会在每�
 
 ## 尚未实现
 
-当前没有向量数据库、模型重排、模糊昵称人物识别、第三方人物自动写入或历史聊天重建。
+当前没有向量数据库、模型重排、模糊昵称人物识别、第三方跨群人物事实或历史聊天重建。
 后续阶段见 [Memory V2 路线](memory-v2-roadmap.md)。

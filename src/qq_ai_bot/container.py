@@ -127,6 +127,8 @@ class ApplicationContainer:
         self.memory_context = persistence.memory_context
         self.memory_index = persistence.memory_index
         self.memory_jobs = persistence.memory_jobs
+        self.memory_audit = persistence.memory_audit
+        self.memory_metrics = persistence.memory_metrics
         self.memory_embeddings = MemoryEmbeddingRuntime(
             settings=settings,
             database=self.database,
@@ -255,6 +257,7 @@ class ApplicationContainer:
         self.chat = conversation.chat
         self.chat.register_tool_provider(self.mcp_tools)
         self.memory_worker = conversation.memory_worker
+        self.memory_maintenance_worker = conversation.memory_maintenance_worker
         self.relationship_worker = conversation.relationship_worker
         admin = AdminModule(
             settings=settings,
@@ -267,6 +270,8 @@ class ApplicationContainer:
             memory_context=self.memory_context,
             memory_index=self.memory_index,
             memory_embeddings=self.memory_embeddings,
+            memory_audit=self.memory_audit,
+            memory_maintenance=self.memory_maintenance_worker,
             groups=self.groups,
             private_users=self.private_users,
             emoji_repository=self.emoji_repository,

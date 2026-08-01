@@ -101,7 +101,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     user_text = user_sender.messages[0].text
     assert "当前权限：普通用户" in user_text
     assert "可修改运行时配置参数：0 项" in user_text
-    assert "本人确定性自助接口：30 项，其中修改型 14 项" in user_text
+    assert "本人确定性自助接口：37 项，其中修改型 17 项" in user_text
     assert "memory.add" in user_text
     assert "planner.max_pending_messages" not in user_text
 
@@ -116,7 +116,7 @@ async def test_capabilities_reports_complete_range_for_current_real_qq(
     )
     admin_text = admin_sender.messages[0].text
     assert "当前权限：超级管理员" in admin_text
-    assert "可修改运行时配置参数：163 项" in admin_text
+    assert "可修改运行时配置参数：185 项" in admin_text
     assert "管理员业务接口：44 项，其中修改型 33 项" in admin_text
     assert "planner.max_pending_messages" in admin_text
     assert "relationship.set_affection" in admin_text

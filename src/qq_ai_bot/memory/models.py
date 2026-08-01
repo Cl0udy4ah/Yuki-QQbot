@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from qq_ai_bot.memory.enums import (
+    MemoryAuthority,
+    MemoryConflictState,
     MemoryEvidenceRelation,
+    MemoryFactRelationType,
+    MemoryInvalidationReason,
     MemoryJobStatus,
     MemoryKind,
+    MemoryResolutionAction,
     MemoryRetrievalMode,
     MemoryScopeType,
+    MemorySemanticRelation,
     MemorySourceType,
+    MemoryStateAction,
     MemoryStatus,
     MemoryTargetRole,
 )
@@ -36,14 +43,48 @@ class MemoryFact(_MemoryModel):
     importance: int = Field(ge=1, le=5)
     confidence: float = Field(ge=0, le=1)
     source_type: MemorySourceType
+    authority: MemoryAuthority = MemoryAuthority.SELF_REPORT
     status: MemoryStatus
+    conflict_state: MemoryConflictState = MemoryConflictState.CLEAR
     supersedes_id: int | None = None
     valid_from: datetime | None = None
     valid_until: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    last_confirmed_at: datetime = Field(default_factory=lambda: datetime.min.replace(tzinfo=UTC))
+    invalidated_reason: MemoryInvalidationReason | None = None
     last_used_at: datetime | None = None
     evidence_count: int = Field(default=0, ge=0)
+
+    @field_validator(
+        "valid_from",
+        "valid_until",
+        "created_at",
+        "updated_at",
+        "last_confirmed_at",
+        "last_used_at",
+        mode="after",
+    )
+    @classmethod
+    def _normalize_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def _validate_lifecycle(self) -> MemoryFact:
+        _validate_fact_lifecycle(
+            status=self.status,
+            conflict_state=self.conflict_state,
+            invalidated_reason=self.invalidated_reason,
+        )
+        if (
+            self.valid_from is not None
+            and self.valid_until is not None
+            and self.valid_from > self.valid_until
+        ):
+            raise ValueError("memory valid_from must not be after valid_until")
+        return self
 
     @property
     def user_id(self) -> str | None:
@@ -66,6 +107,8 @@ class MemoryEvidence(_MemoryModel):
     event_id: int = Field(gt=0)
     source_speaker_user_id: str
     relation: MemoryEvidenceRelation
+    confidence: float = Field(ge=0, le=1)
+    authority: MemoryAuthority
     excerpt: str
     created_at: datetime
 
@@ -74,6 +117,8 @@ class MemoryEvidenceCreate(_MemoryModel):
     event_id: int = Field(gt=0)
     source_speaker_user_id: str
     relation: MemoryEvidenceRelation
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    authority: MemoryAuthority = MemoryAuthority.SELF_REPORT
     excerpt: str
 
 
@@ -88,8 +133,18 @@ class MemoryFactCreate(_MemoryModel):
     importance: int = Field(default=3, ge=1, le=5)
     confidence: float = Field(default=1.0, ge=0, le=1)
     source_type: MemorySourceType
+    authority: MemoryAuthority = MemoryAuthority.SELF_REPORT
+    status: MemoryStatus = MemoryStatus.ACTIVE
+    conflict_state: MemoryConflictState = MemoryConflictState.CLEAR
     valid_from: datetime | None = None
     valid_until: datetime | None = None
+
+    @field_validator("valid_from", "valid_until", mode="after")
+    @classmethod
+    def _normalize_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
     @model_validator(mode="after")
     def _validate_scope(self) -> MemoryFactCreate:
@@ -101,7 +156,103 @@ class MemoryFactCreate(_MemoryModel):
             valid = self.subject_user_id is None and bool(self.group_id)
         if not valid:
             raise ValueError("memory fact identity does not match its scope")
+        _validate_fact_lifecycle(
+            status=self.status,
+            conflict_state=self.conflict_state,
+            invalidated_reason=None,
+        )
+        if (
+            self.valid_from is not None
+            and self.valid_until is not None
+            and self.valid_from > self.valid_until
+        ):
+            raise ValueError("memory valid_from must not be after valid_until")
         return self
+
+
+class MemoryFactRelation(_MemoryModel):
+    id: int = Field(gt=0)
+    source_fact_id: int = Field(gt=0)
+    target_fact_id: int = Field(gt=0)
+    relation_type: MemoryFactRelationType
+    confidence: float = Field(ge=0, le=1)
+    source_event_id: int | None = Field(default=None, gt=0)
+    created_at: datetime
+
+
+class MemoryFactStateEvent(_MemoryModel):
+    id: int = Field(gt=0)
+    fact_id: int = Field(gt=0)
+    action: MemoryStateAction
+    from_status: MemoryStatus | None = None
+    to_status: MemoryStatus | None = None
+    from_conflict_state: MemoryConflictState | None = None
+    to_conflict_state: MemoryConflictState | None = None
+    reason_code: str
+    source_event_id: int | None = Field(default=None, gt=0)
+    actor_user_id: str | None = None
+    created_at: datetime
+
+
+class MemoryCandidate(_MemoryModel):
+    candidate_ref: str = Field(pattern=r"^candidate_[1-9][0-9]*$")
+    fact: MemoryFact
+    exact_key: bool = False
+    exact_content: bool = False
+    relevance: float = 0
+
+
+class CandidateRelation(_MemoryModel):
+    candidate_ref: str = Field(pattern=r"^candidate_[1-9][0-9]*$")
+    relation: MemorySemanticRelation
+    confidence: float = Field(ge=0, le=1)
+
+
+class MemoryRelationClassification(_MemoryModel):
+    relations: tuple[CandidateRelation, ...] = ()
+
+
+class MemoryResolutionPlan(_MemoryModel):
+    action: MemoryResolutionAction
+    existing_fact_id: int | None = Field(default=None, gt=0)
+    new_fact_status: MemoryStatus | None = None
+    new_conflict_state: MemoryConflictState | None = None
+    existing_status: MemoryStatus | None = None
+    existing_conflict_state: MemoryConflictState | None = None
+    relation_types: tuple[MemoryFactRelationType, ...] = ()
+    reason_code: str
+    append_evidence: bool = True
+    create_new_fact: bool = False
+
+
+class MemoryConsistencyHealth(_MemoryModel):
+    active_slot_conflicts: int = Field(ge=0)
+    contested_fact_count: int = Field(ge=0)
+    active_contested_count: int = Field(ge=0)
+    orphan_relation_count: int = Field(ge=0)
+    cross_target_relation_count: int = Field(ge=0)
+    orphan_state_event_count: int = Field(ge=0)
+    invalidated_without_reason_count: int = Field(ge=0)
+    superseded_without_chain_count: int = Field(ge=0)
+    evidence_authority_mismatch_count: int = Field(ge=0)
+    expired_active_count: int = Field(ge=0)
+    stale_backlog_count: int = Field(ge=0)
+    classifier_recent_errors: int = Field(ge=0)
+    maintenance_last_success_at: datetime | None = None
+
+    @property
+    def healthy(self) -> bool:
+        return not any(
+            (
+                self.active_slot_conflicts,
+                self.orphan_relation_count,
+                self.cross_target_relation_count,
+                self.orphan_state_event_count,
+                self.invalidated_without_reason_count,
+                self.superseded_without_chain_count,
+                self.expired_active_count,
+            )
+        )
 
 
 class MemoryFactQuery(_MemoryModel):
@@ -240,3 +391,17 @@ class MemoryIndexHealth(_MemoryModel):
     @property
     def healthy(self) -> bool:
         return self.missing_row_count == 0 and self.orphan_row_count == 0
+
+
+def _validate_fact_lifecycle(
+    *,
+    status: MemoryStatus,
+    conflict_state: MemoryConflictState,
+    invalidated_reason: MemoryInvalidationReason | None,
+) -> None:
+    if status is MemoryStatus.CONTESTED and conflict_state is not MemoryConflictState.CONTESTED:
+        raise ValueError("contested memory status requires contested conflict state")
+    if status is MemoryStatus.INVALIDATED and invalidated_reason is None:
+        raise ValueError("invalidated memory fact requires an invalidation reason")
+    if status is not MemoryStatus.INVALIDATED and invalidated_reason is not None:
+        raise ValueError("invalidation reason is only valid for invalidated memory facts")

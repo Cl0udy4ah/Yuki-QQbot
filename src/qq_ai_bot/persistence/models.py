@@ -274,8 +274,25 @@ class MemoryFactModel(Base):
             name="ck_memory_facts_source_type",
         ),
         CheckConstraint(
-            "status IN ('active', 'superseded', 'invalidated')",
+            "status IN ('active', 'contested', 'superseded', 'invalidated')",
             name="ck_memory_facts_status",
+        ),
+        CheckConstraint(
+            "authority IN ('explicit', 'self_report', 'group_report', 'third_party')",
+            name="ck_memory_facts_authority",
+        ),
+        CheckConstraint(
+            "conflict_state IN ('clear', 'contested')",
+            name="ck_memory_facts_conflict_state",
+        ),
+        CheckConstraint(
+            "status != 'contested' OR conflict_state = 'contested'",
+            name="ck_memory_facts_contested_state",
+        ),
+        CheckConstraint(
+            "(status = 'invalidated' AND invalidated_reason IS NOT NULL) OR "
+            "(status != 'invalidated' AND invalidated_reason IS NULL)",
+            name="ck_memory_facts_invalidation_reason",
         ),
         CheckConstraint("importance BETWEEN 1 AND 5", name="ck_memory_facts_importance"),
         CheckConstraint("confidence BETWEEN 0 AND 1", name="ck_memory_facts_confidence"),
@@ -337,7 +354,13 @@ class MemoryFactModel(Base):
     importance: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     source_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    authority: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="self_report", server_default="self_report"
+    )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    conflict_state: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="clear", server_default="clear"
+    )
     supersedes_id: Mapped[int | None] = mapped_column(
         ForeignKey("memory_facts.id", ondelete="SET NULL"), nullable=True
     )
@@ -345,6 +368,10 @@ class MemoryFactModel(Base):
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_confirmed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    invalidated_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -355,8 +382,14 @@ class MemoryEvidenceModel(Base):
     __table_args__ = (
         UniqueConstraint("fact_id", "event_id", name="uq_memory_evidence_fact_event"),
         CheckConstraint(
-            "relation IN ('self_statement', 'explicit_command', 'correction', 'rebuild')",
+            "relation IN ('self_statement', 'group_statement', 'third_party_statement', "
+            "'explicit_command', 'confirmation', 'correction', 'retraction', 'rebuild')",
             name="ck_memory_evidence_relation",
+        ),
+        CheckConstraint("confidence BETWEEN 0 AND 1", name="ck_memory_evidence_confidence"),
+        CheckConstraint(
+            "authority IN ('explicit', 'self_report', 'group_report', 'third_party')",
+            name="ck_memory_evidence_authority",
         ),
         Index("ix_memory_evidence_fact", "fact_id"),
         Index("ix_memory_evidence_event", "event_id"),
@@ -373,7 +406,88 @@ class MemoryEvidenceModel(Base):
         ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
     )
     relation: Mapped[str] = mapped_column(String(24), nullable=False)
+    confidence: Mapped[float] = mapped_column(
+        Float, nullable=False, default=1.0, server_default="1.0"
+    )
+    authority: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="self_report", server_default="self_report"
+    )
     excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryFactRelationModel(Base):
+    """A directed, immutable semantic relationship between same-target facts."""
+
+    __tablename__ = "memory_fact_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_fact_id",
+            "target_fact_id",
+            "relation_type",
+            name="uq_memory_fact_relations_pair_type",
+        ),
+        CheckConstraint(
+            "source_fact_id != target_fact_id",
+            name="ck_memory_fact_relations_distinct",
+        ),
+        CheckConstraint(
+            "relation_type IN ('supports', 'contradicts', 'refines', 'equivalent')",
+            name="ck_memory_fact_relations_type",
+        ),
+        CheckConstraint(
+            "confidence BETWEEN 0 AND 1",
+            name="ck_memory_fact_relations_confidence",
+        ),
+        Index("ix_memory_fact_relations_source", "source_fact_id"),
+        Index("ix_memory_fact_relations_target", "target_fact_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    target_fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    relation_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    source_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryFactStateEventModel(Base):
+    """Content-free audit record for one fact state transition."""
+
+    __tablename__ = "memory_fact_state_events"
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('created', 'confirmed', 'superseded', 'contested', "
+            "'conflict_cleared', 'invalidated', 'restored', 'merged', 'expired', "
+            "'stale_invalidated')",
+            name="ck_memory_fact_state_events_action",
+        ),
+        Index("ix_memory_fact_state_events_fact_created", "fact_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    action: Mapped[str] = mapped_column(String(24), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    from_conflict_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    to_conflict_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("people.user_id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

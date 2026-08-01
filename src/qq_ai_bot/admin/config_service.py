@@ -1085,6 +1085,48 @@ class RuntimeConfigService:
                     cast(float | int, value("memory.hybrid_semantic_weight"))
                 ),
                 hybrid_rrf_k=int(cast(int, value("memory.hybrid_rrf_k"))),
+                consolidation_enabled=bool(value("memory.consolidation_enabled")),
+                consolidation_candidate_limit=int(
+                    cast(int, value("memory.consolidation_candidate_limit"))
+                ),
+                consolidation_min_relevance=float(
+                    cast(float | int, value("memory.consolidation_min_relevance"))
+                ),
+                consolidation_model_task=str(value("memory.consolidation_model_task")),
+                consolidation_max_output_tokens=int(
+                    cast(int, value("memory.consolidation_max_output_tokens"))
+                ),
+                evidence_weight_explicit=float(
+                    cast(float | int, value("memory.evidence_weight_explicit"))
+                ),
+                evidence_weight_self=float(cast(float | int, value("memory.evidence_weight_self"))),
+                evidence_weight_group=float(
+                    cast(float | int, value("memory.evidence_weight_group"))
+                ),
+                evidence_weight_third_party=float(
+                    cast(float | int, value("memory.evidence_weight_third_party"))
+                ),
+                evidence_weight_rebuild=float(
+                    cast(float | int, value("memory.evidence_weight_rebuild"))
+                ),
+                authority_cap_explicit=float(
+                    cast(float | int, value("memory.authority_cap_explicit"))
+                ),
+                authority_cap_self=float(cast(float | int, value("memory.authority_cap_self"))),
+                authority_cap_group=float(cast(float | int, value("memory.authority_cap_group"))),
+                authority_cap_third_party=float(
+                    cast(float | int, value("memory.authority_cap_third_party"))
+                ),
+                maintenance_enabled=bool(value("memory.maintenance_enabled")),
+                maintenance_interval_seconds=float(
+                    cast(float | int, value("memory.maintenance_interval_seconds"))
+                ),
+                maintenance_batch_limit=int(cast(int, value("memory.maintenance_batch_limit"))),
+                automatic_stale_days=int(cast(int, value("memory.automatic_stale_days"))),
+                third_party_stale_days=int(cast(int, value("memory.third_party_stale_days"))),
+                contested_stale_days=int(cast(int, value("memory.contested_stale_days"))),
+                stale_max_importance=int(cast(int, value("memory.stale_max_importance"))),
+                stale_max_confidence=float(cast(float | int, value("memory.stale_max_confidence"))),
             ),
             reply=ReplyRuntimeConfig(
                 daily_split_enabled=bool(value("reply.daily_split_enabled")),

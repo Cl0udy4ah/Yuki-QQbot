@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from qq_ai_bot.memory.embedding.models import MemorySemanticCandidate
+from qq_ai_bot.memory.enums import MemoryAuthority, MemoryConflictState
 from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
     MemoryFact,
@@ -36,6 +37,8 @@ class MemoryRanker:
                 0 if content == normalized_query else 1,
                 0 if category == normalized_query else 1,
                 candidate.fts_rank,
+                -_authority_rank(fact.authority),
+                1 if fact.conflict_state is MemoryConflictState.CONTESTED else 0,
                 -fact.importance,
                 -fact.confidence,
                 -fact.updated_at.timestamp(),
@@ -109,6 +112,8 @@ class MemoryRanker:
             key=lambda fact: (
                 0 if exact(fact) else 1,
                 -fusion(fact),
+                -_authority_rank(fact.authority),
+                1 if fact.conflict_state is MemoryConflictState.CONTESTED else 0,
                 -fact.importance,
                 -fact.confidence,
                 -fact.updated_at.timestamp(),
@@ -164,6 +169,8 @@ class MemoryRanker:
         ordered = sorted(
             facts,
             key=lambda fact: (
+                -_authority_rank(fact.authority),
+                1 if fact.conflict_state is MemoryConflictState.CONTESTED else 0,
                 -fact.importance,
                 -fact.confidence,
                 -fact.updated_at.timestamp(),
@@ -181,3 +188,12 @@ class MemoryRanker:
             )
             for rank, fact in enumerate(ordered, start=1)
         )
+
+
+def _authority_rank(authority: MemoryAuthority) -> int:
+    return {
+        MemoryAuthority.THIRD_PARTY: 0,
+        MemoryAuthority.GROUP_REPORT: 1,
+        MemoryAuthority.SELF_REPORT: 2,
+        MemoryAuthority.EXPLICIT: 3,
+    }[authority]

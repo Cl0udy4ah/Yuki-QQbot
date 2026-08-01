@@ -26,9 +26,13 @@ score = lexical_weight / (rrf_k + lexical_rank)
       + semantic_weight / (rrf_k + semantic_rank)
 ```
 
-词法 BM25 与余弦分数不直接相加。融合分相同时，依次使用 importance、confidence、updated_at
-和 fact_id 作为稳定 tie-break。一个事实同时被两路命中时只返回一次，并保留来源与有限的
+词法 BM25 与余弦分数不直接相加。融合分相同时，依次使用 authority、conflict_state、
+importance、confidence、updated_at 和 fact_id 作为稳定 tie-break。一个事实同时被两路命中时只返回一次，并保留来源与有限的
 selection reason；向量、完整 profile 和内部语义分数不会注入主模型上下文。
+
+普通检索只读取 `status=active`：active + contested conflict 可以作为带不确定标记的首选事实，
+`status=contested` 的未采用 claim、superseded 与 invalidated 均不进入普通上下文。冲突关系本身
+不会扩大人物/群目标，也不会让检索返回相反事实全文。
 
 ## 身份隔离
 

@@ -10,7 +10,9 @@
 > **3.0.0a2：**Alembic `0021` 只新增可重建的 Memory V2 FTS5 派生索引，不删除事实、
 > 证据或聊天账本。普通聊天现在按当前问题检索相关事实，不再固定加载大量长期事实。
 >
-> **3.0.0b1：**Alembic `0022` 非破坏性新增 Memory V2 Embedding 派生表和持久任务表。
+> **3.0.0b2：**Alembic `0023` 非破坏性增加 Memory V2 冲突、证据权威、状态审计与生命周期。
+> 现有事实、证据、FTS、Embedding 和聊天账本都会保留；存在未解决 contested fact 时不允许
+> downgrade。升级前仍建议备份 `data/`。
 > Embedding 默认关闭；开启后使用 Qwen DashScope 生成 1024 维向量，并与 FTS 通过 RRF
 > 融合。外部服务不可用时自动退回词法检索，不影响聊天和事实写入。
 
@@ -47,7 +49,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.0.0b1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 3.0.0b2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -322,7 +324,7 @@ LLM_FLASH_API_KEY=你的Flash密钥
 LLM_FLASH_MODEL=你的Flash模型名
 ```
 
-TOML 只保存环境变量名称，不保存密钥。默认路由为：`chat_agent`、`automation_agent`、`plugin_agent_session` 使用 `pro`；`planner`、`memory_extraction`、`relationship_evaluation`、`emoji_replacement`、`automation_text_generation`、`utility_structured` 使用 `flash`。同一 endpoint 会共享 HTTP 连接池，但每个档案仍保留自己的超时、重试、思考和输出默认值。
+TOML 只保存环境变量名称，不保存密钥。默认路由为：`chat_agent`、`automation_agent`、`plugin_agent_session` 使用 `pro`；`planner`、`memory_extraction`、`memory_consolidation`、`relationship_evaluation`、`emoji_replacement`、`automation_text_generation`、`utility_structured` 使用 `flash`。同一 endpoint 会共享 HTTP 连接池，但每个档案仍保留自己的超时、重试、思考和输出默认值。
 
 可用诊断：
 
@@ -511,12 +513,14 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 | `memberships` | `(user_id, group_id)` 当前群名片与活跃时间 |
 | `chat_events` | 永久保存收发消息、消息段、回复关系和时间；`0010` 增加图片摘要，`0012` 增加自动化来源、任务和运行 ID |
 | `chat_events_fts` | FTS5 `trigram` 全文索引 |
-| `memory_facts` | person/person_group/group 三种作用域的版本化事实与偏好 |
+| `memory_facts` | person/person_group/group 三种作用域的版本化事实、authority、冲突状态与有效期 |
 | `memory_facts_fts` | `0021` 新增的可重建 FTS5 `trigram` 派生索引，只索引事实正文、key 和类别 |
 | `memory_embedding_profiles` | `0022` 新增的非密钥模型/维度/模板指纹，配置变化时隔离旧向量 |
 | `memory_embeddings` | 当前事实与 profile 对应的 little-endian float32 向量派生数据 |
 | `memory_embedding_jobs` | 事实提交后异步生成、重试或重建向量的持久任务 |
-| `memory_evidence` | 事实对应的真实聊天事件、真实发送者、关系类型与短摘录 |
+| `memory_evidence` | 事实对应的真实聊天事件、真实发送者、证据关系、置信度与 authority |
+| `memory_fact_relations` | `0023` 新增的 supports/contradicts/refines/equivalent 有界事实关系 |
+| `memory_fact_state_events` | `0023` 新增的 created/confirmed/superseded/invalidated 等状态审计 |
 | `memory_jobs` | 每个真实入站非 Bot 事件一个、最多重试 3 次的持久提取任务 |
 | `person_relationships` | 每个 QQ 当前好感度、信任度和自动变化时间 |
 | `relationship_events` | 自动及管理员手动关系变化审计，不重复保存聊天正文 |
@@ -600,6 +604,47 @@ Embedding。Provider 超时、限流、认证或响应异常时，本轮自动�
 重建。详见 [Memory V2 架构](docs/architecture/memory-v2.md)、
 [检索与融合](docs/architecture/memory-v2-retrieval.md) 与
 [Embedding 运维说明](docs/architecture/memory-v2-embedding.md)。
+
+### 记忆冲突、修正与生命周期
+
+3.0.0b2 将长期记忆写入拆成“结构化提取 → 有界候选 → 语义关系分类 → 后端确定性策略 →
+事务提交”。关系分类默认走 `ModelTask.MEMORY_CONSOLIDATION` 的 Flash 路由；模型只能返回
+`same_claim / confirms / supersedes / contradicts / coexists / unrelated / retracts`，不能选择
+QQ、群、fact ID、status、authority 或数据库动作。完全相同、无候选、单一明确修正/撤回等情况
+直接由后端处理，不额外调用分类模型。
+
+- 本人修正会创建新 fact 并让旧版本进入 `superseded`，不会原地覆盖正文；撤回是
+  `invalidated`，不会物理删除事实和证据。
+- 低权威或同权威的矛盾陈述进入 `contested`。普通上下文只注入允许的 active 首选事实，并用
+  `contested=true` 标记不确定性；未采用的 contested claim 默认不进入普通聊天上下文。
+- 群聊中只有真实 `@` 或真实回复作者能成为第三方主体，而且只写当前群的 `person_group`；
+  third-party 表示“有人这样报告”，不等于本人确认，也不能覆盖本人或 explicit 事实。
+- confidence 由不可重复的真实事件证据按固定权重聚合，并受 authority 上限约束；好感度、信任度
+  和用户在 Prompt 中自报的身份都不参与事实可信度。
+- 本地维护 Worker 只处理到期或低重要度、低 confidence 且长期未确认的自动事实。它不扫描
+  `chat_events`，不调用 LLM/Embedding，不物理删除记录，也不自动修改 explicit 事实。
+
+确定性审计命令：
+
+```text
+/ai memory show <fact_id>
+/ai memory explain <fact_id>
+/ai memory history <fact_id>
+/ai memory conflicts [user <QQ号>]
+/ai memory correct <fact_id> <new_content>
+/ai memory invalidate <fact_id> [reason]
+/ai memory restore <fact_id>
+/ai memory merge <source_fact_id> <target_fact_id>
+/ai memory resolve <preferred_fact_id> <contested_fact_id...>
+/ai memory doctor
+/ai memory maintenance status|run
+```
+
+普通用户只能查看、修正和撤回属于自己的事实；merge、全局冲突裁决、完整一致性诊断及手动维护
+只接受当前真实消息发送者属于 `SUPERUSERS` 的调用。详细设计见
+[冲突治理](docs/architecture/memory-v2-conflicts.md)、
+[生命周期](docs/architecture/memory-v2-lifecycle.md) 和
+[第三方人物事实](docs/architecture/memory-v2-third-party-facts.md)。
 
 新事件立即进入账本。后台记忆任务每 30 秒或累计 10 条时唤醒，每批最多 claim 20 条，随后
 逐事件独立提取和提交，失败最多重试 3 次。明确添加的事实标记为 `explicit`，自动提炼不能
@@ -1236,3 +1281,17 @@ docker compose exec bot python -c "import urllib.request; print(urllib.request.u
 `0022` 不修改 Memory V2 事实、证据、FTS 或聊天账本。首次启用后由持久后台任务渐进补齐当前
 事实；不会扫描历史聊天。模型、维度或模板改变会建立新 profile，旧派生数据可在新 profile
 覆盖完成后用 `/ai memory embedding purge-old` 清理。
+
+## 3.0.0b2 升级步骤
+
+1. 只停止 Bot：`docker compose stop bot`，不要停止 NapCat。
+2. 完整备份 `data/`，然后执行 `uv run alembic upgrade head`，确认 head 为 `0023`。
+3. 对照 `.env.example` 补充 Memory consolidation、evidence 和 maintenance 配置；这些项目不含
+   新密钥，默认路由到已有 Flash 模型档案。
+4. 执行 `docker compose up -d --build --no-deps bot`，检查 `/healthz`、
+   `/ai memory doctor` 和 `/ai memory maintenance status`。
+5. 分别验证本人修正、群内真实 @ 第三方事实、矛盾陈述、撤回与恢复；确认 NapCat 登录态不变。
+
+`0023` 会保留全部现有事实、证据、FTS、Embedding 和聊天账本。无 contested fact 时可降回
+`0022`；一旦存在 contested 状态，downgrade 会明确拒绝，必须先在新版本解决冲突或恢复升级前
+备份，不能通过手工删表绕过。

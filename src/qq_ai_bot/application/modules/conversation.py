@@ -12,6 +12,8 @@ from qq_ai_bot.application.modules.persistence import PersistenceBundle
 from qq_ai_bot.capabilities import ToolArtifactWriter
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
+from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
+from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.planner.context import PlannerContextBuilder
@@ -58,6 +60,7 @@ class ConversationBundle:
     plugin_agent_tools: PluginAgentToolBackend
     chat: ChatService
     memory_worker: MemoryWorker
+    memory_maintenance_worker: MemoryMaintenanceWorker
     relationship_worker: RelationshipWorker
 
 
@@ -191,6 +194,19 @@ class ConversationModule:
             ledger=persistence.ledger,
             model_executor=models,
             concurrency=self._concurrency,
+            runtime_config=self._runtime_config,
+            candidate_resolver=MemoryConflictCandidateResolver(
+                persistence.memories.repository,
+                retriever=persistence.memory_context.retriever,
+                limit=settings.memory_consolidation_candidate_limit,
+            ),
+            metrics=persistence.memory_metrics,
+        )
+        memory_maintenance_worker = MemoryMaintenanceWorker(
+            settings=settings,
+            facts=persistence.memories,
+            runtime_config=self._runtime_config,
+            metrics=persistence.memory_metrics,
         )
         relationship_worker = RelationshipWorker(
             settings=settings,
@@ -213,6 +229,7 @@ class ConversationModule:
             plugin_agent_tools,
             chat,
             memory_worker,
+            memory_maintenance_worker,
             relationship_worker,
         )
 
@@ -222,6 +239,11 @@ class ConversationModule:
             "memory_worker",
             start=bundle.memory_worker.start,
             close=bundle.memory_worker.close,
+        )
+        lifecycle.register(
+            "memory_maintenance_worker",
+            start=bundle.memory_maintenance_worker.start,
+            close=bundle.memory_maintenance_worker.close,
         )
         lifecycle.register(
             "relationship_worker",

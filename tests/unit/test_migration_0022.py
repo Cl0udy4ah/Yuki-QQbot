@@ -21,7 +21,7 @@ def test_0022_preserves_v2_and_adds_empty_derived_tables(
         _seed_v2(connection)
         assert connection.execute("SELECT COUNT(*) FROM memory_facts_fts").fetchone() == (1,)
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0022")
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0022",)
         assert connection.execute("SELECT COUNT(*) FROM memory_facts").fetchone() == (1,)

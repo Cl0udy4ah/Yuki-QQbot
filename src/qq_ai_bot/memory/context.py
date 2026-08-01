@@ -7,7 +7,12 @@ from typing import Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.messages import InboundMessage
-from qq_ai_bot.memory.enums import MemoryRetrievalMode, MemoryTargetRole
+from qq_ai_bot.memory.enums import (
+    MemoryAuthority,
+    MemoryConflictState,
+    MemoryRetrievalMode,
+    MemoryTargetRole,
+)
 from qq_ai_bot.memory.models import (
     MemoryContextBlock,
     MemoryEntityTarget,
@@ -29,6 +34,9 @@ def fact_context(fact: MemoryFact) -> dict[str, Any]:
         "importance": fact.importance,
         "confidence": fact.confidence,
         "source_type": fact.source_type.value,
+        "authority": fact.authority.value,
+        "reported": fact.authority is MemoryAuthority.THIRD_PARTY,
+        "contested": fact.conflict_state is MemoryConflictState.CONTESTED,
         "updated_at": fact.updated_at.isoformat(),
     }
 
@@ -50,7 +58,9 @@ def entity_block(block: MemoryContextBlock) -> dict[str, Any]:
 
 ENTITY_MEMORY_RULE = (
     "每条长期事实只属于它所在的 entity block。不得把 current_group 或其他人物的"
-    "信息归给 current_person；没有事实时不得猜测。"
+    "信息归给 current_person；没有事实时不得猜测。third_party/reported 表示他人报告，"
+    "不等于本人确认；contested=true 表示存在未解决冲突，不得当作确定事实。"
+    "不要主动向用户泄露内部 confidence 或 authority 枚举。"
 )
 
 

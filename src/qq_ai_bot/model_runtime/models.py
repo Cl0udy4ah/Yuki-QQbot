@@ -14,6 +14,7 @@ class ModelTask(StrEnum):
     CHAT_AGENT = "chat_agent"
     PLANNER = "planner"
     MEMORY_EXTRACTION = "memory_extraction"
+    MEMORY_CONSOLIDATION = "memory_consolidation"
     RELATIONSHIP_EVALUATION = "relationship_evaluation"
     EMOJI_REPLACEMENT = "emoji_replacement"
     AUTOMATION_TEXT_GENERATION = "automation_text_generation"

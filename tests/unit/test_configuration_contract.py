@@ -8,6 +8,7 @@ from pathlib import Path
 from qq_ai_bot.config import Settings
 
 _EXTERNAL_ENVIRONMENT_KEYS = {
+    "NAPCAT_ACCOUNT",
     "MCD_MCP_TOKEN",
     "NAPCAT_GID",
     "NAPCAT_IMAGE",

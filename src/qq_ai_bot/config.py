@@ -119,6 +119,28 @@ class Settings(BaseSettings):
     memory_hybrid_lexical_weight: float = 1.0
     memory_hybrid_semantic_weight: float = 1.0
     memory_hybrid_rrf_k: int = 60
+    memory_consolidation_enabled: bool = True
+    memory_consolidation_candidate_limit: int = 12
+    memory_consolidation_min_relevance: float = 0.25
+    memory_consolidation_model_task: str = "memory_consolidation"
+    memory_consolidation_max_output_tokens: int = 1200
+    memory_evidence_weight_explicit: float = 1.0
+    memory_evidence_weight_self: float = 0.9
+    memory_evidence_weight_group: float = 0.7
+    memory_evidence_weight_third_party: float = 0.55
+    memory_evidence_weight_rebuild: float = 0.75
+    memory_authority_cap_explicit: float = 1.0
+    memory_authority_cap_self: float = 0.98
+    memory_authority_cap_group: float = 0.9
+    memory_authority_cap_third_party: float = 0.75
+    memory_maintenance_enabled: bool = True
+    memory_maintenance_interval_seconds: float = 300.0
+    memory_maintenance_batch_limit: int = 100
+    memory_automatic_stale_days: int = 180
+    memory_third_party_stale_days: int = 30
+    memory_contested_stale_days: int = 14
+    memory_stale_max_importance: int = 2
+    memory_stale_max_confidence: float = 0.7
 
     memory_embedding_enabled: bool = False
     memory_embedding_provider: str = "qwen_dashscope"
@@ -469,6 +491,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "MEMORY_EMBEDDING_BASE_URL and MEMORY_EMBEDDING_API_KEY are required "
                 "when MEMORY_EMBEDDING_ENABLED=true"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_memory_consolidation_settings(self) -> Self:
+        if self.memory_consolidation_model_task != "memory_consolidation":
+            raise ValueError("MEMORY_CONSOLIDATION_MODEL_TASK must be memory_consolidation")
+        if self.memory_third_party_stale_days > self.memory_automatic_stale_days:
+            raise ValueError(
+                "MEMORY_THIRD_PARTY_STALE_DAYS must not exceed MEMORY_AUTOMATIC_STALE_DAYS"
             )
         return self
 

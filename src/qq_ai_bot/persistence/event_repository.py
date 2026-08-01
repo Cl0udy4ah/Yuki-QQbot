@@ -113,6 +113,20 @@ class EventLedgerRepository:
         self, message: InboundMessage, *, bot_user_id: str
     ) -> tuple[EventRecord, bool]:
         peer = message.sender.user_id if message.scope_type is ScopeType.PRIVATE else None
+        segments: tuple[dict[str, Any], ...] = (
+            *(
+                dict(segment)
+                for segment in message.segments
+                if segment.get("type") != "yuki_context"
+            ),
+            {
+                "type": "yuki_context",
+                "data": {
+                    "mentioned_user_ids": list(message.mentioned_user_ids),
+                    "reply_sender_user_id": message.reply_sender_user_id,
+                },
+            },
+        )
         return await self.append(
             bot_user_id=bot_user_id,
             platform_message_id=message.message_id,
@@ -122,7 +136,7 @@ class EventLedgerRepository:
             sender_user_id=message.sender.user_id,
             direction="inbound",
             content=message.text,
-            segments=message.segments,
+            segments=segments,
             reply_to_message_id=message.reply_to_message_id,
             occurred_at=message.received_at,
             sender_nickname=message.sender.nickname,

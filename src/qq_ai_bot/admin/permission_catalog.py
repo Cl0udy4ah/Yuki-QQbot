@@ -621,6 +621,50 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
 )
 
 
+_MEMORY_LIFECYCLE_CAPABILITIES = (
+    *(
+        CapabilityDescriptor(
+            id=f"command:memory.{operation}:self",
+            kind=CapabilityKind.COMMAND,
+            category="memory",
+            display_name=display_name,
+            description=description,
+            minimum_level=PermissionLevel.USER,
+            mutating=mutating,
+            target_scopes=("self", "current_group"),
+        )
+        for operation, display_name, description, mutating in (
+            ("show", "查看记忆事实", "查看本人可访问的单条记忆事实。", False),
+            ("explain", "解释记忆事实", "查看本人可访问事实的证据摘要。", False),
+            ("history", "查看记忆版本", "查看本人可访问事实的状态和版本历史。", False),
+            ("conflicts", "查看记忆冲突", "查看与本人有关的争议事实。", False),
+            ("correct", "修正记忆事实", "通过新版本修正本人事实，不原地改写正文。", True),
+            ("invalidate", "撤回记忆事实", "将本人事实标记为失效，不物理删除。", True),
+            ("restore", "恢复记忆事实", "恢复本人有权限恢复的失效事实。", True),
+        )
+    ),
+    *(
+        CapabilityDescriptor(
+            id=f"command:memory.{operation}:admin",
+            kind=CapabilityKind.COMMAND,
+            category="memory",
+            display_name=display_name,
+            description=description,
+            minimum_level=PermissionLevel.SUPERUSER,
+            mutating=mutating,
+            target_scopes=("explicit_user_id", "explicit_group_id", "global"),
+        )
+        for operation, display_name, description, mutating in (
+            ("merge", "合并记忆事实", "合并同一身份目标下的重复事实与证据。", True),
+            ("resolve", "解决记忆冲突", "明确选择争议事实并失效其余冲突版本。", True),
+            ("doctor", "诊断记忆一致性", "运行只读的记忆一致性检查。", False),
+            ("maintenance.status", "查看记忆维护", "查看本地记忆维护任务状态。", False),
+            ("maintenance.run", "运行记忆维护", "立即运行一次有界的本地生命周期维护。", True),
+        )
+    ),
+)
+
+
 class PermissionCatalogService:
     """Build capability reports from the two existing allowlist registries."""
 
@@ -682,7 +726,7 @@ class PermissionCatalogService:
         )
 
     def _build_descriptors(self) -> tuple[CapabilityDescriptor, ...]:
-        descriptors = [*_BASE_SELF_SERVICE_CAPABILITIES]
+        descriptors = [*_BASE_SELF_SERVICE_CAPABILITIES, *_MEMORY_LIFECYCLE_CAPABILITIES]
         descriptors.extend(self._self_service_descriptors())
         descriptors.extend(
             self._configuration_descriptor(spec) for spec in self._config_registry.list()

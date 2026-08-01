@@ -89,6 +89,7 @@ services:
     environment:
       NAPCAT_UID: ${NAPCAT_UID:-0}
       NAPCAT_GID: ${NAPCAT_GID:-0}
+      ACCOUNT: ${NAPCAT_ACCOUNT:-}
       WEBUI_TOKEN: ${NAPCAT_WEBUI_TOKEN:-replace-with-a-long-random-webui-token}
       WEBUI_PREFIX: ""
     ports:

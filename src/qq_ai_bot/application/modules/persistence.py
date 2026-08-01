@@ -8,8 +8,11 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.repository import EmojiRepository
+from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.context import MemoryContextService
+from qq_ai_bot.memory.evidence import MemoryEvidencePolicy, MemoryEvidenceWeights
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
+from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
@@ -49,6 +52,8 @@ class PersistenceBundle:
     memory_context: MemoryContextService
     memory_index: SQLiteMemoryFTSIndex
     memory_jobs: MemoryJobRepository
+    memory_audit: MemoryAuditService
+    memory_metrics: MemoryLifecycleMetrics
     agent_actions: AgentActionRepository
     web_sources: WebSearchSourceRepository
     media_analyses: MediaAnalysisRepository
@@ -90,7 +95,25 @@ class PersistenceModule:
         }
         people = UserProfileRepository(database, **initial)
         memory_repository = MemoryFactRepository(database)
-        memories = MemoryFactService(memory_repository)
+        memory_metrics = MemoryLifecycleMetrics()
+        memories = MemoryFactService(
+            memory_repository,
+            evidence_policy=MemoryEvidencePolicy(
+                MemoryEvidenceWeights(
+                    explicit=settings.memory_evidence_weight_explicit,
+                    self_report=settings.memory_evidence_weight_self,
+                    group_report=settings.memory_evidence_weight_group,
+                    third_party=settings.memory_evidence_weight_third_party,
+                    rebuild=settings.memory_evidence_weight_rebuild,
+                    cap_explicit=settings.memory_authority_cap_explicit,
+                    cap_self=settings.memory_authority_cap_self,
+                    cap_group=settings.memory_authority_cap_group,
+                    cap_third_party=settings.memory_authority_cap_third_party,
+                )
+            ),
+            runtime_config=runtime_config,
+            metrics=memory_metrics,
+        )
         memory_index = SQLiteMemoryFTSIndex(database)
         memory_context = MemoryContextService(
             query_builder=MemoryQueryBuilder(MemoryTargetResolver(people)),
@@ -113,6 +136,13 @@ class PersistenceModule:
             memory_context=memory_context,
             memory_index=memory_index,
             memory_jobs=MemoryJobRepository(database),
+            memory_audit=MemoryAuditService(
+                memory_repository,
+                metrics=memory_metrics,
+                settings=settings,
+                runtime_config=runtime_config,
+            ),
+            memory_metrics=memory_metrics,
             agent_actions=AgentActionRepository(database),
             web_sources=WebSearchSourceRepository(database),
             media_analyses=MediaAnalysisRepository(database),

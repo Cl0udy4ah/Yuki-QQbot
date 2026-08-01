@@ -119,6 +119,21 @@ def _event_record(row: ChatEventModel) -> EventRecord:
     except json.JSONDecodeError:
         decoded = []
     segments = tuple(item for item in decoded if isinstance(item, dict))
+    context: dict[str, object] = next(
+        (
+            item.get("data", {})
+            for item in reversed(segments)
+            if item.get("type") == "yuki_context" and isinstance(item.get("data"), dict)
+        ),
+        {},
+    )
+    raw_mentions = context.get("mentioned_user_ids", ())
+    mentioned_user_ids = (
+        tuple(str(item) for item in raw_mentions if str(item))
+        if isinstance(raw_mentions, list | tuple)
+        else ()
+    )
+    raw_reply_sender = context.get("reply_sender_user_id")
     return EventRecord(
         id=row.id,
         bot_user_id=row.bot_user_id,
@@ -136,6 +151,8 @@ def _event_record(row: ChatEventModel) -> EventRecord:
         origin=row.origin,
         automation_id=row.automation_id,
         automation_run_id=row.automation_run_id,
+        mentioned_user_ids=mentioned_user_ids,
+        reply_sender_user_id=str(raw_reply_sender) if raw_reply_sender else None,
     )
 
 

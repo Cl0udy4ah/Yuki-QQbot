@@ -49,6 +49,13 @@ class HealthPayload(TypedDict):
     memory_embedding_coverage: float
     memory_embedding_pending_jobs: int
     memory_embedding_failed_jobs: int
+    memory_maintenance_running: bool
+    memory_contested_facts: int
+    memory_active_contested_facts: int
+    memory_consistency_healthy: bool
+    memory_expired_active_facts: int
+    memory_classifier_recent_errors: int
+    memory_maintenance_last_success_at: str | None
     uptime_seconds: int
 
 
@@ -64,6 +71,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     speech_metrics = await container.speech.metrics()
     mcp_health = container.mcp_manager.health()
     embedding_health = await container.memory_embeddings.health()
+    memory_health = await container.memory_audit.health()
     return HealthPayload(
         status="ok" if database_ok else "degraded",
         version=__version__,
@@ -109,5 +117,16 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         memory_embedding_coverage=embedding_health.coverage_ratio,
         memory_embedding_pending_jobs=embedding_health.pending_job_count,
         memory_embedding_failed_jobs=embedding_health.failed_job_count,
+        memory_maintenance_running=container.memory_maintenance_worker.running,
+        memory_contested_facts=memory_health.contested_fact_count,
+        memory_active_contested_facts=memory_health.active_contested_count,
+        memory_consistency_healthy=memory_health.healthy,
+        memory_expired_active_facts=memory_health.expired_active_count,
+        memory_classifier_recent_errors=memory_health.classifier_recent_errors,
+        memory_maintenance_last_success_at=(
+            memory_health.maintenance_last_success_at.isoformat()
+            if memory_health.maintenance_last_success_at
+            else None
+        ),
         uptime_seconds=max(0, int(time.monotonic() - container.started_at)),
     )

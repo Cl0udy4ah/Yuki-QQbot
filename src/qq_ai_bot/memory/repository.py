@@ -7,12 +7,19 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.memory.enums import MemoryJobStatus, MemoryStatus
+from qq_ai_bot.memory.enums import (
+    MemoryConflictState,
+    MemoryFactRelationType,
+    MemoryInvalidationReason,
+    MemoryJobStatus,
+    MemoryStateAction,
+    MemoryStatus,
+)
 from qq_ai_bot.memory.models import (
     MemoryEntityTarget,
     MemoryEvidence,
@@ -20,6 +27,8 @@ from qq_ai_bot.memory.models import (
     MemoryFact,
     MemoryFactCreate,
     MemoryFactQuery,
+    MemoryFactRelation,
+    MemoryFactStateEvent,
     MemoryJob,
 )
 from qq_ai_bot.persistence.database import Database
@@ -28,6 +37,8 @@ from qq_ai_bot.persistence.models import (
     MembershipModel,
     MemoryEvidenceModel,
     MemoryFactModel,
+    MemoryFactRelationModel,
+    MemoryFactStateEventModel,
     MemoryJobModel,
     PersonModel,
 )
@@ -151,6 +162,68 @@ class MemoryFactRepository:
             row.id: self._project_fact(row, int(evidence_count)) for row, evidence_count in rows
         }
         return tuple(projected[fact_id] for fact_id in unique_ids if fact_id in projected)
+
+    async def list_conflict_candidates(
+        self,
+        fact: MemoryFactCreate,
+        *,
+        normalized_content: str,
+        limit: int,
+        session: AsyncSession | None = None,
+    ) -> tuple[MemoryFact, ...]:
+        """Return bounded same-target candidates; never widens an identity scope."""
+
+        if session is None:
+            async with self._database.sessions() as owned:
+                return await self.list_conflict_candidates(
+                    fact,
+                    normalized_content=normalized_content,
+                    limit=limit,
+                    session=owned,
+                )
+        target = MemoryEntityTarget(
+            role={
+                "person": "current_person",
+                "person_group": "current_person_group",
+                "group": "current_group",
+            }[fact.scope_type.value],
+            scope_type=fact.scope_type,
+            subject_user_id=fact.subject_user_id,
+            group_id=fact.group_id,
+            block_id="conflict_candidates",
+        )
+        rows = (
+            await session.execute(
+                select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
+                .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
+                .where(
+                    *self._target_conditions(target),
+                    MemoryFactModel.status.in_(
+                        (
+                            MemoryStatus.ACTIVE.value,
+                            MemoryStatus.CONTESTED.value,
+                        )
+                    ),
+                    or_(
+                        MemoryFactModel.memory_key == fact.memory_key,
+                        MemoryFactModel.normalized_content == normalized_content,
+                        and_(
+                            MemoryFactModel.category == fact.category,
+                            MemoryFactModel.kind == fact.kind.value,
+                        ),
+                    ),
+                )
+                .group_by(MemoryFactModel.id)
+                .order_by(
+                    (MemoryFactModel.memory_key == fact.memory_key).desc(),
+                    (MemoryFactModel.normalized_content == normalized_content).desc(),
+                    MemoryFactModel.updated_at.desc(),
+                    MemoryFactModel.id.asc(),
+                )
+                .limit(max(1, limit))
+            )
+        ).all()
+        return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
     async def list_overview(
         self,
@@ -299,30 +372,142 @@ class MemoryFactRepository:
             importance=fact.importance,
             confidence=fact.confidence,
             source_type=fact.source_type.value,
-            status=MemoryStatus.ACTIVE.value,
+            authority=fact.authority.value,
+            status=fact.status.value,
+            conflict_state=fact.conflict_state.value,
             supersedes_id=supersedes_id,
             valid_from=fact.valid_from,
             valid_until=fact.valid_until,
             created_at=now,
             updated_at=now,
+            last_confirmed_at=now,
+            invalidated_reason=None,
             last_used_at=None,
         )
         session.add(row)
         await session.flush()
         return row
 
-    async def set_status(
+    async def transition(
         self,
         fact_id: int,
-        status: MemoryStatus,
         *,
+        status: MemoryStatus,
+        conflict_state: MemoryConflictState,
+        invalidated_reason: MemoryInvalidationReason | None,
+        action: MemoryStateAction,
+        reason_code: str,
+        source_event_id: int | None,
+        actor_user_id: str | None,
+        session: AsyncSession,
+    ) -> bool:
+        row = await session.get(MemoryFactModel, fact_id)
+        if row is None:
+            return False
+        now = datetime.now(UTC)
+        if actor_user_id:
+            await _ensure_person(session, actor_user_id, now=now)
+        before_status = row.status
+        before_conflict = row.conflict_state
+        row.status = status.value
+        row.conflict_state = conflict_state.value
+        row.invalidated_reason = invalidated_reason.value if invalidated_reason else None
+        row.updated_at = now
+        session.add(
+            MemoryFactStateEventModel(
+                fact_id=fact_id,
+                action=action.value,
+                from_status=before_status,
+                to_status=status.value,
+                from_conflict_state=before_conflict,
+                to_conflict_state=conflict_state.value,
+                reason_code=reason_code[:64],
+                source_event_id=source_event_id,
+                actor_user_id=actor_user_id,
+                created_at=now,
+            )
+        )
+        await session.flush()
+        return True
+
+    async def record_created(
+        self,
+        fact_id: int,
+        *,
+        status: MemoryStatus,
+        conflict_state: MemoryConflictState,
+        reason_code: str,
+        source_event_id: int | None,
+        actor_user_id: str | None,
+        session: AsyncSession,
+    ) -> None:
+        now = datetime.now(UTC)
+        if actor_user_id:
+            await _ensure_person(session, actor_user_id, now=now)
+        session.add(
+            MemoryFactStateEventModel(
+                fact_id=fact_id,
+                action=MemoryStateAction.CREATED.value,
+                from_status=None,
+                to_status=status.value,
+                from_conflict_state=None,
+                to_conflict_state=conflict_state.value,
+                reason_code=reason_code[:64],
+                source_event_id=source_event_id,
+                actor_user_id=actor_user_id,
+                created_at=now,
+            )
+        )
+        await session.flush()
+
+    async def update_confirmation_metadata(
+        self,
+        fact_id: int,
+        *,
+        authority: str,
+        confidence: float,
+        confirmed_at: datetime,
         session: AsyncSession,
     ) -> None:
         await session.execute(
             update(MemoryFactModel)
             .where(MemoryFactModel.id == fact_id)
-            .values(status=status.value, updated_at=datetime.now(UTC))
+            .values(
+                authority=authority,
+                confidence=confidence,
+                last_confirmed_at=confirmed_at,
+                updated_at=datetime.now(UTC),
+            )
         )
+
+    async def add_relation(
+        self,
+        *,
+        source_fact_id: int,
+        target_fact_id: int,
+        relation_type: MemoryFactRelationType,
+        confidence: float,
+        source_event_id: int | None,
+        session: AsyncSession,
+    ) -> bool:
+        statement = insert(MemoryFactRelationModel).values(
+            source_fact_id=source_fact_id,
+            target_fact_id=target_fact_id,
+            relation_type=relation_type.value,
+            confidence=confidence,
+            source_event_id=source_event_id,
+            created_at=datetime.now(UTC),
+        )
+        result = await session.execute(
+            statement.on_conflict_do_nothing(
+                index_elements=[
+                    MemoryFactRelationModel.source_fact_id,
+                    MemoryFactRelationModel.target_fact_id,
+                    MemoryFactRelationModel.relation_type,
+                ]
+            )
+        )
+        return bool(cast(CursorResult[Any], result).rowcount)
 
     async def refresh_fact(
         self,
@@ -348,31 +533,42 @@ class MemoryFactRepository:
         evidence: MemoryEvidenceCreate,
         *,
         session: AsyncSession,
-    ) -> None:
+    ) -> bool:
         statement = insert(MemoryEvidenceModel).values(
             fact_id=fact_id,
             event_id=evidence.event_id,
             source_speaker_user_id=evidence.source_speaker_user_id,
             relation=evidence.relation.value,
+            confidence=evidence.confidence,
+            authority=evidence.authority.value,
             excerpt=evidence.excerpt[:500],
             created_at=datetime.now(UTC),
         )
-        await session.execute(
+        result = await session.execute(
             statement.on_conflict_do_nothing(
                 index_elements=[MemoryEvidenceModel.fact_id, MemoryEvidenceModel.event_id]
             )
         )
+        return bool(cast(CursorResult[Any], result).rowcount)
 
-    async def list_evidence(self, fact_id: int, *, limit: int = 100) -> tuple[MemoryEvidence, ...]:
-        async with self._database.sessions() as session:
-            rows = (
-                await session.scalars(
-                    select(MemoryEvidenceModel)
-                    .where(MemoryEvidenceModel.fact_id == fact_id)
-                    .order_by(MemoryEvidenceModel.created_at.desc())
-                    .limit(max(1, limit))
-                )
-            ).all()
+    async def list_evidence(
+        self,
+        fact_id: int,
+        *,
+        limit: int = 100,
+        session: AsyncSession | None = None,
+    ) -> tuple[MemoryEvidence, ...]:
+        if session is None:
+            async with self._database.sessions() as owned:
+                return await self.list_evidence(fact_id, limit=limit, session=owned)
+        rows = (
+            await session.scalars(
+                select(MemoryEvidenceModel)
+                .where(MemoryEvidenceModel.fact_id == fact_id)
+                .order_by(MemoryEvidenceModel.created_at.desc())
+                .limit(max(1, limit))
+            )
+        ).all()
         return tuple(
             MemoryEvidence(
                 id=row.id,
@@ -380,11 +576,168 @@ class MemoryFactRepository:
                 event_id=row.event_id,
                 source_speaker_user_id=row.source_speaker_user_id,
                 relation=row.relation,
+                confidence=row.confidence,
+                authority=row.authority,
                 excerpt=row.excerpt,
                 created_at=row.created_at,
             )
             for row in rows
         )
+
+    async def list_relations(
+        self,
+        fact_id: int,
+        *,
+        session: AsyncSession | None = None,
+    ) -> tuple[MemoryFactRelation, ...]:
+        if session is None:
+            async with self._database.sessions() as owned:
+                return await self.list_relations(fact_id, session=owned)
+        rows = (
+            await session.scalars(
+                select(MemoryFactRelationModel)
+                .where(
+                    or_(
+                        MemoryFactRelationModel.source_fact_id == fact_id,
+                        MemoryFactRelationModel.target_fact_id == fact_id,
+                    )
+                )
+                .order_by(MemoryFactRelationModel.created_at, MemoryFactRelationModel.id)
+            )
+        ).all()
+        return tuple(
+            MemoryFactRelation(
+                id=row.id,
+                source_fact_id=row.source_fact_id,
+                target_fact_id=row.target_fact_id,
+                relation_type=row.relation_type,
+                confidence=row.confidence,
+                source_event_id=row.source_event_id,
+                created_at=row.created_at,
+            )
+            for row in rows
+        )
+
+    async def list_state_events(self, fact_id: int) -> tuple[MemoryFactStateEvent, ...]:
+        async with self._database.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(MemoryFactStateEventModel)
+                    .where(MemoryFactStateEventModel.fact_id == fact_id)
+                    .order_by(
+                        MemoryFactStateEventModel.created_at,
+                        MemoryFactStateEventModel.id,
+                    )
+                )
+            ).all()
+        return tuple(
+            MemoryFactStateEvent(
+                id=row.id,
+                fact_id=row.fact_id,
+                action=row.action,
+                from_status=row.from_status,
+                to_status=row.to_status,
+                from_conflict_state=row.from_conflict_state,
+                to_conflict_state=row.to_conflict_state,
+                reason_code=row.reason_code,
+                source_event_id=row.source_event_id,
+                actor_user_id=row.actor_user_id,
+                created_at=row.created_at,
+            )
+            for row in rows
+        )
+
+    async def list_conflicts(
+        self,
+        *,
+        scope_type: str | None = None,
+        subject_user_id: str | None = None,
+        group_id: str | None = None,
+        limit: int = 100,
+    ) -> tuple[MemoryFact, ...]:
+        conditions = [
+            or_(
+                MemoryFactModel.status == MemoryStatus.CONTESTED.value,
+                MemoryFactModel.conflict_state == MemoryConflictState.CONTESTED.value,
+            )
+        ]
+        if scope_type is not None:
+            conditions.append(MemoryFactModel.scope_type == scope_type)
+        if subject_user_id is not None:
+            conditions.append(MemoryFactModel.subject_user_id == subject_user_id)
+        if group_id is not None:
+            conditions.append(MemoryFactModel.group_id == group_id)
+        async with self._database.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
+                    .outerjoin(
+                        MemoryEvidenceModel,
+                        MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+                    )
+                    .where(*conditions)
+                    .group_by(MemoryFactModel.id)
+                    .order_by(MemoryFactModel.updated_at.desc(), MemoryFactModel.id)
+                    .limit(max(1, limit))
+                )
+            ).all()
+        return tuple(self._project_fact(row, int(count)) for row, count in rows)
+
+    async def list_lifecycle_candidates(
+        self,
+        *,
+        now: datetime,
+        automatic_cutoff: datetime,
+        third_party_cutoff: datetime,
+        contested_cutoff: datetime,
+        max_importance: int,
+        max_confidence: float,
+        limit: int,
+    ) -> tuple[MemoryFact, ...]:
+        stale_window = or_(
+            (
+                (MemoryFactModel.authority == "third_party")
+                & (MemoryFactModel.last_confirmed_at <= third_party_cutoff)
+            ),
+            (
+                (MemoryFactModel.status == MemoryStatus.CONTESTED.value)
+                & (MemoryFactModel.last_confirmed_at <= contested_cutoff)
+            ),
+            (
+                (MemoryFactModel.authority != "third_party")
+                & (MemoryFactModel.status != MemoryStatus.CONTESTED.value)
+                & (MemoryFactModel.last_confirmed_at <= automatic_cutoff)
+            ),
+        )
+        conditions = [
+            MemoryFactModel.status.in_((MemoryStatus.ACTIVE.value, MemoryStatus.CONTESTED.value)),
+            MemoryFactModel.source_type != "explicit",
+            MemoryFactModel.authority != "explicit",
+            or_(
+                MemoryFactModel.valid_until <= now,
+                and_(
+                    MemoryFactModel.source_type == "automatic",
+                    MemoryFactModel.importance <= max_importance,
+                    MemoryFactModel.confidence <= max_confidence,
+                    stale_window,
+                ),
+            ),
+        ]
+        async with self._database.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
+                    .outerjoin(
+                        MemoryEvidenceModel,
+                        MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+                    )
+                    .where(*conditions)
+                    .group_by(MemoryFactModel.id)
+                    .order_by(MemoryFactModel.valid_until.asc(), MemoryFactModel.id)
+                    .limit(max(1, limit))
+                )
+            ).all()
+        return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
     async def count_active(
         self,
@@ -428,59 +781,27 @@ class MemoryFactRepository:
         )
         if row is None:
             return False
+        prior_conflict = row.conflict_state
         row.status = MemoryStatus.INVALIDATED.value
+        row.conflict_state = MemoryConflictState.CLEAR.value
+        row.invalidated_reason = MemoryInvalidationReason.STALE.value
         row.updated_at = datetime.now(UTC)
+        session.add(
+            MemoryFactStateEventModel(
+                fact_id=row.id,
+                action=MemoryStateAction.STALE_INVALIDATED.value,
+                from_status=MemoryStatus.ACTIVE.value,
+                to_status=MemoryStatus.INVALIDATED.value,
+                from_conflict_state=prior_conflict,
+                to_conflict_state=MemoryConflictState.CLEAR.value,
+                reason_code="capacity_retention",
+                source_event_id=None,
+                actor_user_id=None,
+                created_at=datetime.now(UTC),
+            )
+        )
         await session.flush()
         return True
-
-    async def invalidate(
-        self,
-        fact_id: int,
-        *,
-        subject_user_id: str | None = None,
-        session: AsyncSession | None = None,
-    ) -> bool:
-        if session is None:
-            async with self.transaction() as owned:
-                return await self.invalidate(
-                    fact_id,
-                    subject_user_id=subject_user_id,
-                    session=owned,
-                )
-        conditions = [
-            MemoryFactModel.id == fact_id,
-            MemoryFactModel.status == MemoryStatus.ACTIVE.value,
-        ]
-        if subject_user_id is not None:
-            conditions.append(MemoryFactModel.subject_user_id == subject_user_id)
-        result = await session.execute(
-            update(MemoryFactModel)
-            .where(*conditions)
-            .values(status=MemoryStatus.INVALIDATED.value, updated_at=datetime.now(UTC))
-        )
-        return bool(cast(CursorResult[Any], result).rowcount)
-
-    async def prune_person(
-        self,
-        *,
-        user_id: str,
-        max_importance: int,
-        older_than: datetime,
-        session: AsyncSession,
-    ) -> int:
-        result = await session.execute(
-            update(MemoryFactModel)
-            .where(
-                MemoryFactModel.scope_type == "person",
-                MemoryFactModel.subject_user_id == user_id,
-                MemoryFactModel.status == MemoryStatus.ACTIVE.value,
-                MemoryFactModel.source_type != "explicit",
-                MemoryFactModel.importance <= max_importance,
-                MemoryFactModel.updated_at < older_than,
-            )
-            .values(status=MemoryStatus.INVALIDATED.value, updated_at=datetime.now(UTC))
-        )
-        return int(cast(CursorResult[Any], result).rowcount or 0)
 
     async def delete_orphaned_automatic_facts(
         self,
@@ -517,12 +838,16 @@ class MemoryFactRepository:
             importance=row.importance,
             confidence=row.confidence,
             source_type=row.source_type,
+            authority=row.authority,
             status=row.status,
+            conflict_state=row.conflict_state,
             supersedes_id=row.supersedes_id,
             valid_from=row.valid_from,
             valid_until=row.valid_until,
             created_at=row.created_at,
             updated_at=row.updated_at,
+            last_confirmed_at=row.last_confirmed_at,
+            invalidated_reason=row.invalidated_reason,
             last_used_at=row.last_used_at,
             evidence_count=evidence_count,
         )

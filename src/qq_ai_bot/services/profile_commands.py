@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from qq_ai_bot.admin.models import AdminActor
@@ -93,12 +94,138 @@ class ProfileCommandHandler:
 
     async def _memory_diagnostics(self, actor: AdminActor, argument: str) -> str | None:
         parts = argument.split()
-        if not parts or parts[0].casefold() not in {"search", "index", "embedding"}:
+        diagnostic_operations = {
+            "search",
+            "index",
+            "embedding",
+            "show",
+            "explain",
+            "history",
+            "conflicts",
+            "correct",
+            "invalidate",
+            "restore",
+            "merge",
+            "resolve",
+            "maintenance",
+            "doctor",
+        }
+        if not parts or parts[0].casefold() not in diagnostic_operations:
             return None
-        if not actor.is_superuser:
-            return "权限不足：记忆检索诊断仅限超级管理员。"
         operation = parts.pop(0).casefold()
         try:
+            if operation in {"show", "explain", "history"}:
+                if len(parts) != 1 or not parts[0].isdigit():
+                    return f"格式：/ai memory {operation} <fact_id>"
+                fact_id = int(parts[0])
+                if operation == "show":
+                    fact = await self._memory_admin.show_fact(actor, fact_id)
+                    if fact is None:
+                        return "没有找到该事实。"
+                    return (
+                        f"#{fact.id} [{fact.status.value}/{fact.conflict_state.value}] "
+                        f"{fact.content}\n作用域：{fact.scope_type.value}；"
+                        f"来源：{fact.authority.value}；证据：{fact.evidence_count} 条"
+                    )
+                if operation == "explain":
+                    explanation = await self._memory_admin.explain_fact(actor, fact_id)
+                    return (
+                        json.dumps(explanation, ensure_ascii=False, indent=2)
+                        if explanation is not None
+                        else "没有找到该事实。"
+                    )
+                history = await self._memory_admin.fact_history(actor, fact_id)
+                if not history:
+                    return "该事实暂无状态历史。"
+                return "\n".join(
+                    f"{row.created_at:%Y-%m-%d %H:%M} {row.action.value} [{row.reason_code}]"
+                    for row in history
+                )
+            if operation == "conflicts":
+                target: str | None = None
+                if parts:
+                    if (
+                        len(parts) != 2
+                        or parts[0].casefold() != "user"
+                        or _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None
+                    ):
+                        return "格式：/ai memory conflicts [user <QQ号>]"
+                    target = parts[1]
+                rows = await self._memory_admin.list_conflicts(
+                    actor,
+                    target_user_id=target,
+                )
+                return (
+                    "\n".join(
+                        f"#{row.id} [{row.status.value}/{row.conflict_state.value}] {row.content}"
+                        for row in rows
+                    )
+                    if rows
+                    else "当前没有未解决的记忆冲突。"
+                )
+            if operation == "correct":
+                if len(parts) < 2 or not parts[0].isdigit():
+                    return "格式：/ai memory correct <fact_id> <new_content>"
+                row = await self._memory_admin.correct_fact(
+                    actor,
+                    int(parts[0]),
+                    " ".join(parts[1:]),
+                )
+                return (
+                    f"已创建修正事实 #{row.id}。" if row is not None else "没有找到可修正的事实。"
+                )
+            if operation == "invalidate":
+                if not 1 <= len(parts) <= 2 or not parts[0].isdigit():
+                    return "格式：/ai memory invalidate <fact_id> [reason]"
+                changed = await self._memory_admin.invalidate_fact(
+                    actor,
+                    int(parts[0]),
+                    parts[1] if len(parts) == 2 else None,
+                )
+                return "事实已失效，历史和证据仍保留。" if changed else "事实不存在或已失效。"
+            if operation == "restore":
+                if len(parts) != 1 or not parts[0].isdigit():
+                    return "格式：/ai memory restore <fact_id>"
+                row = await self._memory_admin.restore_fact(actor, int(parts[0]))
+                return "事实已恢复。" if row is not None else "该事实不能恢复或 active 槽位已占用。"
+            if operation == "merge":
+                if len(parts) != 2 or not all(item.isdigit() for item in parts):
+                    return "格式：/ai memory merge <source_fact_id> <target_fact_id>"
+                row = await self._memory_admin.merge_facts(actor, int(parts[0]), int(parts[1]))
+                return f"已合并到事实 #{row.id}。" if row is not None else "没有找到待合并事实。"
+            if operation == "resolve":
+                if len(parts) < 2 or not all(item.isdigit() for item in parts):
+                    return "格式：/ai memory resolve <preferred_fact_id> <contested_fact_id...>"
+                count = await self._memory_admin.resolve_conflicts(
+                    actor,
+                    int(parts[0]),
+                    tuple(int(item) for item in parts[1:]),
+                )
+                return f"已解决冲突并失效 {count} 条争议事实。"
+            if operation == "maintenance":
+                if len(parts) != 1 or parts[0].casefold() not in {"status", "run"}:
+                    return "格式：/ai memory maintenance status|run"
+                if parts[0].casefold() == "run":
+                    count = await self._memory_admin.maintenance_run(actor)
+                    return f"记忆生命周期维护完成，更新 {count} 条事实。"
+                running, health = await self._memory_admin.maintenance_status(actor)
+                return (
+                    f"维护 Worker：{'运行中' if running else '未运行'}；"
+                    f"过期待处理 {health.expired_active_count}；"
+                    f"陈旧待处理 {health.stale_backlog_count}。"
+                )
+            if operation == "doctor":
+                health = await self._memory_admin.consistency_health(actor)
+                return (
+                    f"Memory V2 一致性：{'正常' if health.healthy else '异常'}；"
+                    f"active 槽冲突 {health.active_slot_conflicts}；"
+                    f"争议 facts {health.contested_fact_count}；"
+                    f"孤立关系 {health.orphan_relation_count}；"
+                    f"跨目标关系 {health.cross_target_relation_count}；"
+                    f"过期 active {health.expired_active_count}。"
+                )
+            if not actor.is_superuser:
+                return "权限不足：该记忆检索诊断仅限超级管理员。"
             if operation == "search":
                 if len(parts) < 3 or parts[0].casefold() not in {"person", "group"}:
                     return "格式：/ai memory search person <QQ号> <query> 或 group <群号> <query>"

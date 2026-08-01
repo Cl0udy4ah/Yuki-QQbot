@@ -149,6 +149,28 @@ class MemoryRetrievalRuntimeConfig:
     hybrid_lexical_weight: float = 1.0
     hybrid_semantic_weight: float = 1.0
     hybrid_rrf_k: int = 60
+    consolidation_enabled: bool = True
+    consolidation_candidate_limit: int = 12
+    consolidation_min_relevance: float = 0.25
+    consolidation_model_task: str = "memory_consolidation"
+    consolidation_max_output_tokens: int = 1200
+    evidence_weight_explicit: float = 1.0
+    evidence_weight_self: float = 0.9
+    evidence_weight_group: float = 0.7
+    evidence_weight_third_party: float = 0.55
+    evidence_weight_rebuild: float = 0.75
+    authority_cap_explicit: float = 1.0
+    authority_cap_self: float = 0.98
+    authority_cap_group: float = 0.9
+    authority_cap_third_party: float = 0.75
+    maintenance_enabled: bool = True
+    maintenance_interval_seconds: float = 300.0
+    maintenance_batch_limit: int = 100
+    automatic_stale_days: int = 180
+    third_party_stale_days: int = 30
+    contested_stale_days: int = 14
+    stale_max_importance: int = 2
+    stale_max_confidence: float = 0.7
 
 
 @dataclass(frozen=True, slots=True)

@@ -23,15 +23,97 @@ class MemorySourceType(StrEnum):
 
 class MemoryStatus(StrEnum):
     ACTIVE = "active"
+    CONTESTED = "contested"
     SUPERSEDED = "superseded"
     INVALIDATED = "invalidated"
 
 
+class MemoryClaimOperation(StrEnum):
+    ASSERT = "assert"
+    CONFIRM = "confirm"
+    CORRECT = "correct"
+    RETRACT = "retract"
+
+
+class MemoryAuthority(StrEnum):
+    EXPLICIT = "explicit"
+    SELF_REPORT = "self_report"
+    GROUP_REPORT = "group_report"
+    THIRD_PARTY = "third_party"
+
+
+class MemoryConflictState(StrEnum):
+    CLEAR = "clear"
+    CONTESTED = "contested"
+
+
+class MemoryFactRelationType(StrEnum):
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+    REFINES = "refines"
+    EQUIVALENT = "equivalent"
+
+
 class MemoryEvidenceRelation(StrEnum):
     SELF_STATEMENT = "self_statement"
+    GROUP_STATEMENT = "group_statement"
+    THIRD_PARTY_STATEMENT = "third_party_statement"
     EXPLICIT_COMMAND = "explicit_command"
+    CONFIRMATION = "confirmation"
     CORRECTION = "correction"
+    RETRACTION = "retraction"
     REBUILD = "rebuild"
+
+
+class MemoryStateAction(StrEnum):
+    CREATED = "created"
+    CONFIRMED = "confirmed"
+    SUPERSEDED = "superseded"
+    CONTESTED = "contested"
+    CONFLICT_CLEARED = "conflict_cleared"
+    INVALIDATED = "invalidated"
+    RESTORED = "restored"
+    MERGED = "merged"
+    EXPIRED = "expired"
+    STALE_INVALIDATED = "stale_invalidated"
+
+
+class MemoryInvalidationReason(StrEnum):
+    USER_RETRACTED = "user_retracted"
+    ADMINISTRATOR_INVALIDATED = "administrator_invalidated"
+    EXPIRED = "expired"
+    STALE = "stale"
+    MERGED = "merged"
+    PRIVACY_DELETION = "privacy_deletion"
+    CONFLICT_RESOLUTION = "conflict_resolution"
+    PLUGIN_EXPLICIT_INVALIDATION = "plugin_explicit_invalidation"
+
+
+class MemoryTemporalMode(StrEnum):
+    PERSISTENT = "persistent"
+    TEMPORARY = "temporary"
+    EPISODE = "episode"
+
+
+class MemorySemanticRelation(StrEnum):
+    SAME_CLAIM = "same_claim"
+    CONFIRMS = "confirms"
+    SUPERSEDES = "supersedes"
+    CONTRADICTS = "contradicts"
+    COEXISTS = "coexists"
+    UNRELATED = "unrelated"
+    RETRACTS = "retracts"
+
+
+class MemoryResolutionAction(StrEnum):
+    CREATE = "create"
+    MERGE_EVIDENCE = "merge_evidence"
+    SUPERSEDE = "supersede"
+    CONTEST = "contest"
+    INVALIDATE = "invalidate"
+    RESTORE = "restore"
+    MERGE = "merge"
+    NOOP = "noop"
 
 
 class MemoryJobStatus(StrEnum):

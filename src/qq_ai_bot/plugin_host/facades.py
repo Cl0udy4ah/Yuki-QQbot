@@ -43,7 +43,9 @@ from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.mcp.manager import MCPManager
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import (
+    MemoryAuthority,
     MemoryEvidenceRelation,
+    MemoryInvalidationReason,
     MemoryRetrievalMode,
     MemoryScopeType,
     MemoryTargetRole,
@@ -1152,6 +1154,7 @@ class _MemoryFacade:
                 event_id=invocation.source_event_id,
                 source_speaker_user_id=invocation.actor_user_id,
                 relation=MemoryEvidenceRelation.EXPLICIT_COMMAND,
+                authority=MemoryAuthority.EXPLICIT,
                 excerpt=normalize_memory_text(
                     invocation.inbound.text if invocation.inbound is not None else "",
                     maximum=500,
@@ -1193,16 +1196,19 @@ class _MemoryFacade:
         numeric_id = _person_memory_id(memory_id)
         if confidence is not None and not 0 <= confidence <= 1:
             raise ValueError("confidence must be between zero and one")
-        service = _require_service(self._host._services.memory_admin, "memory mutation")
-        changed = await service.update_memory(
-            _admin_actor(
-                invocation,
-                is_superuser=self._host._is_real_superuser(invocation),
-            ),
-            invocation.actor_user_id,
-            numeric_id,
-            _bounded_text(content, maximum=4_000, field_name="content"),
-        )
+        memories = _require_service(self._host._services.memories, "memory")
+        current = await memories.get_fact(numeric_id)
+        if current is None or current.subject_user_id != invocation.actor_user_id:
+            changed = False
+        else:
+            changed = (
+                await memories.correct_fact(
+                    numeric_id,
+                    content=_bounded_text(content, maximum=4_000, field_name="content"),
+                    actor_user_id=invocation.actor_user_id,
+                )
+                is not None
+            )
         await self._host._audit(
             invocation,
             operation="memory.update",
@@ -1224,14 +1230,16 @@ class _MemoryFacade:
         )
         assert invocation is not None
         numeric_id = _person_memory_id(memory_id)
-        service = _require_service(self._host._services.memory_admin, "memory mutation")
-        changed = await service.delete_memory(
-            _admin_actor(
-                invocation,
-                is_superuser=self._host._is_real_superuser(invocation),
-            ),
-            invocation.actor_user_id,
-            numeric_id,
+        memories = _require_service(self._host._services.memories, "memory")
+        current = await memories.get_fact(numeric_id)
+        changed = bool(
+            current is not None
+            and current.subject_user_id == invocation.actor_user_id
+            and await memories.invalidate_fact(
+                numeric_id,
+                reason=MemoryInvalidationReason.PLUGIN_EXPLICIT_INVALIDATION,
+                actor_user_id=invocation.actor_user_id,
+            )
         )
         await self._host._audit(
             invocation,
@@ -2875,7 +2883,10 @@ def _memory_record(row: Any, scope: str) -> dict[str, JsonValue]:
         "confidence": row.confidence,
         "source_type": row.source_type.value,
         "status": row.status.value,
+        "authority": row.authority.value,
+        "conflict_state": row.conflict_state.value,
         "evidence_count": row.evidence_count,
+        "last_confirmed_at": row.last_confirmed_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
         "user_id": row.user_id,
         "group_id": row.group_id,

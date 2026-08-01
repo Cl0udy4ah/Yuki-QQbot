@@ -2,7 +2,8 @@
 
 ## 定位
 
-`3.0.0b1` 在既有 Memory V2 事实库和 FTS5 之上增加可选语义召回。`memory_facts` 仍是唯一
+`3.0.0b1` 在既有 Memory V2 事实库和 FTS5 之上增加可选语义召回；`3.0.0b2` 的冲突治理继续
+复用该派生索引。`memory_facts` 仍是唯一
 事实源；Embedding profile、向量和任务都是可丢弃、可重建的派生数据。系统不引入向量数据库、
 NumPy、LLM rerank 或历史聊天扫描。
 
@@ -44,6 +45,11 @@ query instruct 等非密钥配置生成。
 事实写入事务提交后才排队。启动时只协调当前 active facts 与当前 profile，不读取聊天历史。
 文档内容变化会产生新哈希并重新生成；事实删除通过外键级联删除向量和任务。模型或模板配置
 变化会建立新 profile，旧 profile 数据保持隔离，直到管理员显式清理。
+
+3.0.0b2 的 correction 会创建新 fact，因此生成新的 FTS row 和 Embedding job；旧版本进入
+superseded 后不会参与普通语义检索。只改变 authority、confidence、conflict_state 或
+last_confirmed_at 不改变文档正文，不会重复向量化。Embedding 故障也不会阻断修正、证据聚合或
+状态事件事务。
 
 ## 配置
 

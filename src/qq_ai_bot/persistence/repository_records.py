@@ -49,6 +49,8 @@ class EventRecord:
     origin: str = "user_message"
     automation_id: int | None = None
     automation_run_id: int | None = None
+    mentioned_user_ids: tuple[str, ...] = ()
+    reply_sender_user_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

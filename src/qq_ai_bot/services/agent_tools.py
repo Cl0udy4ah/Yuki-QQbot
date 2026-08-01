@@ -232,6 +232,25 @@ class AgentToolService:
                     required=("group_id",),
                 ),
             ),
+            ChatTool(
+                name="get_memory_fact",
+                description="按上下文中已有 fact_id 读取当前用户有权查看的一条记忆事实。",
+                parameters=_object_schema(
+                    {"fact_id": {"type": "integer", "minimum": 1}},
+                    required=("fact_id",),
+                ),
+            ),
+            ChatTool(
+                name="get_memory_evidence",
+                description=("读取当前用户本人记忆的有界证据摘要；不会返回其他人的证据来源身份。"),
+                parameters=_object_schema(
+                    {
+                        "fact_id": {"type": "integer", "minimum": 1},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                    },
+                    required=("fact_id",),
+                ),
+            ),
         ]
         if (
             self._settings.web_enabled
@@ -393,6 +412,10 @@ class AgentToolService:
                     return await self._person_memories(arguments, runtime)
                 if name == "get_group_memories":
                     return await self._group_memories(arguments, runtime)
+                if name == "get_memory_fact":
+                    return await self._memory_fact(arguments, runtime)
+                if name == "get_memory_evidence":
+                    return await self._memory_evidence(arguments, runtime)
                 if name == "web_search":
                     return await self._web_search(arguments, runtime)
                 if name == "read_webpage":
@@ -870,6 +893,48 @@ class AgentToolService:
             raise ValueError("limit 必须是 1～100 的整数")
         return int(value)
 
+    async def _memory_fact(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+        fact_id = arguments.get("fact_id")
+        if isinstance(fact_id, bool) or not isinstance(fact_id, int) or fact_id <= 0:
+            raise ValueError("fact_id 必须是正整数")
+        fact = await self._memories.get_fact(fact_id)
+        if fact is None or not self._can_read_fact(fact, runtime):
+            return self._result(error="memory_not_found", detail="没有找到可查看的事实")
+        return self._result(data={"memory": self._memory_json(fact, retrieval_reason="fact_id")})
+
+    async def _memory_evidence(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
+        fact_id = arguments.get("fact_id")
+        limit = arguments.get("limit", 10)
+        if isinstance(fact_id, bool) or not isinstance(fact_id, int) or fact_id <= 0:
+            raise ValueError("fact_id 必须是正整数")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+            raise ValueError("limit 必须是 1～20 的整数")
+        fact = await self._memories.get_fact(fact_id)
+        if fact is None or fact.subject_user_id != runtime.inbound.sender.user_id:
+            return self._result(error="memory_not_found", detail="没有找到可查看的本人事实")
+        rows = await self._memories.list_evidence(fact_id, limit=limit)
+        return self._result(
+            data={
+                "fact_id": fact_id,
+                "evidence": [
+                    {
+                        "relation": row.relation.value,
+                        "confidence": row.confidence,
+                        "authority": row.authority.value,
+                        "created_at": row.created_at.isoformat(),
+                    }
+                    for row in rows
+                ],
+            }
+        )
+
+    def _can_read_fact(self, fact: Any, runtime: ToolRuntime) -> bool:
+        if fact.subject_user_id == runtime.inbound.sender.user_id:
+            return True
+        return bool(
+            runtime.actor_is_superuser and runtime.actor_user_id in self._settings.superusers
+        )
+
     @staticmethod
     def _memory_query(
         arguments: dict[str, Any],
@@ -902,7 +967,11 @@ class AgentToolService:
             "confidence": row.confidence,
             "source_type": row.source_type.value,
             "status": row.status.value,
+            "authority": row.authority.value,
+            "conflict_state": row.conflict_state.value,
+            "reported": row.authority.value == "third_party",
             "evidence_count": row.evidence_count,
+            "last_confirmed_at": row.last_confirmed_at.isoformat(),
             "retrieval_reason": retrieval_reason,
         }
 

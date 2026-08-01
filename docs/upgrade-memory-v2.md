@@ -1,4 +1,4 @@
-# 升级到 Memory V2（3.0.0b1）
+# 升级到 Memory V2（3.0.0b2）
 
 ## 必须理解的不可逆变化
 
@@ -25,3 +25,21 @@ Alembic `0020` 不提供 downgrade，也不迁移、导入或双写旧记忆。�
 
 如果必须回退，请停止服务并恢复升级前的完整数据库备份。不要尝试执行 Alembic downgrade，
 也不要把旧表手工复制到 Memory V2。
+
+## 3.0.0b2 增量升级
+
+从 `3.0.0b1` 升级时，Alembic `0023` 会为事实和证据增加 authority、冲突状态、确认时间与
+失效原因，并创建事实关系和状态事件表。迁移以现有来源类型确定性回填元数据，不调用 LLM、
+Embedding，也不重新解释事实正文；现有 FTS 与 Embedding 派生数据会保留。
+
+```bash
+docker compose stop bot
+# 先把 data/ 复制到带时间戳的备份目录
+uv run alembic upgrade head
+uv run alembic current
+docker compose up -d --build --no-deps bot
+```
+
+升级后运行 `/ai memory doctor` 与 `/ai memory maintenance status`。没有 contested fact 时，
+`0023 → 0022` downgrade 会删除本阶段新增关系/状态表和元数据列，但保留原 facts/evidence；
+存在 contested fact 时 downgrade 会拒绝，以免无声丢失冲突语义。

@@ -1,29 +1,43 @@
 """Memory V2 public domain surface."""
 
 from qq_ai_bot.memory.enums import (
+    MemoryAuthority,
+    MemoryClaimOperation,
+    MemoryConflictState,
     MemoryEvidenceRelation,
+    MemoryFactRelationType,
+    MemoryInvalidationReason,
     MemoryJobStatus,
     MemoryKind,
     MemoryRetrievalMode,
     MemoryScopeType,
     MemorySourceType,
+    MemoryStateAction,
     MemoryStatus,
     MemoryTargetRole,
+    MemoryTemporalMode,
 )
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.models import (
+    MemoryConsistencyHealth,
     MemoryContextBlock,
     MemoryEvidence,
     MemoryEvidenceCreate,
     MemoryFact,
     MemoryFactCreate,
     MemoryFactQuery,
+    MemoryFactRelation,
+    MemoryFactStateEvent,
     MemoryJob,
     MemoryQuery,
     MemoryRetrievalResult,
 )
 
 __all__ = [
+    "MemoryAuthority",
+    "MemoryClaimOperation",
+    "MemoryConflictState",
+    "MemoryConsistencyHealth",
     "MemoryContextBlock",
     "MemoryEvidence",
     "MemoryEvidenceCreate",
@@ -31,6 +45,10 @@ __all__ = [
     "MemoryFact",
     "MemoryFactCreate",
     "MemoryFactQuery",
+    "MemoryFactRelation",
+    "MemoryFactRelationType",
+    "MemoryFactStateEvent",
+    "MemoryInvalidationReason",
     "MemoryJob",
     "MemoryJobStatus",
     "MemoryKind",
@@ -40,6 +58,8 @@ __all__ = [
     "MemoryRetrievalResult",
     "MemoryScopeType",
     "MemorySourceType",
+    "MemoryStateAction",
     "MemoryStatus",
     "MemoryTargetRole",
+    "MemoryTemporalMode",
 ]

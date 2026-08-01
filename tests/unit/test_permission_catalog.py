@@ -69,8 +69,8 @@ def test_user_report_includes_automation_and_time_self_service_operations() -> N
     assert report.protected_config_count == 0
     assert report.business_action_count == 0
     assert report.mutating_action_count == 0
-    assert report.self_service_operation_count == 30
-    assert report.self_service_mutation_count == 14
+    assert report.self_service_operation_count == 37
+    assert report.self_service_mutation_count == 17
     assert {descriptor.kind for descriptor in report.capabilities} == {CapabilityKind.COMMAND}
     assert {descriptor.id for descriptor in report.capabilities} == {
         "command:chat.help:self",
@@ -100,6 +100,13 @@ def test_user_report_includes_automation_and_time_self_service_operations() -> N
         "command:memory.add:self",
         "command:memory.update:self",
         "command:memory.delete:self",
+        "command:memory.show:self",
+        "command:memory.explain:self",
+        "command:memory.history:self",
+        "command:memory.conflicts:self",
+        "command:memory.correct:self",
+        "command:memory.invalidate:self",
+        "command:memory.restore:self",
         "command:preference.list:self",
         "command:preference.set:self",
         "command:preference.delete:self",
@@ -107,7 +114,14 @@ def test_user_report_includes_automation_and_time_self_service_operations() -> N
     assert all(
         "确定性 /ai" in descriptor.description
         for descriptor in report.capabilities
-        if descriptor.category in {"relationship", "memory", "preference"}
+        if descriptor.category in {"relationship", "preference"}
+        or descriptor.id
+        in {
+            "command:memory.list:self",
+            "command:memory.add:self",
+            "command:memory.update:self",
+            "command:memory.delete:self",
+        }
     )
 
 
@@ -121,13 +135,13 @@ def test_superuser_report_has_exact_registry_counts_and_complete_lists() -> None
     ).report_for_message(inbound("9000"))
 
     assert report.permission_level is PermissionLevel.SUPERUSER
-    assert report.mutable_config_count == 163
+    assert report.mutable_config_count == 185
     assert report.protected_config_count == 12
     assert report.business_action_count == 44
     assert report.mutating_action_count == 33
-    assert report.self_service_operation_count == 30
+    assert report.self_service_operation_count == 42
     assert report.onebot_gateway_count == 1
-    assert len(report.capabilities) == 250
+    assert len(report.capabilities) == 284
 
     config_ids = {
         descriptor.id
@@ -155,13 +169,13 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
 
     assert first == second
     assert first["counts"] == {
-        "total": 250,
-        "mutable_configurations": 163,
+        "total": 284,
+        "mutable_configurations": 185,
         "protected_configurations": 12,
         "business_actions": 44,
         "mutating_business_actions": 33,
-        "self_service_operations": 30,
-        "self_service_mutations": 14,
+        "self_service_operations": 42,
+        "self_service_mutations": 20,
         "onebot_api_gateways": 1,
     }
     assert set(first["available_apply_modes"]) == {
@@ -194,7 +208,7 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
         for items in kinds.values()
         for item in items
     }
-    assert len(rendered) < 32000
+    assert len(rendered) < 36000
     assert compact_ids == {descriptor.id for descriptor in report.capabilities}
 
     summary = report.to_model_dict("summary")
@@ -203,7 +217,7 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
     assert summary["do_not_copy_verbatim_to_user"] is True
     assert "capability_ids" not in summary
     assert len(json.dumps(summary, ensure_ascii=False)) < 4000
-    assert len(json.dumps(full_model_view, ensure_ascii=False)) < 12000
+    assert len(json.dumps(full_model_view, ensure_ascii=False)) < 14000
 
 
 def test_focused_model_view_finds_registry_alias_without_full_catalog() -> None:
@@ -252,7 +266,7 @@ def test_deterministic_text_contains_every_capability_and_onebot_scope() -> None
             capability_id = capability_id.removeprefix("onebot:")
         assert capability_id in rendered
 
-    assert "可修改运行时配置参数：163 项" in rendered
+    assert "可修改运行时配置参数：185 项" in rendered
     assert "管理员业务接口：44 项，其中修改型 33 项" in rendered
     assert "NapCat/OneBot 通用全接口网关：1 项" in rendered
     assert "全部公开 action" in rendered
@@ -266,10 +280,10 @@ def test_category_filter_recomputes_counts_and_preserves_sorted_output() -> None
         category="memory",
     )
 
-    assert report.mutable_config_count == 13
+    assert report.mutable_config_count == 35
     assert report.business_action_count == 5
     assert report.mutating_action_count == 4
-    assert report.self_service_operation_count == 4
+    assert report.self_service_operation_count == 16
     assert all(descriptor.category == "memory" for descriptor in report.capabilities)
     assert list(report.capabilities) == sorted(
         report.capabilities,
@@ -320,7 +334,7 @@ def test_injected_registry_entries_appear_without_copying_registry_tables() -> N
     assert "action:diagnostics.snapshot:any_group" in {
         descriptor.id for descriptor in report.capabilities
     }
-    assert report.mutable_config_count == 164
+    assert report.mutable_config_count == 186
     assert report.business_action_count == 45
 
 

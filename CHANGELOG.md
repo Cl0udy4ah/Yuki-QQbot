@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 3.0.0b2 - 2026-08-01
+
+### Memory V2 冲突治理与可信修正
+
+- 新增 `assert / confirm / correct / retract` 记忆操作、`explicit / self_report /
+  group_report / third_party` 来源权威、`clear / contested` 冲突状态和确定性
+  `MemoryResolutionPolicy`。LLM 只对有界候选分类语义关系，不能决定数据库状态、身份、权限或
+  authority；分类失败会保守降级，不覆盖已有事实。
+- 修正、撤回和合并不再原地改写或物理删除正文：修正建立 supersedes 版本链，撤回转为
+  invalidated，冲突保留双向可查关系和完整状态事件。相同陈述复用事实并聚合真实事件证据，
+  confidence 使用后端固定权重和 authority 上限计算，好感度与信任度不参与事实真伪判断。
+- 真实群 `@` 和回复作者可以成为第三方记忆主体，但只允许写入当前群的 `person_group` 作用域；
+  普通名字文本、私聊、Bot 和其他群都不能产生第三方主体。本人后续确认可提升 authority，
+  第三方陈述不能覆盖本人或显式事实。
+
+### 生命周期、审计与接口
+
+- 新增非破坏性 Alembic `0023`，扩展 `memory_facts` / `memory_evidence`，并建立
+  `memory_fact_relations` 与 `memory_fact_state_events`；现有事实、证据、FTS 和 Embedding
+  派生数据均保留。存在 contested fact 时 downgrade 会明确拒绝。
+- 新增本地 `MemoryMaintenanceWorker`，按 `valid_until` 和可热更新的低价值陈旧规则有界处理
+  自动事实，只改变状态、不扫描聊天历史、不调用 LLM/Embedding，也不修改 explicit 事实。
+- 新增 `/ai memory show|explain|history|conflicts|correct|invalidate|restore|merge|resolve|doctor|
+  maintenance`，以及 Core 只读工具 `get_memory_fact` / `get_memory_evidence`。普通用户只能审计和
+  修正本人事实；跨人物、跨群合并、冲突裁决和完整诊断仅允许真实 `SUPERUSERS` 发送者。
+- Plugin API 保持 `1.0`：`MemoryFacade.update()` 改为建立修正版，`delete()` 改为显式失效，
+  插件不能自行设置 status、authority 或 conflict_state。健康检查增加冲突、一致性、维护和分类
+  错误指标，文档与 `.env.example` 同步到 `3.0.0b2`。
+
 ## 3.0.0b1 - 2026-08-01
 
 ### Qwen Embedding 与混合 RAG

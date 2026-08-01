@@ -9,16 +9,25 @@ from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.config import Settings
+from qq_ai_bot.memory.audit import MemoryAuditService
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.embedding.models import MemoryEmbeddingHealth
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
-from qq_ai_bot.memory.enums import MemoryRetrievalMode, MemoryScopeType, MemoryTargetRole
+from qq_ai_bot.memory.enums import (
+    MemoryInvalidationReason,
+    MemoryRetrievalMode,
+    MemoryScopeType,
+    MemoryTargetRole,
+)
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
+from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.models import (
+    MemoryConsistencyHealth,
     MemoryEntityTarget,
     MemoryEvidence,
     MemoryEvidenceCreate,
     MemoryFact,
+    MemoryFactStateEvent,
     MemoryIndexHealth,
     MemoryRetrievalResult,
 )
@@ -43,6 +52,8 @@ class MemoryAdminService:
         memory_index: SQLiteMemoryFTSIndex | None = None,
         runtime_config: RuntimeConfigService | None = None,
         memory_embeddings: MemoryEmbeddingRuntime | None = None,
+        fact_audit: MemoryAuditService | None = None,
+        maintenance: MemoryMaintenanceWorker | None = None,
     ) -> None:
         self._settings = settings
         self._memories = memories
@@ -62,6 +73,8 @@ class MemoryAdminService:
             database=database,
         )
         self._memory_embeddings = memory_embeddings
+        self._fact_audit = fact_audit or MemoryAuditService(memories.repository)
+        self._maintenance = maintenance
 
     async def list_memories(
         self,
@@ -368,6 +381,159 @@ class MemoryAdminService:
         if self._memory_embeddings is None:
             raise RuntimeError("memory embedding runtime is unavailable")
         return await self._memory_embeddings.purge_old()
+
+    async def show_fact(self, actor: AdminActor, fact_id: int) -> MemoryFact | None:
+        fact = await self._fact_audit.get_fact(fact_id)
+        self._require_fact_access(actor, fact)
+        return fact
+
+    async def explain_fact(self, actor: AdminActor, fact_id: int) -> dict[str, object] | None:
+        fact = await self._fact_audit.get_fact(fact_id)
+        self._require_fact_access(actor, fact)
+        if fact is None:
+            return None
+        explanation = await self._fact_audit.explain(fact_id)
+        if (
+            explanation is not None
+            and actor.is_superuser
+            and actor.user_id in self._settings.superusers
+        ):
+            explanation["evidence_sources"] = [
+                {
+                    "event_id": row.event_id,
+                    "source_speaker_user_id": row.source_speaker_user_id,
+                    "relation": row.relation.value,
+                    "excerpt": row.excerpt,
+                }
+                for row in await self._fact_audit.get_evidence(fact_id)
+            ]
+        return explanation
+
+    async def fact_history(
+        self,
+        actor: AdminActor,
+        fact_id: int,
+    ) -> tuple[MemoryFactStateEvent, ...]:
+        fact = await self._fact_audit.get_fact(fact_id)
+        self._require_fact_access(actor, fact)
+        return await self._fact_audit.get_state_history(fact_id) if fact is not None else ()
+
+    async def list_conflicts(
+        self,
+        actor: AdminActor,
+        *,
+        target_user_id: str | None = None,
+    ) -> tuple[MemoryFact, ...]:
+        target = target_user_id or actor.user_id
+        require_self_or_superuser(actor, target, self._settings)
+        return await self._fact_audit.list_conflicts(subject_user_id=target)
+
+    async def correct_fact(
+        self,
+        actor: AdminActor,
+        fact_id: int,
+        content: str,
+    ) -> MemoryFact | None:
+        fact = await self._fact_audit.get_fact(fact_id)
+        self._require_fact_mutation(actor, fact)
+        return await self._memories.correct_fact(
+            fact_id,
+            content=content,
+            actor_user_id=actor.user_id,
+        )
+
+    async def invalidate_fact(
+        self,
+        actor: AdminActor,
+        fact_id: int,
+        reason: str | None = None,
+    ) -> bool:
+        fact = await self._fact_audit.get_fact(fact_id)
+        self._require_fact_mutation(actor, fact)
+        selected = (
+            MemoryInvalidationReason.ADMINISTRATOR_INVALIDATED
+            if actor.is_superuser
+            else MemoryInvalidationReason.USER_RETRACTED
+        )
+        if reason and actor.is_superuser:
+            selected = MemoryInvalidationReason(reason)
+        return await self._memories.invalidate_fact(
+            fact_id,
+            reason=selected,
+            actor_user_id=actor.user_id,
+        )
+
+    async def restore_fact(self, actor: AdminActor, fact_id: int) -> MemoryFact | None:
+        fact = await self._fact_audit.get_fact(fact_id)
+        self._require_fact_mutation(actor, fact)
+        if (
+            fact is not None
+            and not actor.is_superuser
+            and fact.invalidated_reason
+            not in {
+                MemoryInvalidationReason.USER_RETRACTED,
+                MemoryInvalidationReason.PLUGIN_EXPLICIT_INVALIDATION,
+            }
+        ):
+            raise PermissionError("只能恢复由本人撤回的记忆")
+        return await self._memories.restore_fact(fact_id, actor_user_id=actor.user_id)
+
+    async def merge_facts(
+        self,
+        actor: AdminActor,
+        source_fact_id: int,
+        target_fact_id: int,
+    ) -> MemoryFact | None:
+        self._require_superuser(actor)
+        return await self._memories.merge_facts(
+            source_fact_id,
+            target_fact_id,
+            actor_user_id=actor.user_id,
+        )
+
+    async def resolve_conflicts(
+        self,
+        actor: AdminActor,
+        preferred_fact_id: int,
+        contested_fact_ids: tuple[int, ...],
+    ) -> int:
+        self._require_superuser(actor)
+        return await self._memories.resolve_conflicts(
+            preferred_fact_id,
+            contested_fact_ids,
+            actor_user_id=actor.user_id,
+        )
+
+    async def consistency_health(self, actor: AdminActor) -> MemoryConsistencyHealth:
+        self._require_superuser(actor)
+        return await self._fact_audit.health()
+
+    async def maintenance_status(
+        self,
+        actor: AdminActor,
+    ) -> tuple[bool, MemoryConsistencyHealth]:
+        self._require_superuser(actor)
+        health = await self._fact_audit.health()
+        return bool(self._maintenance and self._maintenance.running), health
+
+    async def maintenance_run(self, actor: AdminActor) -> int:
+        self._require_superuser(actor)
+        if self._maintenance is None:
+            raise RuntimeError("memory maintenance worker is unavailable")
+        return await self._maintenance.process_once()
+
+    def _require_fact_access(self, actor: AdminActor, fact: MemoryFact | None) -> None:
+        if fact is None:
+            return
+        if actor.is_superuser and actor.user_id in self._settings.superusers:
+            return
+        if fact.subject_user_id != actor.user_id:
+            raise PermissionError("只能查看与本人有关的人物记忆")
+
+    def _require_fact_mutation(self, actor: AdminActor, fact: MemoryFact | None) -> None:
+        self._require_fact_access(actor, fact)
+        if fact is not None and fact.scope_type is MemoryScopeType.GROUP and not actor.is_superuser:
+            raise PermissionError("普通用户不能修改群共同事实")
 
     def _require_superuser(self, actor: AdminActor) -> None:
         if not actor.is_superuser or actor.user_id not in self._settings.superusers:
