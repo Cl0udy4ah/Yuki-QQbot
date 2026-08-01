@@ -24,6 +24,7 @@ from qq_ai_bot.planner.models import (
     MemoryContextReasonCode,
     PlannerDecision,
     PlannerInput,
+    PlannerModelOutput,
     PlannerReasonCode,
     ToolMode,
     ToolSelection,
@@ -329,12 +330,12 @@ class LLMPlannerProvider:
                 plugin_messages = self._prompt_registry.render(target=PromptTarget.PLANNER)
                 if plugin_messages:
                     structured_input["plugin_context"] = list(plugin_messages)
-            plan = await _await_with_cancellation(
+            model_output = await _await_with_cancellation(
                 self._structured.run(
                     task=ModelTask.PLANNER,
                     instruction=PLANNER_SYSTEM_PROMPT,
                     structured_input=structured_input,
-                    output_model=TurnPlan,
+                    output_model=PlannerModelOutput,
                     temperature=planner_runtime.temperature,
                     max_output_tokens=planner_runtime.max_output_tokens,
                     allow_text_json=True,
@@ -343,6 +344,7 @@ class LLMPlannerProvider:
                 timeout_seconds=timeout_seconds,
             )
             _raise_if_cancelled(cancellation)
+            plan = model_output.materialize()
             plan = validate_turn_plan(
                 plan,
                 planner_input,

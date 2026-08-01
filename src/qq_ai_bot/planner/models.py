@@ -11,9 +11,22 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validat
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.relationships import RelationshipStage
-from qq_ai_bot.emoji.models import EmojiReplyPlan
+from qq_ai_bot.emoji.models import (
+    EmojiIntent,
+    EmojiPlacement,
+    EmojiReplyMode,
+    EmojiReplyPlan,
+)
 from qq_ai_bot.memory.enums import MemoryContextMode
-from qq_ai_bot.speech.models import VoicePreferenceMode, VoiceReplyPlan
+from qq_ai_bot.speech.models import (
+    SpeechLanguageHint,
+    VoiceAgentToolPolicy,
+    VoiceIntent,
+    VoiceMode,
+    VoicePreferenceChange,
+    VoicePreferenceMode,
+    VoiceReplyPlan,
+)
 
 
 class _StrictPlannerModel(BaseModel):
@@ -333,6 +346,165 @@ class TurnPlan(_StrictPlannerModel):
         """Source-compatible projection for 1.8 integrations."""
 
         return self.tool_selection.mode
+
+
+class PlannerToolOutput(_StrictPlannerModel):
+    """Sparse model-facing tool choice that must be stated explicitly."""
+
+    mode: ToolMode = Field(
+        description=(
+            "当前请求需要调用任何工具时使用 inherit，明确只允许读取时使用 read_only；"
+            "只有完全不需要工具时才使用 none。"
+        )
+    )
+    scopes: tuple[str, ...] = Field(
+        description=(
+            "从 available_tool_scopes 选择本轮完成请求所需的最小 scope 集合；"
+            "用户明确要求搜索、读取记忆、自动化或外部操作时不得留空。"
+        )
+    )
+
+    def materialize(self) -> ToolSelection:
+        """Convert the compact provider response into the domain type."""
+
+        return ToolSelection(mode=self.mode, scopes=self.scopes)
+
+
+class PlannerMemoryOutput(_StrictPlannerModel):
+    """Required retrieval depth plus optional low-cardinality explanation."""
+
+    mode: MemoryContextMode = Field(
+        description=(
+            "日常短对话使用 lexical；追问人物、偏好、旧事或模糊指代使用 hybrid；"
+            "询问完整记忆概览使用 overview；纯效果回复使用 none。"
+        )
+    )
+    reason_code: MemoryContextReasonCode = MemoryContextReasonCode.DEFAULT
+
+    def materialize(self) -> MemoryContextPlan:
+        return MemoryContextPlan(mode=self.mode, reason_code=self.reason_code)
+
+
+class PlannerEmojiOutput(_StrictPlannerModel):
+    """Compact visual-effect decision; secondary presentation fields are optional."""
+
+    intent: EmojiIntent = Field(
+        description="当前用户明确要求发送表情时必须为 explicit_request，否则为 neutral。"
+    )
+    mode: EmojiReplyMode = Field(
+        description=(
+            "明确索要表情时使用 preferred 或 emoji_only；自然聊天可用 optional；"
+            "不适合发表情时使用 none。"
+        )
+    )
+    placement: EmojiPlacement | None = None
+    goal: str = Field(default="", max_length=300)
+    emotion: str = Field(default="", max_length=100)
+
+    def materialize(self) -> EmojiReplyPlan:
+        placement = self.placement
+        if placement is None:
+            placement = (
+                EmojiPlacement.ONLY
+                if self.mode is EmojiReplyMode.EMOJI_ONLY
+                else EmojiPlacement.AFTER_TEXT
+            )
+        return EmojiReplyPlan(
+            intent=self.intent,
+            mode=self.mode,
+            placement=placement,
+            goal=self.goal,
+            emotion=self.emotion,
+        )
+
+
+class PlannerVoiceOutput(_StrictPlannerModel):
+    """Compact voice decision with backend-owned tool authorization defaults."""
+
+    mode: VoiceMode = Field(
+        description=(
+            "当前消息明确要求发送或朗读语音且 speech.available=true 时必须为 voice 或 "
+            "text_and_voice；明确不要语音时为 text。"
+        )
+    )
+    intent: VoiceIntent = Field(
+        description=(
+            "当前消息明确索要语音时必须为 explicit_request，明确拒绝语音时为 "
+            "explicit_opt_out，只有没有表达语音偏好时才为 neutral。"
+        )
+    )
+    style_hint: str = Field(default="", max_length=128)
+    language: SpeechLanguageHint = SpeechLanguageHint.AUTO
+    preference_change: VoicePreferenceChange | None = None
+
+    def materialize(self) -> VoiceReplyPlan:
+        return VoiceReplyPlan(
+            mode=self.mode,
+            intent=self.intent,
+            agent_tool=(
+                VoiceAgentToolPolicy.REQUIRED
+                if self.intent is VoiceIntent.EXPLICIT_REQUEST
+                else VoiceAgentToolPolicy.FORBIDDEN
+            ),
+            style_hint=self.style_hint,
+            language=self.language,
+            preference_change=self.preference_change,
+        )
+
+
+class PlannerModelOutput(_StrictPlannerModel):
+    """Sparse provider response materialized into one strict :class:`TurnPlan`.
+
+    The model must still classify behavior that cannot be inferred safely by
+    the backend: delivery, memory depth, emoji, and voice. Tool selection is
+    optional only because omission preserves the existing capability-kernel
+    ``inherit`` behavior. Secondary details use backend defaults, keeping
+    completions small without spreading nullable values through the domain.
+    """
+
+    decision: PlannerDecision
+    confidence: float = Field(ge=0, le=1, strict=True)
+    reason_code: PlannerReasonCode
+    intent: str = Field(default="", max_length=300)
+    target_user_ids: tuple[str, ...] = Field(default=(), max_length=5)
+    delivery_mode: DeliveryMode = Field(
+        description="选择正文发送形态；用户要求多条或自然聊天适合拆分时使用 natural_multi。"
+    )
+    desired_messages: int = Field(
+        ge=1,
+        le=20,
+        strict=True,
+        description="本轮计划发送的正文消息数量，受后端硬上限约束。",
+    )
+    reply_to_message_id: str | None = Field(default=None, max_length=128)
+    tool_selection: PlannerToolOutput | None = None
+    wait_seconds: float = Field(default=0, ge=0, le=300, strict=True)
+    memory_context: PlannerMemoryOutput
+    emoji: PlannerEmojiOutput
+    voice: PlannerVoiceOutput
+
+    def materialize(self) -> TurnPlan:
+        """Fill omitted provider fields from trusted backend defaults."""
+
+        return TurnPlan(
+            decision=self.decision,
+            intent=self.intent,
+            target_user_ids=self.target_user_ids,
+            delivery_mode=self.delivery_mode,
+            desired_messages=self.desired_messages,
+            reply_to_message_id=self.reply_to_message_id,
+            tool_selection=(
+                self.tool_selection.materialize()
+                if self.tool_selection is not None
+                else ToolSelection()
+            ),
+            wait_seconds=self.wait_seconds,
+            confidence=self.confidence,
+            reason_code=self.reason_code,
+            memory_context=self.memory_context.materialize(),
+            emoji=self.emoji.materialize(),
+            voice=self.voice.materialize(),
+        )
 
 
 class PlannedTurn(_StrictPlannerModel):

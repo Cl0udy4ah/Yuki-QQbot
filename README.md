@@ -1,13 +1,46 @@
-# Yuki-QQbot
+<div align="center">
 
-一个纯用 codex vibe coding 的面向个人部署的 QQ AI Agent。Yuki 通过 NapCatQQ 接入 QQ，使用 Planner、Agent、长期记忆、工具系统和插件系统完成聊天、检索、自动化与外部服务调用。
+<p>
+  <img src="img/Yuki_2.png" alt="Yuki" width="280">
+</p>
 
-当前版本：**3.0.2**
+<h1>Yuki-QQbot</h1>
 
-3.0.2 修复群聊表情候选查询与发送确认链路。明确的“发个表情”请求会走 Planner 的确定性
-快路径；只有 OneBot 返回真实消息 ID 后，系统才会记录图片已发送，失败时会诚实回退为短文字。
+<p>
+  面向个人部署的 QQ AI Agent
+</p>
 
-## 主要功能
+<p>
+  <img src="https://img.shields.io/badge/Version-3.0.2-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python Version">
+  <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2">
+  <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT License">
+  </a>
+</p>
+
+<p>
+  <a href="#-主要功能">主要功能</a>
+  ·
+  <a href="#-快速开始">快速开始</a>
+  ·
+  <a href="#-文档">文档</a>
+  ·
+  <a href="#-开发">开发</a>
+</p>
+
+</div>
+
+---
+
+Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agent。它通过 NapCatQQ 接入 QQ，使用 Planner、Agent、长期记忆、工具系统和插件系统完成聊天、检索、自动化与外部服务调用。
+
+> **当前版本：3.0.2**
+>
+> 本版本修复群聊表情候选查询与发送确认链路。明确的“发个表情”请求会走 Planner 的确定性快路径；只有 OneBot 返回真实消息 ID 后，系统才会记录图片已发送，失败时会回退为短文字。
+
+## ✨ 主要功能
 
 - **自然对话**：支持私聊、群聊、多轮上下文和思考模型。
 - **Planner + Agent**：先规划是否回复、调用哪些能力，再由同一个 Agent 完成工具调用与回答。
@@ -21,19 +54,23 @@
 - **多模态扩展**：可选图片理解、表情系统、受控联网搜索和本地 Genie-TTS 语音回复。
 - **运行时管理**：支持管理员自然语言配置、权限审计、健康检查和数据库迁移。
 
-## 技术栈
+---
+
+## 🧰 技术栈
 
 - Python 3.12
 - NoneBot2
 - OneBot v11 / NapCatQQ
 - SQLite / SQLAlchemy / Alembic
 - Pydantic
-- OpenAI-compatible Chat Completions API，建议deepseek
+- OpenAI-compatible Chat Completions API，建议使用 DeepSeek
 - MCP Python SDK
 - Docker Compose
 - 可选 Qwen Vision、Qwen Embedding、Tavily 与 Genie-TTS
 
-## 架构概览
+---
+
+## 🏗️ 架构概览
 
 ```text
 QQ / NapCatQQ
@@ -64,7 +101,9 @@ Tool Kernel
 → 按实体分块注入当前对话
 ```
 
-## 快速开始
+---
+
+## 🚀 快速开始
 
 ### 1. 准备配置
 
@@ -79,7 +118,7 @@ cp .env.example .env
 - `SUPERUSERS`
 - 主模型的 API 地址、密钥和模型名称
 
-### 2. 启动
+### 2. 启动服务
 
 ```bash
 docker compose up -d --build
@@ -95,13 +134,15 @@ docker compose logs -f bot napcat
 docker compose up -d
 ```
 
-停止：
+停止服务：
 
 ```bash
 docker compose down
 ```
 
-## 可选能力
+---
+
+## 🧩 可选能力
 
 以下功能默认可以关闭，不影响基础聊天：
 
@@ -115,15 +156,20 @@ docker compose down
 
 配置示例见 [`.env.example`](.env.example)。
 
-## 数据与升级
+---
+
+## 🗃️ 数据与升级
 
 Yuki 使用 SQLite 保存事件、人物、关系、记忆、自动化、插件和运行配置。
 
+> [!IMPORTANT]
 > 从 2.x 升级到 3.x 前必须完整备份 `data/`。Memory V2 的首次迁移会删除旧记忆表，但保留聊天事件账本和其他核心数据。
 
 详细步骤见 [Memory V2 升级指南](docs/upgrade-memory-v2.md)。
 
-## 文档
+---
+
+## 📚 文档
 
 - [Memory V2 架构](docs/architecture/memory-v2.md)
 - [记忆检索与混合 RAG](docs/architecture/memory-v2-retrieval.md)
@@ -134,7 +180,11 @@ Yuki 使用 SQLite 保存事件、人物、关系、记忆、自动化、插件�
 - [版本记录](CHANGELOG.md)
 - [完整文档目录](docs/)
 
-## 开发
+---
+
+## 🛠️ 开发
+
+安装依赖并运行检查：
 
 ```bash
 uv sync --all-extras
@@ -144,8 +194,14 @@ uv run mypy src
 uv run pytest
 ```
 
-数据库迁移：
+执行数据库迁移：
 
 ```bash
 uv run alembic upgrade head
 ```
+
+---
+
+## 📄 开源协议
+
+本项目基于 [MIT License](LICENSE) 开源。

@@ -52,7 +52,12 @@ from qq_ai_bot.planner import (
     TurnPlan,
     constrain_turn_plan,
 )
-from qq_ai_bot.planner.models import PlannerEmojiContext, PlannerSpeechContext, ToolScopeSummary
+from qq_ai_bot.planner.models import (
+    PlannerEmojiContext,
+    PlannerModelOutput,
+    PlannerSpeechContext,
+    ToolScopeSummary,
+)
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.speech.models import (
@@ -247,22 +252,22 @@ def _planner_input(
 
 def _valid_plan_payload(**updates: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "schema_version": 1,
         "decision": "reply",
         "intent": "回答当前问题",
         "target_user_ids": ["1001"],
         "delivery_mode": "single",
         "desired_messages": 1,
         "reply_to_message_id": None,
-        "tool_mode": "inherit",
+        "tool_selection": {"mode": "inherit", "scopes": []},
         "wait_seconds": 0,
         "confidence": 0.9,
         "reason_code": "direct_request",
-        "planner_note": "internal only",
         "memory_context": {
             "mode": "lexical",
             "reason_code": "routine_context",
         },
+        "emoji": {"intent": "neutral", "mode": "none"},
+        "voice": {"mode": "text", "intent": "neutral"},
     }
     payload.update(updates)
     return payload
@@ -847,7 +852,10 @@ def test_plan_parser_rejects_unknown_fields_and_permission_modes() -> None:
     with pytest.raises(PlannerResponseError):
         constrain_turn_plan(_valid_plan_payload(root=True), planner_input)
     with pytest.raises(PlannerResponseError):
-        constrain_turn_plan(_valid_plan_payload(tool_mode="write_all"), planner_input)
+        constrain_turn_plan(
+            _valid_plan_payload(tool_selection={"mode": "write_all"}),
+            planner_input,
+        )
 
 
 def test_dynamic_scopes_are_authoritative_and_legacy_groups_remain_compatible() -> None:
@@ -912,6 +920,75 @@ async def test_llm_planner_is_tool_free_non_thinking_and_uses_separate_model() -
     assert request.tools == ()
     assert request.tool_choice is None
     assert "reply_to_message_id 默认必须为 null" in (request.messages[0].content or "")
+
+
+@pytest.mark.asyncio
+async def test_llm_planner_materializes_sparse_output_with_backend_defaults() -> None:
+    llm = FakeLLMProvider(
+        lambda _request: json.dumps(
+            {
+                "decision": "reply",
+                "confidence": 0.92,
+                "reason_code": "direct_request",
+                "delivery_mode": "single",
+                "desired_messages": 1,
+                "memory_context": {"mode": "lexical"},
+                "emoji": {"intent": "neutral", "mode": "none"},
+                "voice": {"mode": "text", "intent": "neutral"},
+            }
+        )
+    )
+    provider = LLMPlannerProvider(llm, model="planner-model")
+
+    plan = await provider.plan(_planner_input(), runtime=_runtime())
+
+    assert plan.decision is PlannerDecision.REPLY
+    assert plan.confidence == 0.92
+    assert plan.intent == ""
+    assert plan.delivery_mode is DeliveryMode.SINGLE
+    assert plan.desired_messages == 1
+    assert plan.reply_to_message_id is None
+    assert plan.tool_mode is ToolMode.INHERIT
+    assert plan.tool_selection.scope_ids == ()
+    assert plan.memory_context.mode is MemoryContextMode.LEXICAL
+    assert plan.emoji.mode is EmojiReplyMode.NONE
+    assert plan.voice.mode is VoiceMode.TEXT
+
+
+def test_sparse_planner_schema_requires_all_non_inferable_decisions() -> None:
+    schema = PlannerModelOutput.model_json_schema()
+
+    assert set(schema["required"]) == {
+        "decision",
+        "confidence",
+        "reason_code",
+        "delivery_mode",
+        "desired_messages",
+        "memory_context",
+        "emoji",
+        "voice",
+    }
+
+
+def test_sparse_planner_derives_secondary_effect_defaults() -> None:
+    output = PlannerModelOutput.model_validate(
+        {
+            "decision": "reply",
+            "confidence": 0.98,
+            "reason_code": "direct_request",
+            "delivery_mode": "single",
+            "desired_messages": 1,
+            "memory_context": {"mode": "none"},
+            "emoji": {"intent": "explicit_request", "mode": "emoji_only"},
+            "voice": {"mode": "voice", "intent": "explicit_request"},
+        }
+    )
+
+    plan = output.materialize()
+
+    assert plan.emoji.placement is EmojiPlacement.ONLY
+    assert plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
+    assert plan.voice.language is SpeechLanguageHint.AUTO
 
 
 @pytest.mark.asyncio

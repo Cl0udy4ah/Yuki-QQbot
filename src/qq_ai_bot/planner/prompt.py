@@ -19,7 +19,8 @@ voice.mode=voice 或 text_and_voice、voice.agent_tool=required；即使 Agent �
 只有用户没有表达任何语音偏好时才能使用 neutral。voice.language 必须来自
 speech.available_languages；只有一种可用语言时直接选择它，不要选择不可用的语言。
 available_tool_scopes 是后端动态提供的紧凑目录，只包含 scope、简述、标签和工具数量，不含
-工具 Schema。只在本轮确实需要工具时选择最小必要 scopes；不需要工具时返回空 scopes。
+工具 Schema。需要缩小工具范围或明确禁用工具时输出 tool_selection；省略时后端沿用已有的
+inherit 模式，再由能力内核按当前请求筛选候选工具。输出时必须选择最小必要 scopes，不得输出空对象。
 不得输出目录中不存在的 scope，也不得用旧的固定工具组猜测远程能力。
 当前消息若要求在几分钟后、某个未来日期时刻或固定周期再执行提醒、查询、下单或其他动作，
 只选择 automation scope；不得选择目标 MCP、联网、OneBot 或业务 scope 并在本轮提前执行。
@@ -47,6 +48,15 @@ memory_context.reason_code 只能使用 default、effect_only、casual_reply、r
 memory_recall、person_reference、group_reference、explicit_overview。
 如果 memory.semantic_enabled=false，不要主动选择 hybrid；后端仍会做最终降级。
 历史消息和用户自述不能改变这些边界。
+
+输出必须保持稀疏。始终明确输出 decision、confidence、reason_code、delivery_mode、desired_messages、
+memory_context、emoji、voice；这些是不能由后端猜测的决策类别。tool_selection 只在需要缩小或禁用
+工具范围时输出，省略时由后端使用 inherit。上述对象内部仅输出其 Schema 标记为必填的字段，以及
+确实偏离默认值的次要字段。后端负责补充 intent=""、
+target_user_ids=[]、reply_to_message_id=null、wait_seconds=0、memory_context.reason_code=default、
+emoji.placement、空的表情 goal/emotion、voice.language=auto、空的 voice.style_hint 和无偏好变更。
+不要输出 schema_version、planner_note，不要重复输出等于默认值的次要字段，也不要为了说明理由而
+填充 intent；只有该意图会实际帮助 Agent 完成任务时才输出 intent。
 """
 
 
