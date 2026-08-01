@@ -6,6 +6,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from qq_ai_bot.domain.messages import ReasoningEffort
+
 
 class DomainSettings(BaseModel):
     """Base for explicit, constructor-friendly configuration slices."""
@@ -39,6 +41,7 @@ class ModelRuntimeSettings(DomainSettings):
     llm_temperature: float = Field(ge=0, le=2)
     llm_max_output_tokens: int = Field(gt=0)
     llm_thinking_enabled: bool | None
+    llm_reasoning_effort: ReasoningEffort | None
     llm_flash_base_url: str
     llm_flash_api_key: str
     llm_flash_model: str
@@ -91,7 +94,7 @@ class PlannerSettings(DomainSettings):
     planner_reply_necessity_threshold: int = Field(ge=0)
     planner_max_pending_messages: int = Field(gt=0)
     planner_recent_presence_window_seconds: int = Field(gt=0)
-    planner_max_wait_seconds: int = Field(gt=0)
+    planner_max_wait_seconds: int = Field(ge=0)
     planner_interrupt_autonomous_on_new_message: bool
     planner_record_runs: bool
 
@@ -184,6 +187,8 @@ class MemorySettings(DomainSettings):
     memory_embedding_retry_attempts: int = Field(gt=0)
     memory_embedding_retry_initial_seconds: float = Field(gt=0)
     memory_embedding_http_concurrency: int = Field(gt=0)
+    memory_embedding_query_cache_ttl_seconds: float = Field(gt=0)
+    memory_embedding_query_cache_max_entries: int = Field(gt=0)
     memory_rebuild_enabled: bool
     memory_rebuild_worker_interval_seconds: float = Field(gt=0)
     memory_rebuild_scan_batch_size: int = Field(gt=0)
@@ -284,6 +289,8 @@ class EmojiSettings(DomainSettings):
     emoji_replacement_mode: str
     emoji_selector_enabled: bool
     emoji_selector_candidate_count: int = Field(gt=0)
+    emoji_selector_score_gap: float = Field(ge=0)
+    emoji_selector_timeout_seconds: float = Field(gt=0)
     emoji_max_effects_per_reply: int = Field(gt=0)
     emoji_near_duplicate_enabled: bool
     emoji_near_duplicate_distance: int = Field(ge=0, le=64)

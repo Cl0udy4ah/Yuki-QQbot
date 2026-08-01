@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from typing import TYPE_CHECKING
@@ -9,7 +10,7 @@ from typing import TYPE_CHECKING
 from qq_ai_bot.admin.models import EmojiRuntimeConfig, VisionRuntimeConfig
 from qq_ai_bot.emoji.grid import EmojiGridBuilder
 from qq_ai_bot.emoji.models import EmojiSelectionRequest, EmojiSelectionResult
-from qq_ai_bot.emoji.retriever import EmojiRetriever
+from qq_ai_bot.emoji.retriever import EmojiRetriever, RankedEmoji
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.plugin_events import LifecycleEventPublisher, publish_notification
 from qq_ai_bot.vision.base import VisionProvider
@@ -71,7 +72,7 @@ class EmojiSelector:
             reason="coarse_top",
             selected_by="coarse",
         )
-        if not runtime.selector_enabled or self._provider is None or len(candidates) == 1:
+        if not self._should_use_visual_selector(request, candidates, runtime=runtime):
             await self._publish_selected(fallback)
             return fallback
         try:
@@ -93,15 +94,19 @@ class EmojiSelector:
                 f"目标：{request.goal[:300]}；情绪：{request.emotion[:100]}；"
                 f"拟回复：{request.reply_text[:1000]}"
             )
-            observation = await self._provider.analyze(
-                (prepared,),
-                prompt,
-                options=VisionAnalysisOptions(
-                    analysis_mode="meme",
-                    thinking_enabled=False,
-                    thinking_budget=vision_runtime.thinking_budget,
-                    low_confidence_retry_threshold=0,
+            assert self._provider is not None
+            observation = await asyncio.wait_for(
+                self._provider.analyze(
+                    (prepared,),
+                    prompt,
+                    options=VisionAnalysisOptions(
+                        analysis_mode="meme",
+                        thinking_enabled=False,
+                        thinking_budget=vision_runtime.thinking_budget,
+                        low_confidence_retry_threshold=0,
+                    ),
                 ),
+                timeout=runtime.selector_timeout_seconds,
             )
             selection_text = " ".join(
                 (
@@ -111,9 +116,11 @@ class EmojiSelector:
             )
             match = _NUMBER.search(selection_text)
             if match is None:
+                await self._publish_selected(fallback)
                 return fallback
             selected_index = int(match.group(1)) - 1
             if not 0 <= selected_index < len(grid.mapping):
+                await self._publish_selected(fallback)
                 return fallback
             selected_id = grid.mapping[selected_index]
             selected = next(item for item in candidates if item.asset.id == selected_id)
@@ -128,6 +135,21 @@ class EmojiSelector:
         except (OSError, RuntimeError, ValueError):
             await self._publish_selected(fallback)
             return fallback
+
+    def _should_use_visual_selector(
+        self,
+        request: EmojiSelectionRequest,
+        candidates: tuple[RankedEmoji, ...],
+        *,
+        runtime: EmojiRuntimeConfig,
+    ) -> bool:
+        """Reserve synchronous vision for ambiguous, explicitly requested emoji replies."""
+
+        if not runtime.selector_enabled or self._provider is None or len(candidates) < 2:
+            return False
+        if not request.explicit_request:
+            return False
+        return candidates[0].score - candidates[1].score <= runtime.selector_score_gap
 
     async def _publish_selected(self, result: EmojiSelectionResult) -> None:
         await publish_notification(

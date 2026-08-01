@@ -44,6 +44,7 @@ from qq_ai_bot.capabilities.request import (
     request_tools_definition,
 )
 from qq_ai_bot.config import Settings
+from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import (
     AttachmentKind,
@@ -56,8 +57,10 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
-from qq_ai_bot.emoji.models import EmojiPlacement, EmojiReplyMode, PendingReplyEffect
+from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode, PendingReplyEffect
+from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.memory.context import MemoryContextService
+from qq_ai_bot.memory.enums import MemoryContextMode
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.repository import MemoryFactRepository
@@ -230,30 +233,6 @@ class _ChatAgentBackend(AgentToolBackend):
             web_was_used=self._web_was_used,
         )
         self._catalog = self._provider_registry.catalog(request_runtime)
-        unrestricted_visible = CapabilityPolicyEngine().visible(
-            tuple(entry.descriptor for entry in self._catalog.entries),
-            CapabilityPolicyContext(
-                authority=AuthorityContext(
-                    actor_user_id=self._runtime.actor_user_id,
-                    is_superuser=self._runtime.actor_is_superuser,
-                ),
-                origin=self._runtime.origin,
-                tool_selection=ToolSelection(mode=self._runtime.tool_mode),
-                contains_images=bool(
-                    self._runtime.inbound.attachments or self._runtime.inbound.reply_attachments
-                ),
-                web_was_used=self._web_was_used,
-            ),
-        )
-        unrestricted_names = {descriptor.model_name for descriptor in unrestricted_visible}
-        self._requestable_catalog = replace(
-            self._catalog,
-            entries=tuple(
-                entry
-                for entry in self._catalog.entries
-                if entry.descriptor.model_name in unrestricted_names
-            ),
-        )
         policy_scopes = tuple(sorted(self._runtime.tool_groups))
         if any(scope.startswith("mcp.") for scope in policy_scopes) and "mcp" not in policy_scopes:
             policy_scopes = (*policy_scopes, "mcp")
@@ -277,6 +256,25 @@ class _ChatAgentBackend(AgentToolBackend):
             ),
         )
         visible_names = {descriptor.model_name for descriptor in visible}
+        # request_tools may recover capabilities omitted by schema budgets, but
+        # it cannot broaden the Planner-approved scope set.
+        self._requestable_catalog = replace(
+            self._catalog,
+            entries=tuple(
+                entry
+                for entry in self._catalog.entries
+                if entry.descriptor.model_name in visible_names
+            ),
+        )
+        if self._runtime.planner_scopes_explicit and not self._runtime.tool_groups:
+            self._requestable_catalog = replace(
+                self._requestable_catalog,
+                entries=tuple(
+                    entry
+                    for entry in self._requestable_catalog.entries
+                    if entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
+                ),
+            )
         filtered_catalog = replace(
             self._catalog,
             entries=tuple(
@@ -692,7 +690,8 @@ class _ChatAgentBackend(AgentToolBackend):
         return any(
             isinstance(effect, PendingReplyEffect)
             and (
-                effect.mode is EmojiReplyMode.EMOJI_ONLY or effect.placement is EmojiPlacement.ONLY
+                effect.mode in {EmojiReplyMode.PREFERRED, EmojiReplyMode.EMOJI_ONLY}
+                or effect.placement is EmojiPlacement.ONLY
             )
             for effect in effects
         )
@@ -1209,15 +1208,24 @@ class ChatService:
                 return 1
 
             source_display_requested = self._source_policy.requested(content)
-            messages = await self._build_messages(
-                inbound,
-                identity,
-                profile,
-                content,
-                runtime_config,
-                visual_observation=visual_observation,
-                visual_failure=visual_failure,
-                planned_turn=planned_turn,
+            planner_emoji_only = bool(
+                planned_turn is not None
+                and planned_turn.plan.emoji.is_exclusive
+                and planned_turn.plan.tool_mode is ToolMode.NONE
+            )
+            messages = (
+                ()
+                if planner_emoji_only
+                else await self._build_messages(
+                    inbound,
+                    identity,
+                    profile,
+                    content,
+                    runtime_config,
+                    visual_observation=visual_observation,
+                    visual_failure=visual_failure,
+                    planned_turn=planned_turn,
+                )
             )
             scheduled_automation_intent = bool(
                 not autonomous
@@ -1247,6 +1255,20 @@ class ChatService:
                 if callable(getattr(sender, "call_api", None))
                 else None
             )
+            reply_effects: list[ReplyEffect] = []
+            if planned_turn is not None and planned_turn.plan.emoji.mode is not EmojiReplyMode.NONE:
+                reply_effects.append(
+                    PendingReplyEffect(
+                        mode=planned_turn.plan.emoji.mode,
+                        placement=planned_turn.plan.emoji.placement,
+                        goal=planned_turn.plan.emoji.goal,
+                        emotion=planned_turn.plan.emoji.emotion,
+                        explicit_request=(
+                            planned_turn.plan.emoji.intent is EmojiIntent.EXPLICIT_REQUEST
+                        ),
+                        source="planner",
+                    )
+                )
             runtime = ToolRuntime(
                 inbound=inbound,
                 gateway=gateway,
@@ -1289,7 +1311,7 @@ class ChatService:
                     )
                 ),
                 turn_token=turn_token,
-                reply_effects=[],
+                reply_effects=reply_effects,
                 voice_tool_authorized=(
                     planned_turn is not None
                     and planned_turn.plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
@@ -1303,7 +1325,9 @@ class ChatService:
                 ),
                 scheduled_automation_intent=scheduled_automation_intent,
             )
-            if turn_token is not None:
+            if planner_emoji_only:
+                response_text = ""
+            elif turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
                     response_text = await self._run_agent(identity.key, messages, runtime)
             else:
@@ -1313,32 +1337,21 @@ class ChatService:
                 trigger_message_id=inbound.message_id,
             )
             response_text = self._source_renderer.sanitize_model_text(response_text, sources)
-            if not response_text and not runtime.reply_effects:
-                response_text = "已完成联网查询，但模型没有生成可用的正文。"
-            rendered = clean_model_output(
-                response_text,
-                max_characters=self._settings.max_output_characters,
-            )
             effects = runtime.reply_effects or []
             emoji_effects = [effect for effect in effects if isinstance(effect, PendingReplyEffect)]
             queued_voice = next(
                 (effect for effect in effects if isinstance(effect, PendingVoiceReplyEffect)),
                 None,
             )
-            if (
-                planned_turn is not None
-                and planned_turn.plan.emoji.mode is not EmojiReplyMode.NONE
-                and not emoji_effects
-            ):
-                emoji_effects.append(
-                    PendingReplyEffect(
-                        mode=planned_turn.plan.emoji.mode,
-                        placement=planned_turn.plan.emoji.placement,
-                        goal=planned_turn.plan.emoji.goal,
-                        emotion=planned_turn.plan.emoji.emotion,
-                        source="planner",
-                    )
+            try:
+                rendered = clean_model_output(
+                    response_text,
+                    max_characters=self._settings.max_output_characters,
                 )
+            except LLMEmptyResponseError:
+                if not emoji_effects:
+                    raise
+                rendered = ""
             prepared_effects: list[tuple[PendingReplyEffect, OutboundMessage]] = []
             if self._emoji_effects is not None:
                 for effect in emoji_effects[: runtime_config.emoji.max_effects_per_reply]:
@@ -1516,6 +1529,11 @@ class ChatService:
             content=content,
             runtime=runtime,
             planner_intent=(planned_turn.plan.intent if planned_turn is not None else ""),
+            memory_mode=(
+                planned_turn.plan.memory_context.mode
+                if planned_turn is not None
+                else MemoryContextMode.LEXICAL
+            ),
         )
         return self._prompt_composer.compose(
             inbound=inbound,

@@ -1389,7 +1389,7 @@ async def test_group_override_is_visible_in_next_snapshot(database: Database) ->
     assert changed.success
     debounce = await service.set_override(
         "planner.group_debounce_seconds",
-        0,
+        1,
         scope_type="group",
         scope_id="2001",
         actor_user_id="9000",
@@ -1397,7 +1397,7 @@ async def test_group_override_is_visible_in_next_snapshot(database: Database) ->
     )
     assert debounce.success
     assert (await service.snapshot(group_id="2001")).planner.max_pending_messages == 10
-    assert (await service.snapshot(group_id="2001")).planner.group_debounce_seconds == 0
+    assert (await service.snapshot(group_id="2001")).planner.group_debounce_seconds == 1
     assert (await service.snapshot(group_id="2002")).planner.max_pending_messages == 8
     assert (await service.snapshot(group_id="2002")).planner.group_debounce_seconds == 3
 

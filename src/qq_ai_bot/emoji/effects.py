@@ -60,6 +60,7 @@ class EmojiReplyEffectService:
                 reply_text=response_text[:4000],
                 goal=effect.goal,
                 emotion=effect.emotion,
+                explicit_request=effect.explicit_request,
                 mode=effect.mode,
                 placement=effect.placement,
             ),

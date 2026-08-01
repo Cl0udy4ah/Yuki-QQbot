@@ -7,8 +7,13 @@ import logging
 import time
 
 from qq_ai_bot.memory.embedding.metrics import MemoryEmbeddingMetrics
-from qq_ai_bot.memory.embedding.models import MemoryEmbeddingProfileRecord, MemorySemanticCandidate
+from qq_ai_bot.memory.embedding.models import (
+    EmbeddingBatchResult,
+    MemoryEmbeddingProfileRecord,
+    MemorySemanticCandidate,
+)
 from qq_ai_bot.memory.embedding.provider import EmbeddingProvider, EmbeddingProviderError
+from qq_ai_bot.memory.embedding.query_cache import QueryEmbeddingCache
 from qq_ai_bot.memory.embedding.semantic import MemorySemanticIndex
 from qq_ai_bot.memory.embedding.text import EmbeddingQueryBuilder
 from qq_ai_bot.memory.enums import (
@@ -45,6 +50,7 @@ class MemoryRetriever:
         embedding_profile: MemoryEmbeddingProfileRecord | None = None,
         embedding_queries: EmbeddingQueryBuilder | None = None,
         embedding_metrics: MemoryEmbeddingMetrics | None = None,
+        query_embedding_cache: QueryEmbeddingCache | None = None,
     ) -> None:
         self._repository = repository
         self._index = lexical_index
@@ -55,6 +61,7 @@ class MemoryRetriever:
         self._embedding_profile = embedding_profile
         self._embedding_queries = embedding_queries
         self._embedding_metrics = embedding_metrics
+        self._query_embedding_cache = query_embedding_cache
 
     @property
     def metrics(self) -> MemoryRetrievalMetrics:
@@ -68,12 +75,14 @@ class MemoryRetriever:
         profile: MemoryEmbeddingProfileRecord,
         queries: EmbeddingQueryBuilder,
         metrics: MemoryEmbeddingMetrics | None = None,
+        query_cache: QueryEmbeddingCache | None = None,
     ) -> None:
         self._semantic_index = semantic_index
         self._embedding_provider = provider
         self._embedding_profile = profile
         self._embedding_queries = queries
         self._embedding_metrics = metrics
+        self._query_embedding_cache = query_cache
 
     async def retrieve(
         self,
@@ -109,28 +118,46 @@ class MemoryRetriever:
             semantic_status = "not_configured"
         elif semantic_requested:
             provider = self._embedding_provider
+            profile = self._embedding_profile
             queries = self._embedding_queries
             assert provider is not None
+            assert profile is not None
             assert queries is not None
+            embedding_started = time.perf_counter()
             try:
                 semantic_status = "ready"
                 query_text = queries.build(query)
                 if query_text:
-                    embedding_started = time.perf_counter()
-                    embedded = await provider.embed_query(query_text)
+
+                    async def embed_once() -> EmbeddingBatchResult:
+                        result = await provider.embed_query(query_text)
+                        if len(result.vectors) != 1:
+                            raise EmbeddingProviderError(
+                                "embedding_invalid_response",
+                                "Embedding provider returned an invalid response.",
+                                retryable=False,
+                            )
+                        return result
+
+                    cache_hit = False
+                    if self._query_embedding_cache is not None:
+                        embedded, cache_hit = await self._query_embedding_cache.get_or_create(
+                            profile_fingerprint=profile.profile.fingerprint,
+                            query_text=query_text,
+                            factory=embed_once,
+                        )
+                    else:
+                        embedded = await embed_once()
                     embedding_latency = time.perf_counter() - embedding_started
                     semantic_latency += embedding_latency
                     if self._embedding_metrics is not None:
-                        self._embedding_metrics.record_query(
-                            input_tokens=embedded.usage.input_tokens,
-                            latency=embedding_latency,
-                        )
-                    if len(embedded.vectors) != 1:
-                        raise EmbeddingProviderError(
-                            "embedding_invalid_response",
-                            "Embedding provider returned an invalid response.",
-                            retryable=False,
-                        )
+                        if cache_hit:
+                            self._embedding_metrics.record_query_cache_hit()
+                        else:
+                            self._embedding_metrics.record_query(
+                                input_tokens=embedded.usage.input_tokens,
+                                latency=embedding_latency,
+                            )
                     query_vector = embedded.vectors[0]
                 else:
                     semantic_status = "empty_query"

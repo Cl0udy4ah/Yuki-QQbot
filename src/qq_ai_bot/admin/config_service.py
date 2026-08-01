@@ -1274,6 +1274,10 @@ class RuntimeConfigService:
                 replacement_mode=str(value("emoji.replacement_mode")),
                 selector_enabled=bool(value("emoji.selector_enabled")),
                 selector_candidate_count=int(cast(int, value("emoji.selector_candidate_count"))),
+                selector_score_gap=float(cast(float | int, value("emoji.selector_score_gap"))),
+                selector_timeout_seconds=float(
+                    cast(float | int, value("emoji.selector_timeout_seconds"))
+                ),
                 max_effects_per_reply=int(cast(int, value("emoji.max_effects_per_reply"))),
                 near_duplicate_enabled=bool(value("emoji.near_duplicate_enabled")),
                 near_duplicate_distance=int(cast(int, value("emoji.near_duplicate_distance"))),

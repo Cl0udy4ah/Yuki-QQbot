@@ -12,6 +12,7 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.relationships import RelationshipStage
 from qq_ai_bot.emoji.models import EmojiReplyPlan
+from qq_ai_bot.memory.enums import MemoryContextMode
 from qq_ai_bot.speech.models import VoicePreferenceMode, VoiceReplyPlan
 
 
@@ -122,6 +123,33 @@ class PlannerReasonCode(StrEnum):
     PLANNER_FALLBACK = "planner_fallback"
 
 
+class MemoryContextReasonCode(StrEnum):
+    """Why Planner selected a memory retrieval depth for this turn."""
+
+    DEFAULT = "default"
+    EFFECT_ONLY = "effect_only"
+    CASUAL_REPLY = "casual_reply"
+    ROUTINE_CONTEXT = "routine_context"
+    MEMORY_RECALL = "memory_recall"
+    PERSON_REFERENCE = "person_reference"
+    GROUP_REFERENCE = "group_reference"
+    EXPLICIT_OVERVIEW = "explicit_overview"
+
+
+class MemoryContextPlan(_StrictPlannerModel):
+    """Semantic intent only; identity targets remain backend-owned."""
+
+    mode: MemoryContextMode = MemoryContextMode.LEXICAL
+    reason_code: MemoryContextReasonCode = MemoryContextReasonCode.DEFAULT
+
+
+class PlannerMemoryContext(_StrictPlannerModel):
+    """Trusted availability flags, without memory contents or identities."""
+
+    retrieval_enabled: bool = True
+    semantic_enabled: bool = False
+
+
 class PlannerMessage(_StrictPlannerModel):
     """One message exposed to Planner with an explicit trust-boundary marker."""
 
@@ -161,6 +189,16 @@ class PlannerSpeechContext(_StrictPlannerModel):
     recent_spontaneous_voice_turns: int = Field(default=0, ge=0, strict=True)
     recent_spontaneous_voice_ratio: float = Field(default=0, ge=0, le=1, strict=True)
     spontaneous_allowed: bool = True
+
+
+class PlannerEmojiContext(_StrictPlannerModel):
+    """Trusted availability of the Planner-owned emoji reply effect."""
+
+    enabled: bool = Field(default=False, description="后端是否启用表情回复效果。")
+    available: bool = Field(
+        default=False,
+        description="后端是否确认本轮能够从已采用表情池选择并发送图片。",
+    )
 
 
 class ReplyNecessitySnapshot(_StrictPlannerModel):
@@ -205,7 +243,9 @@ class PlannerInput(_StrictPlannerModel):
     available_tool_categories: tuple[str, ...] = ()
     available_tool_scopes: tuple[ToolScopeSummary, ...] = ()
     plugin_signals: tuple[PlannerSignal, ...] = ()
+    emoji: PlannerEmojiContext = PlannerEmojiContext()
     speech: PlannerSpeechContext = PlannerSpeechContext()
+    memory: PlannerMemoryContext = PlannerMemoryContext()
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -260,6 +300,7 @@ class TurnPlan(_StrictPlannerModel):
     confidence: float = Field(ge=0, le=1, strict=True)
     reason_code: PlannerReasonCode
     planner_note: str = ""
+    memory_context: MemoryContextPlan = MemoryContextPlan()
     emoji: EmojiReplyPlan = EmojiReplyPlan()
     voice: VoiceReplyPlan = VoiceReplyPlan()
 

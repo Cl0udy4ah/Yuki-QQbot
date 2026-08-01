@@ -8,6 +8,14 @@ import pytest
 from pydantic import ValidationError
 
 from qq_ai_bot.config import Settings
+from qq_ai_bot.domain.messages import ReasoningEffort
+
+
+def test_deepseek_reasoning_effort_accepts_max() -> None:
+    settings = Settings(_env_file=None, llm_reasoning_effort="max")
+
+    assert settings.llm_reasoning_effort is ReasoningEffort.MAX
+    assert settings.model_runtime.llm_reasoning_effort is ReasoningEffort.MAX
 
 
 def test_system_prompt_file_overrides_inline_prompt(tmp_path: Path) -> None:
@@ -126,12 +134,18 @@ def test_memory_embedding_rejects_unsupported_profiles(
 
 def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps() -> None:
     settings = Settings(_env_file=None)
+    assert settings.daily_chat_message_delay_min_seconds == 1
+    assert settings.daily_chat_message_delay_max_seconds == 2
     assert settings.planner_group_debounce_seconds == 3
+    assert settings.planner_max_wait_seconds == 60
     assert settings.planner_preferred_messages == 3
     assert settings.planner_confidence_threshold == 0.2
     assert settings.planner_reply_necessity_threshold == 0
     assert settings.planner_max_pending_messages == 8
     assert settings.reply_plan_hard_max_messages == 10
+    assert settings.emoji_selector_candidate_count == 3
+    assert settings.emoji_selector_score_gap == 0.75
+    assert settings.emoji_selector_timeout_seconds == 2
     assert not settings.plugin_system_enabled
     assert settings.plugin_api_version == "1.0"
     assert settings.plugin_ai_session_max_history_messages == 200
@@ -141,6 +155,7 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
         Settings.model_validate({"planner_reply_necessity_threshold": -1})
     assert Settings.model_validate({"planner_group_debounce_seconds": 0})
     assert Settings.model_validate({"planner_group_debounce_seconds": 61})
+    assert Settings.model_validate({"planner_max_wait_seconds": 0})
     assert Settings.model_validate({"planner_preferred_messages": 21})
     assert Settings.model_validate({"reply_plan_hard_max_messages": 21})
     with pytest.raises(ValidationError, match="PLUGIN_API_VERSION"):

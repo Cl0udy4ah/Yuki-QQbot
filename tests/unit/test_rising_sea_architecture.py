@@ -27,6 +27,7 @@ from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatResponse,
     ChatTool,
+    ReasoningEffort,
     ToolCall,
     ToolFunction,
 )
@@ -83,7 +84,12 @@ def _profile_document(routes: dict[str, str] | None = None) -> str:
     )
 
 
-def _load_catalog(path: Path) -> Any:
+def _load_catalog(path: Path, *, environment: dict[str, str] | None = None) -> Any:
+    resolved_environment = {
+        "PRO_URL": "https://models.invalid/v1",
+        "PRO_MODEL": "test-model",
+        **(environment or {}),
+    }
     return load_model_profile_catalog(
         path,
         legacy_provider="fake",
@@ -94,8 +100,25 @@ def _load_catalog(path: Path) -> Any:
         legacy_temperature=0.1,
         legacy_max_output_tokens=100,
         legacy_thinking_enabled=False,
-        environment={"PRO_URL": "https://models.invalid/v1", "PRO_MODEL": "test-model"},
+        environment=resolved_environment,
     )
+
+
+def test_model_profile_resolves_optional_reasoning_effort_from_environment(
+    tmp_path: Path,
+) -> None:
+    profile_path = tmp_path / "reasoning.toml"
+    profile_path.write_text(
+        _profile_document().replace(
+            'thinking_mode = "disabled"',
+            'thinking_mode = "configurable"\nreasoning_effort_env = "PRO_REASONING"',
+        ),
+        encoding="utf-8",
+    )
+
+    catalog = _load_catalog(profile_path, environment={"PRO_REASONING": "max"})
+
+    assert catalog.profiles["pro"].reasoning_effort is ReasoningEffort.MAX
 
 
 def test_model_profiles_require_every_explicit_route(tmp_path: Path) -> None:
@@ -267,6 +290,42 @@ class _SingleProviderPool:
     def get(self, profile: ModelProfile) -> _CapturingModelProvider:
         assert profile.id == "flash"
         return self.provider
+
+
+@pytest.mark.asyncio
+async def test_executor_applies_profile_reasoning_effort_when_thinking_is_enabled() -> None:
+    profile = ModelProfile(
+        id="flash",
+        provider="fake",
+        model="deepseek-v4-flash",
+        timeout_seconds=10,
+        max_retries=0,
+        default_temperature=0,
+        default_max_output_tokens=100,
+        thinking_enabled=True,
+        reasoning_effort=ReasoningEffort.MAX,
+        capabilities=frozenset({ModelCapability.REASONING}),
+    )
+    catalog = ModelProfileCatalog(
+        profiles={"flash": profile},
+        routes={
+            task: ModelRoute(task=task, profile_id="flash", required_capabilities=frozenset())
+            for task in ModelTask
+        },
+    )
+    provider = _CapturingModelProvider()
+    executor = TaskModelExecutor(
+        router=ModelRouter(catalog),
+        pool=_SingleProviderPool(provider),  # type: ignore[arg-type]
+    )
+
+    await executor.execute(
+        ModelTask.CHAT_AGENT,
+        ChatRequest(messages=(ChatMessage(role="user", content="hello"),)),
+    )
+
+    assert provider.requests[0].thinking_enabled is True
+    assert provider.requests[0].reasoning_effort is ReasoningEffort.MAX
 
 
 @pytest.mark.asyncio

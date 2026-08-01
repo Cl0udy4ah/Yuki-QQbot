@@ -11,6 +11,7 @@ NumPy、LLM rerank 或历史聊天扫描。
 
 ```text
 当前问题
+  -> Planner 选择 none / lexical / hybrid / overview
   -> 后端解析真实人物/群目标
   -> 每个目标分别执行带 scope/user/group/status/profile 条件的 SQL
   -> FTS/BM25 候选 + 目标内余弦相似候选
@@ -21,8 +22,16 @@ NumPy、LLM rerank 或历史聊天扫描。
 向量检索不会全库搜索后再猜身份。当前人物、人物在当前群、当前群以及真实 @/回复得到的引用
 人物始终独立检索。不同 QQ、不同群或私聊资料不会因为语义相似而越界。
 
-相关检索会为当前查询构造一次 `query` embedding，并在同一轮所有合法目标间复用。概览查询
-不调用 Embedding。语义服务不可用时，检索状态标记为 degraded 并继续使用词法候选。
+Planner 只选择检索深度，不能选择人物、QQ、群或会话范围：
+
+- `none`：无需长期记忆的纯效果或即时短回应；不进入长期记忆检索。
+- `lexical`：普通日常交流；只使用本地 FTS/LIKE，不访问 Embedding Provider。
+- `hybrid`：人物事实、偏好、模糊指代、较早细节或群关系问题；使用词法与向量候选融合。
+- `overview`：显式询问记忆概览；按后端概览规则读取，不生成 query embedding。
+
+相关混合检索会为当前查询构造一次 `query` embedding，并在同一轮所有合法目标间复用。相同
+profile 与查询还会通过哈希键在有界进程内缓存中短期复用；原始查询不会因为缓存而写入数据库。
+概览查询不调用 Embedding。语义服务不可用时，检索状态标记为 degraded 并继续使用词法候选。
 
 ## 文档模板与隐私
 
@@ -73,6 +82,8 @@ MEMORY_EMBEDDING_WORKER_CLAIM_LIMIT=100
 MEMORY_EMBEDDING_RETRY_ATTEMPTS=5
 MEMORY_EMBEDDING_RETRY_INITIAL_SECONDS=30
 MEMORY_EMBEDDING_HTTP_CONCURRENCY=2
+MEMORY_EMBEDDING_QUERY_CACHE_TTL_SECONDS=600
+MEMORY_EMBEDDING_QUERY_CACHE_MAX_ENTRIES=512
 ```
 
 混合检索可热更新：
@@ -88,6 +99,7 @@ MEMORY_HYBRID_RRF_K=60
 
 只有 `MEMORY_EMBEDDING_ENABLED=true` 时才要求 base URL 和 API Key。当前实现只接受
 `qwen_dashscope`、dense 与 1024 维，避免 profile 声明和真实向量不一致。
+查询缓存只存在于 Bot 进程内，重启即清空；TTL 和容量是启动配置，不影响数据库 schema。
 
 ## 运维命令
 

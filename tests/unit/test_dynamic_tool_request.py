@@ -54,6 +54,14 @@ def _registry(calls: list[str]) -> ToolProviderRegistry:
             execute=execute,
         )
     )
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _runtime: (_tool("web_search", "联网搜索公开网页"),),
+            execute=execute,
+        )
+    )
     return registry
 
 
@@ -169,3 +177,33 @@ async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> N
     )
     assert outcome["ok"] is True
     assert calls == ["song_share"]
+
+
+@pytest.mark.asyncio
+async def test_agent_cannot_request_a_tool_outside_planner_approved_scopes() -> None:
+    calls: list[str] = []
+    backend = _ChatAgentBackend(_Service(_registry(calls)), _runtime())  # type: ignore[arg-type]
+    agent_runtime = SimpleNamespace()
+
+    exposed = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
+    assert exposed == {"album_share", REQUEST_TOOLS_NAME}
+
+    arguments = json.dumps(
+        {"query": "web_search", "max_results": 1},
+        ensure_ascii=False,
+    )
+    request_call = ToolCall(
+        id="request-web",
+        function=ToolFunction(name=REQUEST_TOOLS_NAME, arguments=arguments),
+    )
+    backend.begin_batch((request_call,), agent_runtime)
+    result = json.loads(
+        await backend.execute(REQUEST_TOOLS_NAME, arguments, agent_runtime)  # type: ignore[arg-type]
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "capability_not_found",
+        "detail": "当前真实用户和场景允许的工具目录中没有匹配能力",
+    }
+    assert calls == []

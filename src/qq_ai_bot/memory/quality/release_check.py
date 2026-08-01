@@ -42,7 +42,7 @@ class MemoryReleaseCheck:
         items.append(
             self._item(
                 "version",
-                __version__ == "3.0.0",
+                __version__ == "3.0.1",
                 f"project version is {__version__}",
             )
         )
@@ -211,7 +211,7 @@ class MemoryReleaseCheck:
                 raw = tomllib.load(stream)
             requires = str(raw.get("yuki_requires", ""))
             try:
-                compatible = bool(requires) and SpecifierSet(requires).contains("3.0.0")
+                compatible = bool(requires) and SpecifierSet(requires).contains(__version__)
             except InvalidSpecifier:
                 compatible = False
             if raw.get("plugin_api") != "1.0" or not compatible:

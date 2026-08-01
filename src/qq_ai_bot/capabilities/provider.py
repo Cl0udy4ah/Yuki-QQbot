@@ -32,7 +32,6 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "web_search": ("web", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "read_webpage": ("web", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "call_onebot_api": ("onebot", CapabilityEffect.PLATFORM_MUTATE, CapabilityRisk.MUTATE),
-    "send_emoji": ("emoji", CapabilityEffect.REPLY_EFFECT, CapabilityRisk.READ),
     "send_voice": ("speech", CapabilityEffect.REPLY_EFFECT, CapabilityRisk.READ),
 }
 

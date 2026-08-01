@@ -14,7 +14,9 @@ from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.persistence.repositories import EventLedgerRepository, RelationshipRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.planner.models import (
+    PlannerEmojiContext,
     PlannerInput,
+    PlannerMemoryContext,
     PlannerMessage,
     PlannerSignal,
     PlannerSpeechContext,
@@ -158,6 +160,10 @@ class PlannerContextBuilder:
                 "spontaneous_allowed": spontaneous_allowed,
             }
         )
+        emoji_context = PlannerEmojiContext(
+            enabled=runtime.emoji.enabled,
+            available=runtime.emoji.enabled,
+        )
         return PlannerInput(
             conversation_key=conversation_key,
             scope_type=inbound.scope_type,
@@ -181,7 +187,12 @@ class PlannerContextBuilder:
             available_tool_categories=available_tool_categories,
             available_tool_scopes=available_tool_scopes,
             plugin_signals=plugin_signals,
+            emoji=emoji_context,
             speech=speech_context or PlannerSpeechContext(),
+            memory=PlannerMemoryContext(
+                retrieval_enabled=runtime.memory.retrieval_enabled,
+                semantic_enabled=runtime.memory.semantic_enabled,
+            ),
         )
 
     @staticmethod

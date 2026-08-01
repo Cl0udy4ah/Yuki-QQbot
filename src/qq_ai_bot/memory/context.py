@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from typing import Any
 
@@ -10,6 +11,7 @@ from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryConflictState,
+    MemoryContextMode,
     MemoryRetrievalMode,
     MemoryTargetRole,
 )
@@ -20,7 +22,7 @@ from qq_ai_bot.memory.models import (
     MemoryRetrievalHit,
     MemoryRetrievalResult,
 )
-from qq_ai_bot.memory.query import MemoryQueryBuilder
+from qq_ai_bot.memory.query import MemoryQueryBuilder, normalize_query_text
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
 
@@ -99,12 +101,25 @@ class MemoryContextService:
         content: str,
         planner_intent: str,
         runtime: RuntimeConfigSnapshot,
+        memory_mode: MemoryContextMode = MemoryContextMode.HYBRID,
     ) -> MemoryRetrievalResult:
+        if memory_mode is MemoryContextMode.NONE:
+            normalized = normalize_query_text(content)
+            return MemoryRetrievalResult(
+                blocks=(),
+                hits=(),
+                candidate_count=0,
+                selected_count=0,
+                query_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+                mode=MemoryRetrievalMode.RELEVANT,
+                semantic_status="planner_skipped",
+            )
         query = await self._queries.build(
             inbound=inbound,
             content=content,
             planner_intent=planner_intent,
             runtime=runtime,
+            memory_mode=memory_mode,
         )
         if runtime.memory.retrieval_enabled:
             return await self._retriever.retrieve(query)

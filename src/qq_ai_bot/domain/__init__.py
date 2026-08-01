@@ -8,6 +8,7 @@ from qq_ai_bot.domain.messages import (
     InboundMessage,
     MessageAttachment,
     OutboundMessage,
+    ReasoningEffort,
     SenderIdentity,
 )
 
@@ -20,6 +21,7 @@ __all__ = [
     "InboundMessage",
     "MessageAttachment",
     "OutboundMessage",
+    "ReasoningEffort",
     "ScopeType",
     "SenderIdentity",
 ]

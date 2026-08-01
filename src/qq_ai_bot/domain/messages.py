@@ -21,6 +21,13 @@ class AttachmentKind(StrEnum):
     UNKNOWN = "unknown"
 
 
+class ReasoningEffort(StrEnum):
+    """Provider-neutral reasoning depth supported by DeepSeek V4."""
+
+    HIGH = "high"
+    MAX = "max"
+
+
 @dataclass(frozen=True, slots=True)
 class MessageAttachment:
     """Transient event media reference; payload fields are never persisted verbatim."""
@@ -166,6 +173,7 @@ class ChatRequest:
     temperature: float | None = None
     max_output_tokens: int | None = None
     thinking_enabled: bool | None = None
+    reasoning_effort: ReasoningEffort | None = None
     tools: tuple[ChatTool, ...] = ()
     tool_choice: str | None = None
     response_format: dict[str, object] | None = None

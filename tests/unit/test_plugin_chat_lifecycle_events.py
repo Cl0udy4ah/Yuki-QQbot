@@ -92,6 +92,8 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
         "voice_mode",
         "voice_intent",
         "voice_tool_policy",
+        "memory_context_mode",
+        "memory_context_reason",
         "confidence",
         "planner_used",
         "fallback_used",

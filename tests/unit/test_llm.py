@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
+from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatTool, ReasoningEffort
 from qq_ai_bot.llm.base import LLMEmptyResponseError, LLMTimeoutError
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
 
@@ -116,6 +116,77 @@ async def test_optional_thinking_mode_is_sent_when_configured() -> None:
         temperature=chat_request.temperature,
         max_output_tokens=chat_request.max_output_tokens,
         thinking_enabled=False,
+    )
+    async with httpx.AsyncClient(
+        base_url="https://provider.test/v1", transport=httpx.MockTransport(handler)
+    ) as client:
+        provider = OpenAICompatibleProvider(
+            base_url="https://provider.test/v1",
+            api_key="secret",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+        response = await provider.complete(chat_request)
+    assert response.content == "answer"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_max_reasoning_omits_tool_choice_in_thinking_mode() -> None:
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        payload = json.loads(http_request.content)
+        assert payload["model"] == "deepseek-v4-flash"
+        assert payload["thinking"] == {"type": "enabled"}
+        assert payload["reasoning_effort"] == "max"
+        assert "tools" in payload
+        assert "tool_choice" not in payload
+        return httpx.Response(
+            200,
+            request=http_request,
+            json={"choices": [{"message": {"content": "answer"}}]},
+        )
+
+    chat_request = ChatRequest(
+        messages=(ChatMessage("user", "hello"),),
+        model="deepseek-v4-flash",
+        temperature=0,
+        max_output_tokens=10,
+        thinking_enabled=True,
+        reasoning_effort=ReasoningEffort.MAX,
+        tools=(ChatTool(name="search", description="search", parameters={}),),
+        tool_choice="auto",
+    )
+    async with httpx.AsyncClient(
+        base_url="https://api.deepseek.com", transport=httpx.MockTransport(handler)
+    ) as client:
+        provider = OpenAICompatibleProvider(
+            base_url="https://api.deepseek.com",
+            api_key="secret",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+        response = await provider.complete(chat_request)
+    assert response.content == "answer"
+
+
+@pytest.mark.asyncio
+async def test_non_deepseek_thinking_keeps_explicit_tool_choice() -> None:
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        payload = json.loads(http_request.content)
+        assert payload["tool_choice"] == "auto"
+        return httpx.Response(
+            200,
+            request=http_request,
+            json={"choices": [{"message": {"content": "answer"}}]},
+        )
+
+    chat_request = ChatRequest(
+        messages=(ChatMessage("user", "hello"),),
+        model="another-reasoning-model",
+        thinking_enabled=True,
+        tools=(ChatTool(name="search", description="search", parameters={}),),
+        tool_choice="auto",
     )
     async with httpx.AsyncClient(
         base_url="https://provider.test/v1", transport=httpx.MockTransport(handler)

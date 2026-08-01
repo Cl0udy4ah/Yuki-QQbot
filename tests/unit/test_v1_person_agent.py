@@ -410,6 +410,34 @@ async def test_agent_voice_tool_is_hidden_without_planner_authorization(database
 
 
 @pytest.mark.asyncio
+async def test_agent_never_exposes_planner_owned_emoji_effect_as_a_tool(
+    database: Database,
+) -> None:
+    settings = make_settings(database.url, emoji_enabled=True)
+    config = RuntimeConfigService(settings=settings, database=database)
+    await config.initialize()
+    tools = AgentToolService(
+        settings=settings,
+        ledger=EventLedgerRepository(database),
+        memories=MemoryFactService(MemoryFactRepository(database)),
+        actions=AgentActionRepository(database),
+        runtime_config=config,
+    )
+    snapshot = await config.snapshot(user_id="1001")
+    runtime = ToolRuntime(
+        inbound("普通聊天", message_id="emoji-unplanned"),
+        None,
+        False,
+        runtime_config=snapshot,
+        reply_effects=[],
+    )
+
+    assert "send_emoji" not in {tool.name for tool in tools.definitions(runtime)}
+    result = await tools.execute("send_emoji", "{}", runtime)
+    assert '"error": "unknown_tool"' in result
+
+
+@pytest.mark.asyncio
 async def test_recent_history_strips_media_locations_and_inline_payloads(
     database: Database,
 ) -> None:

@@ -14,6 +14,7 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import (
+    MemoryContextMode,
     MemoryKind,
     MemoryRetrievalMode,
     MemoryScopeType,
@@ -331,6 +332,92 @@ async def test_personal_overview_drops_referenced_people(database: Database) -> 
         }
         for target in query.targets
     )
+
+
+@pytest.mark.asyncio
+async def test_planner_memory_modes_control_semantic_retrieval(database: Database) -> None:
+    people = PeopleRepository(database)
+    await people.observe(user_id="1001", nickname="当前用户")
+    inbound = InboundMessage(
+        message_id="planner-memory-mode",
+        event_type="message:private:friend",
+        scope_type=ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id="1001", nickname="当前用户"),
+        text="之前聊过的音乐",
+        bot_user_id="8000",
+    )
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url),
+        database=database,
+    ).snapshot(user_id="1001")
+    builder = MemoryQueryBuilder(MemoryTargetResolver(people))
+
+    lexical = await builder.build(
+        inbound=inbound,
+        content=inbound.text,
+        planner_intent="普通字面检索",
+        runtime=runtime,
+        memory_mode=MemoryContextMode.LEXICAL,
+    )
+    hybrid = await builder.build(
+        inbound=inbound,
+        content=inbound.text,
+        planner_intent="回忆长期事实",
+        runtime=runtime,
+        memory_mode=MemoryContextMode.HYBRID,
+    )
+    overview = await builder.build(
+        inbound=inbound,
+        content=inbound.text,
+        planner_intent="读取记忆概览",
+        runtime=runtime,
+        memory_mode=MemoryContextMode.OVERVIEW,
+    )
+
+    assert lexical.mode is MemoryRetrievalMode.RELEVANT
+    assert lexical.semantic_enabled is False
+    assert hybrid.mode is MemoryRetrievalMode.RELEVANT
+    assert hybrid.semantic_enabled is runtime.memory.semantic_enabled
+    assert overview.mode is MemoryRetrievalMode.OVERVIEW
+    assert overview.semantic_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_none_memory_mode_returns_without_resolving_targets(database: Database) -> None:
+    people = PeopleRepository(database)
+    repository = MemoryFactRepository(database)
+    context = MemoryContextService(
+        query_builder=MemoryQueryBuilder(MemoryTargetResolver(people)),
+        retriever=MemoryRetriever(
+            repository=repository,
+            lexical_index=SQLiteMemoryFTSIndex(database),
+        ),
+        facts=MemoryFactService(repository),
+    )
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url),
+        database=database,
+    ).snapshot(user_id="unobserved-user")
+    inbound = InboundMessage(
+        message_id="planner-memory-none",
+        event_type="message:private:friend",
+        scope_type=ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id="unobserved-user", nickname=""),
+        text="嗯",
+        bot_user_id="8000",
+    )
+
+    result = await context.retrieve_for_turn(
+        inbound=inbound,
+        content=inbound.text,
+        planner_intent="即时短回应",
+        runtime=runtime,
+        memory_mode=MemoryContextMode.NONE,
+    )
+
+    assert result.hits == ()
+    assert result.blocks == ()
+    assert result.semantic_status == "planner_skipped"
 
 
 @pytest.mark.asyncio

@@ -114,6 +114,18 @@ class AgentRunner:
                     ),
                 )
             except LLMEmptyResponseError:
+                has_visible_effects = bool(
+                    tools is not None
+                    and callable(getattr(tools, "has_visible_effects", None))
+                    and tools.has_visible_effects()  # type: ignore[attr-defined]
+                )
+                if has_visible_effects:
+                    return AgentRunResult(
+                        text="",
+                        tool_calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                    )
                 if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
                     raise
                 empty_retries += 1

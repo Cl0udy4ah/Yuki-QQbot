@@ -7,6 +7,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from qq_ai_bot.domain.messages import ReasoningEffort
+
 
 class ModelTask(StrEnum):
     """Stable business purpose attached to every main-model invocation."""
@@ -58,6 +60,7 @@ class ModelProfile(_FrozenModel):
     default_temperature: float = Field(ge=0, le=2)
     default_max_output_tokens: int = Field(gt=0)
     thinking_enabled: bool | None = None
+    reasoning_effort: ReasoningEffort | None = None
     structured_output_mode: StructuredOutputMode = StructuredOutputMode.FUNCTION_TOOL
     capabilities: frozenset[ModelCapability] = frozenset()
 
@@ -67,6 +70,10 @@ class ModelProfile(_FrozenModel):
             raise ValueError("base_url is required for non-fake model profiles")
         if self.provider.casefold() != "fake" and not self.api_key_env:
             raise ValueError("api_key_env is required for non-fake model profiles")
+        if self.reasoning_effort is not None and ModelCapability.REASONING not in self.capabilities:
+            raise ValueError("reasoning_effort requires the reasoning capability")
+        if self.reasoning_effort is not None and self.thinking_enabled is False:
+            raise ValueError("reasoning_effort cannot be used with disabled thinking")
         return self
 
 

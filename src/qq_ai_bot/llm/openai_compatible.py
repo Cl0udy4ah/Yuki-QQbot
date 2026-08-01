@@ -140,9 +140,17 @@ class OpenAICompatibleProvider(LLMProvider):
                 }
                 for tool in request.tools
             ]
-            payload["tool_choice"] = request.tool_choice or "auto"
+            # DeepSeek V4 thinking mode rejects tool_choice. Omitting it retains
+            # the standard auto-selection behavior without changing other providers.
+            deepseek_thinking = bool(
+                request.thinking_enabled and request.model.casefold().startswith("deepseek-")
+            )
+            if not deepseek_thinking:
+                payload["tool_choice"] = request.tool_choice or "auto"
         if request.thinking_enabled is not None:
             payload["thinking"] = {"type": "enabled" if request.thinking_enabled else "disabled"}
+        if request.reasoning_effort is not None:
+            payload["reasoning_effort"] = request.reasoning_effort.value
         if request.response_format is not None:
             payload["response_format"] = request.response_format
         response = await self._client.post(

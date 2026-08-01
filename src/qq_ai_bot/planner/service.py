@@ -8,8 +8,11 @@ from dataclasses import dataclass
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode
+from qq_ai_bot.memory.enums import MemoryContextMode
 from qq_ai_bot.planner.models import (
     DeliveryMode,
+    MemoryContextReasonCode,
     PlannedTurn,
     PlannerDecision,
     PlannerInput,
@@ -156,6 +159,8 @@ class PlannerService:
                 "delivery_mode": plan.delivery_mode.value,
                 "desired_messages": plan.desired_messages,
                 "tool_mode": plan.tool_mode.value,
+                "memory_context_mode": plan.memory_context.mode.value,
+                "memory_context_reason": plan.memory_context.reason_code.value,
                 "voice_mode": plan.voice.mode.value,
                 "voice_intent": plan.voice.intent.value,
                 "voice_tool_policy": plan.voice.agent_tool.value,
@@ -208,6 +213,47 @@ class PlannerService:
             ),
             "wait_seconds": min(plan.wait_seconds, runtime.planner.max_wait_seconds),
         }
+        memory_context = plan.memory_context
+        if memory_context.mode is MemoryContextMode.HYBRID and not runtime.memory.semantic_enabled:
+            memory_context = memory_context.model_copy(update={"mode": MemoryContextMode.LEXICAL})
+        updates["memory_context"] = memory_context
+        emoji_plan = plan.emoji
+        if not planner_input.emoji.available:
+            emoji_plan = emoji_plan.model_copy(
+                update={
+                    "mode": EmojiReplyMode.NONE,
+                    "placement": EmojiPlacement.AFTER_TEXT,
+                    "goal": "",
+                    "emotion": "",
+                }
+            )
+        elif emoji_plan.intent is EmojiIntent.EXPLICIT_REQUEST:
+            emoji_updates: dict[str, object] = {}
+            if emoji_plan.mode in {EmojiReplyMode.NONE, EmojiReplyMode.OPTIONAL}:
+                emoji_updates["mode"] = EmojiReplyMode.PREFERRED
+            if emoji_plan.placement is EmojiPlacement.ONLY:
+                emoji_updates["mode"] = EmojiReplyMode.EMOJI_ONLY
+            if not emoji_plan.goal:
+                emoji_updates["goal"] = planner_input.current_message.text[:300]
+            if emoji_updates:
+                emoji_plan = emoji_plan.model_copy(update=emoji_updates)
+        if planner_input.emoji.available and emoji_plan.is_exclusive:
+            emoji_plan = emoji_plan.model_copy(
+                update={
+                    "mode": EmojiReplyMode.EMOJI_ONLY,
+                    "placement": EmojiPlacement.ONLY,
+                }
+            )
+            # An effect-only reply is fully executable by the delivery layer.
+            # No Agent tool scope or memory context may be attached to the same turn.
+            updates["tool_selection"] = ToolSelection(mode=ToolMode.NONE)
+            updates["memory_context"] = plan.memory_context.model_copy(
+                update={
+                    "mode": MemoryContextMode.NONE,
+                    "reason_code": MemoryContextReasonCode.EFFECT_ONLY,
+                }
+            )
+        updates["emoji"] = emoji_plan
         speech_allowed = (
             runtime.speech.enabled
             and runtime.speech.planner_enabled
@@ -289,6 +335,18 @@ class PlannerService:
             or planner_input.mentions_bot
             or planner_input.reply_target_is_bot
         )
+        if (
+            plan.decision is PlannerDecision.WAIT
+            and runtime.planner.max_wait_seconds <= 0
+            and not explicit
+        ):
+            # A disabled wait budget means "decide now", not "re-plan now".
+            # Turning the result silent avoids a second model request with no
+            # intervening message while explicit/admin turns are forced to reply below.
+            updates.update(
+                decision=PlannerDecision.SILENT,
+                wait_seconds=0.0,
+            )
         text = planner_input.current_message.text
         looks_like_request = any(
             token in text

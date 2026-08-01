@@ -241,9 +241,15 @@ def _model_catalog(settings: Settings) -> ModelProfileCatalog:
         legacy_temperature=settings.llm_temperature,
         legacy_max_output_tokens=settings.llm_max_output_tokens,
         legacy_thinking_enabled=settings.llm_thinking_enabled,
+        legacy_reasoning_effort=settings.llm_reasoning_effort,
         environment={
             "LLM_BASE_URL": settings.llm_base_url,
             "LLM_MODEL": settings.llm_model,
+            "LLM_REASONING_EFFORT": (
+                settings.llm_reasoning_effort.value
+                if settings.llm_reasoning_effort is not None
+                else ""
+            ),
             "LLM_FLASH_BASE_URL": settings.llm_flash_base_url,
             "LLM_FLASH_MODEL": settings.llm_flash_model,
         },
@@ -356,7 +362,7 @@ def _scenario_tools(scenario: str) -> tuple[tuple[ChatTool, ...], dict[str, str]
         "admin": ("admin_execute_action", "admin_set_config", "call_onebot_api"),
         "web": ("web_search", "read_webpage"),
         "vision": ("get_person_memories",),
-        "emoji": ("send_emoji",),
+        "emoji": (),
         "speech": ("send_voice",),
         "plugin": ("plugin_example",),
     }[scenario]
@@ -368,7 +374,6 @@ def _scenario_tools(scenario: str) -> tuple[tuple[ChatTool, ...], dict[str, str]
         "call_onebot_api": "onebot",
         "web_search": "web",
         "read_webpage": "web",
-        "send_emoji": "emoji",
         "send_voice": "speech",
         "plugin_example": "plugin",
     }

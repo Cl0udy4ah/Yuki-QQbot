@@ -25,6 +25,7 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.emoji.models import EmojiPlacement, EmojiReplyMode, PendingReplyEffect
 from qq_ai_bot.llm.base import LLMProvider
+from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.chat import ChatService, _ChatAgentBackend
@@ -98,6 +99,22 @@ class VoiceEffectBackend:
         return False
 
 
+class VisibleEffectBackend(VoiceEffectBackend):
+    """Represent a Planner-owned media effect that can stand without text."""
+
+    def definitions(
+        self,
+        runtime: AgentRuntime,
+        *,
+        web_was_used: bool,
+    ) -> tuple[ChatTool, ...]:
+        del runtime, web_was_used
+        return ()
+
+    def has_visible_effects(self) -> bool:
+        return True
+
+
 def _agent_runtime() -> AgentRuntime:
     now = datetime.now(UTC)
     config = cast(
@@ -143,6 +160,21 @@ async def test_empty_final_answer_after_voice_tool_is_retried() -> None:
     assert backend.effects == ["send_voice"]
 
 
+@pytest.mark.asyncio
+async def test_empty_model_response_is_valid_when_planner_has_visible_media() -> None:
+    provider = FakeLLMProvider(lambda _request: "   ")
+
+    result = await AgentRunner(provider, ConcurrencyManager(1)).run(
+        (ChatMessage(role="user", content="发个表情"),),
+        _agent_runtime(),
+        VisibleEffectBackend(),
+    )
+
+    assert result.text == ""
+    assert result.model_requests == 1
+    assert len(provider.requests) == 1
+
+
 def test_voice_effect_cannot_complete_chat_without_text() -> None:
     inbound = InboundMessage(
         message_id="voice-visibility",
@@ -176,6 +208,25 @@ def test_voice_effect_cannot_complete_chat_without_text() -> None:
     )
     emoji_backend = _ChatAgentBackend(cast(ChatService, object()), emoji_runtime)
     assert emoji_backend.has_visible_effects()
+
+    preferred_emoji_runtime = ToolRuntime(
+        inbound=inbound,
+        gateway=None,
+        allow_generic_onebot=False,
+        reply_effects=[
+            PendingReplyEffect(
+                mode=EmojiReplyMode.PREFERRED,
+                placement=EmojiPlacement.AFTER_TEXT,
+                goal="回应用户",
+                source="planner",
+            )
+        ],
+    )
+    preferred_emoji_backend = _ChatAgentBackend(
+        cast(ChatService, object()),
+        preferred_emoji_runtime,
+    )
+    assert preferred_emoji_backend.has_visible_effects()
 
     optional_emoji_runtime = ToolRuntime(
         inbound=inbound,

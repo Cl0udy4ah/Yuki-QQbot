@@ -180,6 +180,15 @@ class MemoryRebuildExpiredClaimPolicy(StrEnum):
     STAGE_INVALIDATED = "stage_invalidated"
 
 
+class MemoryContextMode(StrEnum):
+    """Planner-selected amount of long-term memory needed for one reply."""
+
+    NONE = "none"
+    LEXICAL = "lexical"
+    HYBRID = "hybrid"
+    OVERVIEW = "overview"
+
+
 class MemoryRetrievalMode(StrEnum):
     RELEVANT = "relevant"
     OVERVIEW = "overview"

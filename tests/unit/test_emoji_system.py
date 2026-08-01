@@ -12,7 +12,7 @@ import pytest
 from PIL import Image
 from pydantic import ValidationError
 
-from qq_ai_bot.admin.models import EmojiRuntimeConfig
+from qq_ai_bot.admin.models import EmojiRuntimeConfig, VisionRuntimeConfig
 from qq_ai_bot.automation.authority import PermissionLevel
 from qq_ai_bot.automation.models import AutomationScript
 from qq_ai_bot.automation.registry import build_capability_registry
@@ -21,6 +21,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.messages import AttachmentKind, MessageAttachment
 from qq_ai_bot.emoji.classifier import EmojiClassifier
 from qq_ai_bot.emoji.detector import EmojiCandidateDetector
+from qq_ai_bot.emoji.grid import EmojiGridBuilder
 from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
 from qq_ai_bot.emoji.models import (
     EmojiAnalysis,
@@ -33,6 +34,7 @@ from qq_ai_bot.emoji.models import (
 from qq_ai_bot.emoji.replacement import EmojiReplacementService
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.retriever import EmojiRetriever, RankedEmoji
+from qq_ai_bot.emoji.selector import EmojiSelector
 from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.database import Database
@@ -59,7 +61,9 @@ def _runtime(**updates: object) -> EmojiRuntimeConfig:
         pool_capacity=None,
         replacement_mode="score",
         selector_enabled=True,
-        selector_candidate_count=6,
+        selector_candidate_count=3,
+        selector_score_gap=0.75,
+        selector_timeout_seconds=2,
         max_effects_per_reply=1,
         near_duplicate_enabled=True,
         near_duplicate_distance=6,
@@ -92,6 +96,70 @@ def _image_bytes(image_format: str = "PNG", *, animated: bool = False) -> bytes:
     else:
         first.save(output, format=image_format)
     return output.getvalue()
+
+
+def _vision_runtime() -> VisionRuntimeConfig:
+    return VisionRuntimeConfig(
+        max_images_per_turn=5,
+        max_frames_per_turn=16,
+        gif_max_frames=8,
+        thinking_enabled=False,
+        thinking_budget=1,
+        low_confidence_retry_threshold=0.65,
+        per_user_requests_per_minute=20,
+        per_group_requests_per_minute=60,
+        analysis_retention_days=7,
+    )
+
+
+class _StaticEmojiRetriever(EmojiRetriever):
+    def __init__(self, candidates: tuple[RankedEmoji, ...]) -> None:
+        self._candidates = candidates
+
+    async def retrieve(
+        self,
+        request: EmojiSelectionRequest,
+        *,
+        runtime: EmojiRuntimeConfig,
+    ) -> tuple[RankedEmoji, ...]:
+        del request, runtime
+        return self._candidates
+
+
+async def _selector_with_scores(
+    database: Database,
+    tmp_path: Path,
+    scores: tuple[float, ...],
+    provider: FakeVisionProvider,
+) -> tuple[EmojiSelector, tuple[RankedEmoji, ...]]:
+    storage = EmojiStorage(tmp_path / "emoji")
+    repository = EmojiRepository(database)
+    candidates: list[RankedEmoji] = []
+    for color, score in zip(("red", "green", "blue"), scores, strict=True):
+        output = io.BytesIO()
+        Image.new("RGB", (24, 20), color).save(output, format="PNG")
+        media = storage.inspect(output.getvalue(), near_duplicate_enabled=False)
+        storage.persist(output.getvalue(), media)
+        asset, _ = await repository.record_candidate(
+            media,
+            source_event_id=None,
+            user_id=None,
+            group_id=None,
+            source_sub_type="emoji",
+            source_emoji_id="",
+            source_package_id="",
+        )
+        candidates.append(RankedEmoji(asset=asset, score=score))
+    ranked = tuple(candidates)
+    return (
+        EmojiSelector(
+            retriever=_StaticEmojiRetriever(ranked),
+            grid_builder=EmojiGridBuilder(storage),
+            preprocessor=ImagePreprocessor(),
+            provider=provider,
+        ),
+        ranked,
+    )
 
 
 def test_candidate_detector_honors_metadata_likely_and_all_images() -> None:
@@ -273,6 +341,113 @@ async def test_explicit_emoji_request_bypasses_scope_repeat_cooldown(
 
     assert optional == ()
     assert [item.asset.id for item in explicit] == [asset.id]
+
+
+@pytest.mark.asyncio
+async def test_optional_emoji_uses_local_top_candidate_without_vision(
+    database: Database, tmp_path: Path
+) -> None:
+    provider = FakeVisionProvider(delay_seconds=10)
+    selector, candidates = await _selector_with_scores(
+        database, tmp_path, (5.0, 4.9, 4.8), provider
+    )
+
+    result = await selector.select(
+        EmojiSelectionRequest(
+            actor_user_id="10001",
+            goal="自然回应",
+            mode=EmojiReplyMode.OPTIONAL,
+        ),
+        runtime=_runtime(),
+        vision_runtime=_vision_runtime(),
+    )
+
+    assert result.emoji_id == candidates[0].asset.id
+    assert result.selected_by == "coarse"
+    assert provider.requests == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_emoji_only_uses_vision_when_scores_are_close(
+    database: Database, tmp_path: Path
+) -> None:
+    provider = FakeVisionProvider(
+        lambda _inputs, _question: VisualObservation(
+            items=(VisualItemObservation(index=1, description="选择第二张", ocr_text="2"),),
+            overall_description="2",
+            provider="fake",
+            model="fake",
+            latency_seconds=0,
+        )
+    )
+    selector, candidates = await _selector_with_scores(
+        database, tmp_path, (5.0, 4.8, 4.7), provider
+    )
+
+    result = await selector.select(
+        EmojiSelectionRequest(
+            actor_user_id="10001",
+            goal="发个开心的表情",
+            explicit_request=True,
+            mode=EmojiReplyMode.EMOJI_ONLY,
+        ),
+        runtime=_runtime(selector_score_gap=0.5),
+        vision_runtime=_vision_runtime(),
+    )
+
+    assert result.emoji_id == candidates[1].asset.id
+    assert result.selected_by == "vision"
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_emoji_skips_vision_for_clear_local_winner(
+    database: Database, tmp_path: Path
+) -> None:
+    provider = FakeVisionProvider(delay_seconds=10)
+    selector, candidates = await _selector_with_scores(
+        database, tmp_path, (5.0, 3.0, 2.0), provider
+    )
+
+    result = await selector.select(
+        EmojiSelectionRequest(
+            actor_user_id="10001",
+            goal="发个开心的表情",
+            explicit_request=True,
+            mode=EmojiReplyMode.PREFERRED,
+        ),
+        runtime=_runtime(selector_score_gap=0.5),
+        vision_runtime=_vision_runtime(),
+    )
+
+    assert result.emoji_id == candidates[0].asset.id
+    assert result.selected_by == "coarse"
+    assert provider.requests == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_emoji_vision_timeout_falls_back_to_local_top(
+    database: Database, tmp_path: Path
+) -> None:
+    provider = FakeVisionProvider(delay_seconds=0.1)
+    selector, candidates = await _selector_with_scores(
+        database, tmp_path, (5.0, 4.9, 4.8), provider
+    )
+
+    result = await selector.select(
+        EmojiSelectionRequest(
+            actor_user_id="10001",
+            goal="发个开心的表情",
+            explicit_request=True,
+            mode=EmojiReplyMode.PREFERRED,
+        ),
+        runtime=_runtime(selector_score_gap=0.5, selector_timeout_seconds=0.001),
+        vision_runtime=_vision_runtime(),
+    )
+
+    assert result.emoji_id == candidates[0].asset.id
+    assert result.selected_by == "coarse"
+    assert len(provider.requests) == 1
 
 
 @pytest.mark.asyncio

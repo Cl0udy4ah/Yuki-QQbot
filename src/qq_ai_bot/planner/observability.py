@@ -125,11 +125,12 @@ class PlannerObservability:
             self._last_planned_at = now
         logger.info(
             "planner_planned conversation_hash=%s decision=%s reason=%s delivery=%s "
-            "fallback=%s latency_seconds=%.4f",
+            "memory=%s fallback=%s latency_seconds=%.4f",
             token.conversation_key_hash,
             plan.decision.value,
             plan.reason_code.value,
             plan.delivery_mode.value,
+            plan.memory_context.mode.value,
             fallback,
             max(0.0, latency_seconds),
         )

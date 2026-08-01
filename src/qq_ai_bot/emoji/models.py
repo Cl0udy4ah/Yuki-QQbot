@@ -107,6 +107,7 @@ class EmojiSelectionRequest(_FrozenModel):
     reply_text: str = Field(default="", max_length=4000)
     goal: str = Field(default="", max_length=300)
     emotion: str = Field(default="", max_length=100)
+    explicit_request: bool = False
     mode: EmojiReplyMode = EmojiReplyMode.OPTIONAL
     placement: EmojiPlacement = EmojiPlacement.AFTER_TEXT
 
@@ -118,6 +119,13 @@ class EmojiSelectionResult(_FrozenModel):
     selected_by: Literal["none", "coarse", "vision"] = "none"
 
 
+class EmojiIntent(StrEnum):
+    """Whether the current user explicitly requested an emoji reply effect."""
+
+    NEUTRAL = "neutral"
+    EXPLICIT_REQUEST = "explicit_request"
+
+
 class EmojiReplyPlan(_FrozenModel):
     """Planner-owned behavioural intent; it never contains an asset identifier."""
 
@@ -125,6 +133,10 @@ class EmojiReplyPlan(_FrozenModel):
     # models remain strict; only this LLM boundary model accepts JSON enums.
     model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
 
+    intent: EmojiIntent = Field(
+        default=EmojiIntent.NEUTRAL,
+        description="当前消息明确索要表情时为 explicit_request，否则为 neutral。",
+    )
     mode: EmojiReplyMode = Field(
         default=EmojiReplyMode.NONE,
         description=(
@@ -138,6 +150,12 @@ class EmojiReplyPlan(_FrozenModel):
     goal: str = Field(default="", max_length=300, description="希望表情表达的聊天语义。")
     emotion: str = Field(default="", max_length=100, description="希望表情表达的情绪。")
 
+    @property
+    def is_exclusive(self) -> bool:
+        """Return whether the emoji is the complete user-visible reply."""
+
+        return self.mode is EmojiReplyMode.EMOJI_ONLY or self.placement is EmojiPlacement.ONLY
+
 
 class PendingReplyEffect(_FrozenModel):
     """A queued user-visible effect created by Planner or the Agent tool."""
@@ -147,6 +165,7 @@ class PendingReplyEffect(_FrozenModel):
     placement: EmojiPlacement
     goal: str = Field(default="", max_length=300)
     emotion: str = Field(default="", max_length=100)
+    explicit_request: bool = False
     source: Literal["planner", "agent", "plugin", "automation"]
 
 

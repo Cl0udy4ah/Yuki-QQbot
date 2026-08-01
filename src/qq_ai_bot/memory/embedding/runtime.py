@@ -8,6 +8,7 @@ from qq_ai_bot.memory.embedding.jobs import MemoryEmbeddingJobRepository
 from qq_ai_bot.memory.embedding.metrics import MemoryEmbeddingMetrics
 from qq_ai_bot.memory.embedding.models import MemoryEmbeddingHealth
 from qq_ai_bot.memory.embedding.provider import EmbeddingProvider
+from qq_ai_bot.memory.embedding.query_cache import QueryEmbeddingCache
 from qq_ai_bot.memory.embedding.qwen import QwenDashScopeEmbeddingProvider
 from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
 from qq_ai_bot.memory.embedding.semantic import MemorySemanticIndex
@@ -43,6 +44,10 @@ class MemoryEmbeddingRuntime:
         )
         self.provider = provider or self._build_provider(settings)
         self.metrics = MemoryEmbeddingMetrics()
+        self.query_cache = QueryEmbeddingCache(
+            ttl_seconds=settings.memory_embedding_query_cache_ttl_seconds,
+            max_entries=settings.memory_embedding_query_cache_max_entries,
+        )
         self.jobs: MemoryEmbeddingJobRepository | None = None
         self.worker: MemoryEmbeddingWorker | None = None
         self._profile_id: int | None = None
@@ -84,6 +89,7 @@ class MemoryEmbeddingRuntime:
             profile=profile,
             queries=self.queries,
             metrics=self.metrics,
+            query_cache=self.query_cache,
         )
         if self._settings.memory_embedding_worker_enabled:
             self.worker = MemoryEmbeddingWorker(

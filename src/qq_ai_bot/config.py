@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from qq_ai_bot.domain.messages import ReasoningEffort
 from qq_ai_bot.settings_domains import (
     AppSettings,
     AutomationSettings,
@@ -65,6 +66,7 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
     llm_max_output_tokens: int = 8192
     llm_thinking_enabled: bool | None = None
+    llm_reasoning_effort: ReasoningEffort | None = None
     llm_flash_base_url: str = ""
     llm_flash_api_key: str = Field(default="", repr=False)
     llm_flash_model: str = ""
@@ -92,8 +94,8 @@ class Settings(BaseSettings):
     split_daily_chat_sentences: bool = True
     daily_chat_split_max_characters: int = 240
     daily_chat_split_max_messages: int = 4
-    daily_chat_message_delay_min_seconds: float = 3.0
-    daily_chat_message_delay_max_seconds: float = 5.0
+    daily_chat_message_delay_min_seconds: float = 1.0
+    daily_chat_message_delay_max_seconds: float = 2.0
     group_memory_max_entries: int = 100
 
     observe_enabled_groups: bool = True
@@ -161,6 +163,8 @@ class Settings(BaseSettings):
     memory_embedding_retry_attempts: int = 5
     memory_embedding_retry_initial_seconds: float = 30.0
     memory_embedding_http_concurrency: int = 2
+    memory_embedding_query_cache_ttl_seconds: float = 600.0
+    memory_embedding_query_cache_max_entries: int = 512
     memory_rebuild_enabled: bool = False
     memory_rebuild_worker_interval_seconds: float = 5.0
     memory_rebuild_scan_batch_size: int = 100
@@ -304,7 +308,9 @@ class Settings(BaseSettings):
     emoji_pool_capacity: int | None = None
     emoji_replacement_mode: str = "score"
     emoji_selector_enabled: bool = True
-    emoji_selector_candidate_count: int = 6
+    emoji_selector_candidate_count: int = 3
+    emoji_selector_score_gap: float = 0.75
+    emoji_selector_timeout_seconds: float = 2.0
     emoji_max_effects_per_reply: int = 1
     emoji_near_duplicate_enabled: bool = True
     emoji_near_duplicate_distance: int = 6

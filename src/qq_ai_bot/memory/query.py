@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.messages import InboundMessage
-from qq_ai_bot.memory.enums import MemoryRetrievalMode, MemoryTargetRole
+from qq_ai_bot.memory.enums import MemoryContextMode, MemoryRetrievalMode, MemoryTargetRole
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.models import MemoryEntityTarget, MemoryQuery
 from qq_ai_bot.memory.targets import MemoryTargetResolver
@@ -61,6 +61,7 @@ class MemoryQueryBuilder:
         content: str,
         planner_intent: str,
         runtime: RuntimeConfigSnapshot,
+        memory_mode: MemoryContextMode = MemoryContextMode.HYBRID,
     ) -> MemoryQuery:
         targets = await self.resolve_targets(
             inbound,
@@ -68,7 +69,7 @@ class MemoryQueryBuilder:
         )
         mode = (
             MemoryRetrievalMode.OVERVIEW
-            if is_overview_query(content)
+            if memory_mode is MemoryContextMode.OVERVIEW or is_overview_query(content)
             else MemoryRetrievalMode.RELEVANT
         )
         if mode is MemoryRetrievalMode.OVERVIEW:
@@ -88,12 +89,15 @@ class MemoryQueryBuilder:
         if planner_intent:
             parts.append(planner_intent[:300])
         text = "\n".join(part for part in parts if part.strip())
-        return self.for_targets(
+        query = self.for_targets(
             text=text,
             mode=mode,
             targets=targets,
             runtime=runtime,
         )
+        if memory_mode in {MemoryContextMode.LEXICAL, MemoryContextMode.OVERVIEW}:
+            query = query.model_copy(update={"semantic_enabled": False})
+        return query
 
     @staticmethod
     def for_targets(

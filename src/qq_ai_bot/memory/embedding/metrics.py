@@ -13,6 +13,8 @@ class MemoryEmbeddingMetricSnapshot:
     query_embedding_requests: int = 0
     query_embedding_input_tokens: int = 0
     query_embedding_failures: int = 0
+    query_embedding_cache_hits: int = 0
+    query_embedding_cache_misses: int = 0
     semantic_degraded_count: int = 0
     last_embedding_latency: float = 0
 
@@ -53,6 +55,14 @@ class MemoryEmbeddingMetrics:
                 current.query_embedding_input_tokens + (input_tokens or 0)
             ),
             query_embedding_failures=current.query_embedding_failures + int(failed),
+            query_embedding_cache_misses=current.query_embedding_cache_misses + 1,
             semantic_degraded_count=current.semantic_degraded_count + int(failed),
             last_embedding_latency=latency,
+        )
+
+    def record_query_cache_hit(self) -> None:
+        current = self._snapshot
+        self._snapshot = replace(
+            current,
+            query_embedding_cache_hits=current.query_embedding_cache_hits + 1,
         )

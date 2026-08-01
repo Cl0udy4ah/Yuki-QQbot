@@ -313,6 +313,7 @@ class AutomationCapabilityHandlers:
                     reply_text="",
                     goal=str(arguments.get("intended_tone") or "自然发送一个合适的表情"),
                     emotion=str(arguments.get("emotion") or ""),
+                    explicit_request=True,
                     mode=EmojiReplyMode.PREFERRED,
                     placement=EmojiPlacement(str(arguments.get("placement") or "only")),
                 ),

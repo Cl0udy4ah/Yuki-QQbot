@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
+from qq_ai_bot.domain.messages import ReasoningEffort
 from qq_ai_bot.model_runtime.models import (
     ModelCapability,
     ModelProfile,
@@ -90,6 +91,7 @@ def load_model_profile_catalog(
     legacy_temperature: float,
     legacy_max_output_tokens: int,
     legacy_thinking_enabled: bool | None,
+    legacy_reasoning_effort: ReasoningEffort | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> ModelProfileCatalog:
     """Load TOML or explicitly normalize the legacy LLM settings to ``main``."""
@@ -111,6 +113,7 @@ def load_model_profile_catalog(
             default_temperature=legacy_temperature,
             default_max_output_tokens=legacy_max_output_tokens,
             thinking_enabled=legacy_thinking_enabled,
+            reasoning_effort=legacy_reasoning_effort,
             structured_output_mode=StructuredOutputMode.FUNCTION_TOOL,
             capabilities=capabilities,
         )
@@ -188,6 +191,16 @@ def _resolve_profile_environment(
         if not value:
             raise ValueError(f"environment variable {env_name} is required")
         resolved[value_name] = value
+
+    reasoning_effort_env = resolved.pop("reasoning_effort_env", None)
+    if reasoning_effort_env is not None:
+        if not isinstance(reasoning_effort_env, str) or not reasoning_effort_env:
+            raise ValueError("reasoning_effort_env must name an environment variable")
+        value = (environment or {}).get(reasoning_effort_env) or os.environ.get(
+            reasoning_effort_env
+        )
+        if value:
+            resolved["reasoning_effort"] = value
 
     thinking_mode = resolved.pop("thinking_mode", None)
     if thinking_mode is not None:

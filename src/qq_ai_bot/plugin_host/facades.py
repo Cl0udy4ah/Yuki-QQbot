@@ -1812,6 +1812,7 @@ class _EmojiFacade:
                 reply_text=(invocation.inbound.text if invocation.inbound else ""),
                 goal=_bounded_text(goal, maximum=300, field_name="goal"),
                 emotion=_bounded_optional_text(emotion, maximum=100),
+                explicit_request=mode in {"preferred", "emoji_only"},
                 mode=EmojiReplyMode(mode),
                 placement=EmojiPlacement(placement),
             ),
@@ -1856,6 +1857,7 @@ class _EmojiFacade:
                 placement=EmojiPlacement(placement),
                 goal=_bounded_text(goal, maximum=300, field_name="goal"),
                 emotion=_bounded_optional_text(emotion, maximum=100),
+                explicit_request=mode in {"preferred", "emoji_only"},
                 source="plugin",
             )
         )

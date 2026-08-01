@@ -15,7 +15,7 @@ from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.domain.relationships import RelationshipSnapshot
 from qq_ai_bot.memory.context import MemoryContextService, retrieval_fact_context
-from qq_ai_bot.memory.enums import MemoryTargetRole
+from qq_ai_bot.memory.enums import MemoryContextMode, MemoryTargetRole
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     EventRecord,
@@ -84,6 +84,7 @@ class ContextAssembler:
         content: str,
         runtime: RuntimeConfigSnapshot,
         planner_intent: str = "",
+        memory_mode: MemoryContextMode = MemoryContextMode.LEXICAL,
     ) -> AssembledContext:
         """Build one bounded snapshot without persisting model-only metadata."""
 
@@ -100,6 +101,7 @@ class ContextAssembler:
             content=content,
             planner_intent=planner_intent,
             runtime=runtime,
+            memory_mode=memory_mode,
         )
         hits_by_role = {
             block.target.role: block.hits

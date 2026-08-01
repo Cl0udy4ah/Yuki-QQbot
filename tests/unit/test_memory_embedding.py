@@ -17,11 +17,14 @@ from sqlalchemy import func, select
 from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
 from qq_ai_bot.memory.embedding.fake import FakeEmbeddingProvider
 from qq_ai_bot.memory.embedding.jobs import EmbeddingWrite, MemoryEmbeddingJobRepository
+from qq_ai_bot.memory.embedding.metrics import MemoryEmbeddingMetrics
 from qq_ai_bot.memory.embedding.models import (
+    EmbeddingBatchResult,
     EmbeddingProviderProfile,
     EmbeddingVector,
 )
 from qq_ai_bot.memory.embedding.provider import EmbeddingProviderError
+from qq_ai_bot.memory.embedding.query_cache import QueryEmbeddingCache
 from qq_ai_bot.memory.embedding.qwen import QwenDashScopeEmbeddingProvider
 from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
 from qq_ai_bot.memory.embedding.semantic import MemorySemanticIndex
@@ -105,6 +108,76 @@ async def test_qwen_document_and_query_payloads_and_ordering() -> None:
     assert documents.vectors[0].values[0] == 1
     assert documents.vectors[1].values[0] == 2
     assert query.usage.input_tokens == 2
+
+
+@pytest.mark.asyncio
+async def test_query_embedding_cache_is_bounded_by_ttl() -> None:
+    current = [0.0]
+    provider = FakeEmbeddingProvider(dimensions=4)
+    cache = QueryEmbeddingCache(
+        ttl_seconds=10,
+        max_entries=2,
+        clock=lambda: current[0],
+    )
+
+    async def create() -> EmbeddingBatchResult:
+        return await provider.embed_query("same query")
+
+    first, first_hit = await cache.get_or_create(
+        profile_fingerprint=provider.profile.fingerprint,
+        query_text="same query",
+        factory=create,
+    )
+    second, second_hit = await cache.get_or_create(
+        profile_fingerprint=provider.profile.fingerprint,
+        query_text="same query",
+        factory=create,
+    )
+    current[0] = 11
+    third, third_hit = await cache.get_or_create(
+        profile_fingerprint=provider.profile.fingerprint,
+        query_text="same query",
+        factory=create,
+    )
+
+    assert first == second == third
+    assert (first_hit, second_hit, third_hit) == (False, True, False)
+    assert provider.query_requests == 2
+
+
+@pytest.mark.asyncio
+async def test_query_embedding_cache_coalesces_concurrent_requests() -> None:
+    provider = FakeEmbeddingProvider(dimensions=4)
+    cache = QueryEmbeddingCache(ttl_seconds=10, max_entries=2)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def create() -> EmbeddingBatchResult:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return await provider.embed_query("same query")
+
+    async def get() -> tuple[EmbeddingBatchResult, bool]:
+        return await cache.get_or_create(
+            profile_fingerprint=provider.profile.fingerprint,
+            query_text="same query",
+            factory=create,
+        )
+
+    first_task = asyncio.create_task(get())
+    await started.wait()
+    second_task = asyncio.create_task(get())
+    await asyncio.sleep(0)
+    release.set()
+    first, second = await asyncio.gather(first_task, second_task)
+
+    assert first[0] == second[0]
+    assert (first[1], second[1]) == (False, True)
+    assert calls == 1
+    assert provider.query_requests == 1
 
 
 @pytest.mark.asyncio
@@ -506,6 +579,8 @@ async def test_query_embedding_is_once_for_multiple_targets_and_overview_is_zero
         retry_initial_seconds=1,
     )
     await worker.process_once()
+    metrics = MemoryEmbeddingMetrics()
+    cache = QueryEmbeddingCache(ttl_seconds=600, max_entries=32)
     retriever = MemoryRetriever(
         repository=facts.repository,
         lexical_index=SQLiteMemoryFTSIndex(database),
@@ -513,6 +588,8 @@ async def test_query_embedding_is_once_for_multiple_targets_and_overview_is_zero
         embedding_provider=provider,
         embedding_profile=profile,
         embedding_queries=EmbeddingQueryBuilder(max_characters=4000),
+        embedding_metrics=metrics,
+        query_embedding_cache=cache,
     )
     relevant = MemoryQuery(
         text="饮品",
@@ -531,6 +608,12 @@ async def test_query_embedding_is_once_for_multiple_targets_and_overview_is_zero
         ["1001"],
         ["1002"],
     ]
+
+    repeated = await retriever.retrieve(relevant)
+    assert repeated.hits == result.hits
+    assert provider.query_requests == 1
+    assert metrics.snapshot().query_embedding_cache_misses == 1
+    assert metrics.snapshot().query_embedding_cache_hits == 1
 
     await retriever.retrieve(relevant.model_copy(update={"mode": MemoryRetrievalMode.OVERVIEW}))
     assert provider.query_requests == 1

@@ -19,11 +19,6 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage
-from qq_ai_bot.emoji.models import (
-    EmojiPlacement,
-    EmojiReplyMode,
-    PendingReplyEffect,
-)
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import MemoryRetrievalMode, MemoryScopeType
 from qq_ai_bot.memory.errors import MemoryRetrievalError
@@ -331,33 +326,6 @@ class AgentToolService:
                     ),
                 )
             )
-        if runtime.runtime_config is not None and runtime.runtime_config.emoji.enabled:
-            tools.append(
-                ChatTool(
-                    name="send_emoji",
-                    description=(
-                        "为本轮最终回复排队一个表情效果，不会立即发送，也不能指定表情 ID、"
-                        "文件或 URL。用户明确要求发送表情时必须调用，不要查询或猜测表情库存；"
-                        "goal 和 emotion 描述想表达的语义，placement 决定文字前后，mode 可为 "
-                        "optional/preferred/emoji_only。工具成功只表示已排队，不要在正文声称已经发送。"
-                    ),
-                    parameters=_object_schema(
-                        {
-                            "goal": {"type": "string", "maxLength": 300},
-                            "emotion": {"type": "string", "maxLength": 100},
-                            "placement": {
-                                "type": "string",
-                                "enum": ["before_text", "after_text", "only"],
-                            },
-                            "mode": {
-                                "type": "string",
-                                "enum": ["optional", "preferred", "emoji_only"],
-                            },
-                        },
-                        required=("goal",),
-                    ),
-                )
-            )
         if self._voice_available_for_turn(runtime):
             tools.append(
                 ChatTool(
@@ -422,8 +390,6 @@ class AgentToolService:
                     return await self._read_webpage(arguments, runtime)
                 if name == "call_onebot_api":
                     return await self._call_onebot(arguments, runtime)
-                if name == "send_emoji":
-                    return self._queue_emoji(arguments, runtime)
                 if name == "send_voice":
                     return self._queue_voice(arguments, runtime)
                 return self._result(error="unknown_tool", detail=f"未知工具：{name}")
@@ -435,40 +401,6 @@ class AgentToolService:
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
         finally:
             _RUNTIME_SNAPSHOT.reset(token)
-
-    def _queue_emoji(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
-        queue = runtime.reply_effects
-        config = runtime.runtime_config
-        if queue is None or config is None or not config.emoji.enabled:
-            return self._result(error="emoji_unavailable", detail="当前回复没有启用表情效果")
-        if len(queue) >= config.emoji.max_effects_per_reply:
-            return self._result(
-                error="emoji_effect_limit",
-                detail="本轮表情效果数量已达到当前配置上限",
-            )
-        extra = set(arguments) - {"goal", "emotion", "placement", "mode"}
-        if extra:
-            return self._result(error="invalid_arguments", detail="表情工具参数包含未知字段")
-        goal = arguments.get("goal")
-        emotion = arguments.get("emotion", "")
-        placement = arguments.get("placement", "after_text")
-        mode = arguments.get("mode", "optional")
-        if not isinstance(goal, str) or not goal.strip() or len(goal) > 300:
-            return self._result(error="invalid_arguments", detail="goal 必须是 1..300 字符")
-        if not isinstance(emotion, str) or len(emotion) > 100:
-            return self._result(error="invalid_arguments", detail="emotion 最多 100 字符")
-        try:
-            effect = PendingReplyEffect(
-                mode=EmojiReplyMode(mode),
-                placement=EmojiPlacement(placement),
-                goal=" ".join(goal.split()),
-                emotion=" ".join(emotion.split()),
-                source="agent",
-            )
-        except ValueError:
-            return self._result(error="invalid_arguments", detail="mode 或 placement 无效")
-        queue.append(effect)
-        return self._result(data={"queued": True, "effect": "emoji"})
 
     @staticmethod
     def _voice_available_for_turn(runtime: ToolRuntime) -> bool:

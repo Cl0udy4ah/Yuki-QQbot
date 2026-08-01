@@ -308,6 +308,8 @@ class EmojiRuntimeConfig:
     replacement_mode: str
     selector_enabled: bool
     selector_candidate_count: int
+    selector_score_gap: float
+    selector_timeout_seconds: float
     max_effects_per_reply: int
     near_duplicate_enabled: bool
     near_duplicate_distance: int

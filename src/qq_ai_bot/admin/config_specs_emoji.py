@@ -156,13 +156,37 @@ def emoji_config_specs() -> tuple[ConfigSpec, ...]:
         for key, label, field, minimum, maximum, scopes in integer_specs
     )
     number_specs = (
-        ("emoji.worker_poll_seconds", "表情任务轮询秒数", "emoji_worker_poll_seconds", 0.1, 3600),
+        (
+            "emoji.selector_score_gap",
+            "视觉精选分差阈值",
+            "emoji_selector_score_gap",
+            0,
+            20,
+            _GGU,
+        ),
+        (
+            "emoji.selector_timeout_seconds",
+            "表情视觉精选超时",
+            "emoji_selector_timeout_seconds",
+            0.1,
+            30,
+            _GGU,
+        ),
+        (
+            "emoji.worker_poll_seconds",
+            "表情任务轮询秒数",
+            "emoji_worker_poll_seconds",
+            0.1,
+            3600,
+            _G,
+        ),
         (
             "emoji.worker_retry_delay_seconds",
             "表情任务重试间隔",
             "emoji_worker_retry_delay_seconds",
             0,
             86400,
+            _G,
         ),
     )
     specs.extend(
@@ -173,13 +197,13 @@ def emoji_config_specs() -> tuple[ConfigSpec, ...]:
             value_type="number",
             minimum=minimum,
             maximum=maximum,
-            scopes=_G,
+            scopes=scopes,
             env_alias=field.upper(),
             getter=_field(field),
             settings_fields=(field,),
             category="emoji",
         )
-        for key, label, field, minimum, maximum in number_specs
+        for key, label, field, minimum, maximum, scopes in number_specs
     )
     specs.extend(
         (

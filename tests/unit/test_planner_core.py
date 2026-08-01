@@ -27,11 +27,15 @@ from qq_ai_bot.admin.models import (
 )
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode, EmojiReplyPlan
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.memory.enums import MemoryContextMode
 from qq_ai_bot.planner import (
     DeliveryMode,
     FakePlannerProvider,
     LLMPlannerProvider,
+    MemoryContextPlan,
+    MemoryContextReasonCode,
     PlannerDecision,
     PlannerInput,
     PlannerInterruptedError,
@@ -46,7 +50,7 @@ from qq_ai_bot.planner import (
     TurnPlan,
     constrain_turn_plan,
 )
-from qq_ai_bot.planner.models import PlannerSpeechContext, ToolScopeSummary
+from qq_ai_bot.planner.models import PlannerEmojiContext, PlannerSpeechContext, ToolScopeSummary
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.speech.models import (
@@ -155,7 +159,9 @@ def _runtime() -> RuntimeConfigSnapshot:
             pool_capacity=None,
             replacement_mode="score",
             selector_enabled=True,
-            selector_candidate_count=6,
+            selector_candidate_count=3,
+            selector_score_gap=0.75,
+            selector_timeout_seconds=2,
             max_effects_per_reply=1,
             near_duplicate_enabled=True,
             near_duplicate_distance=6,
@@ -251,6 +257,10 @@ def _valid_plan_payload(**updates: object) -> dict[str, object]:
         "confidence": 0.9,
         "reason_code": "direct_request",
         "planner_note": "internal only",
+        "memory_context": {
+            "mode": "lexical",
+            "reason_code": "routine_context",
+        },
     }
     payload.update(updates)
     return payload
@@ -430,7 +440,6 @@ def test_planner_applies_hot_natural_multi_target_without_affecting_structure() 
         runtime,
         administrator_request=False,
     )
-
     assert natural.delivery_mode is DeliveryMode.NATURAL_MULTI
     assert natural.desired_messages == 4
     assert structured.delivery_mode is DeliveryMode.STRUCTURED
@@ -489,6 +498,100 @@ def test_planner_voice_language_is_bounded_by_the_active_profile() -> None:
     assert japanese.voice.style_hint == "gentle"
     assert unavailable.voice.language.value == "auto"
     assert unavailable.voice.style_hint == ""
+
+
+def test_planner_owns_emoji_effect_and_closes_tools_for_exclusive_delivery() -> None:
+    runtime = _runtime()
+    available = PlannerEmojiContext(enabled=True, available=True)
+    planner_input = _planner_input(text="发个表情").model_copy(update={"emoji": available})
+
+    explicit = PlannerService._constrain_business_rules(
+        TurnPlan(
+            **_valid_plan_payload(
+                emoji=EmojiReplyPlan(
+                    intent=EmojiIntent.EXPLICIT_REQUEST,
+                    mode=EmojiReplyMode.NONE,
+                )
+            )
+        ),
+        planner_input,
+        runtime,
+        administrator_request=False,
+    )
+    explicit_optional = PlannerService._constrain_business_rules(
+        TurnPlan(
+            **_valid_plan_payload(
+                emoji=EmojiReplyPlan(
+                    intent=EmojiIntent.EXPLICIT_REQUEST,
+                    mode=EmojiReplyMode.OPTIONAL,
+                    goal="轻松回应",
+                )
+            )
+        ),
+        planner_input,
+        runtime,
+        administrator_request=False,
+    )
+    exclusive = PlannerService._constrain_business_rules(
+        TurnPlan(
+            **_valid_plan_payload(
+                emoji=EmojiReplyPlan(
+                    intent=EmojiIntent.EXPLICIT_REQUEST,
+                    mode=EmojiReplyMode.EMOJI_ONLY,
+                    placement=EmojiPlacement.AFTER_TEXT,
+                    goal="直接发一张",
+                )
+            )
+        ),
+        planner_input,
+        runtime,
+        administrator_request=False,
+    )
+
+    assert explicit.emoji.mode is EmojiReplyMode.PREFERRED
+    assert explicit.emoji.goal == "发个表情"
+    assert explicit_optional.emoji.mode is EmojiReplyMode.PREFERRED
+    assert exclusive.emoji.mode is EmojiReplyMode.EMOJI_ONLY
+    assert exclusive.emoji.placement is EmojiPlacement.ONLY
+    assert exclusive.emoji.is_exclusive
+    assert exclusive.tool_selection.mode is ToolMode.NONE
+    assert exclusive.tool_selection.scope_ids == ()
+    assert exclusive.memory_context.mode is MemoryContextMode.NONE
+    assert exclusive.memory_context.reason_code is MemoryContextReasonCode.EFFECT_ONLY
+
+
+def test_planner_memory_context_is_separate_and_semantic_mode_degrades_cleanly() -> None:
+    planner_input = _planner_input(text="我以前提到的那个人是谁")
+    model_plan = TurnPlan(
+        **_valid_plan_payload(
+            memory_context=MemoryContextPlan(
+                mode=MemoryContextMode.HYBRID,
+                reason_code=MemoryContextReasonCode.PERSON_REFERENCE,
+            )
+        )
+    )
+    semantic_runtime = _runtime()
+    lexical_runtime = replace(
+        semantic_runtime,
+        memory=replace(semantic_runtime.memory, semantic_enabled=False),
+    )
+
+    hybrid = PlannerService._constrain_business_rules(
+        model_plan,
+        planner_input,
+        semantic_runtime,
+        administrator_request=False,
+    )
+    lexical = PlannerService._constrain_business_rules(
+        model_plan,
+        planner_input,
+        lexical_runtime,
+        administrator_request=False,
+    )
+
+    assert hybrid.memory_context.mode is MemoryContextMode.HYBRID
+    assert lexical.memory_context.mode is MemoryContextMode.LEXICAL
+    assert lexical.memory_context.reason_code is MemoryContextReasonCode.PERSON_REFERENCE
 
 
 def test_planner_semantic_voice_intent_is_enforced_without_keyword_matching() -> None:
@@ -612,6 +715,31 @@ def test_explicit_turns_cannot_be_silenced_or_delayed_by_planner(
     )
 
     assert constrained.decision is PlannerDecision.REPLY
+    assert constrained.wait_seconds == 0
+
+
+def test_disabled_wait_budget_does_not_trigger_immediate_replanning() -> None:
+    runtime = replace(
+        _runtime(),
+        planner=replace(_runtime().planner, max_wait_seconds=0),
+    )
+    planner_input = _planner_input(scope=ScopeType.GROUP, text="继续观察")
+    model_plan = TurnPlan(
+        **_valid_plan_payload(
+            decision="wait",
+            wait_seconds=30,
+            reason_code="wait_for_more_context",
+        )
+    )
+
+    constrained = PlannerService._constrain_business_rules(
+        model_plan,
+        planner_input,
+        runtime,
+        administrator_request=False,
+    )
+
+    assert constrained.decision is PlannerDecision.SILENT
     assert constrained.wait_seconds == 0
 
 
