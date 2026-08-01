@@ -128,6 +128,24 @@ class OutboundMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class OutboundSendReceipt:
+    """Proof that one transport accepted an outbound message."""
+
+    platform_message_id: str
+    transport: str = "onebot"
+
+    def __post_init__(self) -> None:
+        message_id = self.platform_message_id.strip()
+        transport = self.transport.strip()
+        if not message_id:
+            raise ValueError("platform_message_id must not be empty")
+        if not transport:
+            raise ValueError("transport must not be empty")
+        object.__setattr__(self, "platform_message_id", message_id)
+        object.__setattr__(self, "transport", transport)
+
+
+@dataclass(frozen=True, slots=True)
 class ChatMessage:
     """A message sent to a chat completion API, including tool-call turns."""
 

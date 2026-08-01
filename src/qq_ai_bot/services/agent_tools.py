@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 import time
-import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -90,6 +89,7 @@ class ToolRuntime:
     planner_intent: str = ""
     selected_tool_names: frozenset[str] | None = None
     scheduled_automation_intent: bool = False
+    max_model_requests_override: int | None = None
 
 
 def _object_schema(
@@ -1139,9 +1139,11 @@ class AgentToolService:
             raw_id = result.get("message_id") or result.get("id")
             if raw_id is not None:
                 message_id = str(raw_id)
+        if not message_id or not message_id.strip():
+            return
         await self._ledger.append(
             bot_user_id=inbound.bot_user_id or "unknown-bot",
-            platform_message_id=message_id or f"agent-out-{uuid.uuid4()}",
+            platform_message_id=message_id,
             scope_type=scope,
             group_id=group_id,
             private_peer_user_id=peer,

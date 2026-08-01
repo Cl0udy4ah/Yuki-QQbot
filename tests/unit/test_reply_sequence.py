@@ -7,7 +7,12 @@ from tests.conftest import MemorySender, make_settings
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.domain.messages import OutboundMessage
+from qq_ai_bot.domain.messages import (
+    AttachmentKind,
+    OutboundMedia,
+    OutboundMessage,
+    OutboundSendReceipt,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.planner.models import (
     DeliveryMode,
@@ -16,7 +21,10 @@ from qq_ai_bot.planner.models import (
     ToolMode,
     TurnPlan,
 )
-from qq_ai_bot.services.reply_sequence import ReplySequenceManager
+from qq_ai_bot.services.reply_sequence import (
+    DeliveryFailureRecovery,
+    ReplySequenceManager,
+)
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
     ReplySequenceCancelled,
@@ -115,7 +123,7 @@ async def test_only_first_message_in_sequence_quotes_planner_target(database: Da
     sender = MemorySender()
     recorded: list[OutboundMessage] = []
 
-    async def record(message: OutboundMessage, _result: object) -> None:
+    async def record(message: OutboundMessage, _receipt: OutboundSendReceipt) -> None:
         recorded.append(message)
 
     result = await manager.send(
@@ -132,6 +140,186 @@ async def test_only_first_message_in_sequence_quotes_planner_target(database: Da
     assert result.sent_messages == 2
     assert [message.reply_to_message_id for message in sender.messages] == ["12345", None]
     assert recorded == sender.messages
+
+
+class _MediaFailingSender:
+    def __init__(self, *, fail_text: bool = False) -> None:
+        self.attempts: list[OutboundMessage] = []
+        self.fail_text = fail_text
+
+    async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
+        self.attempts.append(message)
+        if message.media or (self.fail_text and message.text):
+            raise RuntimeError("transport failed")
+        return OutboundSendReceipt(platform_message_id=f"sent-{len(self.attempts)}")
+
+
+def _emoji_message() -> OutboundMessage:
+    return OutboundMessage(
+        media=(
+            OutboundMedia(
+                kind=AttachmentKind.IMAGE,
+                content=b"GIF89a",
+                mime_type="image/gif",
+                emoji_id="emoji-one",
+            ),
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_media_failure_recovery_sends_replacement_and_continues_text(
+    database: Database,
+) -> None:
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url),
+        database=database,
+    ).snapshot()
+    coordinator = ConversationTurnCoordinator()
+    token = await coordinator.notify_message("private:1001", TurnOrigin.USER_MESSAGE)
+    manager = ReplySequenceManager(coordinator, random_uniform=lambda _low, _high: 0)
+    sender = _MediaFailingSender()
+    recorded: list[str] = []
+    failures: list[OutboundMessage] = []
+
+    async def record(message: OutboundMessage, _receipt: OutboundSendReceipt) -> None:
+        recorded.append(message.text)
+
+    async def record_failure(message: OutboundMessage, _error: Exception) -> None:
+        failures.append(message)
+
+    async def recover(
+        _message: OutboundMessage,
+        _error: Exception,
+    ) -> DeliveryFailureRecovery:
+        return DeliveryFailureRecovery(
+            handled=True,
+            replacement_messages=(OutboundMessage(text="表情没发出去，先用文字回你。"),),
+        )
+
+    result = await manager.send(
+        text="正文仍然发送",
+        plan=_plan(DeliveryMode.SINGLE),
+        runtime=runtime,
+        token=token,
+        sender=sender,
+        record_outbound=record,
+        record_failure=record_failure,
+        recover_failure=recover,
+        before_messages=(_emoji_message(),),
+    )
+
+    assert result.sent_messages == 2
+    assert len(failures) == 1
+    assert sum(bool(item.media) for item in sender.attempts) == 1
+    assert recorded == ["表情没发出去，先用文字回你。", "正文仍然发送"]
+
+
+@pytest.mark.asyncio
+async def test_optional_media_failure_can_be_handled_without_extra_text(
+    database: Database,
+) -> None:
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url),
+        database=database,
+    ).snapshot()
+    coordinator = ConversationTurnCoordinator()
+    token = await coordinator.notify_message("private:1001", TurnOrigin.USER_MESSAGE)
+    manager = ReplySequenceManager(coordinator, random_uniform=lambda _low, _high: 0)
+    sender = _MediaFailingSender()
+    recorded: list[str] = []
+
+    async def record(message: OutboundMessage, _receipt: OutboundSendReceipt) -> None:
+        recorded.append(message.text)
+
+    async def recover(
+        _message: OutboundMessage,
+        _error: Exception,
+    ) -> DeliveryFailureRecovery:
+        return DeliveryFailureRecovery(handled=True)
+
+    result = await manager.send(
+        text="正文",
+        plan=_plan(DeliveryMode.SINGLE),
+        runtime=runtime,
+        token=token,
+        sender=sender,
+        record_outbound=record,
+        recover_failure=recover,
+        after_messages=(_emoji_message(),),
+    )
+
+    assert result.sent_messages == 1
+    assert recorded == ["正文"]
+    assert sum(bool(item.media) for item in sender.attempts) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_send_record_failure_does_not_resend_transport(database: Database) -> None:
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url),
+        database=database,
+    ).snapshot()
+    coordinator = ConversationTurnCoordinator()
+    token = await coordinator.notify_message("private:1001", TurnOrigin.USER_MESSAGE)
+    manager = ReplySequenceManager(coordinator, random_uniform=lambda _low, _high: 0)
+    sender = MemorySender()
+
+    async def record(
+        _message: OutboundMessage,
+        _receipt: OutboundSendReceipt,
+    ) -> None:
+        raise RuntimeError("ledger failed")
+
+    result = await manager.send(
+        text="只发送一次",
+        plan=_plan(DeliveryMode.SINGLE),
+        runtime=runtime,
+        token=token,
+        sender=sender,
+        record_outbound=record,
+    )
+
+    assert result.sent_messages == 1
+    assert len(sender.messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_replacement_failure_propagates_without_retry(database: Database) -> None:
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url),
+        database=database,
+    ).snapshot()
+    coordinator = ConversationTurnCoordinator()
+    token = await coordinator.notify_message("private:1001", TurnOrigin.USER_MESSAGE)
+    manager = ReplySequenceManager(coordinator, random_uniform=lambda _low, _high: 0)
+    sender = _MediaFailingSender(fail_text=True)
+
+    async def record(_message: OutboundMessage, _receipt: OutboundSendReceipt) -> None:
+        return None
+
+    async def recover(
+        _message: OutboundMessage,
+        _error: Exception,
+    ) -> DeliveryFailureRecovery:
+        return DeliveryFailureRecovery(
+            handled=True,
+            replacement_messages=(OutboundMessage(text="fallback"),),
+        )
+
+    with pytest.raises(RuntimeError, match="transport failed"):
+        await manager.send(
+            text="",
+            plan=_plan(DeliveryMode.SINGLE),
+            runtime=runtime,
+            token=token,
+            sender=sender,
+            record_outbound=record,
+            recover_failure=recover,
+            before_messages=(_emoji_message(),),
+            suppress_text=True,
+        )
+    assert len(sender.attempts) == 2
 
 
 async def test_new_message_stops_unsent_reply_chunks() -> None:

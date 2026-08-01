@@ -105,6 +105,7 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
         "platform_message_id",
         "scope_type",
         "character_count",
+        "delivered",
         "recorded",
     }
     serialized = json.dumps(

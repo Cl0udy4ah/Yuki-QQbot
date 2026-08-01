@@ -11,6 +11,7 @@ from typing import Protocol
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot, SpeechRuntimeConfig
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.emoji.request_detector import EmojiRequestDetector
 from qq_ai_bot.persistence.repositories import EventLedgerRepository, RelationshipRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.planner.models import (
@@ -53,12 +54,14 @@ class PlannerContextBuilder:
         speech: SpeechPlannerContextProvider | None = None,
         voice_preferences: VoicePreferenceRepository | None = None,
         planner_runs: PlannerRepository | None = None,
+        emoji_requests: EmojiRequestDetector | None = None,
     ) -> None:
         self._ledger = ledger
         self._relationships = relationships
         self._speech = speech
         self._voice_preferences = voice_preferences
         self._planner_runs = planner_runs
+        self._emoji_requests = emoji_requests or EmojiRequestDetector()
 
     async def build(
         self,
@@ -160,9 +163,13 @@ class PlannerContextBuilder:
                 "spontaneous_allowed": spontaneous_allowed,
             }
         )
+        emoji_hint = self._emoji_requests.detect(content)
         emoji_context = PlannerEmojiContext(
             enabled=runtime.emoji.enabled,
             available=runtime.emoji.enabled,
+            explicit_request=emoji_hint.explicit_request,
+            standalone_request=emoji_hint.standalone_request,
+            goal=emoji_hint.goal,
         )
         return PlannerInput(
             conversation_key=conversation_key,

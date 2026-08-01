@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-from qq_ai_bot.domain.messages import OutboundMessage
+from qq_ai_bot.domain.messages import OutboundMessage, OutboundSendReceipt
 from qq_ai_bot.planner.models import DeliveryMode, TurnPlan
 from qq_ai_bot.services.renderer import split_daily_chat_sentences, split_qq_message
 from qq_ai_bot.services.turn_coordinator import (
@@ -19,14 +20,28 @@ from qq_ai_bot.services.turn_coordinator import (
     TurnToken,
 )
 
-RecordOutbound = Callable[[OutboundMessage, Any], Awaitable[None]]
+logger = logging.getLogger(__name__)
+
+RecordOutbound = Callable[[OutboundMessage, OutboundSendReceipt], Awaitable[None]]
 RecordFailure = Callable[[OutboundMessage, Exception], Awaitable[None]]
+BeforeSend = Callable[[OutboundMessage], Awaitable[None]]
 _FENCED_BLOCK = re.compile(r"(```[^\n]*\n.*?\n```|~~~[^\n]*\n.*?\n~~~)", re.DOTALL)
 _BLANK_LINE = re.compile(r"\n[ \t]*\n+")
 
 
 class OutboundSender(Protocol):
-    async def send(self, message: OutboundMessage) -> Any: ...
+    async def send(self, message: OutboundMessage) -> OutboundSendReceipt: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryFailureRecovery:
+    """A narrowly scoped replacement for one failed reply-effect delivery."""
+
+    handled: bool
+    replacement_messages: tuple[OutboundMessage, ...] = ()
+
+
+RecoverDeliveryFailure = Callable[[OutboundMessage, Exception], Awaitable[DeliveryFailureRecovery]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +135,8 @@ class ReplySequenceManager:
         sender: OutboundSender,
         record_outbound: RecordOutbound,
         record_failure: RecordFailure | None = None,
+        before_send: BeforeSend | None = None,
+        recover_failure: RecoverDeliveryFailure | None = None,
         before_messages: tuple[OutboundMessage, ...] = (),
         after_messages: tuple[OutboundMessage, ...] = (),
         suppress_text: bool = False,
@@ -150,16 +167,57 @@ class ReplySequenceManager:
                         if delay > 0:
                             await asyncio.sleep(delay)
                     try:
-                        result = await sender.send(outbound)
+                        if before_send is not None:
+                            await before_send(outbound)
+                        receipt = await sender.send(outbound)
+                        if not isinstance(receipt, OutboundSendReceipt):
+                            raise TypeError("outbound sender returned no delivery receipt")
                     except Exception as exc:
                         if record_failure is not None:
                             await record_failure(outbound, exc)
-                        raise
-                    await record_outbound(outbound, result)
+                        recovery = (
+                            await recover_failure(outbound, exc)
+                            if recover_failure is not None
+                            else DeliveryFailureRecovery(handled=False)
+                        )
+                        if not recovery.handled:
+                            raise
+                        for replacement in recovery.replacement_messages:
+                            replacement_receipt = await sender.send(replacement)
+                            if not isinstance(replacement_receipt, OutboundSendReceipt):
+                                raise TypeError(
+                                    "outbound sender returned no delivery receipt"
+                                ) from exc
+                            sent += 1
+                            await self._record_after_acceptance(
+                                replacement,
+                                replacement_receipt,
+                                record_outbound,
+                            )
+                        continue
                     sent += 1
+                    await self._record_after_acceptance(outbound, receipt, record_outbound)
         except ReplySequenceCancelled:
             return ReplySequenceResult(len(outbound_messages), sent, True)
         return ReplySequenceResult(len(outbound_messages), sent, False)
+
+    @staticmethod
+    async def _record_after_acceptance(
+        message: OutboundMessage,
+        receipt: OutboundSendReceipt,
+        record_outbound: RecordOutbound,
+    ) -> None:
+        """Never turn post-send persistence failure into a transport retry."""
+
+        try:
+            await record_outbound(message, receipt)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "reply_post_send_record_failed exception_category=%s",
+                type(exc).__name__,
+            )
 
     @staticmethod
     def _split_preserving_structure(text: str, *, limit: int) -> tuple[str, ...]:

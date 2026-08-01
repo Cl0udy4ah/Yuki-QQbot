@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 3.0.2 - 2026-08-02
+
+### 群聊表情可靠性
+
+- 修复群聊表情作用域查询复用同一 SQLAlchemy 实体导致的 auto-correlation 异常；外层启用
+  作用域与群禁用覆盖现在使用独立 alias，群 A 的禁用不会影响群 B 或私聊。
+- 表情准备改为 `ready / no_candidate / repository_unavailable / asset_missing /
+  storage_missing / unexpected_failure` 强类型结果；可选表情故障不再终止正常文字回复。
+- 明确索要表情的独立消息由 PlannerService 生成确定性 `emoji_only` 计划，不调用 Planner LLM、
+  Chat Agent 或工具；Planner 超时降级不再继承工具范围，最多只做一次无工具正文请求。
+
+### 真实发送回执与故障恢复
+
+- `OutboundSender` 统一返回带真实平台消息 ID 的 `OutboundSendReceipt`；OneBot 缺失或无法识别
+  消息 ID 时视为发送失败，删除已确认发送链路中的本地假 UUID。
+- 回复序列可只恢复失败的媒体效果：optional 静默跳过，preferred 与 emoji-only 使用确定性短文字，
+  不重试原图、不换图，也不重新调用 Planner、Agent 或视觉模型。
+- 平台已接收后，即使账本或表情使用记录写入失败也不会重发；发送、账本与使用记录分别记录状态。
+- 新增可信 `recent_delivery`，只向下一轮投影当前精确会话最近三条已确认消息的 ID、时间、文本
+  存在性和媒体种类，不包含表情 ID、图片描述或媒体字节。
+
+### 后台任务与验证
+
+- 自主群聊 detached task 增加 owner/done callback，统一消费异常、清理 task 引用并统计失败，
+  消除 `Task exception was never retrieved`。
+- 新增真实 SQLite 群作用域、表情准备、OneBot 回执、回复恢复、Planner 快路径、近期投递与
+  自主任务回归测试。
+- 版本提升至 `3.0.2`；不新增 Alembic 迁移，不清理或改写既有数据，head 仍为 `0024`。
+
 ## 3.0.1 - 2026-08-01
 
 ### DeepSeek V4 Flash Max

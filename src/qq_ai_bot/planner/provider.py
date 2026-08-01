@@ -12,11 +12,16 @@ from pydantic import ValidationError
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode, EmojiReplyPlan
+from qq_ai_bot.llm.base import LLMError, LLMTimeoutError
+from qq_ai_bot.memory.enums import MemoryContextMode
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.model_runtime.structured import StructuredTaskError, StructuredTaskRunner
 from qq_ai_bot.planner.models import (
     DeliveryMode,
+    MemoryContextPlan,
+    MemoryContextReasonCode,
     PlannerDecision,
     PlannerInput,
     PlannerReasonCode,
@@ -158,7 +163,36 @@ def normalize_reply_target(
     return requested_message_id
 
 
-def deterministic_fallback_plan(planner_input: PlannerInput) -> TurnPlan:
+def deterministic_effect_plan(planner_input: PlannerInput) -> TurnPlan:
+    """Build the trusted standalone emoji effect without a model request."""
+
+    return TurnPlan(
+        decision=PlannerDecision.REPLY,
+        intent="发送当前用户明确索要的聊天表情",
+        target_user_ids=(planner_input.current_sender_user_id,),
+        delivery_mode=DeliveryMode.SINGLE,
+        desired_messages=1,
+        tool_selection=ToolSelection(mode=ToolMode.NONE),
+        confidence=1.0,
+        reason_code=PlannerReasonCode.DETERMINISTIC_EFFECT_REQUEST,
+        memory_context=MemoryContextPlan(
+            mode=MemoryContextMode.NONE,
+            reason_code=MemoryContextReasonCode.EFFECT_ONLY,
+        ),
+        emoji=EmojiReplyPlan(
+            intent=EmojiIntent.EXPLICIT_REQUEST,
+            mode=EmojiReplyMode.EMOJI_ONLY,
+            placement=EmojiPlacement.ONLY,
+            goal=planner_input.emoji.goal or "自然回应当前用户",
+        ),
+    )
+
+
+def deterministic_fallback_plan(
+    planner_input: PlannerInput,
+    *,
+    reason_code: PlannerReasonCode = PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK,
+) -> TurnPlan:
     """Return a deterministic fallback without consulting a model.
 
     Autonomous turns only reach the provider after the necessity gate admits
@@ -172,15 +206,14 @@ def deterministic_fallback_plan(planner_input: PlannerInput) -> TurnPlan:
         or planner_input.reply_target_is_bot
     )
     should_reply = explicitly_triggered or planner_input.necessity.should_enter_planner
-    available_scopes = (
-        tuple(scope.scope_id for scope in planner_input.available_tool_scopes)
-        or planner_input.available_tool_categories
-    )
-    natural_direct_reply = should_reply and (
-        planner_input.scope_type is ScopeType.PRIVATE
-        or planner_input.mentions_bot
-        or planner_input.reply_target_is_bot
-    )
+    if (
+        planner_input.emoji.available
+        and planner_input.emoji.explicit_request
+        and planner_input.emoji.standalone_request
+    ):
+        return deterministic_effect_plan(planner_input).model_copy(
+            update={"reason_code": reason_code, "confidence": 0.0}
+        )
     return TurnPlan(
         decision=PlannerDecision.REPLY if should_reply else PlannerDecision.SILENT,
         intent=(
@@ -189,16 +222,21 @@ def deterministic_fallback_plan(planner_input: PlannerInput) -> TurnPlan:
             else "Planner 失败且本轮未通过发言门槛，保持沉默"
         ),
         target_user_ids=(planner_input.current_sender_user_id,) if should_reply else (),
-        delivery_mode=(DeliveryMode.NATURAL_MULTI if natural_direct_reply else DeliveryMode.SINGLE),
-        desired_messages=3 if natural_direct_reply else 1,
-        tool_selection=ToolSelection(
-            mode=(ToolMode.READ_ONLY if planner_input.visual_input_present else ToolMode.INHERIT),
-            scopes=available_scopes,
-        ),
+        delivery_mode=DeliveryMode.CONCISE,
+        desired_messages=1,
+        tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
         wait_seconds=0.0,
         confidence=0.0,
-        reason_code=PlannerReasonCode.PLANNER_FALLBACK,
+        reason_code=reason_code,
         planner_note="deterministic fallback after planner failure",
+        memory_context=MemoryContextPlan(
+            mode=(
+                MemoryContextMode.NONE
+                if planner_input.origin.value == "autonomous_group"
+                else MemoryContextMode.LEXICAL
+            ),
+            reason_code=MemoryContextReasonCode.CASUAL_REPLY,
+        ),
     )
 
 
@@ -271,7 +309,7 @@ class LLMPlannerProvider:
             else None
         )
         try:
-            self._raise_if_cancelled(cancellation)
+            _raise_if_cancelled(cancellation)
             planner_runtime = runtime.planner
             timeout_seconds = planner_runtime.timeout_seconds or self._timeout_seconds or 20.0
             hard_max_messages = (
@@ -304,7 +342,7 @@ class LLMPlannerProvider:
                 cancellation=cancellation,
                 timeout_seconds=timeout_seconds,
             )
-            self._raise_if_cancelled(cancellation)
+            _raise_if_cancelled(cancellation)
             plan = validate_turn_plan(
                 plan,
                 planner_input,
@@ -325,7 +363,14 @@ class LLMPlannerProvider:
                     latency_seconds=time.perf_counter() - started,
                 )
             raise
-        except (PlannerProviderError, StructuredTaskError, TimeoutError, ValueError) as exc:
+        except (
+            PlannerProviderError,
+            StructuredTaskError,
+            LLMError,
+            TimeoutError,
+            OSError,
+            ValueError,
+        ) as exc:
             if not self._fallback_on_error:
                 if self._observability is not None and token is not None:
                     self._observability.request_failed(
@@ -339,7 +384,8 @@ class LLMPlannerProvider:
                 type(exc).__name__,
                 str(exc),
             )
-            plan = deterministic_fallback_plan(planner_input)
+            fallback_reason = _fallback_reason(exc)
+            plan = deterministic_fallback_plan(planner_input, reason_code=fallback_reason)
             if self._observability is not None and token is not None:
                 self._observability.request_finished(
                     token,
@@ -356,10 +402,18 @@ class LLMPlannerProvider:
             )
         return plan
 
-    @staticmethod
-    def _raise_if_cancelled(cancellation: asyncio.Event | None) -> None:
-        if cancellation is not None and cancellation.is_set():
-            raise PlannerInterruptedError("planner request superseded")
+
+def _fallback_reason(exc: Exception) -> PlannerReasonCode:
+    if isinstance(exc, (PlannerTimeoutError, LLMTimeoutError, TimeoutError)):
+        return PlannerReasonCode.PLANNER_TIMEOUT_FALLBACK
+    if isinstance(exc, (PlannerResponseError, StructuredTaskError, ValueError)):
+        return PlannerReasonCode.PLANNER_INVALID_RESPONSE_FALLBACK
+    return PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK
+
+
+def _raise_if_cancelled(cancellation: asyncio.Event | None) -> None:
+    if cancellation is not None and cancellation.is_set():
+        raise PlannerInterruptedError("planner request superseded")
 
 
 async def _await_with_cancellation[T](

@@ -9,7 +9,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from qq_ai_bot.planner.models import PlannerDecision, ReplyNecessitySnapshot, TurnPlan
+from qq_ai_bot.planner.models import (
+    PlannerDecision,
+    PlannerReasonCode,
+    ReplyNecessitySnapshot,
+    TurnPlan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +46,12 @@ class PlannerMetricsSnapshot:
     fallback_plans: int
     interrupted_requests: int
     failed_requests: int
+    deterministic_effects: int
+    timeout_fallbacks: int
+    invalid_response_fallbacks: int
+    provider_error_fallbacks: int
+    fallback_agent_requests: int
+    fallback_tool_calls: int
     active_requests: int
     last_latency_seconds: float | None
     last_decision: PlannerDecision | None
@@ -58,6 +69,12 @@ class PlannerObservability:
         self._fallback_plans = 0
         self._interrupted_requests = 0
         self._failed_requests = 0
+        self._deterministic_effects = 0
+        self._timeout_fallbacks = 0
+        self._invalid_response_fallbacks = 0
+        self._provider_error_fallbacks = 0
+        self._fallback_agent_requests = 0
+        self._fallback_tool_calls = 0
         self._last_latency_seconds: float | None = None
         self._last_decision: PlannerDecision | None = None
         self._last_planned_at: datetime | None = None
@@ -120,6 +137,18 @@ class PlannerObservability:
         with self._lock:
             self._successful_plans += 1
             self._fallback_plans += int(fallback)
+            if plan.reason_code is PlannerReasonCode.PLANNER_TIMEOUT_FALLBACK:
+                self._timeout_fallbacks += 1
+            elif plan.reason_code is PlannerReasonCode.PLANNER_INVALID_RESPONSE_FALLBACK:
+                self._invalid_response_fallbacks += 1
+            elif plan.reason_code is PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK:
+                self._provider_error_fallbacks += 1
+            if fallback and plan.decision is PlannerDecision.REPLY and not plan.emoji.is_exclusive:
+                self._fallback_agent_requests += 1
+            if fallback and (
+                plan.tool_selection.mode.value != "none" or plan.tool_selection.scope_ids
+            ):
+                self._fallback_tool_calls += 1
             self._last_latency_seconds = max(0.0, latency_seconds)
             self._last_decision = plan.decision
             self._last_planned_at = now
@@ -133,6 +162,19 @@ class PlannerObservability:
             plan.memory_context.mode.value,
             fallback,
             max(0.0, latency_seconds),
+        )
+
+    def record_deterministic_effect(self, *, conversation_key: str) -> None:
+        """Record a model-free Planner effect decision without raw identifiers."""
+
+        with self._lock:
+            self._deterministic_effects += 1
+            self._last_decision = PlannerDecision.REPLY
+            self._last_planned_at = datetime.now(UTC)
+            self._last_latency_seconds = 0.0
+        logger.info(
+            "planner_deterministic_effect conversation_hash=%s",
+            identifier_hash(conversation_key),
         )
 
     def request_interrupted(
@@ -185,6 +227,12 @@ class PlannerObservability:
                 fallback_plans=self._fallback_plans,
                 interrupted_requests=self._interrupted_requests,
                 failed_requests=self._failed_requests,
+                deterministic_effects=self._deterministic_effects,
+                timeout_fallbacks=self._timeout_fallbacks,
+                invalid_response_fallbacks=self._invalid_response_fallbacks,
+                provider_error_fallbacks=self._provider_error_fallbacks,
+                fallback_agent_requests=self._fallback_agent_requests,
+                fallback_tool_calls=self._fallback_tool_calls,
                 active_requests=len(self._active),
                 last_latency_seconds=self._last_latency_seconds,
                 last_decision=self._last_decision,

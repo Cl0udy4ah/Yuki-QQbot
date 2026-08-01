@@ -2660,9 +2660,12 @@ async def _record_outbound(
     if ledger is None or invocation.inbound is None:
         return
     message_id = _onebot_message_id(result)
+    if message_id is None:
+        host._logger.warning("plugin_outbound_record_skipped_missing_receipt")
+        return
     await ledger.append(
         bot_user_id=invocation.bot_user_id,
-        platform_message_id=message_id or f"plugin-out-{uuid.uuid4()}",
+        platform_message_id=message_id,
         scope_type=outbound.scope_type,
         sender_user_id=invocation.bot_user_id,
         direction="outbound",

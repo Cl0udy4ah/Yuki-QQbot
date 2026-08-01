@@ -24,6 +24,7 @@ from qq_ai_bot.planner.models import (
 from qq_ai_bot.planner.observability import PlannerObservability
 from qq_ai_bot.planner.provider import (
     PlannerProvider,
+    deterministic_effect_plan,
     deterministic_fallback_plan,
     normalize_reply_target,
 )
@@ -106,7 +107,16 @@ class PlannerService:
             if planner_input.origin is TurnOrigin.AUTONOMOUS_GROUP
             else runtime.planner.direct_enabled
         )
-        should_call = enabled_for_turn and planner_input.necessity.should_enter_planner
+        deterministic_effect = bool(
+            planner_input.emoji.available
+            and planner_input.emoji.explicit_request
+            and planner_input.emoji.standalone_request
+        )
+        should_call = (
+            enabled_for_turn
+            and planner_input.necessity.should_enter_planner
+            and not deterministic_effect
+        )
         planner_model = (
             str(getattr(self._provider, "model_name", "") or runtime.llm.model)
             if should_call
@@ -122,14 +132,24 @@ class PlannerService:
             else None
         )
         fallback_used = False
-        if not planner_input.necessity.should_enter_planner:
+        if deterministic_effect:
+            plan = deterministic_effect_plan(planner_input)
+            self._observability.record_deterministic_effect(
+                conversation_key=planner_input.conversation_key
+            )
+        elif not planner_input.necessity.should_enter_planner:
             plan = self._silent_gate_plan()
         elif not enabled_for_turn:
             plan = deterministic_fallback_plan(planner_input)
             fallback_used = True
         else:
             plan = await self._provider.plan(planner_input, runtime=runtime)
-            fallback_used = plan.reason_code is PlannerReasonCode.PLANNER_FALLBACK
+            fallback_used = plan.reason_code in {
+                PlannerReasonCode.PLANNER_FALLBACK,
+                PlannerReasonCode.PLANNER_TIMEOUT_FALLBACK,
+                PlannerReasonCode.PLANNER_INVALID_RESPONSE_FALLBACK,
+                PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK,
+            }
         plan = self._constrain_business_rules(
             plan,
             planner_input,
@@ -195,7 +215,13 @@ class PlannerService:
     ) -> TurnPlan:
         hard_max = runtime.reply.plan_hard_max_messages
         preferred = min(runtime.planner.preferred_messages, hard_max)
-        requested_multi = any(
+        fallback_reason = plan.reason_code in {
+            PlannerReasonCode.PLANNER_FALLBACK,
+            PlannerReasonCode.PLANNER_TIMEOUT_FALLBACK,
+            PlannerReasonCode.PLANNER_INVALID_RESPONSE_FALLBACK,
+            PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK,
+        }
+        requested_multi = not fallback_reason and any(
             token in planner_input.current_message.text for token in _MULTI_MESSAGE_REQUESTS
         )
         delivery_mode = DeliveryMode.NATURAL_MULTI if requested_multi else plan.delivery_mode
@@ -213,6 +239,12 @@ class PlannerService:
             ),
             "wait_seconds": min(plan.wait_seconds, runtime.planner.max_wait_seconds),
         }
+        if fallback_reason:
+            updates.update(
+                delivery_mode=DeliveryMode.CONCISE,
+                desired_messages=1,
+                tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
+            )
         memory_context = plan.memory_context
         if memory_context.mode is MemoryContextMode.HYBRID and not runtime.memory.semantic_enabled:
             memory_context = memory_context.model_copy(update={"mode": MemoryContextMode.LEXICAL})
@@ -362,7 +394,7 @@ class PlannerService:
         if (
             planner_input.origin is TurnOrigin.AUTONOMOUS_GROUP
             and plan.decision is PlannerDecision.REPLY
-            and plan.reason_code is not PlannerReasonCode.PLANNER_FALLBACK
+            and not fallback_reason
             and plan.confidence < runtime.planner.confidence_threshold
         ):
             updates.update(

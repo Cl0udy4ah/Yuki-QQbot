@@ -15,6 +15,7 @@ from qq_ai_bot.domain.messages import (
     ChatResponse,
     InboundMessage,
     OutboundMessage,
+    OutboundSendReceipt,
     SenderIdentity,
     ToolCall,
     ToolFunction,
@@ -164,9 +165,12 @@ class ToolGatewaySender:
         self.messages: list[OutboundMessage] = []
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def send(self, message: OutboundMessage) -> dict[str, int]:
+    async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
         self.messages.append(message)
-        return {"message_id": 90001 + len(self.messages)}
+        return OutboundSendReceipt(
+            platform_message_id=str(90001 + len(self.messages)),
+            transport="test",
+        )
 
     async def call_api(self, action: str, params: dict[str, Any]) -> Any:
         self.calls.append((action, params))

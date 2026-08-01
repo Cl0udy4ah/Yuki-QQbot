@@ -10,6 +10,7 @@ from typing import Literal
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.orm import aliased
 
 from qq_ai_bot.emoji.db_models import (
     EmojiAssetModel,
@@ -357,12 +358,12 @@ class EmojiRepository:
     ) -> tuple[tuple[EmojiAsset, float], ...]:
         if limit <= 0:
             raise ValueError("limit must be positive")
-        scope_filter = EmojiScopeStateModel.scope_type == "global"
+        enabled_scope = aliased(EmojiScopeStateModel, name="enabled_scope")
+        scope_filter = enabled_scope.scope_type == "global"
         if group_id:
             scope_filter = or_(
                 scope_filter,
-                (EmojiScopeStateModel.scope_type == "group")
-                & (EmojiScopeStateModel.scope_id == group_id),
+                (enabled_scope.scope_type == "group") & (enabled_scope.scope_id == group_id),
             )
         recent_scope = None
         if scope_cooldown_after is not None:
@@ -379,11 +380,11 @@ class EmojiRepository:
                     EmojiUsageEventModel.actor_user_id == actor_user_id,
                 )
         statement = (
-            select(EmojiAssetModel, func.max(EmojiScopeStateModel.weight))
-            .join(EmojiScopeStateModel, EmojiScopeStateModel.emoji_id == EmojiAssetModel.id)
+            select(EmojiAssetModel, func.max(enabled_scope.weight))
+            .join(enabled_scope, enabled_scope.emoji_id == EmojiAssetModel.id)
             .where(
                 EmojiAssetModel.status == EmojiLifecycleStatus.ADOPTED.value,
-                EmojiScopeStateModel.enabled.is_(True),
+                enabled_scope.enabled.is_(True),
                 scope_filter,
                 or_(
                     EmojiAssetModel.last_used_at.is_(None),
@@ -395,14 +396,17 @@ class EmojiRepository:
             .limit(limit)
         )
         if group_id is not None:
+            disabled_group = aliased(EmojiScopeStateModel, name="disabled_group")
             disabled_override = (
-                select(EmojiScopeStateModel.id)
+                select(disabled_group.id)
+                .select_from(disabled_group)
                 .where(
-                    EmojiScopeStateModel.emoji_id == EmojiAssetModel.id,
-                    EmojiScopeStateModel.scope_type == "group",
-                    EmojiScopeStateModel.scope_id == group_id,
-                    EmojiScopeStateModel.enabled.is_(False),
+                    disabled_group.emoji_id == EmojiAssetModel.id,
+                    disabled_group.scope_type == "group",
+                    disabled_group.scope_id == group_id,
+                    disabled_group.enabled.is_(False),
                 )
+                .correlate(EmojiAssetModel)
                 .exists()
             )
             statement = statement.where(~disabled_override)

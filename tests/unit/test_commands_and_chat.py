@@ -18,6 +18,8 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.emoji.models import (
     EmojiIntent,
     EmojiPlacement,
+    EmojiPreparationResult,
+    EmojiPreparationStatus,
     EmojiReplyMode,
     EmojiReplyPlan,
 )
@@ -413,8 +415,8 @@ async def test_planner_preferred_emoji_can_complete_without_text(database: Datab
     )
 
     class PreparedEmojiEffect:
-        async def prepare(self, *_args: object, **_kwargs: object) -> OutboundMessage:
-            return OutboundMessage(
+        async def prepare(self, *_args: object, **_kwargs: object) -> EmojiPreparationResult:
+            message = OutboundMessage(
                 media=(
                     OutboundMedia(
                         kind=AttachmentKind.IMAGE,
@@ -426,6 +428,18 @@ async def test_planner_preferred_emoji_can_complete_without_text(database: Datab
                     ),
                 )
             )
+            return EmojiPreparationResult(
+                status=EmojiPreparationStatus.READY,
+                message=message,
+                emoji_id="emoji-test",
+                reason_code="selected",
+            )
+
+        async def record_send_attempted(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        async def record_send_accepted(self, *_args: object, **_kwargs: object) -> None:
+            return None
 
         async def record_success(self, *_args: object, **_kwargs: object) -> None:
             return None
@@ -443,7 +457,7 @@ async def test_planner_preferred_emoji_can_complete_without_text(database: Datab
 
     assert result.reason == "chat"
     assert result.sent_messages == 1
-    assert len(provider.requests) == 1
+    assert provider.requests == []
     assert sender.messages[0].text == ""
     assert sender.messages[0].media[0].emoji_id == "emoji-test"
 
@@ -481,8 +495,8 @@ async def test_planner_emoji_only_skips_agent_context_and_embedding(database: Da
             raise AssertionError("emoji-only reply must not assemble Agent context")
 
     class PreparedEmojiEffect:
-        async def prepare(self, *_args: object, **_kwargs: object) -> OutboundMessage:
-            return OutboundMessage(
+        async def prepare(self, *_args: object, **_kwargs: object) -> EmojiPreparationResult:
+            message = OutboundMessage(
                 media=(
                     OutboundMedia(
                         kind=AttachmentKind.IMAGE,
@@ -494,6 +508,18 @@ async def test_planner_emoji_only_skips_agent_context_and_embedding(database: Da
                     ),
                 )
             )
+            return EmojiPreparationResult(
+                status=EmojiPreparationStatus.READY,
+                message=message,
+                emoji_id="emoji-only-test",
+                reason_code="selected",
+            )
+
+        async def record_send_attempted(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        async def record_send_accepted(self, *_args: object, **_kwargs: object) -> None:
+            return None
 
         async def record_success(self, *_args: object, **_kwargs: object) -> None:
             return None

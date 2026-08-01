@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import time
-import uuid
 from dataclasses import replace
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -53,11 +53,19 @@ from qq_ai_bot.domain.messages import (
     InboundMessage,
     OutboundMedia,
     OutboundMessage,
+    OutboundSendReceipt,
     ToolCall,
 )
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
-from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode, PendingReplyEffect
+from qq_ai_bot.emoji.models import (
+    EmojiIntent,
+    EmojiPlacement,
+    EmojiPreparationResult,
+    EmojiPreparationStatus,
+    EmojiReplyMode,
+    PendingReplyEffect,
+)
 from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import MemoryContextMode
@@ -99,7 +107,10 @@ from qq_ai_bot.services.renderer import (
     split_daily_chat_sentences,
     split_qq_message,
 )
-from qq_ai_bot.services.reply_sequence import ReplySequenceManager
+from qq_ai_bot.services.reply_sequence import (
+    DeliveryFailureRecovery,
+    ReplySequenceManager,
+)
 from qq_ai_bot.services.source_policy import SourceDisplayPolicy
 from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator, TurnToken
@@ -112,6 +123,8 @@ from qq_ai_bot.speech.reply_effect import (
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
 from yuki_plugin_sdk.events import EventName
+
+logger = logging.getLogger(__name__)
 
 _ADMIN_RETRYABLE_ERRORS = frozenset(
     {
@@ -127,8 +140,8 @@ _ADMIN_RETRYABLE_ERRORS = frozenset(
 class OutboundSender(Protocol):
     """Adapter-provided sender used by the business layer."""
 
-    async def send(self, message: OutboundMessage) -> Any:
-        """Send one normal message and optionally return a platform message id."""
+    async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
+        """Send one normal message and return proof of platform acceptance."""
 
 
 class AdminToolService(Protocol):
@@ -1269,20 +1282,26 @@ class ChatService:
                         source="planner",
                     )
                 )
+            fallback_plan = planned_turn is not None and planned_turn.fallback_used
+            scheduled_automation_allowed = scheduled_automation_intent and not fallback_plan
             runtime = ToolRuntime(
                 inbound=inbound,
                 gateway=gateway,
                 allow_generic_onebot=(
                     not autonomous
                     and not visual_input_present
+                    and not fallback_plan
                     and inbound.sender.user_id in self._settings.superusers
                 ),
                 allow_admin_actions=(
                     not autonomous
                     and not visual_input_present
+                    and not fallback_plan
                     and inbound.sender.user_id in self._settings.superusers
                 ),
-                allow_automation=(not autonomous and not visual_input_present),
+                allow_automation=(
+                    not autonomous and not visual_input_present and not fallback_plan
+                ),
                 conversation_key=identity.key,
                 trigger_message_id=inbound.message_id,
                 source_display_requested=source_display_requested,
@@ -1294,7 +1313,7 @@ class ChatService:
                 origin=(TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE),
                 tool_mode=(
                     ToolMode.INHERIT
-                    if scheduled_automation_intent
+                    if scheduled_automation_allowed
                     else (
                         planned_turn.plan.tool_mode
                         if planned_turn is not None
@@ -1303,7 +1322,7 @@ class ChatService:
                 ),
                 tool_groups=(
                     frozenset({ToolGroup.AUTOMATION.value})
-                    if scheduled_automation_intent
+                    if scheduled_automation_allowed
                     else (
                         frozenset(planned_turn.plan.tool_selection.scope_ids)
                         if planned_turn is not None
@@ -1320,10 +1339,11 @@ class ChatService:
                 selection_query=content,
                 planner_intent=(
                     "创建未来触发的持久化自动化任务"
-                    if scheduled_automation_intent
+                    if scheduled_automation_allowed
                     else (planned_turn.plan.intent if planned_turn is not None else "")
                 ),
-                scheduled_automation_intent=scheduled_automation_intent,
+                scheduled_automation_intent=scheduled_automation_allowed,
+                max_model_requests_override=(1 if fallback_plan else None),
             )
             if planner_emoji_only:
                 response_text = ""
@@ -1353,16 +1373,41 @@ class ChatService:
                     raise
                 rendered = ""
             prepared_effects: list[tuple[PendingReplyEffect, OutboundMessage]] = []
+            preparation_fallbacks: list[OutboundMessage] = []
             if self._emoji_effects is not None:
                 for effect in emoji_effects[: runtime_config.emoji.max_effects_per_reply]:
-                    prepared = await self._emoji_effects.prepare(
-                        effect,
-                        inbound=inbound,
-                        response_text=rendered,
-                        runtime=runtime_config,
-                    )
-                    if prepared is not None:
-                        prepared_effects.append((effect, prepared))
+                    try:
+                        preparation = await self._emoji_effects.prepare(
+                            effect,
+                            inbound=inbound,
+                            response_text=rendered,
+                            runtime=runtime_config,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        logger.exception(
+                            "emoji_prepare_unexpected_failure exception_category=%s",
+                            type(exc).__name__,
+                        )
+                        preparation = EmojiPreparationResult(
+                            status=EmojiPreparationStatus.UNEXPECTED_FAILURE,
+                            reason_code="unexpected_prepare_failure",
+                        )
+                    if preparation.status is EmojiPreparationStatus.READY:
+                        assert preparation.message is not None
+                        prepared_effects.append((effect, preparation.message))
+                        continue
+                    fallback_text = self._emoji_preparation_failure_text(effect, preparation)
+                    if not fallback_text:
+                        continue
+                    if (
+                        effect.mode is EmojiReplyMode.EMOJI_ONLY
+                        or effect.placement is EmojiPlacement.ONLY
+                    ):
+                        rendered = fallback_text
+                    elif not preparation_fallbacks:
+                        preparation_fallbacks.append(OutboundMessage(text=fallback_text))
             prepared_voice: PreparedVoiceReply | None = None
             if (
                 planned_turn is not None
@@ -1387,7 +1432,12 @@ class ChatService:
                     ),
                     profile_id=queued_voice.profile_id if queued_voice is not None else "",
                 )
-            if not rendered and not prepared_effects and prepared_voice is None:
+            if (
+                not rendered
+                and not prepared_effects
+                and not preparation_fallbacks
+                and prepared_voice is None
+            ):
                 # A failed optional media effect must never turn a planned reply
                 # into silence. AgentRunner normally prevents this, while this
                 # guard also covers selectors/synthesizers that decline an effect.
@@ -1404,16 +1454,46 @@ class ChatService:
                             max_characters=self._settings.max_output_characters,
                         )
 
-                async def record_chunk(message: OutboundMessage, result: Any) -> None:
-                    await self._record_outbound_message(inbound, message, result)
+                async def record_chunk(
+                    message: OutboundMessage,
+                    receipt: OutboundSendReceipt,
+                ) -> None:
+                    if message.media and self._emoji_effects is not None:
+                        await self._emoji_effects.record_send_accepted(
+                            message,
+                            source="reply_effect",
+                        )
+                    recorded = await self._record_outbound_message(inbound, message, receipt)
                     if message.media and self._emoji_effects is not None:
                         await self._emoji_effects.record_success(
                             message,
                             inbound=inbound,
                             source="reply_effect",
+                            ledger_recorded=recorded,
                         )
                     if message.media and self._speech_effects is not None:
-                        await self._speech_effects.record_success(message)
+                        try:
+                            await self._speech_effects.record_success(message)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            logger.exception(
+                                "speech_post_send_record_failed exception_category=%s",
+                                type(exc).__name__,
+                            )
+                    if id(message) in fallback_message_ids:
+                        await publish_notification(
+                            self._event_publisher,
+                            EventName.EMOJI_FALLBACK_TEXT_SENT,
+                            {"scope_type": inbound.scope_type.value},
+                        )
+
+                async def before_send(message: OutboundMessage) -> None:
+                    if message.media and self._emoji_effects is not None:
+                        await self._emoji_effects.record_send_attempted(
+                            message,
+                            source="reply_effect",
+                        )
 
                 async def record_failure(message: OutboundMessage, _error: Exception) -> None:
                     if message.media and self._emoji_effects is not None:
@@ -1423,6 +1503,50 @@ class ChatService:
                         )
                     if message.media and self._speech_effects is not None:
                         await self._speech_effects.record_failure(message)
+
+                effect_by_emoji_id = {
+                    media.emoji_id: effect
+                    for effect, message in prepared_effects
+                    for media in message.media
+                    if media.emoji_id
+                }
+                fallback_message_ids: set[int] = {id(message) for message in preparation_fallbacks}
+                send_failure_notice_created = False
+
+                async def recover_failure(
+                    message: OutboundMessage,
+                    _error: Exception,
+                ) -> DeliveryFailureRecovery:
+                    nonlocal send_failure_notice_created
+                    emoji_id = next(
+                        (media.emoji_id for media in message.media if media.emoji_id),
+                        None,
+                    )
+                    failed_effect = (
+                        effect_by_emoji_id.get(emoji_id) if emoji_id is not None else None
+                    )
+                    if failed_effect is None:
+                        return DeliveryFailureRecovery(handled=False)
+                    if (
+                        failed_effect.mode is EmojiReplyMode.OPTIONAL
+                        and not failed_effect.explicit_request
+                    ):
+                        return DeliveryFailureRecovery(handled=True)
+                    if send_failure_notice_created:
+                        return DeliveryFailureRecovery(handled=True)
+                    send_failure_notice_created = True
+                    failure_text = (
+                        "表情没发出去，发送失败了。"
+                        if failed_effect.mode is EmojiReplyMode.EMOJI_ONLY
+                        or failed_effect.placement is EmojiPlacement.ONLY
+                        else "表情没发出去，先用文字回你。"
+                    )
+                    fallback = OutboundMessage(text=failure_text)
+                    fallback_message_ids.add(id(fallback))
+                    return DeliveryFailureRecovery(
+                        handled=True,
+                        replacement_messages=(fallback,),
+                    )
 
                 before = tuple(
                     message
@@ -1434,6 +1558,7 @@ class ChatService:
                     for effect, message in prepared_effects
                     if effect.placement is not EmojiPlacement.BEFORE_TEXT
                 )
+                after = (*after, *preparation_fallbacks)
                 if prepared_voice is not None:
                     after = (*after, prepared_voice.message)
                 suppress_text = bool(prepared_effects) and any(
@@ -1452,6 +1577,8 @@ class ChatService:
                     sender=sender,
                     record_outbound=record_chunk,
                     record_failure=record_failure,
+                    before_send=before_send,
+                    recover_failure=recover_failure,
                     before_messages=before,
                     after_messages=after,
                     suppress_text=suppress_text,
@@ -1474,6 +1601,15 @@ class ChatService:
                 for effect, message in prepared_effects
                 if effect.placement is not EmojiPlacement.BEFORE_TEXT
             )
+            legacy_messages.extend(preparation_fallbacks)
+            legacy_effect_by_emoji_id = {
+                media.emoji_id: effect
+                for effect, message in prepared_effects
+                for media in message.media
+                if media.emoji_id
+            }
+            legacy_failure_notice_sent = False
+            sent_count = 0
             for index, outbound in enumerate(legacy_messages):
                 if len(legacy_messages) > 1 and index > 0:
                     delay = random.uniform(
@@ -1483,30 +1619,78 @@ class ChatService:
                     if delay > 0:
                         await asyncio.sleep(delay)
                 try:
-                    result = await sender.send(outbound)
-                except Exception:
+                    if outbound.media and self._emoji_effects is not None:
+                        await self._emoji_effects.record_send_attempted(
+                            outbound,
+                            source="reply_effect",
+                        )
+                    receipt = await sender.send(outbound)
+                    if not isinstance(receipt, OutboundSendReceipt):
+                        raise TypeError("outbound sender returned no delivery receipt")
+                except Exception as exc:
                     if outbound.media and self._emoji_effects is not None:
                         await self._emoji_effects.record_failure(
                             outbound,
                             source="reply_effect",
                         )
-                    raise
-                await self._record_outbound_message(inbound, outbound, result)
+                    emoji_id = next(
+                        (media.emoji_id for media in outbound.media if media.emoji_id),
+                        None,
+                    )
+                    failed_effect = (
+                        legacy_effect_by_emoji_id.get(emoji_id) if emoji_id is not None else None
+                    )
+                    if failed_effect is None:
+                        raise
+                    if (
+                        failed_effect.mode is EmojiReplyMode.OPTIONAL
+                        and not failed_effect.explicit_request
+                    ):
+                        continue
+                    if legacy_failure_notice_sent:
+                        continue
+                    legacy_failure_notice_sent = True
+                    fallback = OutboundMessage(
+                        text=(
+                            "表情没发出去，发送失败了。"
+                            if failed_effect.mode is EmojiReplyMode.EMOJI_ONLY
+                            or failed_effect.placement is EmojiPlacement.ONLY
+                            else "表情没发出去，先用文字回你。"
+                        )
+                    )
+                    fallback_receipt = await sender.send(fallback)
+                    if not isinstance(fallback_receipt, OutboundSendReceipt):
+                        raise TypeError("outbound sender returned no delivery receipt") from exc
+                    sent_count += 1
+                    await self._record_outbound_message(inbound, fallback, fallback_receipt)
+                    await publish_notification(
+                        self._event_publisher,
+                        EventName.EMOJI_FALLBACK_TEXT_SENT,
+                        {"scope_type": inbound.scope_type.value},
+                    )
+                    continue
+                sent_count += 1
+                if outbound.media and self._emoji_effects is not None:
+                    await self._emoji_effects.record_send_accepted(
+                        outbound,
+                        source="reply_effect",
+                    )
+                recorded = await self._record_outbound_message(inbound, outbound, receipt)
                 if outbound.media and self._emoji_effects is not None:
                     await self._emoji_effects.record_success(
                         outbound,
                         inbound=inbound,
                         source="reply_effect",
+                        ledger_recorded=recorded,
                     )
-            sent_count = len(legacy_messages)
             if source_display_requested:
                 source_text = self._source_renderer.render(
                     sources,
                     maximum=runtime_config.web.extract_max_results,
                 )
                 if source_text:
-                    result = await sender.send(OutboundMessage(text=source_text))
-                    await self._record_outbound(inbound, source_text, result)
+                    receipt = await sender.send(OutboundMessage(text=source_text))
+                    await self._record_outbound(inbound, source_text, receipt)
                     sent_count += 1
             return sent_count
 
@@ -1574,7 +1758,14 @@ class ChatService:
                 current_time=current_time,
                 allowed_capabilities=frozenset(),
                 max_tool_calls=config.agent.max_tool_calls,
-                max_model_requests=config.agent.max_model_requests,
+                max_model_requests=(
+                    min(
+                        config.agent.max_model_requests,
+                        runtime.max_model_requests_override,
+                    )
+                    if runtime.max_model_requests_override is not None
+                    else config.agent.max_model_requests
+                ),
             ),
             _ChatAgentBackend(self, runtime),
         )
@@ -1733,57 +1924,63 @@ class ChatService:
         self,
         inbound: InboundMessage,
         content: str,
-        send_result: Any,
+        receipt: OutboundSendReceipt,
         *,
         reply_to_message_id: str | None = None,
-    ) -> None:
-        await self._record_outbound_message(
+    ) -> bool:
+        return await self._record_outbound_message(
             inbound,
             OutboundMessage(text=content, reply_to_message_id=reply_to_message_id),
-            send_result,
+            receipt,
         )
 
     async def _record_outbound_message(
         self,
         inbound: InboundMessage,
         message: OutboundMessage,
-        send_result: Any,
-    ) -> None:
+        receipt: OutboundSendReceipt,
+    ) -> bool:
         """Persist text and ledger-safe media metadata after confirmed delivery."""
 
-        message_id: str | None = None
-        if isinstance(send_result, str | int):
-            message_id = str(send_result)
-        elif isinstance(send_result, dict):
-            raw_id = send_result.get("message_id") or send_result.get("id")
-            if raw_id is not None:
-                message_id = str(raw_id)
-        platform_message_id = message_id or f"out-{uuid.uuid4()}"
+        if not isinstance(receipt, OutboundSendReceipt):
+            raise TypeError("confirmed outbound recording requires a delivery receipt")
+        platform_message_id = receipt.platform_message_id
         media_segments = tuple(self._ledger_media_segment(media) for media in message.media)
         content = self._ledger_content(message)
-        await self._ledger.append(
-            bot_user_id=inbound.bot_user_id or "unknown-bot",
-            platform_message_id=platform_message_id,
-            scope_type=inbound.scope_type,
-            sender_user_id=inbound.bot_user_id or "unknown-bot",
-            direction="outbound",
-            content=content,
-            segments=(
-                *(
-                    ({"type": "reply", "data": {"id": message.reply_to_message_id}},)
-                    if message.reply_to_message_id
-                    else ()
+        recorded = False
+        try:
+            await self._ledger.append(
+                bot_user_id=inbound.bot_user_id or "unknown-bot",
+                platform_message_id=platform_message_id,
+                scope_type=inbound.scope_type,
+                sender_user_id=inbound.bot_user_id or "unknown-bot",
+                direction="outbound",
+                content=content,
+                segments=(
+                    *(
+                        ({"type": "reply", "data": {"id": message.reply_to_message_id}},)
+                        if message.reply_to_message_id
+                        else ()
+                    ),
+                    *(({"type": "text", "data": {"text": message.text}},) if message.text else ()),
+                    *media_segments,
                 ),
-                *(({"type": "text", "data": {"text": message.text}},) if message.text else ()),
-                *media_segments,
-            ),
-            group_id=inbound.group_id,
-            private_peer_user_id=(
-                inbound.sender.user_id if inbound.scope_type is ScopeType.PRIVATE else None
-            ),
-            reply_to_message_id=message.reply_to_message_id,
-            sender_is_bot=True,
-        )
+                group_id=inbound.group_id,
+                private_peer_user_id=(
+                    inbound.sender.user_id if inbound.scope_type is ScopeType.PRIVATE else None
+                ),
+                reply_to_message_id=message.reply_to_message_id,
+                sender_is_bot=True,
+            )
+            recorded = True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "confirmed_outbound_record_failed transport=%s exception_category=%s",
+                receipt.transport,
+                type(exc).__name__,
+            )
         await publish_notification(
             self._event_publisher,
             EventName.REPLY_SENT,
@@ -1792,19 +1989,44 @@ class ChatService:
                 "platform_message_id": platform_message_id,
                 "scope_type": inbound.scope_type.value,
                 "character_count": len(content),
-                "recorded": True,
+                "delivered": True,
+                "recorded": recorded,
             },
         )
+        return recorded
 
     async def record_confirmed_outbound(
         self,
         inbound: InboundMessage,
         message: OutboundMessage,
-        send_result: Any,
-    ) -> None:
+        receipt: OutboundSendReceipt,
+    ) -> bool:
         """Share the same ledger boundary with deterministic media commands."""
 
-        await self._record_outbound_message(inbound, message, send_result)
+        return await self._record_outbound_message(inbound, message, receipt)
+
+    @staticmethod
+    def _emoji_preparation_failure_text(
+        effect: PendingReplyEffect,
+        result: EmojiPreparationResult,
+    ) -> str:
+        if effect.mode is EmojiReplyMode.OPTIONAL and not effect.explicit_request:
+            return ""
+        if (
+            effect.mode is not EmojiReplyMode.EMOJI_ONLY
+            and effect.placement is not EmojiPlacement.ONLY
+        ):
+            return "表情没发出去，先用文字回你。"
+        if result.status is EmojiPreparationStatus.NO_CANDIDATE:
+            return "我这边暂时没有可用的表情。"
+        if result.status is EmojiPreparationStatus.REPOSITORY_UNAVAILABLE:
+            return "表情没发出去，表情库暂时不可用。"
+        if result.status in {
+            EmojiPreparationStatus.ASSET_MISSING,
+            EmojiPreparationStatus.STORAGE_MISSING,
+        }:
+            return "这张表情暂时无法读取，我先不乱发。"
+        return "表情没发出去，表情功能刚才出了点问题。"
 
     @staticmethod
     def _ledger_content(message: OutboundMessage) -> str:

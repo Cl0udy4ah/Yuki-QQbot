@@ -6,7 +6,9 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from qq_ai_bot.domain.messages import OutboundMessage
 
 
 class _FrozenModel(BaseModel):
@@ -117,6 +119,36 @@ class EmojiSelectionResult(_FrozenModel):
     score: float = 0
     reason: str = ""
     selected_by: Literal["none", "coarse", "vision"] = "none"
+
+
+class EmojiPreparationStatus(StrEnum):
+    """Stable outcomes at the optional reply-effect infrastructure boundary."""
+
+    READY = "ready"
+    NO_CANDIDATE = "no_candidate"
+    REPOSITORY_UNAVAILABLE = "repository_unavailable"
+    ASSET_MISSING = "asset_missing"
+    STORAGE_MISSING = "storage_missing"
+    UNEXPECTED_FAILURE = "unexpected_failure"
+
+
+class EmojiPreparationResult(_FrozenModel):
+    """A prepared emoji message or one sanitized, recoverable failure."""
+
+    status: EmojiPreparationStatus
+    message: OutboundMessage | None = None
+    emoji_id: str | None = None
+    reason_code: str = Field(min_length=1, max_length=64)
+    retryable: bool = False
+
+    @model_validator(mode="after")
+    def _validate_ready_payload(self) -> EmojiPreparationResult:
+        if self.status is EmojiPreparationStatus.READY:
+            if self.message is None or not self.emoji_id:
+                raise ValueError("ready emoji preparation requires message and emoji_id")
+        elif self.message is not None or self.emoji_id is not None:
+            raise ValueError("failed emoji preparation cannot contain media")
+        return self
 
 
 class EmojiIntent(StrEnum):

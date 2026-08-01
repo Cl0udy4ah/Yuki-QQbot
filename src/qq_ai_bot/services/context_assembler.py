@@ -50,6 +50,7 @@ class AssembledContext:
 
     metadata_payload: dict[str, Any]
     history_messages: tuple[ChatMessage, ...]
+    recent_delivery: tuple[dict[str, object], ...]
     current_time: TimeContext
     current_relationship: RelationshipSnapshot | None
     metrics: ContextMetrics
@@ -239,10 +240,58 @@ class ContextAssembler:
         return AssembledContext(
             metadata_payload=metadata_payload,
             history_messages=history_messages,
+            recent_delivery=self._recent_delivery(recent),
             current_time=current_time,
             current_relationship=current_relationship,
             metrics=metrics,
         )
+
+    @staticmethod
+    def _recent_delivery(
+        recent: tuple[EventRecord, ...],
+    ) -> tuple[dict[str, object], ...]:
+        """Project confirmed outbound delivery metadata for the exact conversation."""
+
+        delivered: list[dict[str, object]] = []
+        for row in reversed(recent):
+            if row.direction != "outbound" or not row.platform_message_id.strip():
+                continue
+            # Historical synthetic ids predate strict transport receipts and
+            # cannot prove that a platform accepted the message.
+            if row.platform_message_id.startswith(("out-", "agent-out-", "plugin-out-")):
+                continue
+            media_kinds: list[str] = []
+            has_text = False
+            for segment in row.segments:
+                segment_type = str(segment.get("type", ""))
+                data = segment.get("data")
+                if segment_type == "text":
+                    has_text = has_text or bool(
+                        isinstance(data, dict) and str(data.get("text", "")).strip()
+                    )
+                elif segment_type == "record":
+                    if "voice" not in media_kinds:
+                        media_kinds.append("voice")
+                elif segment_type == "image":
+                    kind = (
+                        "emoji_image"
+                        if isinstance(data, dict) and bool(str(data.get("emoji_id", "")).strip())
+                        else "image"
+                    )
+                    if kind not in media_kinds:
+                        media_kinds.append(kind)
+            delivered.append(
+                {
+                    "platform_message_id": row.platform_message_id,
+                    "sent_at": row.occurred_at.isoformat(),
+                    "has_text": has_text,
+                    "media_kinds": media_kinds,
+                }
+            )
+            if len(delivered) >= 3:
+                break
+        delivered.reverse()
+        return tuple(delivered)
 
     async def _related_people(
         self,

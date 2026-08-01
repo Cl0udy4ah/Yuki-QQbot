@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import logging
 import time
-import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -26,7 +25,7 @@ from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode, ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
+from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage, OutboundSendReceipt
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.collector import EmojiCollector
 from qq_ai_bot.emoji.worker import EmojiWorker
@@ -700,7 +699,7 @@ class MessageProcessor:
             logger.warning("llm_failure exception_category=%s", type(exc).__name__)
             sent = await self._send_text(message, sender, "AI 服务暂时不可用，请稍后重试。")
             return ProcessResult(True, int(sent), "llm_failure")
-        except (OSError, RuntimeError) as exc:
+        except (OSError, RuntimeError, TypeError) as exc:
             logger.error("message_send_or_storage_failure", exc_info=exc)
             return ProcessResult(True, reason="send_or_storage_failure")
 
@@ -990,43 +989,27 @@ class MessageProcessor:
         record: bool = True,
     ) -> bool:
         try:
-            result = await sender.send(OutboundMessage(text=text))
-            message_id: str | None = None
-            if isinstance(result, str | int):
-                message_id = str(result)
-            elif isinstance(result, dict):
-                raw_id = result.get("message_id") or result.get("id")
-                if raw_id is not None:
-                    message_id = str(raw_id)
-            platform_message_id = message_id or f"out-{uuid.uuid4()}"
+            outbound = OutboundMessage(text=text)
+            receipt = await sender.send(outbound)
+            if not isinstance(receipt, OutboundSendReceipt):
+                raise TypeError("outbound sender returned no delivery receipt")
             if record:
-                await self._ledger.append(
-                    bot_user_id=inbound.bot_user_id or "unknown-bot",
-                    platform_message_id=platform_message_id,
-                    scope_type=inbound.scope_type,
-                    sender_user_id=inbound.bot_user_id or "unknown-bot",
-                    direction="outbound",
-                    content=text,
-                    segments=({"type": "text", "data": {"text": text}},),
-                    group_id=inbound.group_id,
-                    private_peer_user_id=(
-                        inbound.sender.user_id if inbound.scope_type is ScopeType.PRIVATE else None
-                    ),
-                    sender_is_bot=True,
+                await self._chat.record_confirmed_outbound(inbound, outbound, receipt)
+            else:
+                await publish_notification(
+                    self._event_publisher,
+                    EventName.REPLY_SENT,
+                    {
+                        "trigger_message_id": inbound.message_id,
+                        "platform_message_id": receipt.platform_message_id,
+                        "scope_type": inbound.scope_type.value,
+                        "character_count": len(text),
+                        "delivered": True,
+                        "recorded": False,
+                    },
                 )
-            await publish_notification(
-                self._event_publisher,
-                EventName.REPLY_SENT,
-                {
-                    "trigger_message_id": inbound.message_id,
-                    "platform_message_id": platform_message_id,
-                    "scope_type": inbound.scope_type.value,
-                    "character_count": len(text),
-                    "recorded": record,
-                },
-            )
             return True
-        except (OSError, RuntimeError) as exc:
+        except (OSError, RuntimeError, TypeError) as exc:
             logger.error("outbound_send_failed", exc_info=exc)
             return False
 
@@ -1037,8 +1020,10 @@ class MessageProcessor:
         outbound: OutboundMessage,
     ) -> bool:
         try:
-            result = await sender.send(outbound)
-            await self._chat.record_confirmed_outbound(inbound, outbound, result)
+            receipt = await sender.send(outbound)
+            if not isinstance(receipt, OutboundSendReceipt):
+                raise TypeError("outbound sender returned no delivery receipt")
+            await self._chat.record_confirmed_outbound(inbound, outbound, receipt)
             return True
         except (OSError, RuntimeError) as exc:
             logger.error("outbound_media_send_failed", exc_info=exc)

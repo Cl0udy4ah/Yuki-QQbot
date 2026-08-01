@@ -122,6 +122,20 @@ class PromptComposer:
                     },
                 )
             )
+        if context.recent_delivery:
+            contributions.append(
+                PromptContribution(
+                    id="runtime.recent_delivery",
+                    channel=PromptChannel.RUNTIME,
+                    trust=PromptTrust.TRUSTED,
+                    priority=94,
+                    payload={
+                        "recent_delivery": list(context.recent_delivery),
+                        "purpose": "delivery_status_only",
+                    },
+                    required=True,
+                )
+            )
         if context.metadata_payload:
             contributions.append(
                 PromptContribution(

@@ -14,6 +14,7 @@ from qq_ai_bot.domain.messages import (
     ChatResponse,
     InboundMessage,
     OutboundMessage,
+    OutboundSendReceipt,
     SenderIdentity,
     ToolCall,
     ToolFunction,
@@ -114,8 +115,8 @@ class ToolGatewaySender(MemorySender):
         self.api_calls.append((action, params))
         return {"status": "ok"}
 
-    async def send(self, message: OutboundMessage) -> None:
-        await super().send(message)
+    async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
+        return await super().send(message)
 
 
 class WebThenOneBotLLM(LLMProvider):

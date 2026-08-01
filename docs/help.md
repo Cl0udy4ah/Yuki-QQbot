@@ -1,5 +1,9 @@
 # Yuki-QQbot
 
+> **3.0.2 表情可靠性补丁：**修复群聊表情作用域 SQL、Planner 超时放大和媒体“准备成功即
+> 发送成功”的误判。明确索要表情时不调用 Planner LLM 或 Chat Agent；只有 OneBot 真实回执
+> 会进入成功账本。失败时返回确定性短文字，不重试图片。本补丁无数据库迁移，head 仍为 `0024`。
+
 > **3.0.0 正式版：**Memory V2 六阶段已收口。正式版不新增生产数据库迁移，Alembic head
 > 仍为 `0024`；新增版本化合成质量基准、严格污染门禁、内容无关生产审计、指纹保护的显式
 > hygiene 和契约快照。升级或启动不会运行基准、扫描历史或自动修复数据库。
@@ -57,7 +61,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.0.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 3.0.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。

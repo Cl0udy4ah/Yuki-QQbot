@@ -28,6 +28,8 @@ from qq_ai_bot.admin.models import (
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode, EmojiReplyPlan
+from qq_ai_bot.emoji.request_detector import EmojiRequestDetector
+from qq_ai_bot.llm.base import LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.enums import MemoryContextMode
 from qq_ai_bot.planner import (
@@ -264,6 +266,55 @@ def _valid_plan_payload(**updates: object) -> dict[str, object]:
     }
     payload.update(updates)
     return payload
+
+
+@pytest.mark.parametrize(
+    ("text", "standalone"),
+    (
+        ("@Yuki 发个表情", True),
+        ("来个开心的表情包", True),
+        ("给我发张梗图", True),
+        ("这个表情是什么意思", False),
+        ("不要发表情", False),
+        ("回答问题并带一个表情", False),
+        ("给图片加表情", False),
+    ),
+)
+def test_emoji_request_detector_is_conservative(text: str, standalone: bool) -> None:
+    hint = EmojiRequestDetector().detect(text)
+    assert hint.standalone_request is standalone
+    assert hint.explicit_request is standalone
+
+
+@pytest.mark.asyncio
+async def test_standalone_emoji_uses_deterministic_planner_without_provider() -> None:
+    provider = FakePlannerProvider(TurnPlan(**_valid_plan_payload()))
+    observability = PlannerObservability()
+    service = PlannerService(provider=provider, observability=observability)
+    planner_input = _planner_input(text="发个开心的表情").model_copy(
+        update={
+            "emoji": PlannerEmojiContext(
+                enabled=True,
+                available=True,
+                explicit_request=True,
+                standalone_request=True,
+                goal="开心",
+            )
+        }
+    )
+
+    outcome = await service.plan(planner_input, runtime=_runtime(), turn_version=1)
+
+    assert provider.inputs == []
+    assert outcome.planned_turn.planner_used is False
+    assert outcome.planned_turn.plan.reason_code is PlannerReasonCode.DETERMINISTIC_EFFECT_REQUEST
+    assert outcome.planned_turn.plan.emoji.mode is EmojiReplyMode.EMOJI_ONLY
+    assert outcome.planned_turn.plan.tool_mode is ToolMode.NONE
+    assert outcome.planned_turn.plan.tool_selection.scope_ids == ()
+    assert outcome.planned_turn.plan.memory_context.mode is MemoryContextMode.NONE
+    snapshot = observability.snapshot()
+    assert snapshot.deterministic_effects == 1
+    assert snapshot.total_requests == 0
 
 
 def test_planner_models_reject_unknown_fields_and_mark_untrusted_text() -> None:
@@ -910,7 +961,40 @@ async def test_invalid_planner_json_is_not_retried_and_falls_back_safely() -> No
     plan = await provider.plan(_planner_input(), runtime=_runtime())
     assert len(llm.requests) == 1
     assert plan.decision is PlannerDecision.REPLY
-    assert plan.reason_code is PlannerReasonCode.PLANNER_FALLBACK
+    assert plan.reason_code is PlannerReasonCode.PLANNER_INVALID_RESPONSE_FALLBACK
+
+
+@pytest.mark.asyncio
+async def test_planner_provider_failure_falls_back_without_tools() -> None:
+    def unavailable(_request: object) -> str:
+        raise LLMUnavailableError("provider unavailable")
+
+    llm = FakeLLMProvider(unavailable)
+    provider = LLMPlannerProvider(llm)
+    plan = await provider.plan(_planner_input(), runtime=_runtime())
+    assert len(llm.requests) == 1
+    assert plan.reason_code is PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK
+    assert plan.tool_mode is ToolMode.NONE
+    assert plan.tool_selection.scope_ids == ()
+    assert plan.desired_messages == 1
+
+
+@pytest.mark.asyncio
+async def test_planner_timeout_has_distinct_narrow_fallback() -> None:
+    llm = FakeLLMProvider(
+        lambda _request: json.dumps(_valid_plan_payload()),
+        delay_seconds=0.1,
+    )
+    provider = LLMPlannerProvider(llm)
+    runtime = replace(
+        _runtime(),
+        planner=replace(_runtime().planner, timeout_seconds=0.001),
+    )
+    plan = await provider.plan(_planner_input(), runtime=runtime)
+    assert plan.reason_code is PlannerReasonCode.PLANNER_TIMEOUT_FALLBACK
+    assert plan.tool_mode is ToolMode.NONE
+    assert plan.tool_selection.scope_ids == ()
+    assert plan.desired_messages == 1
 
 
 @pytest.mark.asyncio
@@ -929,7 +1013,8 @@ async def test_admitted_autonomous_group_failure_falls_back_to_reply() -> None:
     )
     plan = await provider.plan(planner_input, runtime=_runtime())
     assert plan.decision is PlannerDecision.REPLY
-    assert plan.tool_mode is ToolMode.INHERIT
+    assert plan.tool_mode is ToolMode.NONE
+    assert plan.tool_selection.scope_ids == ()
 
 
 @pytest.mark.asyncio

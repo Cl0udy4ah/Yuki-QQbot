@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
@@ -15,7 +16,8 @@ from qq_ai_bot.memory.models import MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repositories import PeopleRepository
+from qq_ai_bot.persistence.repositories import EventLedgerRepository, PeopleRepository
+from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.context_assembler import ContextAssembler
 
 
@@ -194,3 +196,106 @@ async def test_only_facts_surviving_context_budget_are_marked_used(database: Dat
     assert fact_ids == (selected.id,)
     assert selected_row is not None and selected_row.last_used_at is not None
     assert omitted_row is not None and omitted_row.last_used_at is None
+
+
+def test_recent_delivery_projects_only_confirmed_transport_metadata() -> None:
+    now = datetime.now(UTC)
+
+    def event(
+        event_id: int,
+        platform_id: str,
+        segments: tuple[dict[str, object], ...],
+        *,
+        direction: str = "outbound",
+    ) -> EventRecord:
+        return EventRecord(
+            id=event_id,
+            bot_user_id="9000",
+            platform_message_id=platform_id,
+            scope_type=ScopeType.GROUP,
+            sender_user_id="9000",
+            direction=direction,
+            content="模型可能声称发过表情，但这里不能作为证据",
+            visual_summary="不应投影的图片描述",
+            segments=segments,
+            occurred_at=now,
+            group_id="2001",
+        )
+
+    recent = ContextAssembler._recent_delivery(
+        (
+            event(1, "out-fake", ({"type": "image", "data": {"emoji_id": "fake"}},)),
+            event(2, "real-text", ({"type": "text", "data": {"text": "你好"}},)),
+            event(
+                3,
+                "real-emoji",
+                ({"type": "image", "data": {"emoji_id": "secret-id", "summary": "秘密"}},),
+            ),
+            event(4, "real-voice", ({"type": "record", "data": {"summary": "秘密"}},)),
+            event(5, "real-image", ({"type": "image", "data": {"emoji_id": ""}},)),
+        )
+    )
+
+    assert [item["platform_message_id"] for item in recent] == [
+        "real-emoji",
+        "real-voice",
+        "real-image",
+    ]
+    assert [item["media_kinds"] for item in recent] == [
+        ["emoji_image"],
+        ["voice"],
+        ["image"],
+    ]
+    serialized = json.dumps(recent, ensure_ascii=False)
+    assert "secret-id" not in serialized
+    assert "秘密" not in serialized
+    assert "模型可能" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_recent_delivery_is_trusted_and_exact_conversation_only(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    for group_id, platform_id in (("2001", "same-group"), ("2002", "other-group")):
+        await ledger.append(
+            bot_user_id="9000",
+            platform_message_id=platform_id,
+            scope_type=ScopeType.GROUP,
+            sender_user_id="9000",
+            direction="outbound",
+            content="",
+            segments=(
+                {
+                    "type": "image",
+                    "data": {"emoji_id": f"hidden-{group_id}", "summary": "不可信描述"},
+                },
+            ),
+            group_id=group_id,
+            private_peer_user_id=None,
+            sender_is_bot=True,
+        )
+    harness = build_harness(database, make_settings(database.url))
+    await harness.groups.set_enabled("2001", True)
+    await harness.processor.handle(
+        InboundMessage(
+            message_id="delivery-context-current",
+            event_type="message:group:normal",
+            scope_type=ScopeType.GROUP,
+            sender=SenderIdentity(user_id="1001"),
+            text="刚才发了吗",
+            group_id="2001",
+            mentions_bot=True,
+            bot_user_id="9000",
+        ),
+        MemorySender(),
+    )
+
+    request = harness.provider.requests[0]  # type: ignore[attr-defined]
+    prompt = "\n".join(message.content or "" for message in request.messages)
+    assert '"id":"runtime.recent_delivery"' in prompt
+    assert "same-group" in prompt
+    assert "other-group" not in prompt
+    assert "emoji_image" in prompt
+    assert "hidden-2001" not in prompt
+    assert "不可信描述" not in prompt

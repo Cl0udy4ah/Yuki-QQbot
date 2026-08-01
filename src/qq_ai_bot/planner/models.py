@@ -121,6 +121,10 @@ class PlannerReasonCode(StrEnum):
     INSUFFICIENT_CONTEXT = "insufficient_context"
     WAIT_FOR_MORE_CONTEXT = "wait_for_more_context"
     PLANNER_FALLBACK = "planner_fallback"
+    DETERMINISTIC_EFFECT_REQUEST = "deterministic_effect_request"
+    PLANNER_TIMEOUT_FALLBACK = "planner_timeout_fallback"
+    PLANNER_INVALID_RESPONSE_FALLBACK = "planner_invalid_response_fallback"
+    PLANNER_PROVIDER_ERROR_FALLBACK = "planner_provider_error_fallback"
 
 
 class MemoryContextReasonCode(StrEnum):
@@ -199,6 +203,9 @@ class PlannerEmojiContext(_StrictPlannerModel):
         default=False,
         description="后端是否确认本轮能够从已采用表情池选择并发送图片。",
     )
+    explicit_request: bool = False
+    standalone_request: bool = False
+    goal: str = Field(default="", max_length=300)
 
 
 class ReplyNecessitySnapshot(_StrictPlannerModel):

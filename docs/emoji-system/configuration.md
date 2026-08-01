@@ -13,3 +13,6 @@
 `selector_candidate_count` 默认是 3。日常 `optional` 表情直接采用本地描述和标签评分第一名；只有明确索要表情且前两名分差不超过 `selector_score_gap` 时才调用视觉精选，并受 `selector_timeout_seconds` 短超时约束。视觉调用超时或失败会立即回退本地第一名。
 
 `pool_capacity` 未设置表示无限；两个 cooldown 都允许 `0` 表示关闭。`storage_root` 和预览尺寸是启动配置。不存在 `emoji.review_enabled`。
+
+3.0.2 没有新增配置项，也没有新增迁移。确定性表情意图识别、真实回执校验和失败文字属于固定
+正确性契约，不能通过降低 Planner 超时或放宽工具范围关闭。

@@ -7,6 +7,8 @@ import logging
 from collections import deque
 from dataclasses import dataclass, field
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode
@@ -58,6 +60,13 @@ class AutonomousGroupService:
         self._coordinator = turn_coordinator or chat._turn_coordinator
         self._planner_signals = planner_signals
         self._states: dict[str, _GroupState] = {}
+        self._task_failures = 0
+
+    @property
+    def task_failures(self) -> int:
+        """Return the process-local count of observed background task failures."""
+
+        return self._task_failures
 
     def observe(
         self,
@@ -66,19 +75,43 @@ class AutonomousGroupService:
         sender: OutboundSender,
         turn_token: TurnToken | None = None,
     ) -> None:
-        if message.group_id is None:
+        group_id = message.group_id
+        if group_id is None:
             return
-        state = self._states.setdefault(message.group_id, _GroupState())
+        state = self._states.setdefault(group_id, _GroupState())
         state.messages.append(message)
         state.profiles.append(profile)
         state.senders.append(sender)
         state.latest_token = turn_token
         if state.task is not None and not state.task.done():
             state.task.cancel()
-        state.task = asyncio.create_task(
-            self._after_silence(message.group_id),
-            name=f"planner-group-{message.group_id}",
+        task = asyncio.create_task(
+            self._after_silence(group_id),
+            name=f"planner-group-{group_id}",
         )
+        state.task = task
+
+        def task_done(completed: asyncio.Task[None]) -> None:
+            self._task_done(group_id, completed)
+
+        task.add_done_callback(task_done)
+
+    def _task_done(self, group_id: str, completed: asyncio.Task[None]) -> None:
+        """Own a detached task, consume its outcome, and release its state reference."""
+
+        state = self._states.get(group_id)
+        if state is not None and state.task is completed:
+            state.task = None
+        try:
+            completed.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            self._task_failures += 1
+            logger.exception(
+                "autonomous_group_task_failed exception_category=%s",
+                type(exc).__name__,
+            )
 
     async def _after_silence(self, group_id: str) -> None:
         try:
@@ -210,8 +243,18 @@ class AutonomousGroupService:
             TurnSupersededError,
         ):
             return
+        except SQLAlchemyError as exc:
+            self._task_failures += 1
+            logger.warning(
+                "autonomous_group_task_failed exception_category=%s",
+                type(exc).__name__,
+            )
         except (LLMError, OSError, RuntimeError, ValueError, TypeError) as exc:
-            logger.warning("planner_group_failed exception_category=%s", type(exc).__name__)
+            self._task_failures += 1
+            logger.warning(
+                "autonomous_group_task_failed exception_category=%s",
+                type(exc).__name__,
+            )
 
     async def wait_until_idle(self, group_id: str) -> None:
         state = self._states.get(group_id)
