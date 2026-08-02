@@ -20,6 +20,7 @@
 - 新增启动期静态 `PLUGIN_DIRECT_COMMAND_BINDINGS`，把受审阅前缀绑定到已批准、已启用、运行中的 `USER` 插件命令；拒绝空白、控制字符、斜杠、AI 前缀和任意互相重叠的前缀。
 - 直达匹配只新增明确触发信号；群/私聊准入、持久消息去重、入站账本、命令限流、图片写隔离、插件权限、真实调用上下文和超时保持不变。
 - configured-but-inactive 绑定失败关闭且不进入 Planner，插件 doctor 输出 active/inactive 原因。
+- 确定性插件直达命令不再进入自动 Memory Worker，避免把 `*签到` 等游戏语法误抽取为长期记忆。
 
 ### Plugin API 与养鲲游戏
 

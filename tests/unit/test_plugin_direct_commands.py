@@ -12,6 +12,7 @@ from typing import cast
 
 import pytest
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import func, select
 from tests.conftest import MemorySender, build_harness, make_settings
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -24,6 +25,7 @@ from qq_ai_bot.domain.messages import (
     SenderIdentity,
 )
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.models import MemoryJobModel
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.plugin_host.command_adapter import PluginCommandAdapter
 from qq_ai_bot.plugin_host.direct_command_router import (
@@ -351,6 +353,11 @@ async def test_processor_direct_command_obeys_admission_dedup_ledger_and_image_i
     assert disabled.reason == "group_disabled"
     assert image.reason == "image_write_isolated"
     assert len(service.calls) == 1
+    async with database.sessions() as session:
+        memory_job_count = int(
+            await session.scalar(select(func.count()).select_from(MemoryJobModel)) or 0
+        )
+    assert memory_job_count == 0
 
 
 @pytest.mark.asyncio
