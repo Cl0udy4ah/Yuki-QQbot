@@ -82,6 +82,37 @@ async def test_sender_encodes_local_audio_only_at_onebot_boundary(tmp_path: Path
     assert payload[0].data["file"] == "base64://" + base64.b64encode(audio).decode("ascii")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("emoji_id", "expected_sub_type"), (("emoji-1", 1), (None, None)))
+async def test_sender_marks_only_emoji_images_with_onebot_sub_type(
+    emoji_id: str | None,
+    expected_sub_type: int | None,
+) -> None:
+    image = b"GIF89a"
+    bot = AsyncMock()
+    bot.send.return_value = {"message_id": 10004}
+    sender = OneBotSender(cast(Bot, bot), cast(MessageEvent, object()))
+
+    await sender.send(
+        OutboundMessage(
+            media=(
+                OutboundMedia(
+                    kind=AttachmentKind.IMAGE,
+                    content=image,
+                    mime_type="image/gif",
+                    emoji_id=emoji_id,
+                ),
+            )
+        )
+    )
+
+    payload = bot.send.await_args.kwargs["message"]
+    assert isinstance(payload, Message)
+    assert payload[0].type == "image"
+    assert payload[0].data["file"] == "base64://" + base64.b64encode(image).decode("ascii")
+    assert payload[0].data.get("sub_type") == expected_sub_type
+
+
 class _ReceiptObject:
     def __init__(self, message_id: object) -> None:
         self.message_id = message_id

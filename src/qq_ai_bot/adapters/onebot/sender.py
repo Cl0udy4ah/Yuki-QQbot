@@ -49,7 +49,10 @@ class OneBotSender:
                 if media.kind is AttachmentKind.IMAGE:
                     content = media.content
                     encoded = base64.b64encode(content).decode("ascii")
-                    payload += MessageSegment.image(file=f"base64://{encoded}")
+                    segment = MessageSegment.image(file=f"base64://{encoded}")
+                    if media.emoji_id:
+                        segment.data["sub_type"] = 1
+                    payload += segment
                 elif media.kind is AttachmentKind.AUDIO:
                     if media.local_path is None:
                         raise ValueError("audio media is missing its local file")

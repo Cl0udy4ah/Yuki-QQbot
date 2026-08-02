@@ -142,7 +142,12 @@ class OneBotProactiveGateway:
         if (user_id is None) == (group_id is None):
             raise ProactiveGatewayError("invalid_emoji_target")
         encoded = base64.b64encode(content).decode("ascii")
-        message = [{"type": "image", "data": {"file": f"base64://{encoded}"}}]
+        message = [
+            {
+                "type": "image",
+                "data": {"file": f"base64://{encoded}", "sub_type": 1},
+            }
+        ]
         action = "send_group_msg" if group_id is not None else "send_private_msg"
         target_key = "group_id" if group_id is not None else "user_id"
         target_value = group_id if group_id is not None else user_id
