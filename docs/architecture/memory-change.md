@@ -10,9 +10,11 @@
   或事件 ID，后端只接受当前发送者、当前群、真实 mention 和 reply author 别名。
 - `MemoryMutationService` 统一执行主体解析、权限、证据、版本、冲突、事务、回执和 Embedding
   调度；Agent、生产 Memory Worker、确定性命令、管理员 Action、Plugin Memory Facade 和有界
-  lifecycle reflection 均接入该边界。
+  lifecycle reflection 与可恢复后台反思 Worker 均接入该边界。
 - Alembic `0025` 新增 `memory_mutation_receipts`，分别保存请求幂等指纹和不含 operation 的
   claim 指纹；Agent 与 Worker 对同一事件、目标、key、内容的判断只提交一次。
+- Alembic `0026` 新增 `memory_reflection_jobs`；后台有界扫描重复、争议和归属异常，持久领取、
+  退避重试并恢复超时任务，实际更改仍只能经 `MemoryMutationService` 提交。
 - 普通成员可影响本人 `person/person_group`、当前 `group` 和当前群他人的 `person_group`；
   第三方来源始终记录为 `third_party`，高权威冲突可以实际落为 `contest`，不会冒充本人。
 - 读取本轮提及群友时只开放当前群 `person_group`，不再投影对方跨群 `person` 事实。

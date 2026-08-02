@@ -571,6 +571,56 @@ class MemoryMutationReceiptModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MemoryReflectionJobModel(Base):
+    """One restart-safe bounded governance task over existing memory evidence."""
+
+    __tablename__ = "memory_reflection_jobs"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_memory_reflection_jobs_fingerprint"),
+        CheckConstraint(
+            "issue_type IN ('duplicate','contested','attribution')",
+            name="ck_memory_reflection_jobs_issue_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending','processing','completed','failed')",
+            name="ck_memory_reflection_jobs_status",
+        ),
+        CheckConstraint(
+            "attempts >= 0 AND max_attempts BETWEEN 1 AND 20",
+            name="ck_memory_reflection_jobs_attempts",
+        ),
+        Index("ix_memory_reflection_jobs_status_next", "status", "next_attempt_at"),
+        Index("ix_memory_reflection_jobs_fact_issue", "fact_id", "issue_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    issue_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    related_fact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default="3"
+    )
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class MemoryRebuildRunModel(Base):
     """Administrator-created immutable historical rebuild snapshot."""
 

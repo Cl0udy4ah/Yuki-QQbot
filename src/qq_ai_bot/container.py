@@ -261,6 +261,7 @@ class ApplicationContainer:
         self.memory_rebuild_service = conversation.memory_rebuild_service
         self.memory_rebuild_worker = conversation.memory_rebuild_worker
         self.memory_maintenance_worker = conversation.memory_maintenance_worker
+        self.memory_reflection_worker = conversation.memory_reflection_worker
         self.relationship_worker = conversation.relationship_worker
         admin = AdminModule(
             settings=settings,

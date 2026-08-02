@@ -21,6 +21,8 @@ Memory V2 将长期记忆拆为事实、证据、逐事件提取任务和可重�
   创建的可审阅暂存区；它们不构成第二套事实库，只有 commit 才会经共享事实服务写入。
 - `memory_mutation_receipts` 是 Alembic `0025` 创建的统一变更回执，记录触发者、决策者、Bot
   执行者、请求/实际操作、双指纹、事实版本和真实结果；事实写入与回执处于同一事务。
+- `memory_reflection_jobs` 是 Alembic `0026` 创建的可恢复后台治理队列；它只保存内容无关的
+  候选事实 ID、问题类型、领取/重试状态和错误类别，不构成第二套事实库。
 - 三个 partial unique index 保证每个主体、kind、memory_key 最多一个 active fact。
 
 ## 可信身份映射

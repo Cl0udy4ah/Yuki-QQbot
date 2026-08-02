@@ -335,7 +335,8 @@ class MemoryMutationService:
         fact: MemoryFact,
         *,
         operation: MemoryMutationOperation,
-        reason: MemoryInvalidationReason,
+        reason: MemoryInvalidationReason | str,
+        merge_fact_id: int | None = None,
     ) -> MemoryMutationResult:
         """Apply one bounded background-governance decision using existing evidence."""
 
@@ -351,15 +352,17 @@ class MemoryMutationService:
             if evidence.excerpt and evidence.excerpt in event.content
             else event.content[:500]
         )
+        reason_code = reason.value if isinstance(reason, MemoryInvalidationReason) else reason
         return await self.mutate_resolved(
             MemoryMutationRequest(
                 operation=operation,
                 fact_id=fact.id,
+                merge_fact_id=merge_fact_id,
                 target=MemoryMutationTarget(
                     subject_ref="current_speaker",
                     scope_type=fact.scope_type,
                 ),
-                reason=reason.value,
+                reason=reason_code,
                 evidence_quote=quote,
             ),
             MemoryMutationContext(
@@ -370,7 +373,7 @@ class MemoryMutationService:
                     else f"private:{fact.subject_user_id}:reflection"
                 ),
                 turn_origin="memory_reflection",
-                delegation_mode="bounded_background_reflection",
+                delegation_mode=f"reflection:{reason_code}"[:32],
                 trigger_actor_user_id=event.sender_user_id,
                 decision_actor_type=MemoryDecisionActorType.REFLECTION,
                 decision_actor_id="memory_maintenance",
@@ -460,7 +463,7 @@ class MemoryMutationService:
             MemoryDecisionActorType.REFLECTION,
             MemoryDecisionActorType.SYSTEM,
         }:
-            common["decision_namespace"] = context.decision_actor_type.value
+            common["decision_namespace"] = context.delegation_mode
         claim_fingerprint = _fingerprint(common)
         idempotency_key = _fingerprint(
             {

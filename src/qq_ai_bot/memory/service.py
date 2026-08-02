@@ -42,6 +42,10 @@ if TYPE_CHECKING:
     from qq_ai_bot.admin.config_service import RuntimeConfigService
 
 
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 class MemoryEmbeddingScheduler(Protocol):
     async def schedule(self, fact_id: int) -> None: ...
 
@@ -1208,9 +1212,9 @@ class MemoryFactService:
         await self._refresh_evidence(
             target_fact_id,
             confirmed_at=max(
-                source.last_confirmed_at,
-                target.last_confirmed_at,
-                confirmed_at or target.last_confirmed_at,
+                _as_utc(source.last_confirmed_at),
+                _as_utc(target.last_confirmed_at),
+                _as_utc(confirmed_at or target.last_confirmed_at),
             ),
             session=session,
         )

@@ -8,6 +8,8 @@
   contest、merge、reassign 和 update_metadata，并以实际 applied operation/outcome 驱动回复。
 - 新增统一 `MemoryMutationService` 与 Alembic `0025` mutation receipt；Agent 与 Worker 通过
   request/claim 双指纹去重，事实、证据、状态和回执原子提交。
+- 新增 Alembic `0026` 可恢复反思任务；有界扫描重复、争议和 `person_group` 归属异常，支持
+  持久领取、指数退避、进程中断恢复，并只经统一变更服务执行合并或争议标记。
 - 生产 Memory Worker、确定性记忆/偏好命令、管理员 Action、Plugin Memory Facade 和有界
   lifecycle reflection 接入统一变更边界；普通成员可影响本人、当前群及群内人物记忆，同时
   保留 `third_party` 来源。

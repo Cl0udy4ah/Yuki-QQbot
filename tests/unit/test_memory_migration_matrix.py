@@ -18,6 +18,7 @@ MATRIX = {
     "3.0.0b2": "0023",
     "3.0.0rc1": "0024",
     "memory-mutation": "0025",
+    "memory-reflection": "0026",
 }
 
 
@@ -55,8 +56,9 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
     assert "memory_embeddings" in expected_names
     assert "memory_rebuild_runs" in expected_names
     assert "memory_mutation_receipts" in expected_names
+    assert "memory_reflection_jobs" in expected_names
     with sqlite3.connect(fresh) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0025",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0026",)
 
     for label, revision in MATRIX.items():
         database = tmp_path / f"{label}.db"
@@ -66,11 +68,11 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
         assert names == expected_names, label
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "0025",
+                "0026",
             )
             assert connection.execute("SELECT COUNT(*) FROM memory_rebuild_runs").fetchone() == (0,)
 
 
-def test_memory_mutation_adds_exactly_one_production_migration() -> None:
+def test_memory_reflection_is_the_current_production_migration() -> None:
     versions = sorted((ROOT / "migrations/versions").glob("*.py"))
-    assert versions[-1].name == "0025_memory_mutation_receipts.py"
+    assert versions[-1].name == "0026_memory_reflection_jobs.py"

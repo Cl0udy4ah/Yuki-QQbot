@@ -17,6 +17,8 @@ from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.rebuild.worker import MemoryRebuildWorker
+from qq_ai_bot.memory.reflection.repository import MemoryReflectionRepository
+from qq_ai_bot.memory.reflection.worker import MemoryReflectionWorker
 from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.planner.context import PlannerContextBuilder
@@ -67,6 +69,7 @@ class ConversationBundle:
     memory_rebuild_service: MemoryRebuildService
     memory_rebuild_worker: MemoryRebuildWorker
     memory_maintenance_worker: MemoryMaintenanceWorker
+    memory_reflection_worker: MemoryReflectionWorker
     relationship_worker: RelationshipWorker
 
 
@@ -228,6 +231,13 @@ class ConversationModule:
             metrics=persistence.memory_metrics,
             mutations=memory_mutations,
         )
+        memory_reflection_worker = MemoryReflectionWorker(
+            settings=settings,
+            repository=MemoryReflectionRepository(persistence.database),
+            facts=persistence.memories,
+            mutations=memory_mutations,
+            metrics=persistence.memory_metrics,
+        )
         relationship_worker = RelationshipWorker(
             settings=settings,
             jobs=persistence.relationship_jobs,
@@ -253,6 +263,7 @@ class ConversationModule:
             memory_rebuild_service,
             memory_rebuild_worker,
             memory_maintenance_worker,
+            memory_reflection_worker,
             relationship_worker,
         )
 
@@ -272,6 +283,11 @@ class ConversationModule:
             "memory_maintenance_worker",
             start=bundle.memory_maintenance_worker.start,
             close=bundle.memory_maintenance_worker.close,
+        )
+        lifecycle.register(
+            "memory_reflection_worker",
+            start=bundle.memory_reflection_worker.start,
+            close=bundle.memory_reflection_worker.close,
         )
         lifecycle.register(
             "relationship_worker",
