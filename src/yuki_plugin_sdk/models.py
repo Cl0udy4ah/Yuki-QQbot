@@ -112,6 +112,7 @@ class CurrentMessage(StrictModel):
     scope_type: str = Field(pattern=r"^(private|group)$")
     group_id: str | None = Field(default=None, max_length=64)
     text: str = Field(default="", max_length=12_000)
+    mentioned_user_ids: tuple[str, ...] = Field(default=(), max_length=20)
     received_at: datetime
 
 

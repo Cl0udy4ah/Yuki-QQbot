@@ -91,6 +91,32 @@ def test_group_mention_triggers_but_plain_message_does_not() -> None:
     assert not plain.should_respond
 
 
+def test_direct_plugin_trigger_respects_group_and_private_admission() -> None:
+    enabled = evaluate_message(
+        message(scope=ScopeType.GROUP, group_id="2001", text="*签到"),
+        settings(),
+        group_policy=EffectiveGroupPolicy(enabled=True),
+        direct_triggered=True,
+    )
+    disabled_group = evaluate_message(
+        message(scope=ScopeType.GROUP, group_id="2999", text="*签到"),
+        settings(),
+        group_policy=EffectiveGroupPolicy(enabled=False),
+        direct_triggered=True,
+    )
+    disabled_private = evaluate_message(
+        message(scope=ScopeType.PRIVATE, text="*签到"),
+        settings(),
+        private_policy=EffectivePrivatePolicy(enabled=False),
+        direct_triggered=True,
+    )
+
+    assert enabled.should_respond and enabled.reason == "group_triggered"
+    assert not disabled_group.should_respond and disabled_group.reason == "group_disabled"
+    assert not disabled_private.should_respond
+    assert disabled_private.reason == "private_not_allowed"
+
+
 def test_prefix_and_commands_trigger_group() -> None:
     policy = EffectiveGroupPolicy(enabled=True)
     command = evaluate_message(

@@ -28,6 +28,7 @@ from qq_ai_bot.settings_domains import (
     ToolingSettings,
     VisionSettings,
     WebSettings,
+    validate_direct_command_bindings,
 )
 
 
@@ -228,6 +229,7 @@ class Settings(BaseSettings):
     plugin_system_enabled: bool = False
     plugin_directory: Path = Path("plugins")
     plugin_api_version: str = "1.0"
+    plugin_direct_command_bindings: dict[str, str] = Field(default_factory=dict)
     plugin_hook_timeout_seconds: float = 3.0
     plugin_start_timeout_seconds: float = 10.0
     plugin_stop_timeout_seconds: float = 10.0
@@ -466,6 +468,23 @@ class Settings(BaseSettings):
         if {"windows", "system32"}.issubset(lowered):
             raise ValueError("PLUGIN_DIRECTORY must not point to a system directory")
         return path
+
+    @field_validator("plugin_direct_command_bindings")
+    @classmethod
+    def _valid_direct_command_bindings(cls, value: dict[str, str]) -> dict[str, str]:
+        return validate_direct_command_bindings(value)
+
+    @model_validator(mode="after")
+    def _direct_bindings_do_not_shadow_ai_prefix(self) -> Self:
+        ai_prefix = self.ai_prefix.strip()
+        if not ai_prefix:
+            return self
+        for prefix in self.plugin_direct_command_bindings:
+            if prefix.startswith(ai_prefix) or ai_prefix.startswith(prefix):
+                raise ValueError(
+                    f"PLUGIN_DIRECT_COMMAND_BINDINGS must not overlap AI_PREFIX: {prefix!r}"
+                )
+        return self
 
     @model_validator(mode="after")
     def _load_system_prompt_file(self) -> Self:

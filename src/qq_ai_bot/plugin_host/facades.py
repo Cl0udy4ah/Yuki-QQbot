@@ -2832,12 +2832,18 @@ def _facade_error_category(exc: Exception) -> str:
 def _current_message(inbound: InboundMessage | None) -> CurrentMessage | None:
     if inbound is None:
         return None
+    mentioned_user_ids = tuple(
+        dict.fromkeys(
+            user_id for user_id in inbound.mentioned_user_ids if user_id != inbound.bot_user_id
+        )
+    )[:20]
     return CurrentMessage(
         message_id=inbound.message_id,
         sender_user_id=inbound.sender.user_id,
         scope_type=inbound.scope_type.value,
         group_id=inbound.group_id,
         text=inbound.text[:12_000],
+        mentioned_user_ids=mentioned_user_ids,
         received_at=inbound.received_at,
     )
 

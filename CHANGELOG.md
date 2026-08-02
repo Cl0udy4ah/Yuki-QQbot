@@ -15,6 +15,21 @@
   保留 `third_party` 来源。
 - 被提及群友的读取范围收窄为当前群 `person_group`，不向普通成员投影对方跨群 `person`。
 
+### Host 管理的插件直达绑定
+
+- 新增启动期静态 `PLUGIN_DIRECT_COMMAND_BINDINGS`，把受审阅前缀绑定到已批准、已启用、运行中的 `USER` 插件命令；拒绝空白、控制字符、斜杠、AI 前缀和任意互相重叠的前缀。
+- 直达匹配只新增明确触发信号；群/私聊准入、持久消息去重、入站账本、命令限流、图片写隔离、插件权限、真实调用上下文和超时保持不变。
+- configured-but-inactive 绑定失败关闭且不进入 Planner，插件 doctor 输出 active/inactive 原因。
+
+### Plugin API 与养鲲游戏
+
+- `CurrentMessage` 新增默认空元组的可信 `mentioned_user_ids`，按真实消息顺序去重并剔除机器人自身；Feature Registry 新增 `message.current.mentions.v1`。
+- 内置 `io.github.yuanyeyoutao.kun-game`，完整覆盖养成、PVP、BOSS、拍卖、小游戏和 SUPERUSER 管理动作；`*` 只绑定普通 `play`，管理动作仅保留长入口。
+- 游戏规则为无 I/O 的确定性引擎，使用上海消息时间与局部 RNG；状态按群/私聊隔离，以每作用域锁和完整状态 CAS 一次提交。
+- 修复负数和非有限数、重复处罚、属性重复显示、数星星答案、BOSS 排行、拍卖买方覆盖和文本 QQ 目标问题；不提供旧 AstrBot JSON 运行时迁移。
+- 版本提升至 `3.1.0`；Plugin API 仍为 `1.0`，养鲲功能本身不新增迁移；当前开发分支的
+  Alembic head 为 Memory Mutation V2 的 `0026`。
+
 ## 3.0.3 - 2026-08-02
 
 ### 日常表情节奏

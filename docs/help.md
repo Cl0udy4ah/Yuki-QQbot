@@ -1,5 +1,9 @@
 # Yuki-QQbot
 
+> **3.1.0 养鲲插件与安全直达绑定：**新增 Host 静态 `prefix → plugin_id:command` 路由、
+> `CurrentMessage.mentioned_user_ids` 可信投影和内置养鲲游戏。直达命令继续经过现有安全链；
+> 养鲲功能不新增数据库迁移，当前开发分支 Alembic head 为 `0026`。
+
 > **Memory Mutation V2 开发版：**新增唯一的 `memory_change` Agent 写工具和统一
 > `MemoryMutationService`；Alembic head 为 `0026`。Agent、自动 Worker、记忆命令、管理员、
 > 插件和可恢复的有界后台治理共享事务回执与双指纹去重。群友只能读取被提及成员在当前群的
@@ -70,7 +74,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.0.3 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 3.1.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -469,6 +473,8 @@ Planner 同时是聊天语音的唯一决策边界：它从语义识别本轮明
 PLUGIN_SYSTEM_ENABLED=true
 PLUGIN_DIRECTORY=plugins
 PLUGIN_API_VERSION=1.0
+# 示例：让“*签到”等消息直达插件的 play 命令。
+PLUGIN_DIRECT_COMMAND_BINDINGS={"*":"io.github.yuanyeyoutao.kun-game:play"}
 ```
 
 仓库提供无网络 [`com.example.echo`](../examples/plugins/com.example.echo/README.md) 示例：
@@ -482,7 +488,30 @@ uv run qq-ai-bot-cli plugin test plugins/com.example.echo
 
 通过插件 CLI 发现、审阅权限、批准并启用后重启 Bot。Manifest 任何变化都会使批准失效，必须重新审阅。Docker Compose 将 `./plugins` 只读挂载到 `/app/plugins`，插件热更新和在线下载不属于 1.6.0。
 
+`PLUGIN_DIRECT_COMMAND_BINDINGS` 是启动期静态 JSON 对象。前缀不得为空、包含空白或控制字符、以 `/` 开头、与 `AI_PREFIX` 重叠，多个前缀之间也不得相同或互为前缀。目标必须写成 `plugin_id:command`，且只能是已批准、已启用、正在运行的普通用户命令。命中后仍会经过群/私聊准入、消息去重、入站账本、命令限流和插件调用隔离；配置目标暂时不可用时会失败关闭，不会回退 Planner。可用 `qq-ai-bot-cli plugin doctor <plugin_id>` 查看绑定状态。
+
 插件需要连续独立上下文时可使用 `ctx.agent_sessions`。例如跑团插件可以创建 `durable + current_group` 会话；历史只写 `plugin_agent_messages`，不写主 `chat_events`，默认不注入主聊天或人物记忆，也不返回隐藏推理。详见 [独立 AI 会话](plugin-development/service-facades.md#独立-ai-会话跑团示例)。
+
+#### 可选：养鲲游戏
+
+仓库内置 [`io.github.yuanyeyoutao.kun-game`](../plugins/io.github.yuanyeyoutao.kun-game/README.md)。它把
+`*签到`、`*孵化`、PVP、BOSS、拍卖和群小游戏适配为确定性 Yuki 插件命令。按上文完成审批后，
+在 `.env` 增加静态绑定并重启 Bot：
+
+```dotenv
+PLUGIN_DIRECT_COMMAND_BINDINGS={"*":"io.github.yuanyeyoutao.kun-game:play"}
+```
+
+```bash
+docker compose exec bot qq-ai-bot-cli plugin approve io.github.yuanyeyoutao.kun-game
+docker compose exec bot qq-ai-bot-cli plugin enable io.github.yuanyeyoutao.kun-game
+docker compose restart bot
+docker compose exec bot qq-ai-bot-cli plugin doctor io.github.yuanyeyoutao.kun-game
+```
+
+普通 `*` 文本只能进入 `play`；开关、刷新、重置、清除、下架、修改和经济配置只能由真实
+`SUPERUSERS` 使用 `/ai plugin run io.github.yuanyeyoutao.kun-game admin ...`。私聊状态不会与任何群
+同步，旧 AstrBot `groups.json` 也不会在运行时自动导入。完整命令、配置、状态和回滚说明见插件 README。
 
 #### 可选：网易云音乐卡片
 
@@ -1174,6 +1203,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `PLUGIN_SYSTEM_ENABLED` | `false` |
 | `PLUGIN_DIRECTORY` | `plugins` |
 | `PLUGIN_API_VERSION` | `1.0` |
+| `PLUGIN_DIRECT_COMMAND_BINDINGS` | `{}` |
 | `PLUGIN_HOOK_TIMEOUT_SECONDS` | `3` |
 | `PLUGIN_START_TIMEOUT_SECONDS` | `10` |
 | `PLUGIN_STOP_TIMEOUT_SECONDS` | `10` |

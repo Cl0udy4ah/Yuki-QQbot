@@ -30,6 +30,7 @@ from qq_ai_bot.persistence.repositories import (
 from qq_ai_bot.planner.observability import PlannerObservability
 from qq_ai_bot.planner.repository import PlannerRepository
 from qq_ai_bot.plugin_host.command_adapter import PluginCommandAdapter
+from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
 from qq_ai_bot.services.admin.group_admin import GroupAdminService
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
@@ -129,6 +130,26 @@ class CommandService:
             settings=settings,
             automation_service=automation_service,
         )
+
+    async def execute_direct_plugin(
+        self,
+        message: InboundMessage,
+        identity: ConversationIdentity,
+        match: DirectCommandMatch,
+    ) -> CommandExecution:
+        if self._plugin_commands is None:
+            return CommandExecution("插件直达命令当前不可用。")
+        runtime = await self._runtime_config.snapshot(
+            user_id=message.sender.user_id,
+            group_id=message.group_id,
+        )
+        text = await self._plugin_commands.execute_direct(
+            message=message,
+            identity=identity,
+            match=match,
+            runtime=runtime,
+        )
+        return CommandExecution(text)
 
     @staticmethod
     def may_write(command: CommandName, argument: str) -> bool:

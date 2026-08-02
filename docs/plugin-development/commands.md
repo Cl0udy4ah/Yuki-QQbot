@@ -39,3 +39,14 @@ registrar.register_command(
 
 命令只在当前真实消息上下文执行，不能从参数伪造超级管理员或跨群目标。需要发送、配置写入等操作时仍须相应 Facade 权限。
 
+## Host 管理的静态直达绑定
+
+部署者可在启动时把消息前缀直接绑定到一个已注册命令，无需修改插件元数据：
+
+```dotenv
+PLUGIN_DIRECT_COMMAND_BINDINGS={"*":"io.github.example.game:play"}
+```
+
+直达绑定只接受已批准、已启用、正在运行的 `USER` 命令。Host 会拒绝空白、控制字符、以 `/` 开头、与 `AI_PREFIX` 重叠，以及相同或互为前缀的配置。匹配只是明确触发信号；准入、持久去重、入站账本、命令限流、参数校验、真实 `ToolRuntime`、权限、调用作用域和超时都与普通确定性命令相同。
+
+已配置但暂时不可用的绑定会被消费并返回稳定错误，不会落入 Planner。SUPERUSER 管理命令不能绑定直达前缀，应继续使用 `/ai plugin run <plugin_id> <command> ...`。

@@ -36,9 +36,10 @@ class CurrentMessage(StrictModel):
     group_id: str | None
     text: str  # <=12000
     received_at: datetime
+    mentioned_user_ids: tuple[str, ...] = ()  # <=20，按消息中的可信提及顺序去重
 ```
 
-它是脱敏投影，不是原始事件。
+它是脱敏投影，不是原始事件。`mentioned_user_ids` 来自 Host 归一化的真实提及，且不包含机器人自身；需要该字段的插件可调用 `ctx.features.require("message.current.mentions.v1")`。
 
 ## Agent Session
 
@@ -83,4 +84,3 @@ class AgentSessionRunResult(StrictModel):
 ## PlannerSignal / PromptFragment
 
 `PlannerSignal.score_delta` 为 `-10..10`、`confidence` 为 `0..1`；`PromptFragment.content` 最多 16000 字符，但最终还受更小 Host/Manifest 预算限制。详细规则见 [PlannerSignal](../planner-signals.md) 与 [Prompt](../prompts.md)。
-

@@ -16,6 +16,10 @@ from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ConversationIdentity
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.planner.models import ToolMode
+from qq_ai_bot.plugin_host.direct_command_router import (
+    DirectCommandMatch,
+    DirectCommandRouter,
+)
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from qq_ai_bot.plugin_host.manager import PluginManager
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -31,11 +35,13 @@ class PluginCommandAdapter:
         registry: ExtensionRegistry,
         superusers: frozenset[str],
         invocation_scope: Callable[..., object] | None = None,
+        direct_commands: DirectCommandRouter | None = None,
     ) -> None:
         self._manager = manager
         self._registry = registry
         self._superusers = superusers
         self._invocation_scope = invocation_scope
+        self._direct_commands = direct_commands
 
     async def execute(
         self,
@@ -83,10 +89,43 @@ class PluginCommandAdapter:
             return f"已停用插件：{getattr(row, 'plugin_id', target)}。"
         if operation == "doctor":
             report = (await self._manager.doctor(target)).model_dump(mode="json")
-            return "插件诊断：\n" + "\n".join(
+            text = "插件诊断：\n" + "\n".join(
                 f"- {key}: {value}" for key, value in sorted(report.items())
             )
+            bindings = (
+                self._direct_commands.diagnostics(plugin_id=target)
+                if self._direct_commands is not None
+                else ()
+            )
+            if bindings:
+                text += "\n直达绑定：\n" + "\n".join(
+                    f"- {row.prefix} -> {row.command_name}: {row.reason}" for row in bindings
+                )
+            return text
         return "未知插件命令，请使用 /ai plugin list。"
+
+    async def execute_direct(
+        self,
+        *,
+        message: InboundMessage,
+        identity: ConversationIdentity,
+        match: DirectCommandMatch,
+        runtime: RuntimeConfigSnapshot,
+    ) -> str:
+        """Execute one Host-owned direct binding through the normal command scope."""
+
+        if not match.active:
+            return f"插件直达命令暂不可用：{match.reason}。"
+        return await self._execute_registered_command(
+            message=message,
+            identity=identity,
+            plugin_id=match.plugin_id,
+            command_name=match.command_name,
+            raw_arguments=match.arguments,
+            runtime=runtime,
+            allow_alias=False,
+            direct=True,
+        )
 
     async def _run_command(
         self,
@@ -100,12 +139,39 @@ class PluginCommandAdapter:
             return "格式错误：/ai plugin run <plugin_id> <command> [参数]"
         plugin_id, command_name = parts[:2]
         raw_arguments = parts[2] if len(parts) == 3 else ""
+        return await self._execute_registered_command(
+            message=message,
+            identity=identity,
+            plugin_id=plugin_id,
+            command_name=command_name,
+            raw_arguments=raw_arguments,
+            runtime=runtime,
+            allow_alias=True,
+            direct=False,
+        )
+
+    async def _execute_registered_command(
+        self,
+        *,
+        message: InboundMessage,
+        identity: ConversationIdentity,
+        plugin_id: str,
+        command_name: str,
+        raw_arguments: str,
+        runtime: RuntimeConfigSnapshot,
+        allow_alias: bool,
+        direct: bool,
+    ) -> str:
+        if plugin_id not in self._manager.running_plugin_ids:
+            return "插件当前未运行。"
         item = self._registry.get(f"{plugin_id}:{command_name}")
-        if item is None or item.kind is not ExtensionKind.COMMAND:
+        if allow_alias and (item is None or item.kind is not ExtensionKind.COMMAND):
             item = self._registry.resolve_command_alias(command_name)
         if item is None or item.kind is not ExtensionKind.COMMAND or item.plugin_id != plugin_id:
             return "没有找到该插件命令。"
         registration = cast(CommandRegistration, item.registration)
+        if direct and registration.metadata.permission is not PermissionLevel.USER:
+            return "插件直达绑定只能执行普通用户命令。"
         if not _level_allowed(
             registration.metadata.permission,
             message.sender.user_id in self._superusers,
