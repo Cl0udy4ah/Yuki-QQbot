@@ -114,28 +114,26 @@ def validate_turn_plan(
         raise PlannerResponseError(
             f"planner selected unknown tool scopes: {', '.join(unknown_scopes)}"
         )
-    return plan.model_copy(
-        update={
-            "target_user_ids": tuple(
-                dict.fromkeys(target for target in plan.target_user_ids if target in known_targets)
-            ),
-            "reply_to_message_id": normalize_reply_target(
-                plan.reply_to_message_id,
-                planner_input,
-            ),
-            "desired_messages": min(plan.desired_messages, hard_max_messages),
-            "wait_seconds": (
-                min(plan.wait_seconds, max_wait_seconds)
-                if plan.decision is PlannerDecision.WAIT
-                else 0.0
-            ),
-            "tool_selection": plan.tool_selection.model_copy(
-                update={
-                    "scopes": plan.tool_selection.scope_ids,
-                }
-            ),
-        }
-    )
+    updates: dict[str, object] = {
+        "target_user_ids": tuple(
+            dict.fromkeys(target for target in plan.target_user_ids if target in known_targets)
+        ),
+        "reply_to_message_id": normalize_reply_target(
+            plan.reply_to_message_id,
+            planner_input,
+        ),
+        "desired_messages": min(plan.desired_messages, hard_max_messages),
+        "wait_seconds": (
+            min(plan.wait_seconds, max_wait_seconds)
+            if plan.decision is PlannerDecision.WAIT
+            else 0.0
+        ),
+    }
+    if plan.tool_selection_explicit:
+        updates["tool_selection"] = plan.tool_selection.model_copy(
+            update={"scopes": plan.tool_selection.scope_ids}
+        )
+    return plan.model_copy(update=updates)
 
 
 def normalize_reply_target(

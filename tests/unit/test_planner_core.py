@@ -968,6 +968,7 @@ async def test_llm_planner_materializes_sparse_output_with_backend_defaults() ->
     assert plan.reply_to_message_id is None
     assert plan.tool_mode is ToolMode.INHERIT
     assert plan.tool_selection.scope_ids == ()
+    assert plan.tool_selection_explicit is False
     assert plan.memory_context.mode is MemoryContextMode.LEXICAL
     assert plan.emoji.mode is EmojiReplyMode.NONE
     assert plan.voice.mode is VoiceMode.TEXT
@@ -1007,6 +1008,27 @@ def test_sparse_planner_derives_secondary_effect_defaults() -> None:
     assert plan.emoji.placement is EmojiPlacement.ONLY
     assert plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
     assert plan.voice.language is SpeechLanguageHint.AUTO
+
+
+def test_sparse_planner_preserves_explicit_empty_tool_selection() -> None:
+    output = PlannerModelOutput.model_validate(
+        {
+            "decision": "reply",
+            "confidence": 0.98,
+            "reason_code": "direct_request",
+            "delivery_mode": "single",
+            "desired_messages": 1,
+            "tool_selection": {"mode": "inherit", "scopes": []},
+            "memory_context": {"mode": "lexical"},
+            "emoji": {"intent": "neutral", "mode": "none"},
+            "voice": {"mode": "text", "intent": "neutral"},
+        }
+    )
+
+    plan = output.materialize()
+
+    assert plan.tool_selection.scope_ids == ()
+    assert plan.tool_selection_explicit is True
 
 
 @pytest.mark.asyncio

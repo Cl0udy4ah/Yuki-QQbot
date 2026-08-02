@@ -352,6 +352,12 @@ class TurnPlan(_StrictPlannerModel):
 
         return self.tool_selection.mode
 
+    @property
+    def tool_selection_explicit(self) -> bool:
+        """Whether the provider explicitly narrowed tool scopes for this turn."""
+
+        return "tool_selection" in self.model_fields_set
+
 
 class PlannerToolOutput(_StrictPlannerModel):
     """Sparse model-facing tool choice that must be stated explicitly."""
@@ -491,24 +497,24 @@ class PlannerModelOutput(_StrictPlannerModel):
     def materialize(self) -> TurnPlan:
         """Fill omitted provider fields from trusted backend defaults."""
 
-        return TurnPlan(
+        plan = TurnPlan(
             decision=self.decision,
             intent=self.intent,
             target_user_ids=self.target_user_ids,
             delivery_mode=self.delivery_mode,
             desired_messages=self.desired_messages,
             reply_to_message_id=self.reply_to_message_id,
-            tool_selection=(
-                self.tool_selection.materialize()
-                if self.tool_selection is not None
-                else ToolSelection()
-            ),
             wait_seconds=self.wait_seconds,
             confidence=self.confidence,
             reason_code=self.reason_code,
             memory_context=self.memory_context.materialize(),
             emoji=self.emoji.materialize(),
             voice=self.voice.materialize(),
+        )
+        if self.tool_selection is None:
+            return plan
+        return plan.model_copy(
+            update={"tool_selection": self.tool_selection.materialize()},
         )
 
 

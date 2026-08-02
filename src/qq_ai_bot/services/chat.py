@@ -1335,7 +1335,10 @@ class ChatService:
                     planned_turn is not None
                     and planned_turn.plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
                 ),
-                planner_scopes_explicit=(scheduled_automation_intent or planned_turn is not None),
+                planner_scopes_explicit=(
+                    scheduled_automation_intent
+                    or (planned_turn is not None and planned_turn.plan.tool_selection_explicit)
+                ),
                 selection_query=content,
                 planner_intent=(
                     "创建未来触发的持久化自动化任务"
