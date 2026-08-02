@@ -93,6 +93,7 @@ def evaluate_message(
     *,
     group_policy: EffectiveGroupPolicy | None = None,
     private_policy: EffectivePrivatePolicy | None = None,
+    direct_triggered: bool = False,
 ) -> PolicyDecision:
     """Apply self/bot, allowlist, group, mention, prefix, and command rules."""
 
@@ -126,7 +127,7 @@ def evaluate_message(
                 reason="superuser_group_enable",
             )
         return PolicyDecision(False, reason="group_disabled")
-    if message.mentions_bot or prefix_triggered:
+    if message.mentions_bot or prefix_triggered or direct_triggered:
         return PolicyDecision(
             True,
             content=content,

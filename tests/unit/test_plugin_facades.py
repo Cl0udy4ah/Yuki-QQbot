@@ -95,12 +95,14 @@ def invocation(
     group_id: str | None = None,
     gateway: Gateway | FailingGateway | None = None,
     attachments: tuple[MessageAttachment, ...] = (),
+    mentioned_user_ids: tuple[str, ...] = (),
     web_was_used: bool = False,
 ) -> PluginInvocation:
     message = inbound(
         user_id=user_id,
         group_id=group_id,
         attachments=attachments,
+        mentioned_user_ids=mentioned_user_ids,
     )
     return PluginInvocation(
         plugin_id=plugin_id,
@@ -120,6 +122,24 @@ async def test_contextvar_binding_is_required_scoped_and_task_local() -> None:
         approved_permissions=(PluginPermission.MESSAGE_CURRENT_READ,),
     )
     assert context.current is None
+
+
+@pytest.mark.asyncio
+async def test_current_message_projects_unique_trusted_mentions_without_bot() -> None:
+    context = HostPluginContext(
+        plugin_id="example.plugin",
+        approved_permissions=(PluginPermission.MESSAGE_CURRENT_READ,),
+    )
+    trusted = invocation(
+        group_id="20001",
+        mentioned_user_ids=("10002", "99999", "10002"),
+    )
+
+    with context.bind(trusted):
+        current = await context.messages.get_current()
+
+    assert current is not None
+    assert current.mentioned_user_ids == ("10002",)
     with pytest.raises(PluginPermissionError, match="trusted invocation"):
         await context.messages.get_current()
 

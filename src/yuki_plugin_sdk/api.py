@@ -10,6 +10,7 @@ _API_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 DEFAULT_FEATURES: frozenset[str] = frozenset(
     {
         "message.normalized.v1",
+        "message.current.mentions.v1",
         "prompt.fragment.v1",
         "planner.signal.v1",
         "automation.action.v1",

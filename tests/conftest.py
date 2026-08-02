@@ -45,11 +45,12 @@ from qq_ai_bot.planner.observability import PlannerObservability
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService
+from qq_ai_bot.services.command_service import CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.deduplication import DeduplicationService
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.media_resolver import MediaResolver
-from qq_ai_bot.services.processor import MessageProcessor
+from qq_ai_bot.services.processor import DirectPluginCommandResolver, MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
 from qq_ai_bot.services.relationship_evaluator import FakeRelationshipEvaluator
 from qq_ai_bot.services.relationship_worker import RelationshipWorker
@@ -149,6 +150,8 @@ def build_harness(
     *,
     web_provider: WebSearchProvider | None = None,
     vision_provider: VisionProvider | None = None,
+    command_service: CommandService | None = None,
+    direct_plugin_commands: DirectPluginCommandResolver | None = None,
 ) -> Harness:
     conversations = ConversationRepository(database)
     groups = GroupSettingsRepository(database)
@@ -271,6 +274,8 @@ def build_harness(
         relationship_worker=relationship_worker,
         runtime_config=runtime_config,
         vision_service=vision,
+        command_service=command_service,
+        direct_plugin_commands=direct_plugin_commands,
     )
     return Harness(
         settings,
