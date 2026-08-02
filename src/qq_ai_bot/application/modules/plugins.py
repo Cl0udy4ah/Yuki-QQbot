@@ -15,6 +15,7 @@ from qq_ai_bot.plugin_host.audit import PluginAuditService
 from qq_ai_bot.plugin_host.automation_adapter import PluginAutomationAdapter
 from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
 from qq_ai_bot.plugin_host.command_adapter import PluginCommandAdapter
+from qq_ai_bot.plugin_host.direct_command_router import DirectCommandRouter
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
 from qq_ai_bot.plugin_host.emoji_adapter import PluginEmojiSelectionSignalAdapter
 from qq_ai_bot.plugin_host.event_bus import PluginEventBus
@@ -56,6 +57,7 @@ class PluginBundle:
     automation: PluginAutomationAdapter
     manager: PluginManager
     tools: PluginCapabilityAdapter
+    direct_commands: DirectCommandRouter
     commands: PluginCommandAdapter
     planner_signals: PluginPlannerSignalAdapter
 
@@ -154,11 +156,17 @@ class PluginModule:
             invocation_scope=self._plugin_invocation_scope,
             is_running=lambda plugin_id: plugin_id in manager.running_plugin_ids,
         )
+        direct_commands = DirectCommandRouter(
+            bindings=settings.plugin_direct_command_bindings,
+            registry=extensions,
+            manager=manager,
+        )
         commands = PluginCommandAdapter(
             manager=manager,
             registry=extensions,
             superusers=self._superusers,
             invocation_scope=self._plugin_invocation_scope,
+            direct_commands=direct_commands,
         )
         planner_signals = PluginPlannerSignalAdapter(
             extensions,
@@ -166,23 +174,24 @@ class PluginModule:
             invocation_scope=self._signal_invocation_scope,
         )
         return PluginBundle(
-            installations,
-            config_values,
-            state,
-            audit_repository,
-            audit,
-            session_repository,
-            sessions,
-            http,
-            events,
-            extensions,
-            emoji_signals,
-            prompts,
-            automation,
-            manager,
-            tools,
-            commands,
-            planner_signals,
+            installations=installations,
+            config_values=config_values,
+            state=state,
+            audit_repository=audit_repository,
+            audit=audit,
+            session_repository=session_repository,
+            sessions=sessions,
+            http=http,
+            events=events,
+            extensions=extensions,
+            emoji_signals=emoji_signals,
+            prompts=prompts,
+            automation=automation,
+            manager=manager,
+            tools=tools,
+            direct_commands=direct_commands,
+            commands=commands,
+            planner_signals=planner_signals,
         )
 
     @staticmethod

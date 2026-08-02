@@ -2,11 +2,51 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from qq_ai_bot.domain.messages import ReasoningEffort
+
+_PLUGIN_ID = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,126}[a-z0-9])?$")
+_COMMAND_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
+
+def validate_direct_command_bindings(value: dict[str, str]) -> dict[str, str]:
+    """Normalize fail-closed Host-owned direct command bindings."""
+
+    normalized: dict[str, str] = {}
+    for prefix, raw_target in value.items():
+        if not prefix or len(prefix) > 16:
+            raise ValueError("PLUGIN_DIRECT_COMMAND_BINDINGS prefixes must be 1..16 characters")
+        if prefix != prefix.strip() or any(
+            character.isspace() or unicodedata.category(character).startswith("C")
+            for character in prefix
+        ):
+            raise ValueError(
+                "PLUGIN_DIRECT_COMMAND_BINDINGS prefixes must not contain whitespace "
+                "or control characters"
+            )
+        if prefix.startswith("/"):
+            raise ValueError("PLUGIN_DIRECT_COMMAND_BINDINGS prefixes must not start with '/'")
+        target = raw_target.strip()
+        if target != raw_target or ":" not in target:
+            raise ValueError("PLUGIN_DIRECT_COMMAND_BINDINGS targets must use plugin_id:command")
+        plugin_id, command_name = target.rsplit(":", 1)
+        if _PLUGIN_ID.fullmatch(plugin_id) is None or _COMMAND_NAME.fullmatch(command_name) is None:
+            raise ValueError("PLUGIN_DIRECT_COMMAND_BINDINGS targets must use plugin_id:command")
+        normalized[prefix] = target
+
+    prefixes = tuple(normalized)
+    for index, left in enumerate(prefixes):
+        for right in prefixes[index + 1 :]:
+            if left.startswith(right) or right.startswith(left):
+                raise ValueError(
+                    f"PLUGIN_DIRECT_COMMAND_BINDINGS prefixes must not overlap: {left!r}, {right!r}"
+                )
+    return normalized
 
 
 class DomainSettings(BaseModel):
@@ -103,6 +143,7 @@ class PluginSettings(DomainSettings):
     plugin_system_enabled: bool
     plugin_directory: Path
     plugin_api_version: str
+    plugin_direct_command_bindings: dict[str, str] = Field(default_factory=dict)
     plugin_hook_timeout_seconds: float = Field(gt=0)
     plugin_start_timeout_seconds: float = Field(gt=0)
     plugin_stop_timeout_seconds: float = Field(gt=0)
@@ -114,6 +155,11 @@ class PluginSettings(DomainSettings):
     plugin_http_max_response_bytes: int = Field(gt=0)
     plugin_http_timeout_seconds: float = Field(gt=0)
     plugin_ai_session_max_history_messages: int = Field(gt=0)
+
+    @field_validator("plugin_direct_command_bindings")
+    @classmethod
+    def _direct_command_bindings(cls, value: dict[str, str]) -> dict[str, str]:
+        return validate_direct_command_bindings(value)
 
     @model_validator(mode="after")
     def _prompt_budgets(self) -> PluginSettings:

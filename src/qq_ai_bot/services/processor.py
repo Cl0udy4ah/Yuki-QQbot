@@ -46,6 +46,7 @@ from qq_ai_bot.planner.context import PlannerContextBuilder
 from qq_ai_bot.planner.models import PlannerDecision, PlannerSignal
 from qq_ai_bot.planner.provider import PlannerInterruptedError as ProviderPlannerInterruptedError
 from qq_ai_bot.planner.service import PlannerOutcome, PlannerService
+from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
 from qq_ai_bot.services.admin.group_admin import GroupAdminService
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
@@ -54,7 +55,7 @@ from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminServ
 from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.chat import ChatService, OutboundSender
-from qq_ai_bot.services.command_service import CommandService
+from qq_ai_bot.services.command_service import CommandExecution, CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager, RequestCancelledError
 from qq_ai_bot.services.deduplication import DeduplicationService, build_event_key
 from qq_ai_bot.services.media_resolver import OneBotMediaGateway
@@ -103,6 +104,10 @@ class PlannerSignalProvider(Protocol):
         origin: TurnOrigin,
         runtime: RuntimeConfigSnapshot,
     ) -> tuple[PlannerSignal, ...]: ...
+
+
+class DirectPluginCommandResolver(Protocol):
+    def match(self, text: str) -> DirectCommandMatch | None: ...
 
 
 RATE_LIMIT_MESSAGE = "请求过于频繁，请稍后再试。"
@@ -251,6 +256,7 @@ class MessageProcessor:
         automation_repository: AutomationRepository | None = None,
         automation_worker: AutomationWorker | None = None,
         command_service: CommandService | None = None,
+        direct_plugin_commands: DirectPluginCommandResolver | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
         planner_signals: PlannerSignalProvider | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
@@ -373,6 +379,7 @@ class MessageProcessor:
             planner_observability=self._planner.observability,
             planner_repository=self._planner.repository,
         )
+        self._direct_plugin_commands = direct_plugin_commands
         self._event_publisher: LifecycleEventPublisher | None = None
         self._emoji_collector = emoji_collector
         self._emoji_worker = emoji_worker
@@ -410,17 +417,24 @@ class MessageProcessor:
         )
         group_policy = await self._effective_group_policy(message.group_id)
         private_policy = await self._effective_private_policy(message)
+        direct_match = (
+            self._direct_plugin_commands.match(message.text)
+            if self._direct_plugin_commands is not None
+            else None
+        )
         decision = evaluate_message(
             message,
             self._settings,
             group_policy=group_policy,
             private_policy=private_policy,
+            direct_triggered=direct_match is not None,
         )
         if decision.reason == "bot_message":
             return ProcessResult(False, reason=decision.reason)
         is_superuser = message.sender.user_id in self._settings.superusers
         admin_candidate = bool(
             is_superuser
+            and direct_match is None
             and decision.command is None
             and (
                 decision.should_respond
@@ -483,10 +497,16 @@ class MessageProcessor:
         has_visual_input = VisionService.has_visual_input(message)
         image_blocks_command = bool(
             has_visual_input
-            and decision.command is not None
-            and self._commands.may_write(decision.command, decision.content)
+            and (
+                direct_match is not None
+                or (
+                    decision.command is not None
+                    and self._commands.may_write(decision.command, decision.content)
+                )
+            )
             and not (
-                decision.command is CommandName.EMOJI
+                direct_match is None
+                and decision.command is CommandName.EMOJI
                 and decision.content.strip().casefold().startswith("import")
             )
         )
@@ -498,7 +518,11 @@ class MessageProcessor:
                     "message_id": message.message_id,
                     "scope_type": message.scope_type.value,
                     "trigger_reason": decision.reason,
-                    "command": (decision.command.value if decision.command is not None else None),
+                    "command": (
+                        "plugin_direct"
+                        if direct_match is not None
+                        else (decision.command.value if decision.command is not None else None)
+                    ),
                     "visual_input_present": has_visual_input,
                     "mentions_bot": message.mentions_bot,
                 },
@@ -563,7 +587,7 @@ class MessageProcessor:
                     self._autonomous.observe(message, profile, sender, turn_token)
             return ProcessResult(False, reason="group_observed")
 
-        category = "command" if decision.command is not None else "chat"
+        category = "command" if direct_match is not None or decision.command is not None else "chat"
         rate = await self._rate_limiter.check(
             user_id=message.sender.user_id,
             group_id=message.group_id,
@@ -572,6 +596,23 @@ class MessageProcessor:
         if not rate.allowed:
             sent = await self._send_text(message, sender, RATE_LIMIT_MESSAGE)
             return ProcessResult(True, int(sent), f"{rate.scope}_rate_limited")
+
+        if direct_match is not None:
+            if image_blocks_command:
+                sent = await self._send_text(
+                    message,
+                    sender,
+                    IMAGE_WRITE_ISOLATION_MESSAGE,
+                )
+                return ProcessResult(True, int(sent), "image_write_isolated")
+            return await self._handle_direct_plugin_command(
+                direct_match,
+                message,
+                identity,
+                sender,
+                event_key,
+                started,
+            )
 
         if decision.command is not None:
             if image_blocks_command:
@@ -946,6 +987,47 @@ class MessageProcessor:
                 else None
             ),
         )
+        return await self._deliver_command_execution(
+            execution=execution,
+            message=message,
+            identity=identity,
+            sender=sender,
+            event_key=event_key,
+            started=started,
+            handler=f"command_{command.value}",
+        )
+
+    async def _handle_direct_plugin_command(
+        self,
+        match: DirectCommandMatch,
+        message: InboundMessage,
+        identity: ConversationIdentity,
+        sender: OutboundSender,
+        event_key: str,
+        started: float,
+    ) -> ProcessResult:
+        execution = await self._commands.execute_direct_plugin(message, identity, match)
+        return await self._deliver_command_execution(
+            execution=execution,
+            message=message,
+            identity=identity,
+            sender=sender,
+            event_key=event_key,
+            started=started,
+            handler="command_plugin_direct",
+        )
+
+    async def _deliver_command_execution(
+        self,
+        *,
+        execution: CommandExecution,
+        message: InboundMessage,
+        identity: ConversationIdentity,
+        sender: OutboundSender,
+        event_key: str,
+        started: float,
+        handler: str,
+    ) -> ProcessResult:
         sent = (
             await self._send_outbound(message, sender, execution.outbound)
             if execution.outbound is not None
@@ -964,11 +1046,11 @@ class MessageProcessor:
             event_key,
             identity,
             message,
-            handler=f"command_{command.value}",
+            handler=handler,
             started=started,
             success=sent,
         )
-        return ProcessResult(True, int(sent), f"command_{command.value}")
+        return ProcessResult(True, int(sent), handler)
 
     @staticmethod
     def _event_profile(message: InboundMessage) -> UserProfileSnapshot:

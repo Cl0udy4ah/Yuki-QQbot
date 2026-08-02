@@ -364,6 +364,7 @@ class ApplicationContainer:
         self.plugin_automation = plugins.automation
         self.plugin_manager = plugins.manager
         self.plugin_tools = plugins.tools
+        self.plugin_direct_commands = plugins.direct_commands
         self.plugin_commands = plugins.commands
         self.plugin_planner_signals = plugins.planner_signals
         self.emoji_collector.set_event_publisher(self.plugin_events)
@@ -443,6 +444,7 @@ class ApplicationContainer:
             automation_repository=self.automation_repository,
             automation_worker=self.automation_worker,
             command_service=self.command_service,
+            direct_plugin_commands=self.plugin_direct_commands,
             planner_context=self.planner_context,
             planner_service=self.planner,
             turn_coordinator=self.turn_coordinator,
