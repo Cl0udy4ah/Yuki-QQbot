@@ -21,10 +21,12 @@ from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
+from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
+    EventLedgerRepository,
     GroupSettingsRepository,
     PrivateUserSettingsRepository,
     RelationshipRepository,
@@ -77,6 +79,8 @@ class AdminModule:
         emoji_worker: EmojiWorker | None,
         speech_admin: SpeechAdminService,
         memory_rebuild: MemoryRebuildService,
+        memory_mutations: MemoryMutationService,
+        ledger: EventLedgerRepository,
     ) -> None:
         self._settings = settings
         self._database = database
@@ -99,6 +103,8 @@ class AdminModule:
         self._emoji_worker = emoji_worker
         self._speech_admin = speech_admin
         self._memory_rebuild = memory_rebuild
+        self._memory_mutations = memory_mutations
+        self._ledger = ledger
 
     def build(self) -> AdminBundle:
         audit = AdminAuditService(self._database)
@@ -118,11 +124,14 @@ class AdminModule:
             runtime_config=self._runtime_config,
             fact_audit=self._memory_audit,
             maintenance=self._memory_maintenance,
+            mutations=self._memory_mutations,
+            ledger=self._ledger,
         )
         preferences = PreferenceAdminService(
             settings=self._settings,
             memories=self._memories,
             audit=audit,
+            memory_mutations=memories,
         )
         groups = GroupAdminService(
             settings=self._settings,

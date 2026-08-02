@@ -1,8 +1,22 @@
-# `memory_change`：Yuki 自主记忆更改接口讨论稿
+# `memory_change`：Yuki 自主记忆更改接口
 
-> 状态：设计讨论稿，尚未实现。
+> 状态：Memory Mutation V2 已在 `codex/memory-mutation-service` 分支实现；本文前半保留设计
+> 推导，实际运行边界以“实施说明”一节和代码测试为准。
 > 目标读者：项目维护者、架构评审者和参与方案讨论的语言模型。
-> 本文描述的是拟议能力，不代表当前代码已经具备这些行为。
+
+## 0. 实施说明
+
+- 模型侧只增加 `memory_change`，仅在真实 `user_message` 轮开放；参数不能携带 QQ 号、群号
+  或事件 ID，后端只接受当前发送者、当前群、真实 mention 和 reply author 别名。
+- `MemoryMutationService` 统一执行主体解析、权限、证据、版本、冲突、事务、回执和 Embedding
+  调度；Agent、生产 Memory Worker、确定性命令、管理员 Action、Plugin Memory Facade 和有界
+  lifecycle reflection 均接入该边界。
+- Alembic `0025` 新增 `memory_mutation_receipts`，分别保存请求幂等指纹和不含 operation 的
+  claim 指纹；Agent 与 Worker 对同一事件、目标、key、内容的判断只提交一次。
+- 普通成员可影响本人 `person/person_group`、当前 `group` 和当前群他人的 `person_group`；
+  第三方来源始终记录为 `third_party`，高权威冲突可以实际落为 `contest`，不会冒充本人。
+- 读取本轮提及群友时只开放当前群 `person_group`，不再投影对方跨群 `person` 事实。
+- 普通变更是版本化/状态化操作，不做物理删除；`forgetme` 仍沿用独立隐私删除路径。
 
 ## 1. 摘要
 

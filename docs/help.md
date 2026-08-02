@@ -1,5 +1,10 @@
 # Yuki-QQbot
 
+> **Memory Mutation V2 开发版：**新增唯一的 `memory_change` Agent 写工具和统一
+> `MemoryMutationService`；Alembic head 为 `0025`。Agent、自动 Worker、记忆命令、管理员、
+> 插件和有界后台治理共享事务回执与双指纹去重。群友只能读取被提及成员在当前群的
+> `person_group`，不会读取对方跨群 `person`。
+
 > **3.0.3 日常表情节奏：**新增可热修改的 `emoji.spontaneous_frequency`，默认 `0.15`。
 > Planner 复用近期账本中的真实投递记录限制自发 `optional` 表情；明确索要表情不受影响。
 > 本补丁不新增数据库迁移，Alembic head 仍为 `0024`。

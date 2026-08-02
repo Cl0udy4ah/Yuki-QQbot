@@ -287,7 +287,7 @@ async def test_target_resolver_uses_only_real_current_event_references(
     referenced = [
         target.subject_user_id
         for target in targets
-        if target.role is MemoryTargetRole.REFERENCED_PERSON
+        if target.role is MemoryTargetRole.REFERENCED_PERSON_GROUP
     ]
     assert referenced == ["1002", "1003"]
     assert all(target.group_id == "2001" for target in targets if target.group_id)

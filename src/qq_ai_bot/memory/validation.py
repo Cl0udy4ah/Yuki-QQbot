@@ -52,6 +52,12 @@ def normalize_memory_text(value: str, *, maximum: int) -> str:
     return " ".join(_CONTROL.sub(" ", value).split())[:maximum].strip()
 
 
+def event_requests_explicit_memory(value: str) -> bool:
+    """Return whether the trusted event explicitly asks Yuki to retain a memory."""
+
+    return any(marker in value for marker in _EXPLICIT_MARKERS)
+
+
 class MemoryClaimValidator:
     """Turn a claim into trusted persistence input or reject it without guessing."""
 
@@ -112,14 +118,9 @@ class MemoryClaimValidator:
         is_third_party = bool(resolved.subject_user_id) and not subject_is_speaker
         if is_third_party and resolved.scope_type is not MemoryScopeType.PERSON_GROUP:
             return None
-        if is_third_party and claim.operation in {
-            MemoryClaimOperation.CORRECT,
-            MemoryClaimOperation.RETRACT,
-        }:
-            return None
         source_type = claim.source_type
-        if source_type is MemorySourceType.EXPLICIT and not any(
-            marker in event.content for marker in _EXPLICIT_MARKERS
+        if source_type is MemorySourceType.EXPLICIT and not event_requests_explicit_memory(
+            event.content
         ):
             source_type = MemorySourceType.AUTOMATIC
         if is_third_party:

@@ -93,6 +93,7 @@ def upgrade() -> None:
             "memory_rebuild_runs",
             "memory_rebuild_items",
             "memory_rebuild_proposals",
+            "memory_mutation_receipts",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

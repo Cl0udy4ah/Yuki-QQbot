@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryConflictState,
+    MemoryEvidenceRelation,
     MemoryFactRelationType,
     MemoryInvalidationReason,
     MemoryKind,
@@ -712,12 +713,132 @@ class MemoryFactService:
             await self.schedule_embedding(result.id)
         return result
 
+    async def version_fact(
+        self,
+        fact_id: int,
+        *,
+        replacement: MemoryFactCreate,
+        evidence: MemoryEvidenceCreate,
+        actor_user_id: str,
+        reason_code: str,
+        limit: int | None,
+        copy_existing_evidence: bool,
+        confirmed_at: datetime,
+        copied_evidence_authority: MemoryAuthority | None = None,
+        session: AsyncSession | None = None,
+    ) -> MemoryFact | None:
+        """Atomically supersede one fact with a validated replacement version."""
+
+        if session is None:
+            async with self._repository.transaction() as owned:
+                result = await self.version_fact(
+                    fact_id,
+                    replacement=replacement,
+                    evidence=evidence,
+                    actor_user_id=actor_user_id,
+                    reason_code=reason_code,
+                    limit=limit,
+                    copy_existing_evidence=copy_existing_evidence,
+                    copied_evidence_authority=copied_evidence_authority,
+                    confirmed_at=confirmed_at,
+                    session=owned,
+                )
+            if result is not None and result.status is MemoryStatus.ACTIVE:
+                await self.schedule_embedding(result.id)
+            return result
+        current = await self._repository.get_fact(fact_id, session=session)
+        if current is None or current.status not in {
+            MemoryStatus.ACTIVE,
+            MemoryStatus.CONTESTED,
+        }:
+            return None
+        collision = await self._repository.find_active(replacement, session=session)
+        if collision is not None and collision.id != current.id:
+            raise ValueError("memory replacement target already has an active fact for this key")
+        old_target = (current.scope_type, current.subject_user_id, current.group_id)
+        new_target = (
+            replacement.scope_type,
+            replacement.subject_user_id,
+            replacement.group_id,
+        )
+        if old_target != new_target and limit is not None:
+            query = MemoryFactQuery(
+                scope_type=replacement.scope_type,
+                subject_user_id=replacement.subject_user_id,
+                group_id=replacement.group_id,
+            )
+            if not await self._repository.make_room(query, limit=limit, session=session):
+                raise ValueError("memory capacity is occupied by explicit facts")
+        await self._repository.transition(
+            fact_id,
+            status=MemoryStatus.SUPERSEDED,
+            conflict_state=MemoryConflictState.CLEAR,
+            invalidated_reason=None,
+            action=MemoryStateAction.SUPERSEDED,
+            reason_code=reason_code,
+            source_event_id=evidence.event_id,
+            actor_user_id=actor_user_id,
+            session=session,
+        )
+        created = await self._repository.create_fact(
+            replacement.model_copy(
+                update={
+                    "status": MemoryStatus.ACTIVE,
+                    "conflict_state": MemoryConflictState.CLEAR,
+                    "invalidated_reason": None,
+                }
+            ),
+            normalized_content=normalize_memory_text(replacement.content, maximum=4000).casefold(),
+            supersedes_id=current.id,
+            recorded_at=confirmed_at,
+            session=session,
+        )
+        if copy_existing_evidence:
+            for row in await self._repository.list_evidence(
+                fact_id, limit=100_000, session=session
+            ):
+                await self._repository.add_evidence(
+                    created.id,
+                    MemoryEvidenceCreate(
+                        event_id=row.event_id,
+                        source_speaker_user_id=row.source_speaker_user_id,
+                        relation=(
+                            MemoryEvidenceRelation.THIRD_PARTY_STATEMENT
+                            if copied_evidence_authority is MemoryAuthority.THIRD_PARTY
+                            else row.relation
+                        ),
+                        confidence=row.confidence,
+                        authority=copied_evidence_authority or row.authority,
+                        excerpt=row.excerpt,
+                    ),
+                    session=session,
+                )
+        await self._repository.add_evidence(created.id, evidence, session=session)
+        await self._refresh_evidence(
+            created.id,
+            confirmed_at=confirmed_at,
+            session=session,
+        )
+        await self._repository.record_created(
+            created.id,
+            status=MemoryStatus.ACTIVE,
+            conflict_state=MemoryConflictState.CLEAR,
+            reason_code=reason_code,
+            source_event_id=evidence.event_id,
+            actor_user_id=actor_user_id,
+            session=session,
+        )
+        self.metrics.increment("facts_superseded")
+        self.metrics.increment("facts_created")
+        return await self._repository.get_fact(created.id, session=session)
+
     async def invalidate_fact(
         self,
         fact_id: int,
         *,
         reason: MemoryInvalidationReason,
         actor_user_id: str | None,
+        evidence: MemoryEvidenceCreate | None = None,
         session: AsyncSession | None = None,
     ) -> bool:
         if session is None:
@@ -726,11 +847,14 @@ class MemoryFactService:
                     fact_id,
                     reason=reason,
                     actor_user_id=actor_user_id,
+                    evidence=evidence,
                     session=owned,
                 )
         current = await self._repository.get_fact(fact_id, session=session)
         if current is None or current.status is MemoryStatus.INVALIDATED:
             return False
+        if evidence is not None:
+            await self._repository.add_evidence(fact_id, evidence, session=session)
         changed = await self._repository.transition(
             fact_id,
             status=MemoryStatus.INVALIDATED,
@@ -744,7 +868,7 @@ class MemoryFactService:
                 else MemoryStateAction.INVALIDATED
             ),
             reason_code=reason.value,
-            source_event_id=None,
+            source_event_id=evidence.event_id if evidence is not None else None,
             actor_user_id=actor_user_id,
             session=session,
         )
@@ -768,26 +892,38 @@ class MemoryFactService:
         *,
         reason_code: str,
         actor_user_id: str | None = None,
+        evidence: MemoryEvidenceCreate | None = None,
+        session: AsyncSession | None = None,
     ) -> bool:
-        async with self._repository.transaction() as session:
-            current = await self._repository.get_fact(fact_id, session=session)
-            if current is None or current.status is not MemoryStatus.ACTIVE:
-                return False
-            changed = await self._repository.transition(
-                fact_id,
-                status=current.status,
-                conflict_state=MemoryConflictState.CONTESTED,
-                invalidated_reason=None,
-                action=MemoryStateAction.CONTESTED,
-                reason_code=reason_code,
-                source_event_id=None,
-                actor_user_id=actor_user_id,
-                session=session,
-            )
-            if changed:
-                self.metrics.increment("facts_contested")
-                self.metrics.increment("conflicts_open")
-            return changed
+        if session is None:
+            async with self._repository.transaction() as owned:
+                return await self.contest_fact(
+                    fact_id,
+                    reason_code=reason_code,
+                    actor_user_id=actor_user_id,
+                    evidence=evidence,
+                    session=owned,
+                )
+        current = await self._repository.get_fact(fact_id, session=session)
+        if current is None or current.status is not MemoryStatus.ACTIVE:
+            return False
+        if evidence is not None:
+            await self._repository.add_evidence(fact_id, evidence, session=session)
+        changed = await self._repository.transition(
+            fact_id,
+            status=current.status,
+            conflict_state=MemoryConflictState.CONTESTED,
+            invalidated_reason=None,
+            action=MemoryStateAction.CONTESTED,
+            reason_code=reason_code,
+            source_event_id=evidence.event_id if evidence is not None else None,
+            actor_user_id=actor_user_id,
+            session=session,
+        )
+        if changed:
+            self.metrics.increment("facts_contested")
+            self.metrics.increment("conflicts_open")
+        return changed
 
     async def clear_conflict(
         self,
@@ -958,42 +1094,65 @@ class MemoryFactService:
                     session=session,
                 )
 
-    async def restore_fact(self, fact_id: int, *, actor_user_id: str) -> MemoryFact | None:
-        async with self._repository.transaction() as session:
-            current = await self._repository.get_fact(fact_id, session=session)
-            if current is None or current.status is not MemoryStatus.INVALIDATED:
-                return None
-            if current.valid_until is not None and current.valid_until <= datetime.now(UTC):
-                return None
-            probe = MemoryFactCreate(
-                scope_type=current.scope_type,
-                subject_user_id=current.subject_user_id,
-                group_id=current.group_id,
-                kind=current.kind,
-                memory_key=current.memory_key,
-                category=current.category,
-                content=current.content,
-                source_type=current.source_type,
-                authority=current.authority,
-            )
-            if await self._repository.find_active(probe, session=session) is not None:
-                return None
-            await self._repository.transition(
+    async def restore_fact(
+        self,
+        fact_id: int,
+        *,
+        actor_user_id: str,
+        evidence: MemoryEvidenceCreate | None = None,
+        confirmed_at: datetime | None = None,
+        session: AsyncSession | None = None,
+    ) -> MemoryFact | None:
+        if session is None:
+            async with self._repository.transaction() as owned:
+                result = await self.restore_fact(
+                    fact_id,
+                    actor_user_id=actor_user_id,
+                    evidence=evidence,
+                    confirmed_at=confirmed_at,
+                    session=owned,
+                )
+            if result is not None:
+                await self.schedule_embedding(result.id)
+            return result
+        current = await self._repository.get_fact(fact_id, session=session)
+        if current is None or current.status is not MemoryStatus.INVALIDATED:
+            return None
+        if current.valid_until is not None and current.valid_until <= datetime.now(UTC):
+            return None
+        probe = MemoryFactCreate(
+            scope_type=current.scope_type,
+            subject_user_id=current.subject_user_id,
+            group_id=current.group_id,
+            kind=current.kind,
+            memory_key=current.memory_key,
+            category=current.category,
+            content=current.content,
+            source_type=current.source_type,
+            authority=current.authority,
+        )
+        if await self._repository.find_active(probe, session=session) is not None:
+            return None
+        if evidence is not None:
+            await self._repository.add_evidence(fact_id, evidence, session=session)
+            await self._refresh_evidence(
                 fact_id,
-                status=MemoryStatus.ACTIVE,
-                conflict_state=MemoryConflictState.CLEAR,
-                invalidated_reason=None,
-                action=MemoryStateAction.RESTORED,
-                reason_code="explicit_restore",
-                source_event_id=None,
-                actor_user_id=actor_user_id,
+                confirmed_at=confirmed_at or datetime.now(UTC),
                 session=session,
             )
-            self.metrics.increment("facts_restored")
-            result = await self._repository.get_fact(fact_id, session=session)
-        if result is not None:
-            await self.schedule_embedding(result.id)
-        return result
+        await self._repository.transition(
+            fact_id,
+            status=MemoryStatus.ACTIVE,
+            conflict_state=MemoryConflictState.CLEAR,
+            invalidated_reason=None,
+            action=MemoryStateAction.RESTORED,
+            reason_code="explicit_restore",
+            source_event_id=evidence.event_id if evidence is not None else None,
+            actor_user_id=actor_user_id,
+            session=session,
+        )
+        self.metrics.increment("facts_restored")
+        return await self._repository.get_fact(fact_id, session=session)
 
     async def merge_facts(
         self,
@@ -1001,63 +1160,81 @@ class MemoryFactService:
         target_fact_id: int,
         *,
         actor_user_id: str,
+        evidence: MemoryEvidenceCreate | None = None,
+        confirmed_at: datetime | None = None,
+        session: AsyncSession | None = None,
     ) -> MemoryFact | None:
         if source_fact_id == target_fact_id:
             raise ValueError("cannot merge a memory fact into itself")
-        async with self._repository.transaction() as session:
-            source = await self._repository.get_fact(source_fact_id, session=session)
-            target = await self._repository.get_fact(target_fact_id, session=session)
-            if source is None or target is None:
-                return None
-            if source.status not in {MemoryStatus.ACTIVE, MemoryStatus.CONTESTED}:
-                raise ValueError("memory merge source must be active or contested")
-            source_target = (source.scope_type, source.subject_user_id, source.group_id)
-            target_target = (target.scope_type, target.subject_user_id, target.group_id)
-            if source_target != target_target:
-                raise ValueError("memory merge cannot cross identity targets")
-            if target.status is not MemoryStatus.ACTIVE:
-                raise ValueError("memory merge target must be active")
-            for evidence in await self._repository.list_evidence(
-                source_fact_id, limit=100_000, session=session
-            ):
-                await self._repository.add_evidence(
+        if session is None:
+            async with self._repository.transaction() as owned:
+                return await self.merge_facts(
+                    source_fact_id,
                     target_fact_id,
-                    MemoryEvidenceCreate(
-                        event_id=evidence.event_id,
-                        source_speaker_user_id=evidence.source_speaker_user_id,
-                        relation=evidence.relation,
-                        confidence=evidence.confidence,
-                        authority=evidence.authority,
-                        excerpt=evidence.excerpt,
-                    ),
-                    session=session,
+                    actor_user_id=actor_user_id,
+                    evidence=evidence,
+                    confirmed_at=confirmed_at,
+                    session=owned,
                 )
-            await self._refresh_evidence(
+        source = await self._repository.get_fact(source_fact_id, session=session)
+        target = await self._repository.get_fact(target_fact_id, session=session)
+        if source is None or target is None:
+            return None
+        if source.status not in {MemoryStatus.ACTIVE, MemoryStatus.CONTESTED}:
+            raise ValueError("memory merge source must be active or contested")
+        source_target = (source.scope_type, source.subject_user_id, source.group_id)
+        target_target = (target.scope_type, target.subject_user_id, target.group_id)
+        if source_target != target_target:
+            raise ValueError("memory merge cannot cross identity targets")
+        if target.status is not MemoryStatus.ACTIVE:
+            raise ValueError("memory merge target must be active")
+        for row in await self._repository.list_evidence(
+            source_fact_id, limit=100_000, session=session
+        ):
+            await self._repository.add_evidence(
                 target_fact_id,
-                confirmed_at=max(source.last_confirmed_at, target.last_confirmed_at),
+                MemoryEvidenceCreate(
+                    event_id=row.event_id,
+                    source_speaker_user_id=row.source_speaker_user_id,
+                    relation=row.relation,
+                    confidence=row.confidence,
+                    authority=row.authority,
+                    excerpt=row.excerpt,
+                ),
                 session=session,
             )
-            await self._repository.add_relation(
-                source_fact_id=source_fact_id,
-                target_fact_id=target_fact_id,
-                relation_type=MemoryFactRelationType.EQUIVALENT,
-                confidence=1.0,
-                source_event_id=None,
-                session=session,
-            )
-            await self._repository.transition(
-                source_fact_id,
-                status=MemoryStatus.SUPERSEDED,
-                conflict_state=MemoryConflictState.CLEAR,
-                invalidated_reason=None,
-                action=MemoryStateAction.MERGED,
-                reason_code=MemoryInvalidationReason.MERGED.value,
-                source_event_id=None,
-                actor_user_id=actor_user_id,
-                session=session,
-            )
-            self.metrics.increment("facts_merged")
-            return await self._repository.get_fact(target_fact_id, session=session)
+        if evidence is not None:
+            await self._repository.add_evidence(target_fact_id, evidence, session=session)
+        await self._refresh_evidence(
+            target_fact_id,
+            confirmed_at=max(
+                source.last_confirmed_at,
+                target.last_confirmed_at,
+                confirmed_at or target.last_confirmed_at,
+            ),
+            session=session,
+        )
+        await self._repository.add_relation(
+            source_fact_id=source_fact_id,
+            target_fact_id=target_fact_id,
+            relation_type=MemoryFactRelationType.EQUIVALENT,
+            confidence=1.0,
+            source_event_id=evidence.event_id if evidence is not None else None,
+            session=session,
+        )
+        await self._repository.transition(
+            source_fact_id,
+            status=MemoryStatus.SUPERSEDED,
+            conflict_state=MemoryConflictState.CLEAR,
+            invalidated_reason=None,
+            action=MemoryStateAction.MERGED,
+            reason_code=MemoryInvalidationReason.MERGED.value,
+            source_event_id=evidence.event_id if evidence is not None else None,
+            actor_user_id=actor_user_id,
+            session=session,
+        )
+        self.metrics.increment("facts_merged")
+        return await self._repository.get_fact(target_fact_id, session=session)
 
     async def resolve_conflicts(
         self,

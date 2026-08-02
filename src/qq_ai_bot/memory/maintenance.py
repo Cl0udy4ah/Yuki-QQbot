@@ -10,6 +10,11 @@ from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.lifecycle import MemoryLifecycleConfig, MemoryLifecyclePolicy
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
+from qq_ai_bot.memory.mutation.models import (
+    MemoryMutationAppliedOperation,
+    MemoryMutationOperation,
+)
+from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.service import MemoryFactService
 
 
@@ -34,12 +39,14 @@ class MemoryMaintenanceWorker:
         runtime_config: RuntimeConfigService | None = None,
         policy: MemoryLifecyclePolicy | None = None,
         metrics: MemoryLifecycleMetrics | None = None,
+        mutations: MemoryMutationService | None = None,
     ) -> None:
         self._settings = settings
         self._facts = facts
         self._runtime_config = runtime_config
         self._policy = policy or MemoryLifecyclePolicy()
         self.metrics = metrics or MemoryLifecycleMetrics()
+        self._mutations = mutations
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -97,6 +104,30 @@ class MemoryMaintenanceWorker:
             limit=runtime.batch_limit,
         )
         changed = 0
+        if self._mutations is not None:
+            for candidate in rows:
+                fact = await self._facts.repository.get_fact(candidate.id)
+                if fact is None:
+                    continue
+                reason = self._policy.reason(fact, now=now, config=config)
+                if reason is None:
+                    continue
+                result = await self._mutations.mutate_reflection(
+                    fact,
+                    operation=MemoryMutationOperation.INVALIDATE,
+                    reason=reason,
+                )
+                if result.ok and result.applied_operation is (
+                    MemoryMutationAppliedOperation.INVALIDATE
+                ):
+                    changed += 1
+                    self.metrics.increment(
+                        "maintenance_expired"
+                        if reason.value == "expired"
+                        else "maintenance_stale_invalidated"
+                    )
+            self.metrics.record_maintenance_success(now)
+            return changed
         async with self._facts.repository.transaction() as session:
             for candidate in rows:
                 # Candidate loading is intentionally bounded and read-only. Re-read each

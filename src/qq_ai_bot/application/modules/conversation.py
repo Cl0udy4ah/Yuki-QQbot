@@ -14,6 +14,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
+from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.rebuild.worker import MemoryRebuildWorker
 from qq_ai_bot.memory.worker import MemoryWorker
@@ -61,6 +62,7 @@ class ConversationBundle:
     agent_tools: AgentToolService
     plugin_agent_tools: PluginAgentToolBackend
     chat: ChatService
+    memory_mutations: MemoryMutationService
     memory_worker: MemoryWorker
     memory_rebuild_service: MemoryRebuildService
     memory_rebuild_worker: MemoryRebuildWorker
@@ -156,11 +158,28 @@ class ConversationModule:
             per_user=settings.per_user_requests_per_minute,
             per_group=settings.per_group_requests_per_minute,
         )
+        memory_worker = MemoryWorker(
+            settings=settings,
+            jobs=persistence.memory_jobs,
+            facts=persistence.memories,
+            ledger=persistence.ledger,
+            model_executor=models,
+            concurrency=self._concurrency,
+            runtime_config=self._runtime_config,
+            candidate_resolver=MemoryConflictCandidateResolver(
+                persistence.memories.repository,
+                retriever=persistence.memory_context.retriever,
+                limit=settings.memory_consolidation_candidate_limit,
+            ),
+            metrics=persistence.memory_metrics,
+        )
+        memory_mutations = memory_worker.mutations
         agent_tools = AgentToolService(
             settings=settings,
             ledger=persistence.ledger,
             memories=persistence.memories,
             memory_context=persistence.memory_context,
+            memory_mutations=memory_mutations,
             actions=persistence.agent_actions,
             web_provider=self._web_provider,
             web_sources=persistence.web_sources,
@@ -191,21 +210,6 @@ class ConversationModule:
             tool_artifacts=self._tool_artifacts,
             tool_invocations=self._tool_invocations,
         )
-        memory_worker = MemoryWorker(
-            settings=settings,
-            jobs=persistence.memory_jobs,
-            facts=persistence.memories,
-            ledger=persistence.ledger,
-            model_executor=models,
-            concurrency=self._concurrency,
-            runtime_config=self._runtime_config,
-            candidate_resolver=MemoryConflictCandidateResolver(
-                persistence.memories.repository,
-                retriever=persistence.memory_context.retriever,
-                limit=settings.memory_consolidation_candidate_limit,
-            ),
-            metrics=persistence.memory_metrics,
-        )
         memory_rebuild_service = MemoryRebuildService(
             settings=settings,
             repository=persistence.memory_rebuilds,
@@ -222,6 +226,7 @@ class ConversationModule:
             facts=persistence.memories,
             runtime_config=self._runtime_config,
             metrics=persistence.memory_metrics,
+            mutations=memory_mutations,
         )
         relationship_worker = RelationshipWorker(
             settings=settings,
@@ -243,6 +248,7 @@ class ConversationModule:
             agent_tools,
             plugin_agent_tools,
             chat,
+            memory_mutations,
             memory_worker,
             memory_rebuild_service,
             memory_rebuild_worker,

@@ -464,7 +464,9 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
 
 
 @pytest.mark.asyncio
-async def test_context_loads_mentioned_member_facts_in_separate_block(database: Database) -> None:
+async def test_context_limits_mentioned_member_facts_to_current_group_block(
+    database: Database,
+) -> None:
     memories = MemoryFactService(MemoryFactRepository(database))
     person_fact = await memories.remember(
         _fact(content="小李喜欢水彩绘画", memory_key="hobby:painting", user_id="1002")
@@ -510,7 +512,12 @@ async def test_context_loads_mentioned_member_facts_in_separate_block(database: 
     referenced = blocks["referenced_person.0"]
 
     assert referenced["user_id"] == "1002"
-    assert [fact["fact_id"] for fact in referenced["person_facts"]] == [person_fact.id]
+    assert referenced["person_facts"] == []
     assert [fact["fact_id"] for fact in referenced["group_facts"]] == [group_fact.id]
+    assert person_fact.id not in {
+        fact["fact_id"]
+        for values in (referenced["person_facts"], referenced["group_facts"])
+        for fact in values
+    }
     assert blocks["current_person"]["facts"] == []
     assert "另一个群的秘密" not in envelope

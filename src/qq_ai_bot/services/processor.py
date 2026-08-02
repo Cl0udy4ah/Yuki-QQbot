@@ -527,7 +527,10 @@ class MessageProcessor:
         record, created = await self._ledger.append_inbound(
             message, bot_user_id=message.bot_user_id or "unknown-bot"
         )
-        if created:
+        # Deterministic commands execute their own reviewed mutation path. Feeding the
+        # command syntax to the extraction Worker would create a second interpretation
+        # of the same write and can generate a different semantic memory key.
+        if created and decision.command is None:
             await self._memory_worker.enqueue(record.id, identity.key)
         is_explicit_emoji_import = bool(
             decision.command is CommandName.EMOJI

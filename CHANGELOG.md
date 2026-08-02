@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Memory Mutation V2
+
+- 新增主 Agent 唯一记忆写工具 `memory_change`，支持 create、correct、invalidate、restore、
+  contest、merge、reassign 和 update_metadata，并以实际 applied operation/outcome 驱动回复。
+- 新增统一 `MemoryMutationService` 与 Alembic `0025` mutation receipt；Agent 与 Worker 通过
+  request/claim 双指纹去重，事实、证据、状态和回执原子提交。
+- 生产 Memory Worker、确定性记忆/偏好命令、管理员 Action、Plugin Memory Facade 和有界
+  lifecycle reflection 接入统一变更边界；普通成员可影响本人、当前群及群内人物记忆，同时
+  保留 `third_party` 来源。
+- 被提及群友的读取范围收窄为当前群 `person_group`，不向普通成员投影对方跨群 `person`。
+
 ## 3.0.3 - 2026-08-02
 
 ### 日常表情节奏

@@ -47,7 +47,7 @@ class MemoryReleaseCheck:
             )
         )
         head = self._alembic_head()
-        items.append(self._item("alembic_head", head == "0024", f"Alembic head is {head}"))
+        items.append(self._item("alembic_head", head == "0025", f"Alembic head is {head}"))
         try:
             suite = load_quality_suite(self._root / "tests/fixtures/memory_quality/v1")
             items.append(
@@ -191,12 +191,13 @@ class MemoryReleaseCheck:
             "0022_memory_embeddings.py",
             "0023_memory_conflicts_lifecycle.py",
             "0024_memory_rebuild.py",
+            "0025_memory_mutation_receipts.py",
         }
         missing = sorted(required - versions)
         return self._item(
             "migration_contract",
-            not missing and self._alembic_head() == "0024",
-            "fresh/upgrade matrix is frozen through 0024"
+            not missing and self._alembic_head() == "0025",
+            "fresh/upgrade matrix is current through 0025"
             if not missing
             else f"missing migration files: {','.join(missing)}",
         )
@@ -230,7 +231,7 @@ class MemoryReleaseCheck:
             integrity = str(await session.scalar(text("PRAGMA integrity_check")))
             foreign_keys = tuple((await session.execute(text("PRAGMA foreign_key_check"))).all())
             revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
-        return integrity == "ok" and not foreign_keys and str(revision) == "0024"
+        return integrity == "ok" and not foreign_keys and str(revision) == "0025"
 
     @staticmethod
     def _item(code: str, passed: bool, detail: str) -> ReleaseCheckItem:

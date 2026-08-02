@@ -320,6 +320,13 @@ class EventLedgerRepository:
             )
         return _event_record(row) if row is not None else None
 
+    async def get_event(self, event_id: int) -> EventRecord | None:
+        """Return one exact ledger event by its internal immutable identifier."""
+
+        async with self._database.sessions() as session:
+            row = await session.get(ChatEventModel, event_id)
+        return _event_record(row) if row is not None else None
+
     async def list_recent(
         self,
         *,

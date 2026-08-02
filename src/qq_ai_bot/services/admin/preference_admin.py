@@ -10,6 +10,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.models import MemoryFact
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.services.admin.common import require_self_or_superuser
+from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 
 
 class PreferenceAdminService:
@@ -21,10 +22,12 @@ class PreferenceAdminService:
         settings: Settings,
         memories: MemoryFactService,
         audit: AdminAuditService,
+        memory_mutations: MemoryAdminService | None = None,
     ) -> None:
         self._settings = settings
         self._memories = memories
         self._audit = audit
+        self._memory_mutations = memory_mutations
 
     async def list_preferences(
         self,
@@ -50,6 +53,36 @@ class PreferenceAdminService:
         if not normalized_key or not normalized_value:
             raise ValueError("偏好键和值不能为空")
         started = time.perf_counter()
+        if self._memory_mutations is not None:
+            existing = {
+                row.key: row
+                for row in await self._memories.list_preferences(
+                    target,
+                    limit=self._settings.preference_max_entries,
+                )
+            }.get(normalized_key)
+            row = await self._memory_mutations.set_explicit_preference(
+                actor,
+                target,
+                normalized_key,
+                normalized_value,
+                existing=existing,
+            )
+            await self._audit.record(
+                actor=actor,
+                capability="preference",
+                operation="set",
+                target_type="user",
+                target_id=target,
+                before={
+                    "key": normalized_key,
+                    "preference_value": existing.value if existing else None,
+                },
+                after={"key": normalized_key, "preference_value": normalized_value},
+                success=True,
+                duration_seconds=time.perf_counter() - started,
+            )
+            return row
         async with self._audit.transaction() as session:
             existing = {
                 row.key: row
@@ -93,6 +126,38 @@ class PreferenceAdminService:
         require_self_or_superuser(actor, target, self._settings)
         normalized_key = key.strip()
         started = time.perf_counter()
+        if self._memory_mutations is not None:
+            existing = {
+                row.key: row
+                for row in await self._memories.list_preferences(
+                    target,
+                    limit=self._settings.preference_max_entries,
+                )
+            }.get(normalized_key)
+            deleted = bool(
+                existing is not None
+                and await self._memory_mutations.delete_explicit_preference(
+                    actor,
+                    target,
+                    existing,
+                )
+            )
+            await self._audit.record(
+                actor=actor,
+                capability="preference",
+                operation="delete",
+                target_type="user",
+                target_id=target,
+                before={
+                    "key": normalized_key,
+                    "preference_value": existing.value if existing else None,
+                },
+                after=None,
+                success=deleted,
+                error_category=None if deleted else "not_found",
+                duration_seconds=time.perf_counter() - started,
+            )
+            return deleted
         async with self._audit.transaction() as session:
             existing = {
                 row.key: row
