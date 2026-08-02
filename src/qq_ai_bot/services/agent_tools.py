@@ -832,7 +832,8 @@ class AgentToolService:
             item
             for item in targets
             if item.subject_user_id == user_id
-            and item.scope_type in {
+            and item.scope_type
+            in {
                 MemoryScopeType.PERSON,
                 MemoryScopeType.PERSON_GROUP,
             }
@@ -1021,8 +1022,7 @@ class AgentToolService:
                 decision_actor_id="main_agent",
                 executed_by_bot_user_id=runtime.inbound.bot_user_id,
                 actor_is_superuser=(
-                    runtime.actor_is_superuser
-                    and event.sender_user_id in self._settings.superusers
+                    runtime.actor_is_superuser and event.sender_user_id in self._settings.superusers
                 ),
             ),
         )

@@ -281,10 +281,7 @@ class MemoryReflectionRepository:
 
 
 def _candidate_fingerprint(candidate: MemoryReflectionCandidate) -> str:
-    payload = (
-        f"{candidate.issue_type.value}:{candidate.fact_id}:"
-        f"{candidate.related_fact_id or 0}"
-    )
+    payload = f"{candidate.issue_type.value}:{candidate.fact_id}:{candidate.related_fact_id or 0}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

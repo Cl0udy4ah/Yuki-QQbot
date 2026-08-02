@@ -717,10 +717,7 @@ class MemoryMutationService:
             MemoryMutationOperation.CONTEST,
         }:
             return None
-        if (
-            request.operation is MemoryMutationOperation.CONTEST
-            and request.new_content is None
-        ):
+        if request.operation is MemoryMutationOperation.CONTEST and request.new_content is None:
             return None
         content = normalize_memory_text(request.new_content or "", maximum=4000)
         key = normalize_memory_text(

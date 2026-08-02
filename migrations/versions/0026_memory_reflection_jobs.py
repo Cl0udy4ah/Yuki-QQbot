@@ -38,9 +38,7 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["fact_id"], ["memory_facts.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(
-            ["related_fact_id"], ["memory_facts.id"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["related_fact_id"], ["memory_facts.id"], ondelete="SET NULL"),
         sa.UniqueConstraint("fingerprint", name="uq_memory_reflection_jobs_fingerprint"),
         sa.CheckConstraint(
             "issue_type IN ('duplicate','contested','attribution')",

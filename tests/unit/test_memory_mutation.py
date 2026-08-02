@@ -173,8 +173,7 @@ async def test_self_create_is_atomic_receipted_and_deduplicated(database: Databa
     assert rows[0].authority is MemoryAuthority.EXPLICIT
     async with database.sessions() as session:
         receipt_count = int(
-            await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
-            or 0
+            await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel)) or 0
         )
     assert receipt_count == 1
 
@@ -272,9 +271,7 @@ async def test_bot_event_cannot_become_user_memory_evidence(database: Database) 
     async with database.sessions() as session:
         assert (
             int(
-                await session.scalar(
-                    select(func.count()).select_from(MemoryMutationReceiptModel)
-                )
+                await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
                 or 0
             )
             == 0
@@ -611,9 +608,7 @@ async def test_receipt_failure_rolls_back_fact(
     async with database.sessions() as session:
         assert (
             int(
-                await session.scalar(
-                    select(func.count()).select_from(MemoryMutationReceiptModel)
-                )
+                await session.scalar(select(func.count()).select_from(MemoryMutationReceiptModel))
                 or 0
             )
             == 0
