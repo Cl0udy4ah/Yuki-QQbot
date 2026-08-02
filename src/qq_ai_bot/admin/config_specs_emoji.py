@@ -157,6 +157,14 @@ def emoji_config_specs() -> tuple[ConfigSpec, ...]:
     )
     number_specs = (
         (
+            "emoji.spontaneous_frequency",
+            "日常表情频率",
+            "emoji_spontaneous_frequency",
+            0,
+            1,
+            _GGU,
+        ),
+        (
             "emoji.selector_score_gap",
             "视觉精选分差阈值",
             "emoji_selector_score_gap",
@@ -193,7 +201,16 @@ def emoji_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             key,
             label,
-            f"配置{label}。",
+            (
+                "Planner 在用户未明确索要表情时选择表情的目标频率，范围 0..1；0.15 表示 15%。"
+                if key == "emoji.spontaneous_frequency"
+                else f"配置{label}。"
+            ),
+            aliases=(
+                ("日常表情频率", "主动表情频率", "自发表情频率")
+                if key == "emoji.spontaneous_frequency"
+                else ()
+            ),
             value_type="number",
             minimum=minimum,
             maximum=maximum,

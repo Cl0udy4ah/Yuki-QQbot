@@ -312,6 +312,7 @@ class Settings(BaseSettings):
     emoji_selector_score_gap: float = 0.75
     emoji_selector_timeout_seconds: float = 2.0
     emoji_max_effects_per_reply: int = 1
+    emoji_spontaneous_frequency: float = Field(default=0.15, ge=0, le=1)
     emoji_near_duplicate_enabled: bool = True
     emoji_near_duplicate_distance: int = 6
     emoji_same_emoji_cooldown_seconds: int = 300

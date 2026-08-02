@@ -170,6 +170,7 @@ def _runtime() -> RuntimeConfigSnapshot:
             selector_score_gap=0.75,
             selector_timeout_seconds=2,
             max_effects_per_reply=1,
+            spontaneous_frequency=0.15,
             near_duplicate_enabled=True,
             near_duplicate_distance=6,
             same_emoji_cooldown_seconds=300,
@@ -603,6 +604,22 @@ def test_planner_owns_emoji_effect_and_closes_tools_for_exclusive_delivery() -> 
         runtime,
         administrator_request=False,
     )
+    spontaneous_blocked = PlannerService._constrain_business_rules(
+        TurnPlan(
+            **_valid_plan_payload(
+                emoji=EmojiReplyPlan(
+                    intent=EmojiIntent.NEUTRAL,
+                    mode=EmojiReplyMode.OPTIONAL,
+                    goal="日常回应",
+                )
+            )
+        ),
+        planner_input.model_copy(
+            update={"emoji": available.model_copy(update={"spontaneous_allowed": False})}
+        ),
+        runtime,
+        administrator_request=False,
+    )
 
     assert explicit.emoji.mode is EmojiReplyMode.PREFERRED
     assert explicit.emoji.goal == "发个表情"
@@ -614,6 +631,7 @@ def test_planner_owns_emoji_effect_and_closes_tools_for_exclusive_delivery() -> 
     assert exclusive.tool_selection.scope_ids == ()
     assert exclusive.memory_context.mode is MemoryContextMode.NONE
     assert exclusive.memory_context.reason_code is MemoryContextReasonCode.EFFECT_ONLY
+    assert spontaneous_blocked.emoji.mode is EmojiReplyMode.NONE
 
 
 def test_planner_memory_context_is_separate_and_semantic_mode_degrades_cleanly() -> None:

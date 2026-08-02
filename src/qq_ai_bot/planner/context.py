@@ -39,6 +39,16 @@ class _ConversationMetrics:
     last_was_bot: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _EmojiCadence:
+    turns: int
+    emoji_turns: int
+
+    @property
+    def ratio(self) -> float:
+        return self.emoji_turns / self.turns if self.turns else 0.0
+
+
 class SpeechPlannerContextProvider(Protocol):
     async def planner_context(self, *, runtime: SpeechRuntimeConfig) -> PlannerSpeechContext: ...
 
@@ -164,12 +174,22 @@ class PlannerContextBuilder:
             }
         )
         emoji_hint = self._emoji_requests.detect(content)
+        emoji_cadence = self._emoji_cadence(recent, inbound.bot_user_id)
         emoji_context = PlannerEmojiContext(
             enabled=runtime.emoji.enabled,
             available=runtime.emoji.enabled,
             explicit_request=emoji_hint.explicit_request,
             standalone_request=emoji_hint.standalone_request,
             goal=emoji_hint.goal,
+            spontaneous_frequency=runtime.emoji.spontaneous_frequency,
+            recent_spontaneous_turns=emoji_cadence.turns,
+            recent_spontaneous_emoji_turns=emoji_cadence.emoji_turns,
+            recent_spontaneous_emoji_ratio=emoji_cadence.ratio,
+            spontaneous_allowed=self._effect_frequency_allows(
+                emoji_cadence.turns,
+                emoji_cadence.emoji_turns,
+                runtime.emoji.spontaneous_frequency,
+            ),
         )
         return PlannerInput(
             conversation_key=conversation_key,
@@ -211,8 +231,47 @@ class PlannerContextBuilder:
     ) -> bool:
         if preference_mode is VoicePreferenceMode.TEXT_ONLY or frequency <= 0:
             return False
-        budget = ceil((cadence.spontaneous_turns + 1) * min(1.0, frequency))
-        return cadence.spontaneous_voice_turns < budget
+        return PlannerContextBuilder._effect_frequency_allows(
+            cadence.spontaneous_turns,
+            cadence.spontaneous_voice_turns,
+            frequency,
+        )
+
+    @staticmethod
+    def _effect_frequency_allows(turns: int, effect_turns: int, frequency: float) -> bool:
+        if frequency <= 0:
+            return False
+        budget = ceil((turns + 1) * min(1.0, frequency))
+        return effect_turns < budget
+
+    @staticmethod
+    def _emoji_cadence(rows: tuple[EventRecord, ...], bot_user_id: str) -> _EmojiCadence:
+        """Summarize up to 20 recent bot reply bursts from the existing ledger read."""
+
+        turns: list[bool] = []
+        current: bool | None = None
+        for row in rows:
+            if row.direction != "outbound" and row.sender_user_id != bot_user_id:
+                if current is not None:
+                    turns.append(current)
+                    current = None
+                continue
+            current = bool(current) or any(
+                PlannerContextBuilder._is_emoji_segment(segment) for segment in row.segments
+            )
+        if current is not None:
+            turns.append(current)
+        window = turns[-20:]
+        return _EmojiCadence(len(window), sum(window))
+
+    @staticmethod
+    def _is_emoji_segment(segment: dict[str, object]) -> bool:
+        data = segment.get("data")
+        return bool(
+            segment.get("type") == "image"
+            and isinstance(data, dict)
+            and str(data.get("emoji_id", "")).strip()
+        )
 
     @staticmethod
     def _default_preference_mode(default_mode: str) -> VoicePreferenceMode:

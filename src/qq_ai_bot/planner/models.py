@@ -219,6 +219,11 @@ class PlannerEmojiContext(_StrictPlannerModel):
     explicit_request: bool = False
     standalone_request: bool = False
     goal: str = Field(default="", max_length=300)
+    spontaneous_frequency: float = Field(default=0.15, ge=0, le=1, strict=True)
+    recent_spontaneous_turns: int = Field(default=0, ge=0, strict=True)
+    recent_spontaneous_emoji_turns: int = Field(default=0, ge=0, strict=True)
+    recent_spontaneous_emoji_ratio: float = Field(default=0, ge=0, le=1, strict=True)
+    spontaneous_allowed: bool = True
 
 
 class ReplyNecessitySnapshot(_StrictPlannerModel):

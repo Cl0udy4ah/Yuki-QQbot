@@ -1279,6 +1279,9 @@ class RuntimeConfigService:
                     cast(float | int, value("emoji.selector_timeout_seconds"))
                 ),
                 max_effects_per_reply=int(cast(int, value("emoji.max_effects_per_reply"))),
+                spontaneous_frequency=float(
+                    cast(float | int, value("emoji.spontaneous_frequency"))
+                ),
                 near_duplicate_enabled=bool(value("emoji.near_duplicate_enabled")),
                 near_duplicate_distance=int(cast(int, value("emoji.near_duplicate_distance"))),
                 same_emoji_cooldown_seconds=int(

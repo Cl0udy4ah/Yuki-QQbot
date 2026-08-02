@@ -136,6 +136,53 @@ def test_spontaneous_frequency_is_a_deterministic_budget() -> None:
     )
 
 
+def test_emoji_cadence_groups_split_messages_into_reply_turns() -> None:
+    now = datetime.now(UTC)
+    inbound = EventRecord(
+        id=1,
+        bot_user_id="8000",
+        platform_message_id="in-1",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="1001",
+        direction="inbound",
+        content="你好",
+        visual_summary="",
+        segments=({"type": "text", "data": {"text": "你好"}},),
+        occurred_at=now,
+        private_peer_user_id="1001",
+    )
+    text_reply = replace(
+        inbound,
+        id=2,
+        platform_message_id="out-1",
+        sender_user_id="8000",
+        direction="outbound",
+        content="在呢",
+        segments=({"type": "text", "data": {"text": "在呢"}},),
+    )
+    split_reply = replace(text_reply, id=3, platform_message_id="out-2", content="怎么啦")
+    emoji_reply = replace(
+        text_reply,
+        id=5,
+        platform_message_id="out-3",
+        content="",
+        segments=({"type": "image", "data": {"emoji_id": "emoji-1"}},),
+    )
+    cadence = PlannerContextBuilder._emoji_cadence(
+        (inbound, text_reply, split_reply, replace(inbound, id=4), emoji_reply),
+        "8000",
+    )
+
+    assert cadence.turns == 2
+    assert cadence.emoji_turns == 1
+    assert cadence.ratio == 0.5
+    assert not PlannerContextBuilder._effect_frequency_allows(
+        cadence.turns,
+        cadence.emoji_turns,
+        0.15,
+    )
+
+
 def test_voice_ledger_separates_spoken_text_from_internal_metadata() -> None:
     technical_summary = "Yuki 发送了一条语音，声线：roxy，风格：happy，语言：jp"
     media_only = OutboundMessage(

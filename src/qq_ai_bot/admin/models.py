@@ -311,6 +311,7 @@ class EmojiRuntimeConfig:
     selector_score_gap: float
     selector_timeout_seconds: float
     max_effects_per_reply: int
+    spontaneous_frequency: float
     near_duplicate_enabled: bool
     near_duplicate_distance: int
     same_emoji_cooldown_seconds: int

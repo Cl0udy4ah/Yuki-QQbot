@@ -269,6 +269,15 @@ class PlannerService:
                 emoji_updates["goal"] = planner_input.current_message.text[:300]
             if emoji_updates:
                 emoji_plan = emoji_plan.model_copy(update=emoji_updates)
+        elif not planner_input.emoji.spontaneous_allowed:
+            emoji_plan = emoji_plan.model_copy(
+                update={
+                    "mode": EmojiReplyMode.NONE,
+                    "placement": EmojiPlacement.AFTER_TEXT,
+                    "goal": "",
+                    "emotion": "",
+                }
+            )
         if planner_input.emoji.available and emoji_plan.is_exclusive:
             emoji_plan = emoji_plan.model_copy(
                 update={

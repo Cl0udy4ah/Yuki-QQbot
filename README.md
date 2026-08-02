@@ -11,7 +11,7 @@
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/Version-3.0.2-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Version-3.0.3-blue" alt="Version">
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python Version">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -36,9 +36,10 @@
 
 Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agent。它通过 NapCatQQ 接入 QQ，使用 Planner、Agent、长期记忆、工具系统和插件系统完成聊天、检索、自动化与外部服务调用。
 
-> **当前版本：3.0.2**
+> **当前版本：3.0.3**
 >
-> 本版本修复群聊表情候选查询与发送确认链路。明确的“发个表情”请求会走 Planner 的确定性快路径；只有 OneBot 返回真实消息 ID 后，系统才会记录图片已发送，失败时会回退为短文字。
+> 本版本新增日常表情目标频率：Planner 根据近期真实投递比例限制自发 `optional` 表情，明确
+> 索要表情不受影响；频率支持全局、群和用户作用域热修改。本版本不新增数据库迁移。
 
 ## ✨ 主要功能
 

@@ -162,6 +162,9 @@ def test_registry_is_explicit_and_converts_supported_types() -> None:
     assert registry.convert(registry.get("planner.group_enabled"), "开启") is True
     assert registry.get("desired_messages").key == "planner.preferred_messages"
     assert registry.convert(registry.get("日常回复条数"), "5") == 5
+    emoji_frequency = registry.get("日常表情频率")
+    assert emoji_frequency.key == "emoji.spontaneous_frequency"
+    assert registry.convert(emoji_frequency, "0.1") == 0.1
     with pytest.raises(KeyError):
         registry.get("arbitrary_config_set")
     with pytest.raises(ValueError):

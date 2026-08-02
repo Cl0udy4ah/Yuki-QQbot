@@ -292,6 +292,7 @@ class EmojiSettings(DomainSettings):
     emoji_selector_score_gap: float = Field(ge=0)
     emoji_selector_timeout_seconds: float = Field(gt=0)
     emoji_max_effects_per_reply: int = Field(gt=0)
+    emoji_spontaneous_frequency: float = Field(ge=0, le=1)
     emoji_near_duplicate_enabled: bool
     emoji_near_duplicate_distance: int = Field(ge=0, le=64)
     emoji_same_emoji_cooldown_seconds: int = Field(ge=0)

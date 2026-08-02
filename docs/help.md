@@ -1,8 +1,12 @@
 # Yuki-QQbot
 
+> **3.0.3 日常表情节奏：**新增可热修改的 `emoji.spontaneous_frequency`，默认 `0.15`。
+> Planner 复用近期账本中的真实投递记录限制自发 `optional` 表情；明确索要表情不受影响。
+> 本补丁不新增数据库迁移，Alembic head 仍为 `0024`。
+
 > **3.0.2 表情可靠性补丁：**修复群聊表情作用域 SQL、Planner 超时放大和媒体“准备成功即
 > 发送成功”的误判。明确索要表情时不调用 Planner LLM 或 Chat Agent；只有 OneBot 真实回执
-> 会进入成功账本。失败时返回确定性短文字，不重试图片。本补丁无数据库迁移，head 仍为 `0024`。
+> 会进入成功账本。失败时返回确定性短文字，不重试图片。
 
 > **3.0.0 正式版：**Memory V2 六阶段已收口。正式版不新增生产数据库迁移，Alembic head
 > 仍为 `0024`；新增版本化合成质量基准、严格污染门禁、内容无关生产审计、指纹保护的显式
@@ -61,7 +65,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.0.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 3.0.3 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -210,7 +214,7 @@ TaskSpec Schema 提供的模型安全 ID 中选择能力，后端会解析为真
 - 状态：`candidate → recognized → adopted`；普通照片进入 `rejected`，管理员可 `ban`，文件丢失时标记 `missing`。
 - 自动收集：`metadata_only` 只看 OneBot 明确表情字段；`likely` 还接受表情相关元数据；`all_images` 接受作用域内全部图片作为候选。
 - 去重与文件：SHA-256 完全去重；可选 dHash 只标识近似候选，不会误删。原图保存到 `data/emoji/original/`，第一帧 WebP 预览保存到 `data/emoji/preview/`；GIF/WebP 原动画保持不变。
-- 回复：Planner 只输出语义目标、情绪、模式和位置，不能指定文件或表情 ID；核心先粗排，再可选用候选拼图做视觉精排。`emoji_only` 由发送层直接执行，不再经过第二次 Agent 决策；发送可以位于文字前、文字后或仅发表情，并服从新消息取消与发送成功后计数。
+- 回复：Planner 只输出语义目标、情绪、模式和位置，不能指定文件或表情 ID；核心先粗排，再可选用候选拼图做视觉精排。`emoji_only` 由发送层直接执行，不再经过第二次 Agent 决策；日常 `optional` 受 `EMOJI_SPONTANEOUS_FREQUENCY`（默认 0.15）和近期真实发送比例约束，明确索要表情不受影响。发送可以位于文字前、文字后或仅发表情，并服从新消息取消与发送成功后计数。
 - 隔离：OCR、描述、插件和网页都不能执行命令、改变关系或写人物记忆；数据库和日志不保存图片 Base64。
 
 常用命令（仅真实 `SUPERUSERS`）：
