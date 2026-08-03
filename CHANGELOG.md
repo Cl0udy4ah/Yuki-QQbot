@@ -13,7 +13,8 @@
 - 生产 Memory Worker、确定性记忆/偏好命令、管理员 Action、Plugin Memory Facade 和有界
   lifecycle reflection 接入统一变更边界；普通成员可影响本人、当前群及群内人物记忆，同时
   保留 `third_party` 来源。
-- 被提及群友的读取范围收窄为当前群 `person_group`，不向普通成员投影对方跨群 `person`。
+- 群友读取以当前群 `person_group` 为基础，并只读投影由目标本人在当前群 evidence 支持的
+  `person`；不暴露 evidence、其他群事实或变更权限。
 
 ### Host 管理的插件直达绑定
 
