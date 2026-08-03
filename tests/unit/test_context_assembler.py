@@ -138,7 +138,7 @@ async def test_context_assembler_enforces_one_dynamic_character_budget(
 
 @pytest.mark.asyncio
 async def test_context_exposes_event_bound_memory_subject_refs(database: Database) -> None:
-    settings = make_settings(database.url)
+    settings = make_settings(database.url, self_memory_enabled=True)
     harness = build_harness(database, settings)
     await harness.groups.set_enabled("2001", True)
     await harness.profiles.observe(
