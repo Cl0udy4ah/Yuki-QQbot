@@ -151,6 +151,9 @@ class MemoryContextReasonCode(StrEnum):
     PERSON_REFERENCE = "person_reference"
     GROUP_REFERENCE = "group_reference"
     EXPLICIT_OVERVIEW = "explicit_overview"
+    SELF_MEMORY_RECALL = "self_memory_recall"
+    SELF_REFERENCE = "self_reference"
+    SELF_OVERVIEW = "self_overview"
 
 
 class MemoryContextPlan(_StrictPlannerModel):
@@ -158,6 +161,7 @@ class MemoryContextPlan(_StrictPlannerModel):
 
     mode: MemoryContextMode = MemoryContextMode.LEXICAL
     reason_code: MemoryContextReasonCode = MemoryContextReasonCode.DEFAULT
+    self_recall: bool = False
 
 
 class PlannerMemoryContext(_StrictPlannerModel):
@@ -165,6 +169,7 @@ class PlannerMemoryContext(_StrictPlannerModel):
 
     retrieval_enabled: bool = True
     semantic_enabled: bool = False
+    self_enabled: bool = False
 
 
 class PlannerMessage(_StrictPlannerModel):
@@ -391,9 +396,17 @@ class PlannerMemoryOutput(_StrictPlannerModel):
         )
     )
     reason_code: MemoryContextReasonCode = MemoryContextReasonCode.DEFAULT
+    self_recall: bool = Field(
+        default=False,
+        description="是否检索 Yuki 过去形成的动态自我记忆。",
+    )
 
     def materialize(self) -> MemoryContextPlan:
-        return MemoryContextPlan(mode=self.mode, reason_code=self.reason_code)
+        return MemoryContextPlan(
+            mode=self.mode,
+            reason_code=self.reason_code,
+            self_recall=self.self_recall,
+        )
 
 
 class PlannerEmojiOutput(_StrictPlannerModel):

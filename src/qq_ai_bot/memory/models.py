@@ -24,6 +24,7 @@ from qq_ai_bot.memory.enums import (
     MemoryStateAction,
     MemoryStatus,
     MemoryTargetRole,
+    SelfMemoryVisibility,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -37,6 +38,9 @@ class MemoryFact(_MemoryModel):
     scope_type: MemoryScopeType
     subject_user_id: str | None = None
     group_id: str | None = None
+    visibility_type: SelfMemoryVisibility | None = None
+    visibility_user_id: str | None = None
+    visibility_group_id: str | None = None
     kind: MemoryKind
     memory_key: str
     category: str
@@ -75,11 +79,24 @@ class MemoryFact(_MemoryModel):
 
     @model_validator(mode="after")
     def _validate_lifecycle(self) -> MemoryFact:
+        _validate_fact_identity(
+            scope_type=self.scope_type,
+            subject_user_id=self.subject_user_id,
+            group_id=self.group_id,
+            visibility_type=self.visibility_type,
+            visibility_user_id=self.visibility_user_id,
+            visibility_group_id=self.visibility_group_id,
+        )
         _validate_fact_lifecycle(
             status=self.status,
             conflict_state=self.conflict_state,
             invalidated_reason=self.invalidated_reason,
         )
+        if (
+            self.authority is MemoryAuthority.AGENT_REFLECTION
+            and self.scope_type is not MemoryScopeType.SELF
+        ):
+            raise ValueError("agent reflection authority is only valid for self memory")
         if (
             self.valid_from is not None
             and self.valid_until is not None
@@ -128,6 +145,9 @@ class MemoryFactCreate(_MemoryModel):
     scope_type: MemoryScopeType
     subject_user_id: str | None = None
     group_id: str | None = None
+    visibility_type: SelfMemoryVisibility | None = None
+    visibility_user_id: str | None = None
+    visibility_group_id: str | None = None
     kind: MemoryKind = MemoryKind.FACT
     memory_key: str = Field(min_length=1, max_length=128)
     category: str = Field(min_length=1, max_length=64)
@@ -151,19 +171,24 @@ class MemoryFactCreate(_MemoryModel):
 
     @model_validator(mode="after")
     def _validate_scope(self) -> MemoryFactCreate:
-        if self.scope_type is MemoryScopeType.PERSON:
-            valid = bool(self.subject_user_id) and self.group_id is None
-        elif self.scope_type is MemoryScopeType.PERSON_GROUP:
-            valid = bool(self.subject_user_id) and bool(self.group_id)
-        else:
-            valid = self.subject_user_id is None and bool(self.group_id)
-        if not valid:
-            raise ValueError("memory fact identity does not match its scope")
+        _validate_fact_identity(
+            scope_type=self.scope_type,
+            subject_user_id=self.subject_user_id,
+            group_id=self.group_id,
+            visibility_type=self.visibility_type,
+            visibility_user_id=self.visibility_user_id,
+            visibility_group_id=self.visibility_group_id,
+        )
         _validate_fact_lifecycle(
             status=self.status,
             conflict_state=self.conflict_state,
             invalidated_reason=self.invalidated_reason,
         )
+        if (
+            self.authority is MemoryAuthority.AGENT_REFLECTION
+            and self.scope_type is not MemoryScopeType.SELF
+        ):
+            raise ValueError("agent reflection authority is only valid for self memory")
         if (
             self.valid_from is not None
             and self.valid_until is not None
@@ -262,6 +287,9 @@ class MemoryFactQuery(_MemoryModel):
     scope_type: MemoryScopeType
     subject_user_id: str | None = None
     group_id: str | None = None
+    visibility_type: SelfMemoryVisibility | None = None
+    visibility_user_id: str | None = None
+    visibility_group_id: str | None = None
     kind: MemoryKind | None = None
     status: MemoryStatus = MemoryStatus.ACTIVE
 
@@ -271,6 +299,9 @@ class MemoryFactQuery(_MemoryModel):
             scope_type=self.scope_type,
             subject_user_id=self.subject_user_id,
             group_id=self.group_id,
+            visibility_type=self.visibility_type,
+            visibility_user_id=self.visibility_user_id,
+            visibility_group_id=self.visibility_group_id,
             kind=self.kind or MemoryKind.FACT,
             memory_key="query",
             category="query",
@@ -309,6 +340,9 @@ class MemoryEntityTarget(_MemoryModel):
     scope_type: MemoryScopeType
     subject_user_id: str | None = None
     group_id: str | None = None
+    visibility_type: SelfMemoryVisibility | None = None
+    visibility_user_id: str | None = None
+    visibility_group_id: str | None = None
     block_id: str
 
     @model_validator(mode="after")
@@ -317,8 +351,12 @@ class MemoryEntityTarget(_MemoryModel):
             scope_type=self.scope_type,
             subject_user_id=self.subject_user_id,
             group_id=self.group_id,
+            visibility_type=self.visibility_type,
+            visibility_user_id=self.visibility_user_id,
+            visibility_group_id=self.visibility_group_id,
         )
         expected = {
+            MemoryTargetRole.CURRENT_SELF: MemoryScopeType.SELF,
             MemoryTargetRole.CURRENT_PERSON: MemoryScopeType.PERSON,
             MemoryTargetRole.CURRENT_PERSON_GROUP: MemoryScopeType.PERSON_GROUP,
             MemoryTargetRole.CURRENT_GROUP: MemoryScopeType.GROUP,
@@ -412,3 +450,41 @@ def _validate_fact_lifecycle(
         raise ValueError("invalidated memory fact requires an invalidation reason")
     if status is not MemoryStatus.INVALIDATED and invalidated_reason is not None:
         raise ValueError("invalidation reason is only valid for invalidated memory facts")
+
+
+def _validate_fact_identity(
+    *,
+    scope_type: MemoryScopeType,
+    subject_user_id: str | None,
+    group_id: str | None,
+    visibility_type: SelfMemoryVisibility | None,
+    visibility_user_id: str | None,
+    visibility_group_id: str | None,
+) -> None:
+    """Keep subject identity separate from SELF conversation visibility."""
+
+    if scope_type is MemoryScopeType.PERSON:
+        identity_valid = bool(subject_user_id) and group_id is None
+    elif scope_type is MemoryScopeType.PERSON_GROUP:
+        identity_valid = bool(subject_user_id) and bool(group_id)
+    elif scope_type is MemoryScopeType.GROUP:
+        identity_valid = subject_user_id is None and bool(group_id)
+    else:
+        identity_valid = subject_user_id is None and group_id is None
+    if not identity_valid:
+        raise ValueError("memory fact identity does not match its scope")
+
+    if scope_type is not MemoryScopeType.SELF:
+        if any((visibility_type, visibility_user_id, visibility_group_id)):
+            raise ValueError("non-self memory cannot carry self visibility")
+        return
+    if visibility_type is SelfMemoryVisibility.GLOBAL:
+        visibility_valid = visibility_user_id is None and visibility_group_id is None
+    elif visibility_type is SelfMemoryVisibility.PRIVATE:
+        visibility_valid = bool(visibility_user_id) and visibility_group_id is None
+    elif visibility_type is SelfMemoryVisibility.GROUP:
+        visibility_valid = visibility_user_id is None and bool(visibility_group_id)
+    else:
+        visibility_valid = False
+    if not visibility_valid:
+        raise ValueError("self memory visibility does not match its boundary")

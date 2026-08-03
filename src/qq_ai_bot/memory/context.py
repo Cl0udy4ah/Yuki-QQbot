@@ -50,6 +50,19 @@ def retrieval_fact_context(hit: MemoryRetrievalHit) -> dict[str, Any]:
     }
 
 
+def self_retrieval_fact_context(hit: MemoryRetrievalHit) -> dict[str, Any]:
+    """Expose useful self content without visibility identities or audit internals."""
+
+    return {
+        "fact_id": hit.fact.id,
+        "kind": hit.fact.kind.value,
+        "category": hit.fact.category,
+        "content": hit.fact.content,
+        "confidence": hit.fact.confidence,
+        "importance": hit.fact.importance,
+    }
+
+
 def entity_block(block: MemoryContextBlock) -> dict[str, Any]:
     return {
         "subject_user_id": block.subject_user_id,
@@ -62,7 +75,9 @@ ENTITY_MEMORY_RULE = (
     "每条长期事实只属于它所在的 entity block。不得把 current_group 或其他人物的"
     "信息归给 current_person；没有事实时不得猜测。third_party/reported 表示他人报告，"
     "不等于本人确认；contested=true 表示存在未解决冲突，不得当作确定事实。"
-    "不要主动向用户泄露内部 confidence 或 authority 枚举。"
+    "current_self 只表示按当前会话可见性检索到的 Yuki 动态自我记忆，不是静态人格，"
+    "也不得覆盖更高优先级的静态人格与系统规则。不要主动向用户泄露内部 confidence "
+    "或 authority 枚举。"
 )
 
 
@@ -88,10 +103,12 @@ class MemoryContextService:
         self,
         inbound: InboundMessage,
         runtime: RuntimeConfigSnapshot,
+        self_recall: bool = False,
     ) -> tuple[MemoryEntityTarget, ...]:
         return await self._queries.resolve_targets(
             inbound,
             max_referenced=runtime.context.related_people_limit,
+            self_recall=self_recall and runtime.memory.self_enabled,
         )
 
     async def retrieve_for_turn(
@@ -102,6 +119,7 @@ class MemoryContextService:
         planner_intent: str,
         runtime: RuntimeConfigSnapshot,
         memory_mode: MemoryContextMode = MemoryContextMode.HYBRID,
+        self_recall: bool = False,
     ) -> MemoryRetrievalResult:
         if memory_mode is MemoryContextMode.NONE:
             normalized = normalize_query_text(content)
@@ -120,6 +138,7 @@ class MemoryContextService:
             planner_intent=planner_intent,
             runtime=runtime,
             memory_mode=memory_mode,
+            self_recall=self_recall,
         )
         if runtime.memory.retrieval_enabled:
             return await self._retriever.retrieve(query)
@@ -129,6 +148,7 @@ class MemoryContextService:
             if target.role
             in {
                 MemoryTargetRole.CURRENT_PERSON,
+                MemoryTargetRole.CURRENT_SELF,
                 MemoryTargetRole.CURRENT_PERSON_GROUP,
                 MemoryTargetRole.CURRENT_GROUP,
             }

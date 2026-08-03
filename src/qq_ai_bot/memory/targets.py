@@ -6,7 +6,11 @@ from pydantic import ValidationError
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage
-from qq_ai_bot.memory.enums import MemoryScopeType, MemoryTargetRole
+from qq_ai_bot.memory.enums import (
+    MemoryScopeType,
+    MemoryTargetRole,
+    SelfMemoryVisibility,
+)
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.models import MemoryEntityTarget
 from qq_ai_bot.persistence.repositories import PeopleRepository
@@ -23,17 +27,35 @@ class MemoryTargetResolver:
         inbound: InboundMessage,
         *,
         max_referenced: int,
+        include_self: bool = False,
     ) -> tuple[MemoryEntityTarget, ...]:
         user_id = inbound.sender.user_id
         try:
-            targets = [
+            targets = []
+            if include_self:
+                is_private = inbound.scope_type is ScopeType.PRIVATE or inbound.group_id is None
+                targets.append(
+                    MemoryEntityTarget(
+                        role=MemoryTargetRole.CURRENT_SELF,
+                        scope_type=MemoryScopeType.SELF,
+                        visibility_type=(
+                            SelfMemoryVisibility.PRIVATE
+                            if is_private
+                            else SelfMemoryVisibility.GROUP
+                        ),
+                        visibility_user_id=user_id if is_private else None,
+                        visibility_group_id=None if is_private else inbound.group_id,
+                        block_id="current_self",
+                    )
+                )
+            targets.append(
                 MemoryEntityTarget(
                     role=MemoryTargetRole.CURRENT_PERSON,
                     scope_type=MemoryScopeType.PERSON,
                     subject_user_id=user_id,
                     block_id="current_person",
                 )
-            ]
+            )
         except ValidationError as exc:
             raise MemoryRetrievalError("memory_target_invalid") from exc
         if inbound.scope_type is ScopeType.PRIVATE or inbound.group_id is None:

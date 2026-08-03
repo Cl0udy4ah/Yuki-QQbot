@@ -19,6 +19,7 @@ MATRIX = {
     "3.0.0rc1": "0024",
     "memory-mutation": "0025",
     "memory-reflection": "0026",
+    "yuki-self-memory": "0027",
 }
 
 
@@ -58,7 +59,7 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
     assert "memory_mutation_receipts" in expected_names
     assert "memory_reflection_jobs" in expected_names
     with sqlite3.connect(fresh) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0026",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0027",)
 
     for label, revision in MATRIX.items():
         database = tmp_path / f"{label}.db"
@@ -68,11 +69,11 @@ def test_fresh_and_upgrade_matrix_have_equivalent_head_schema(tmp_path: Path) ->
         assert names == expected_names, label
         with sqlite3.connect(database) as connection:
             assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-                "0026",
+                "0027",
             )
             assert connection.execute("SELECT COUNT(*) FROM memory_rebuild_runs").fetchone() == (0,)
 
 
-def test_memory_reflection_is_the_current_production_migration() -> None:
+def test_yuki_self_memory_is_the_current_production_migration() -> None:
     versions = sorted((ROOT / "migrations/versions").glob("*.py"))
-    assert versions[-1].name == "0026_memory_reflection_jobs.py"
+    assert versions[-1].name == "0027_yuki_self_memory.py"

@@ -14,7 +14,11 @@ from qq_ai_bot.domain.conversations import ConversationIdentity
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.domain.relationships import RelationshipSnapshot
-from qq_ai_bot.memory.context import MemoryContextService, retrieval_fact_context
+from qq_ai_bot.memory.context import (
+    MemoryContextService,
+    retrieval_fact_context,
+    self_retrieval_fact_context,
+)
 from qq_ai_bot.memory.enums import MemoryContextMode, MemoryTargetRole
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
@@ -86,6 +90,7 @@ class ContextAssembler:
         runtime: RuntimeConfigSnapshot,
         planner_intent: str = "",
         memory_mode: MemoryContextMode = MemoryContextMode.LEXICAL,
+        self_recall: bool = False,
     ) -> AssembledContext:
         """Build one bounded snapshot without persisting model-only metadata."""
 
@@ -103,6 +108,7 @@ class ContextAssembler:
             planner_intent=planner_intent,
             runtime=runtime,
             memory_mode=memory_mode,
+            self_recall=self_recall,
         )
         hits_by_role = {
             block.target.role: block.hits
@@ -110,6 +116,7 @@ class ContextAssembler:
             if block.target.role
             in {
                 MemoryTargetRole.CURRENT_PERSON,
+                MemoryTargetRole.CURRENT_SELF,
                 MemoryTargetRole.CURRENT_PERSON_GROUP,
                 MemoryTargetRole.CURRENT_GROUP,
             }
@@ -148,6 +155,11 @@ class ContextAssembler:
                 "group_card": profile.group_card,
             },
         }
+        self_hits = hits_by_role.get(MemoryTargetRole.CURRENT_SELF, ())
+        if self_hits:
+            context["current_self"] = {
+                "facts": [self_retrieval_fact_context(hit) for hit in self_hits]
+            }
         context["available_memory_subjects"] = await self._available_memory_subjects(
             inbound,
             profile,
@@ -328,6 +340,8 @@ class ContextAssembler:
                 "display_name": current_profile.display_name,
             }
         ]
+        if self._settings.self_memory_enabled:
+            subjects.append({"subject_ref": "self", "display_name": "Yuki"})
         group_id = inbound.group_id
         if group_id is None:
             return subjects
@@ -412,17 +426,38 @@ class ContextAssembler:
         context: dict[str, Any],
         limit: int,
     ) -> tuple[dict[str, object], tuple[int, ...]]:
-        """Select domain-neutral contributions; no category-specific pop loop remains."""
+        """Select contributions and enforce the serialized metadata budget."""
 
         contributions = cls._context_contributions(context)
-        selection = ContextBudgeter().select(
-            contributions,
-            character_budget=limit,
-        )
-        selected = {item.id: item.payload for item in selection.selected}
+        selection_budget = limit
+        while True:
+            selection = ContextBudgeter().select(
+                contributions,
+                character_budget=selection_budget,
+            )
+            payload, selected_fact_ids = cls._render_metadata_selection(selection.selected)
+            rendered_size = len(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                )
+            )
+            if rendered_size <= limit:
+                return payload, selected_fact_ids
+            # Contribution costs intentionally describe standalone items. Reduce the
+            # selection budget by the exact container/aggregation overshoot and retry.
+            selection_budget -= max(1, rendered_size - limit)
+
+    @staticmethod
+    def _render_metadata_selection(
+        selection: tuple[ContextContribution, ...],
+    ) -> tuple[dict[str, object], tuple[int, ...]]:
+        selected = {item.id: item.payload for item in selection}
         items: list[dict[str, object]] = []
         selected_fact_ids: list[int] = []
-        for item in selection.selected:
+        for item in selection:
             if isinstance(item.payload, dict):
                 fact_id = item.payload.get("fact_id")
                 if isinstance(fact_id, int) and fact_id > 0:
@@ -434,6 +469,7 @@ class ContextAssembler:
                     "current_person_in_group.fact.",
                     "referenced_person_fact.",
                     "referenced_group_fact.",
+                    "current_self.fact.",
                 )
             ):
                 continue
@@ -457,6 +493,11 @@ class ContextAssembler:
                     ],
                 }
             items.append({"id": item.id, "data": payload})
+        self_facts = [
+            value for key, value in selected.items() if key.startswith("current_self.fact.")
+        ]
+        if self_facts:
+            items.append({"id": "current_self", "data": {"facts": self_facts}})
         for output_item in items:
             item_id = output_item["id"]
             payload = output_item["data"]
@@ -525,6 +566,16 @@ class ContextAssembler:
                     relevance=0.9,
                 )
         add("scene", context.get("scene", {}), priority=100, relevance=1, required=True)
+        current_self = context.get("current_self")
+        if isinstance(current_self, dict):
+            for index, memory in enumerate(current_self.get("facts", ())):
+                importance = memory.get("importance", 1) if isinstance(memory, dict) else 1
+                add(
+                    f"current_self.fact.{index}",
+                    memory,
+                    priority=70 + int(importance),
+                    relevance=0.95,
+                )
         memory_subjects = context.get("available_memory_subjects")
         if isinstance(memory_subjects, list) and memory_subjects:
             add(
@@ -532,7 +583,6 @@ class ContextAssembler:
                 memory_subjects,
                 priority=100,
                 relevance=1,
-                required=True,
             )
         for key, priority in (("current_group", 55), ("current_person_in_group", 65)):
             block = context.get(key)

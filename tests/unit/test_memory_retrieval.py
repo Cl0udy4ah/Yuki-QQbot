@@ -14,12 +14,14 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import (
+    MemoryAuthority,
     MemoryContextMode,
     MemoryKind,
     MemoryRetrievalMode,
     MemoryScopeType,
     MemorySourceType,
     MemoryTargetRole,
+    SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex, build_safe_lexical_query
@@ -97,12 +99,19 @@ async def _remember(
     category: str = "profile",
     importance: int = 3,
     confidence: float = 0.8,
+    visibility_type: SelfMemoryVisibility | None = None,
+    visibility_user_id: str | None = None,
+    visibility_group_id: str | None = None,
+    authority: MemoryAuthority = MemoryAuthority.SELF_REPORT,
 ) -> MemoryFact:
     return await service.remember(
         MemoryFactCreate(
             scope_type=scope,
             subject_user_id=user_id,
             group_id=group_id,
+            visibility_type=visibility_type,
+            visibility_user_id=visibility_user_id,
+            visibility_group_id=visibility_group_id,
             kind=kind,
             memory_key=memory_key,
             category=category,
@@ -110,8 +119,136 @@ async def _remember(
             importance=importance,
             confidence=confidence,
             source_type=source,
+            authority=authority,
         )
     )
+
+
+def _self_target(
+    visibility: SelfMemoryVisibility,
+    *,
+    user_id: str | None = None,
+    group_id: str | None = None,
+) -> MemoryEntityTarget:
+    return MemoryEntityTarget(
+        role=MemoryTargetRole.CURRENT_SELF,
+        scope_type=MemoryScopeType.SELF,
+        visibility_type=visibility,
+        visibility_user_id=user_id,
+        visibility_group_id=group_id,
+        block_id="current_self",
+    )
+
+
+@pytest.mark.asyncio
+async def test_self_retrieval_hard_filters_global_and_current_visibility(
+    database: Database,
+) -> None:
+    memories, retriever = _retriever(database)
+    common = dict(
+        content="Yuki 喜欢认真讨论记忆架构",
+        user_id=None,
+        group_id=None,
+        scope=MemoryScopeType.SELF,
+        category="self_preference",
+        authority=MemoryAuthority.AGENT_REFLECTION,
+    )
+    global_fact = await _remember(
+        memories,
+        memory_key="self:global",
+        visibility_type=SelfMemoryVisibility.GLOBAL,
+        **common,
+    )
+    private_fact = await _remember(
+        memories,
+        memory_key="self:private:1001",
+        visibility_type=SelfMemoryVisibility.PRIVATE,
+        visibility_user_id="1001",
+        **common,
+    )
+    other_private = await _remember(
+        memories,
+        memory_key="self:private:1002",
+        visibility_type=SelfMemoryVisibility.PRIVATE,
+        visibility_user_id="1002",
+        **common,
+    )
+    group_fact = await _remember(
+        memories,
+        memory_key="self:group:2001",
+        visibility_type=SelfMemoryVisibility.GROUP,
+        visibility_group_id="2001",
+        **common,
+    )
+    other_group = await _remember(
+        memories,
+        memory_key="self:group:2002",
+        visibility_type=SelfMemoryVisibility.GROUP,
+        visibility_group_id="2002",
+        **common,
+    )
+
+    private_result = await retriever.retrieve(
+        _query(
+            "认真讨论记忆架构",
+            _self_target(SelfMemoryVisibility.PRIVATE, user_id="1001"),
+        )
+    )
+    assert {hit.fact.id for hit in private_result.hits} == {global_fact.id, private_fact.id}
+    assert other_private.id not in {hit.fact.id for hit in private_result.hits}
+
+    group_result = await retriever.retrieve(
+        _query(
+            "认真讨论记忆架构",
+            _self_target(SelfMemoryVisibility.GROUP, group_id="2001"),
+        )
+    )
+    assert {hit.fact.id for hit in group_result.hits} == {global_fact.id, group_fact.id}
+    assert other_group.id not in {hit.fact.id for hit in group_result.hits}
+
+
+@pytest.mark.asyncio
+async def test_query_builder_adds_self_target_only_for_enabled_explicit_recall(
+    database: Database,
+) -> None:
+    settings = make_settings(database.url, self_memory_enabled=True)
+    runtime = await RuntimeConfigService(settings=settings, database=database).snapshot(
+        user_id="1001"
+    )
+    builder = MemoryQueryBuilder(MemoryTargetResolver(PeopleRepository(database)))
+    inbound = InboundMessage(
+        message_id="self-recall-target",
+        event_type="message:private",
+        scope_type=ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id="1001"),
+        text="你喜欢咖啡吗",
+        bot_user_id="8000",
+    )
+
+    disabled_for_turn = await builder.build(
+        inbound=inbound,
+        content=inbound.text,
+        planner_intent="询问 Yuki 的偏好",
+        runtime=runtime,
+        self_recall=False,
+    )
+    enabled_for_turn = await builder.build(
+        inbound=inbound,
+        content=inbound.text,
+        planner_intent="询问 Yuki 的偏好",
+        runtime=runtime,
+        self_recall=True,
+    )
+    assert MemoryTargetRole.CURRENT_SELF not in {
+        target.role for target in disabled_for_turn.targets
+    }
+    self_target = next(
+        target
+        for target in enabled_for_turn.targets
+        if target.role is MemoryTargetRole.CURRENT_SELF
+    )
+    assert self_target.visibility_type is SelfMemoryVisibility.PRIVATE
+    assert self_target.visibility_user_id == "1001"
 
 
 def _retriever(database: Database) -> tuple[MemoryFactService, MemoryRetriever]:

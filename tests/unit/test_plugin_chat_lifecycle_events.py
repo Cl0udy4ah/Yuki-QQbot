@@ -94,6 +94,7 @@ async def test_chat_lifecycle_events_are_metadata_only_and_ordered(
         "voice_tool_policy",
         "memory_context_mode",
         "memory_context_reason",
+        "memory_self_recall",
         "confidence",
         "planner_used",
         "fallback_used",

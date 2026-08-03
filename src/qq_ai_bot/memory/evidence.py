@@ -31,7 +31,8 @@ class MemoryEvidencePolicy:
         MemoryAuthority.THIRD_PARTY: 0,
         MemoryAuthority.GROUP_REPORT: 1,
         MemoryAuthority.SELF_REPORT: 2,
-        MemoryAuthority.EXPLICIT: 3,
+        MemoryAuthority.AGENT_REFLECTION: 3,
+        MemoryAuthority.EXPLICIT: 4,
     }
 
     def __init__(self, weights: MemoryEvidenceWeights | None = None) -> None:
@@ -63,6 +64,7 @@ class MemoryEvidencePolicy:
         return {
             MemoryAuthority.EXPLICIT: self.weights.cap_explicit,
             MemoryAuthority.SELF_REPORT: self.weights.cap_self,
+            MemoryAuthority.AGENT_REFLECTION: self.weights.cap_self,
             MemoryAuthority.GROUP_REPORT: self.weights.cap_group,
             MemoryAuthority.THIRD_PARTY: self.weights.cap_third_party,
         }[authority]
@@ -78,5 +80,6 @@ class MemoryEvidencePolicy:
             MemoryEvidenceRelation.GROUP_STATEMENT: self.weights.group_report,
             MemoryEvidenceRelation.THIRD_PARTY_STATEMENT: self.weights.third_party,
             MemoryEvidenceRelation.REBUILD: self.weights.rebuild,
+            MemoryEvidenceRelation.AGENT_REFLECTION: self.weights.self_report,
         }[evidence.relation]
         return min(1.0, max(0.0, base * evidence.confidence))

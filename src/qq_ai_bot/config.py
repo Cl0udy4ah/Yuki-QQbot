@@ -110,6 +110,7 @@ class Settings(BaseSettings):
     memory_batch_trigger_count: int = 10
     memory_batch_max_events: int = 20
     memory_retrieval_enabled: bool = True
+    self_memory_enabled: bool = False
     memory_lexical_candidate_limit: int = 50
     memory_context_limit_per_entity: int = 8
     memory_overview_limit_per_entity: int = 20

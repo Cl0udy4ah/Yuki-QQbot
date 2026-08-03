@@ -51,8 +51,13 @@ class MemoryQueryBuilder:
         inbound: InboundMessage,
         *,
         max_referenced: int,
+        self_recall: bool = False,
     ) -> tuple[MemoryEntityTarget, ...]:
-        return await self._targets.resolve(inbound, max_referenced=max_referenced)
+        return await self._targets.resolve(
+            inbound,
+            max_referenced=max_referenced,
+            include_self=self_recall,
+        )
 
     async def build(
         self,
@@ -62,10 +67,12 @@ class MemoryQueryBuilder:
         planner_intent: str,
         runtime: RuntimeConfigSnapshot,
         memory_mode: MemoryContextMode = MemoryContextMode.HYBRID,
+        self_recall: bool = False,
     ) -> MemoryQuery:
         targets = await self.resolve_targets(
             inbound,
             max_referenced=runtime.context.related_people_limit,
+            self_recall=self_recall and runtime.memory.self_enabled,
         )
         mode = (
             MemoryRetrievalMode.OVERVIEW
@@ -79,6 +86,7 @@ class MemoryQueryBuilder:
                 if target.role
                 in {
                     MemoryTargetRole.CURRENT_PERSON,
+                    MemoryTargetRole.CURRENT_SELF,
                     MemoryTargetRole.CURRENT_PERSON_GROUP,
                     MemoryTargetRole.CURRENT_GROUP,
                 }

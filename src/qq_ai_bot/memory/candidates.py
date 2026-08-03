@@ -112,9 +112,13 @@ class MemoryConflictCandidateResolver:
                 "person": MemoryTargetRole.CURRENT_PERSON,
                 "person_group": MemoryTargetRole.CURRENT_PERSON_GROUP,
                 "group": MemoryTargetRole.CURRENT_GROUP,
+                "self": MemoryTargetRole.CURRENT_SELF,
             }[fact.scope_type.value],
             scope_type=fact.scope_type,
             subject_user_id=fact.subject_user_id,
             group_id=fact.group_id,
+            visibility_type=fact.visibility_type,
+            visibility_user_id=fact.visibility_user_id,
+            visibility_group_id=fact.visibility_group_id,
             block_id="conflict_candidates",
         )

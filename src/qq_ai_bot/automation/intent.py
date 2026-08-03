@@ -25,22 +25,34 @@ _SUCCESS_CLAIM = re.compile(
     r"(?:设好了|设置好了|安排好了|创建成功|已经创建|已创建|建好了|任务已(?:经)?建立|"
     r"定时(?:已经)?设好|到时候(?:会|就会))"
 )
+_SENTENCE_BOUNDARY = re.compile(r"[。！？!?；;\n]+")
+
+
+def _is_scheduled_automation_clause(text: str) -> bool:
+    """Return whether one sentence commands an action at a future trigger."""
+
+    if not text or not _ACTION.search(text):
+        return False
+    delayed = bool(_DELAY.search(text))
+    recurring = bool(_RECURRENCE.search(text))
+    future_day = bool(_FUTURE_DAY.search(text))
+    clock = bool(_CLOCK.search(text))
+    vague = bool(_VAGUE_FUTURE.search(text))
+    if _PAST_ONLY.search(text) and not (delayed or recurring or future_day or vague):
+        return False
+    return delayed or recurring or vague or clock or future_day
 
 
 def is_scheduled_automation_request(text: str) -> bool:
     """Return whether the current message commands an action at a future trigger."""
 
     compact = " ".join(text.casefold().split())
-    if not compact or not _ACTION.search(compact):
+    if not compact:
         return False
-    delayed = bool(_DELAY.search(compact))
-    recurring = bool(_RECURRENCE.search(compact))
-    future_day = bool(_FUTURE_DAY.search(compact))
-    clock = bool(_CLOCK.search(compact))
-    vague = bool(_VAGUE_FUTURE.search(compact))
-    if _PAST_ONLY.search(compact) and not (delayed or recurring or future_day or vague):
-        return False
-    return delayed or recurring or vague or clock or future_day
+    return any(
+        _is_scheduled_automation_clause(clause.strip())
+        for clause in _SENTENCE_BOUNDARY.split(compact)
+    )
 
 
 def contains_automation_success_claim(text: str) -> bool:

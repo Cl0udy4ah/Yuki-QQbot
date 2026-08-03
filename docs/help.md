@@ -1,8 +1,8 @@
 # Yuki-QQbot
 
-> **3.1.0 养鲲插件与安全直达绑定：**新增 Host 静态 `prefix → plugin_id:command` 路由、
-> `CurrentMessage.mentioned_user_ids` 可信投影和内置养鲲游戏。直达命令继续经过现有安全链；
-> 养鲲功能不新增数据库迁移，当前开发分支 Alembic head 为 `0026`。
+> **3.2.0 Yuki 自我长期记忆：**新增 `self` 作用域、按需 SELF RAG、统一 `memory_change`
+> 自我变更和只读 `get_self_memories`。SELF 事实按 global、private、group 可见范围硬隔离；
+> Alembic `0027` 为非破坏性迁移，功能通过 `SELF_MEMORY_ENABLED` 控制。
 
 > **Memory Mutation V2 开发版：**新增唯一的 `memory_change` Agent 写工具和统一
 > `MemoryMutationService`；Alembic head 为 `0026`。Agent、自动 Worker、记忆命令、管理员、
@@ -75,7 +75,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.1.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 3.2.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。

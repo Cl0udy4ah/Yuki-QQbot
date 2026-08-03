@@ -57,6 +57,8 @@ class MemoryReflectionRepository:
                 ),
             )
             .where(
+                left.scope_type != "self",
+                right.scope_type != "self",
                 left.status.in_(_OPEN_FACT_STATUSES),
                 right.status.in_(_OPEN_FACT_STATUSES),
                 left.normalized_content != "",
@@ -67,6 +69,7 @@ class MemoryReflectionRepository:
         contested_query = (
             select(MemoryFactModel.id)
             .where(
+                MemoryFactModel.scope_type != "self",
                 MemoryFactModel.status.in_(_OPEN_FACT_STATUSES),
                 or_(
                     MemoryFactModel.status == "contested",

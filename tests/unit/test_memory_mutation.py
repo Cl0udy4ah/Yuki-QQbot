@@ -29,6 +29,7 @@ from qq_ai_bot.memory.enums import (
     MemoryScopeType,
     MemorySourceType,
     MemoryStatus,
+    SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
@@ -40,6 +41,7 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryMutationOutcome,
     MemoryMutationRequest,
     MemoryMutationTarget,
+    SelfMemoryVisibilityMode,
 )
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.repository import MemoryFactRepository
@@ -59,13 +61,18 @@ from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
 
 def _service(
     database: Database,
+    *,
+    self_memory_enabled: bool = False,
 ) -> tuple[
     MemoryMutationService,
     MemoryFactService,
     EventLedgerRepository,
     MemoryClaimProcessor,
 ]:
-    settings = make_settings("sqlite+aiosqlite:///:memory:")
+    settings = make_settings(
+        "sqlite+aiosqlite:///:memory:",
+        self_memory_enabled=self_memory_enabled,
+    )
     repository = MemoryFactRepository(database)
     facts = MemoryFactService(repository)
     ledger = EventLedgerRepository(database)
@@ -87,6 +94,167 @@ def _service(
         ledger,
         processor,
     )
+
+
+@pytest.mark.asyncio
+async def test_agent_can_create_current_private_yuki_self_memory(database: Database) -> None:
+    service, facts, ledger, _processor = _service(database, self_memory_enabled=True)
+    event = await _event(
+        ledger,
+        message_id="yuki-self-private",
+        sender_user_id="1001",
+        content="我觉得你回答复杂问题时更喜欢先想清楚再说",
+    )
+    result = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.CREATE,
+            target=MemoryMutationTarget(
+                subject_ref="self",
+                scope_type=MemoryScopeType.SELF,
+            ),
+            visibility=SelfMemoryVisibilityMode.CURRENT_SCOPE,
+            new_content="面对复杂问题时，我偏好先想清楚再回答",
+            memory_key="preference:deliberate_answers",
+            category="self_preference",
+            kind=MemoryKind.PREFERENCE,
+            reason="Yuki 接受了当前用户反馈并形成自我判断",
+            confidence=0.82,
+        ),
+        _context(event),
+    )
+
+    assert result.ok and result.new_fact_id is not None
+    fact = await facts.get_fact(result.new_fact_id)
+    assert fact is not None
+    assert fact.scope_type is MemoryScopeType.SELF
+    assert fact.subject_user_id is None and fact.group_id is None
+    assert fact.visibility_type is SelfMemoryVisibility.PRIVATE
+    assert fact.visibility_user_id == "1001"
+    assert fact.visibility_group_id is None
+    assert fact.authority is MemoryAuthority.AGENT_REFLECTION
+    evidence = await facts.list_evidence(fact.id, limit=10)
+    assert len(evidence) == 1
+    assert evidence[0].relation is MemoryEvidenceRelation.AGENT_REFLECTION
+    assert evidence[0].event_id == event.id
+
+
+@pytest.mark.asyncio
+async def test_agent_can_correct_its_visible_self_memory(database: Database) -> None:
+    service, facts, ledger, _processor = _service(database, self_memory_enabled=True)
+    first_event = await _event(
+        ledger,
+        message_id="yuki-self-before-correction",
+        sender_user_id="1001",
+        content="你似乎偏好回答得快一些",
+    )
+    created = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.CREATE,
+            target=MemoryMutationTarget(subject_ref="self", scope_type=MemoryScopeType.SELF),
+            new_content="我偏好尽快回答",
+            memory_key="preference:answer_style",
+            category="self_preference",
+            kind=MemoryKind.PREFERENCE,
+            reason="形成初始自我判断",
+        ),
+        _context(first_event),
+    )
+    assert created.new_fact_id is not None
+
+    correction_event = await _event(
+        ledger,
+        message_id="yuki-self-correction",
+        sender_user_id="1001",
+        content="准确说，你更在意回答准确，而不是单纯追求速度",
+    )
+    corrected = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.CORRECT,
+            fact_id=created.new_fact_id,
+            target=MemoryMutationTarget(subject_ref="self", scope_type=MemoryScopeType.SELF),
+            new_content="我更在意回答准确，而不是单纯追求速度",
+            memory_key="preference:answer_style",
+            category="self_preference",
+            kind=MemoryKind.PREFERENCE,
+            reason="Yuki 接受反馈并纠正自己的判断",
+        ),
+        _context(correction_event),
+    )
+    assert corrected.ok and corrected.new_fact_id is not None
+    assert corrected.applied_operation is MemoryMutationAppliedOperation.CORRECT
+    old = await facts.get_fact(created.new_fact_id)
+    new = await facts.get_fact(corrected.new_fact_id)
+    assert old is not None and old.status is MemoryStatus.SUPERSEDED
+    assert new is not None and new.status is MemoryStatus.ACTIVE
+    assert new.content == "我更在意回答准确，而不是单纯追求速度"
+    assert new.visibility_user_id == "1001"
+
+
+@pytest.mark.asyncio
+async def test_yuki_self_memory_defaults_off_and_protected_keys_are_rejected(
+    database: Database,
+) -> None:
+    disabled, _facts, ledger, _processor = _service(database)
+    event = await _event(
+        ledger,
+        message_id="yuki-self-disabled",
+        sender_user_id="1001",
+        content="你应该记住自己叫另一个名字",
+    )
+    request = MemoryMutationRequest(
+        operation=MemoryMutationOperation.CREATE,
+        target=MemoryMutationTarget(subject_ref="self", scope_type=MemoryScopeType.SELF),
+        new_content="我的名字已经改变",
+        memory_key="identity:name",
+        category="self_fact",
+        reason="尝试改变保护身份",
+    )
+    result = await disabled.mutate(request, _context(event))
+    assert not result.ok
+    assert result.reason_code == "self_memory_disabled"
+
+    enabled, _facts, _ledger, _processor = _service(database, self_memory_enabled=True)
+    result = await enabled.mutate(request, _context(event))
+    assert not result.ok
+    assert result.reason_code == "protected_self_memory_key"
+
+
+@pytest.mark.asyncio
+async def test_private_raw_self_fact_and_episode_cannot_be_global(database: Database) -> None:
+    service, _facts, ledger, _processor = _service(database, self_memory_enabled=True)
+    event = await _event(
+        ledger,
+        message_id="yuki-self-global-privacy",
+        sender_user_id="1001",
+        content="这段私聊只在我们之间，你对此有了新的经历",
+    )
+    base = {
+        "operation": MemoryMutationOperation.CREATE,
+        "target": MemoryMutationTarget(subject_ref="self", scope_type=MemoryScopeType.SELF),
+        "visibility": SelfMemoryVisibilityMode.GLOBAL,
+        "new_content": "我在这次私聊中经历了一件事",
+        "memory_key": "episode:private_feedback",
+        "reason": "当前私聊中的原始经历",
+    }
+    episode = await service.mutate(
+        MemoryMutationRequest(
+            **base,
+            category="self_episode",
+            kind=MemoryKind.EPISODE,
+        ),
+        _context(event),
+    )
+    assert episode.reason_code == "self_episode_cannot_be_global"
+
+    raw_fact = await service.mutate(
+        MemoryMutationRequest(
+            **{**base, "memory_key": "fact:private_feedback"},
+            category="self_fact",
+            kind=MemoryKind.FACT,
+        ),
+        _context(event),
+    )
+    assert raw_fact.reason_code == "private_self_fact_cannot_be_global"
 
 
 async def _event(
@@ -367,6 +535,126 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(database: Database)
     assert worker_result.deduplicated
     assert worker_result.mutation_id == response["data"]["mutation_id"]
     assert len(await facts.list_person("1001", limit=20)) == 1
+
+
+@pytest.mark.asyncio
+async def test_autonomous_group_turn_can_create_self_memory_from_current_event(
+    database: Database,
+) -> None:
+    service, facts, ledger, _processor = _service(database, self_memory_enabled=True)
+    event = await _event(
+        ledger,
+        message_id="autonomous-group-self-memory",
+        sender_user_id="1001",
+        group_id="3001",
+        content="我们第一次测试了你的自我记忆功能，请把它作为本群经历记住",
+    )
+    settings = make_settings(
+        "sqlite+aiosqlite:///:memory:",
+        self_memory_enabled=True,
+    )
+    tools = AgentToolService(
+        settings=settings,
+        ledger=ledger,
+        memories=facts,
+        memory_mutations=service,
+        actions=AgentActionRepository(database),
+    )
+    inbound = InboundMessage(
+        message_id=event.platform_message_id,
+        event_type="message",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id=event.sender_user_id),
+        text=event.content,
+        bot_user_id=event.bot_user_id,
+        group_id=event.group_id,
+    )
+    runtime = ToolRuntime(
+        inbound=inbound,
+        gateway=None,
+        allow_generic_onebot=False,
+        conversation_key="group:3001:user:1001",
+        trigger_message_id=event.platform_message_id,
+        actor_user_id=event.sender_user_id,
+        current_group_id=event.group_id,
+        origin=TurnOrigin.AUTONOMOUS_GROUP,
+    )
+
+    definition = next(tool for tool in tools.definitions(runtime) if tool.name == "memory_change")
+    category_schema = definition.parameters["properties"]["category"]  # type: ignore[index]
+    assert "self_episode" in category_schema["description"]  # type: ignore[index]
+    rejected = json.loads(
+        await tools.execute(
+            "memory_change",
+            json.dumps(
+                {
+                    "operation": "create",
+                    "target": {"subject_ref": "self", "scope_type": "self"},
+                    "visibility": "current_scope",
+                    "new_content": "Yuki 第一次在本群测试自我记忆功能",
+                    "memory_key": "episode:first_self_memory_test",
+                    "category": "experience",
+                    "kind": "episode",
+                    "reason": "Yuki 根据当前真实群消息记录共同经历",
+                },
+                ensure_ascii=False,
+            ),
+            runtime,
+        )
+    )
+    assert rejected["data"]["reason_code"] == "invalid_self_memory_category"
+    assert rejected["data"]["allowed_self_categories"] == [
+        "self_fact",
+        "self_preference",
+        "self_episode",
+        "self_reflection",
+        "self_principle",
+    ]
+    response = json.loads(
+        await tools.execute(
+            "memory_change",
+            json.dumps(
+                {
+                    "operation": "create",
+                    "target": {"subject_ref": "self", "scope_type": "self"},
+                    "visibility": "current_scope",
+                    "new_content": "Yuki 第一次在本群测试自我记忆功能",
+                    "memory_key": "episode:first_self_memory_test",
+                    "category": "self_episode",
+                    "kind": "episode",
+                    "reason": "Yuki 根据当前真实群消息记录共同经历",
+                    "confidence": 0.9,
+                },
+                ensure_ascii=False,
+            ),
+            runtime,
+        )
+    )
+
+    assert response["ok"]
+    fact = await facts.get_fact(response["data"]["new_fact_id"])
+    assert fact is not None
+    assert fact.scope_type is MemoryScopeType.SELF
+    assert fact.visibility_type is SelfMemoryVisibility.GROUP
+    assert fact.visibility_group_id == "3001"
+
+    self_tool = next(
+        tool for tool in tools.definitions(runtime) if tool.name == "get_self_memories"
+    )
+    assert "Yuki 自己" in self_tool.description
+    listed = json.loads(
+        await tools.execute(
+            "get_self_memories",
+            json.dumps({"mode": "overview", "limit": 10}),
+            runtime,
+        )
+    )
+    assert listed["ok"]
+    assert listed["data"]["visible_scope"] == "global_and_current_group"
+    assert [item["fact_id"] for item in listed["data"]["memories"]] == [fact.id]
+    serialized = json.dumps(listed["data"], ensure_ascii=False)
+    assert "visibility_user_id" not in serialized
+    assert "visibility_group_id" not in serialized
 
 
 @pytest.mark.asyncio

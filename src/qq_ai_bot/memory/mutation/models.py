@@ -55,6 +55,20 @@ class MemoryDecisionActorType(StrEnum):
     SYSTEM = "system"
 
 
+class SelfMemoryVisibilityMode(StrEnum):
+    CURRENT_SCOPE = "current_scope"
+    GLOBAL = "global"
+
+
+SELF_MEMORY_CATEGORIES: tuple[str, ...] = (
+    "self_fact",
+    "self_preference",
+    "self_episode",
+    "self_reflection",
+    "self_principle",
+)
+
+
 class _MutationModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -73,6 +87,7 @@ class MemoryMutationRequest(_MutationModel):
     fact_id: int | None = Field(default=None, ge=1)
     merge_fact_id: int | None = Field(default=None, ge=1)
     target: MemoryMutationTarget | None = None
+    visibility: SelfMemoryVisibilityMode | None = None
     new_content: str | None = Field(default=None, max_length=4000)
     memory_key: str | None = Field(default=None, max_length=128)
     category: str | None = Field(default=None, max_length=64)

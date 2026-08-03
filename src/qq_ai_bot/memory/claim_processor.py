@@ -300,7 +300,7 @@ class MemoryClaimProcessor:
         }
 
     def _scope_limit(self, scope: MemoryScopeType) -> int:
-        if scope is MemoryScopeType.PERSON:
+        if scope in {MemoryScopeType.PERSON, MemoryScopeType.SELF}:
             return self._settings.person_memory_max_entries
         if scope is MemoryScopeType.GROUP:
             return self._settings.group_memory_max_entries

@@ -1770,6 +1770,9 @@ class ChatService:
                 if planned_turn is not None
                 else MemoryContextMode.LEXICAL
             ),
+            self_recall=(
+                planned_turn.plan.memory_context.self_recall if planned_turn is not None else False
+            ),
         )
         return self._prompt_composer.compose(
             inbound=inbound,

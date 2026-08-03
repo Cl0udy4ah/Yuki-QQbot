@@ -48,9 +48,10 @@ class MemoryResolutionPolicy:
             )
 
         exact = tuple(candidate for candidate in candidates if candidate.exact_key)
-        subject_controls_target = (
-            claim.subject_is_speaker or claim.fact.scope_type is MemoryScopeType.GROUP
-        )
+        subject_controls_target = claim.subject_is_speaker or claim.fact.scope_type in {
+            MemoryScopeType.GROUP,
+            MemoryScopeType.SELF,
+        }
         if claim.operation is MemoryClaimOperation.RETRACT:
             if len(exact) == 1 and subject_controls_target:
                 return self._plan(

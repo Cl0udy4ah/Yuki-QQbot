@@ -127,7 +127,10 @@ class MemoryAuditService:
                 SELECT COALESCE(SUM(c - 1), 0) FROM (
                     SELECT COUNT(*) AS c FROM memory_facts WHERE status = 'active'
                     GROUP BY scope_type, COALESCE(subject_user_id, ''),
-                        COALESCE(group_id, ''), kind, memory_key HAVING COUNT(*) > 1
+                        COALESCE(group_id, ''), COALESCE(visibility_type, ''),
+                        COALESCE(visibility_user_id, ''), COALESCE(visibility_group_id, ''),
+                        CASE WHEN scope_type='self' THEN '' ELSE kind END,
+                        memory_key HAVING COUNT(*) > 1
                 )
             """,
             "contested_fact_count": "SELECT COUNT(*) FROM memory_facts WHERE status='contested'",
@@ -148,6 +151,9 @@ class MemoryAuditService:
                 WHERE s.scope_type != t.scope_type
                     OR COALESCE(s.subject_user_id, '') != COALESCE(t.subject_user_id, '')
                     OR COALESCE(s.group_id, '') != COALESCE(t.group_id, '')
+                    OR COALESCE(s.visibility_type, '') != COALESCE(t.visibility_type, '')
+                    OR COALESCE(s.visibility_user_id, '') != COALESCE(t.visibility_user_id, '')
+                    OR COALESCE(s.visibility_group_id, '') != COALESCE(t.visibility_group_id, '')
             """,
             "orphan_state_event_count": """
                 SELECT COUNT(*) FROM memory_fact_state_events e
@@ -169,10 +175,12 @@ class MemoryAuditService:
             "evidence_authority_mismatch_count": """
                 SELECT COUNT(*) FROM memory_evidence e JOIN memory_facts f ON f.id=e.fact_id
                 WHERE CASE e.authority
-                    WHEN 'explicit' THEN 3 WHEN 'self_report' THEN 2
+                    WHEN 'explicit' THEN 4 WHEN 'agent_reflection' THEN 3
+                    WHEN 'self_report' THEN 2
                     WHEN 'group_report' THEN 1 ELSE 0 END
                   > CASE f.authority
-                    WHEN 'explicit' THEN 3 WHEN 'self_report' THEN 2
+                    WHEN 'explicit' THEN 4 WHEN 'agent_reflection' THEN 3
+                    WHEN 'self_report' THEN 2
                     WHEN 'group_report' THEN 1 ELSE 0 END
             """,
             "expired_active_count": """
@@ -197,6 +205,7 @@ class MemoryAuditService:
                                 SELECT COUNT(*) FROM memory_facts
                                 WHERE status IN ('active','contested')
                                   AND source_type='automatic' AND authority != 'explicit'
+                                  AND scope_type!='self'
                                   AND importance <= :max_importance
                                   AND confidence <= :max_confidence
                                   AND (

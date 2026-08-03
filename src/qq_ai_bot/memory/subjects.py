@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.memory.enums import MemoryScopeType
+from qq_ai_bot.memory.enums import MemoryScopeType, SelfMemoryVisibility
 from qq_ai_bot.memory.extraction import AvailableSubject
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -15,6 +15,9 @@ class ResolvedSubject:
     scope_type: MemoryScopeType
     subject_user_id: str | None
     group_id: str | None
+    visibility_type: SelfMemoryVisibility | None = None
+    visibility_user_id: str | None = None
+    visibility_group_id: str | None = None
 
 
 class SubjectResolver:
@@ -76,6 +79,8 @@ class SubjectResolver:
         subject_ref: str,
         scope_type: MemoryScopeType,
     ) -> ResolvedSubject | None:
+        if subject_ref == "self" and scope_type is MemoryScopeType.SELF:
+            return ResolvedSubject(scope_type, None, None)
         if subject_ref == "speaker":
             if scope_type is MemoryScopeType.PERSON:
                 return ResolvedSubject(scope_type, event.sender_user_id, None)

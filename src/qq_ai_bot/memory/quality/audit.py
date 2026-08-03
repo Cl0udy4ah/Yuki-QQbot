@@ -77,7 +77,22 @@ class MemoryProductionQualityAudit:
                     "AND group_id IS NULL) "
                     "OR (scope_type='person_group' AND subject_user_id IS NOT NULL "
                     "AND group_id IS NOT NULL) OR (scope_type='group' AND subject_user_id IS NULL "
-                    "AND group_id IS NOT NULL))",
+                    "AND group_id IS NOT NULL) OR (scope_type='self' AND subject_user_id IS NULL "
+                    "AND group_id IS NULL))",
+                ),
+            ),
+            (
+                "self_visibility_invalid",
+                "error",
+                _query(
+                    "memory_facts",
+                    "(scope_type!='self' AND (visibility_type IS NOT NULL OR "
+                    "visibility_user_id IS NOT NULL OR visibility_group_id IS NOT NULL)) OR "
+                    "(scope_type='self' AND NOT ((visibility_type='global' AND "
+                    "visibility_user_id IS NULL AND visibility_group_id IS NULL) OR "
+                    "(visibility_type='private' AND visibility_user_id IS NOT NULL AND "
+                    "visibility_group_id IS NULL) OR (visibility_type='group' AND "
+                    "visibility_user_id IS NULL AND visibility_group_id IS NOT NULL)))",
                 ),
             ),
             (
@@ -95,7 +110,10 @@ class MemoryProductionQualityAudit:
                 WITH bad AS (
                   SELECT MIN(id) AS id FROM memory_facts WHERE status='active'
                   GROUP BY scope_type, COALESCE(subject_user_id,''), COALESCE(group_id,''),
-                           kind, memory_key HAVING COUNT(*) > 1
+                           COALESCE(visibility_type,''), COALESCE(visibility_user_id,''),
+                           COALESCE(visibility_group_id,''),
+                           CASE WHEN scope_type='self' THEN '' ELSE kind END,
+                           memory_key HAVING COUNT(*) > 1
                 ), tally AS (SELECT COUNT(*) AS n FROM bad)
                 SELECT tally.n, sample.id FROM tally LEFT JOIN
                   (SELECT id FROM bad ORDER BY id LIMIT 20) sample ON 1=1
@@ -115,7 +133,8 @@ class MemoryProductionQualityAudit:
                 "error",
                 _query(
                     "memory_facts",
-                    "authority NOT IN ('explicit','self_report','group_report','third_party')",
+                    "authority NOT IN ('explicit','self_report','group_report','third_party',"
+                    "'agent_reflection')",
                 ),
             ),
             (
@@ -251,7 +270,10 @@ class MemoryProductionQualityAudit:
                     "JOIN memory_facts t ON t.id=r.target_fact_id",
                     "s.scope_type!=t.scope_type OR COALESCE(s.subject_user_id,'')!="
                     "COALESCE(t.subject_user_id,'') OR COALESCE(s.group_id,'')!="
-                    "COALESCE(t.group_id,'')",
+                    "COALESCE(t.group_id,'') OR COALESCE(s.visibility_type,'')!="
+                    "COALESCE(t.visibility_type,'') OR COALESCE(s.visibility_user_id,'')!="
+                    "COALESCE(t.visibility_user_id,'') OR COALESCE(s.visibility_group_id,'')!="
+                    "COALESCE(t.visibility_group_id,'')",
                     id_expression="r.id",
                 ),
             ),

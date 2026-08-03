@@ -11,7 +11,7 @@
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/Version-3.1.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Version-3.2.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python Version">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -36,17 +36,18 @@
 
 Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agent。它通过 NapCatQQ 接入 QQ，使用 Planner、Agent、长期记忆、工具系统和插件系统完成聊天、检索、自动化与外部服务调用。
 
-> **当前版本：3.1.0**
+> **当前版本：3.2.0**
 >
-> 本版本新增 Host 管理的静态插件直达绑定与可信提及投影，并内置完整 Yuki 养鲲游戏插件；
-> `*签到` 仍通过现有准入、去重、账本、限流、权限和插件调用链。本版本不新增数据库迁移。
+> 本版本新增 Yuki 自我长期记忆：按需检索自己的偏好、经历、反思和原则，通过统一
+> `memory_change` 自主变更，并可使用 `get_self_memories` 读取当前会话可见的自我记忆。
+> Alembic `0027` 为非破坏性迁移，SELF 记忆按 global、private、group 硬隔离。
 
 ## ✨ 主要功能
 
 - **自然对话**：支持私聊、群聊、多轮上下文和思考模型。
 - **Planner + Agent**：先规划是否回复、调用哪些能力，再由同一个 Agent 完成工具调用与回答。
-- **Memory V2**：按人物、群和群内身份保存长期事实；Yuki 可通过统一变更回执自主创建、纠正、
-  争议、合并或恢复记忆，并记录证据、来源、有效期和版本链。
+- **Memory V2**：按人物、群、群内身份和 Yuki 自身保存长期事实；Yuki 可通过统一变更回执自主
+  创建、纠正、争议、合并或恢复记忆，并记录证据、来源、有效期和版本链。
 - **混合 RAG**：在人物与群硬隔离后，结合 SQLite FTS 与可选 Qwen Embedding 检索相关记忆。
 - **关系系统**：为每个 QQ 保存独立的好感度、信任度和关系阶段。
 - **自动化任务**：用户可以通过自然语言创建持久化提醒和周期任务。

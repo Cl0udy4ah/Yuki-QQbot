@@ -21,6 +21,45 @@ from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.context_assembler import ContextAssembler
 
 
+def test_current_self_metadata_is_emitted_only_with_selected_facts() -> None:
+    base = {
+        "current_person": {
+            "user_id": "1001",
+            "nickname": "用户",
+            "display_name": "用户",
+            "aliases": [],
+            "facts": [],
+        },
+        "scene": {"type": "private", "group_id": None, "group_card": ""},
+        "available_memory_subjects": [
+            {"subject_ref": "current_speaker", "display_name": "用户"},
+            {"subject_ref": "self", "display_name": "Yuki"},
+        ],
+    }
+    empty, _ = ContextAssembler._fit_metadata(
+        {**base, "current_self": {"facts": []}},
+        4000,
+    )
+    assert "current_self" not in {item["id"] for item in empty["items"]}
+
+    visible_fact = {
+        "fact_id": 7,
+        "kind": "preference",
+        "category": "self_preference",
+        "content": "我偏好先理解问题再回答",
+        "confidence": 0.8,
+        "importance": 4,
+    }
+    selected, fact_ids = ContextAssembler._fit_metadata(
+        {**base, "current_self": {"facts": [visible_fact]}},
+        4000,
+    )
+    blocks = {item["id"]: item["data"] for item in selected["items"]}
+    assert blocks["current_self"] == {"facts": [visible_fact]}
+    assert fact_ids == (7,)
+    assert "visibility_user_id" not in json.dumps(blocks["current_self"])
+
+
 @pytest.mark.asyncio
 async def test_context_assembler_enforces_one_dynamic_character_budget(
     database: Database,
@@ -136,6 +175,7 @@ async def test_context_exposes_event_bound_memory_subject_refs(database: Databas
 
     assert subjects == [
         {"subject_ref": "current_speaker", "display_name": "提问者"},
+        {"subject_ref": "self", "display_name": "Yuki"},
         {"subject_ref": "mentioned_user_1", "display_name": "查无此人"},
         {"subject_ref": "replied_message_author", "display_name": "查无此人"},
     ]

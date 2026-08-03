@@ -4,7 +4,8 @@
       "explicit",
       "self_report",
       "group_report",
-      "third_party"
+      "third_party",
+      "agent_reflection"
     ],
     "MemoryConflictState": [
       "clear",
@@ -18,7 +19,8 @@
       "confirmation",
       "correction",
       "retraction",
-      "rebuild"
+      "rebuild",
+      "agent_reflection"
     ],
     "MemoryFactRelationType": [
       "supports",
@@ -54,7 +56,8 @@
     "MemoryScopeType": [
       "person",
       "person_group",
-      "group"
+      "group",
+      "self"
     ],
     "MemorySourceType": [
       "automatic",
@@ -102,21 +105,21 @@
   "schema_version": "1",
   "schemas": {
     "EmbeddingProviderProfile": "01d9ddd287565ae59d747a226abc5d68b909680f06ce3bf23588d7fb169e9d31",
-    "MemoryContextBlock": "3ba938bdf92c5d136fbb01da3d4e3c3b889c394a777be67a5bc0790198b1040a",
-    "MemoryEvidenceCreate": "39bdd5400118521c246c6bf86766a43fcf3c380f4b0d6c12cf374b1f702ddf8a",
-    "MemoryFactCreate": "98636edff59afaeb830080ec79b8ef007f368929ff662e0927c21acc71d03461",
+    "MemoryContextBlock": "b36ae42adb47c35a607a5cc6ea085608ad03fbfb24a61d31acb6a1f9a3e494de",
+    "MemoryEvidenceCreate": "d35bfde37a0701c695e8c2b1f1a72c8e4bc50f29c526adbc14932125df6681db",
+    "MemoryFactCreate": "7c1cd48c44170bb1fd74f0636033cd5a81531972c9da3ac706db1664b934ff7f",
     "MemoryQualityCase": "164e18198531e86f029a603ee5ff716bd7c8580840ac35e8133c5a3d6c5fefaa",
     "MemoryQualityReport": "d757579c3972dbe182aa8b711bbce98c50ec10a872ae7fdc0ab6c4861959d942",
-    "MemoryQuery": "25cb4f49a0f822bbf855c25def19bcfa52d3986029bfda8009e3b94d32c59dcf",
+    "MemoryQuery": "e6657f62bb695b28f6d2bd171a7490ce9520c50ab9b23f6d25b75f3c66409ddd",
     "MemoryRebuildSelection": "a59e4b20baa53ce036a30d7ab821346510c4d5cca9e6461987270125aaa8ccc2",
     "QualityPerformanceReport": "c1be55cf27f74865792e9d26f07116ad0e6142cdca91dd9bd4d05f39ac7ee8cd"
   },
   "versions": {
     "embedding_profile_schema": 1,
-    "memory_context_schema": 1,
-    "memory_evidence_schema": 2,
-    "memory_fact_schema": 2,
-    "memory_query_schema": 1,
+    "memory_context_schema": 2,
+    "memory_evidence_schema": 3,
+    "memory_fact_schema": 3,
+    "memory_query_schema": 2,
     "plugin_memory_facade": 1,
     "quality_performance_schema": 1,
     "quality_report_schema": 1,
