@@ -251,9 +251,7 @@ class MemoryClaimValidator:
         predicate_tail = compact[matched.end("subject") :].lstrip()
         if re.match(r"^(?:都)?(?:叫|称|称呼)我", predicate_tail):
             return False
-        return not (
-            subject.startswith(("我", "咱", "俺")) or subject in _SELF_OR_TOPIC_SUBJECTS
-        )
+        return not (subject.startswith(("我", "咱", "俺")) or subject in _SELF_OR_TOPIC_SUBJECTS)
 
     @staticmethod
     def _semantically_anchored(content: str, quote: str) -> bool:

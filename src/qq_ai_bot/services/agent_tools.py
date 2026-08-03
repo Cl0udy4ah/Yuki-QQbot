@@ -895,9 +895,7 @@ class AgentToolService:
                         )
                     )
             existing_ids = {row.id for row, _projected in rows}
-            rows.extend(
-                (row, True) for row in projected_rows if row.id not in existing_ids
-            )
+            rows.extend((row, True) for row in projected_rows if row.id not in existing_ids)
             rows.sort(
                 key=lambda item: (
                     item[0].importance,
@@ -911,9 +909,7 @@ class AgentToolService:
                 self._memory_json(
                     row,
                     retrieval_reason=(
-                        "same_group_evidence_projection"
-                        if projected
-                        else "deterministic_list"
+                        "same_group_evidence_projection" if projected else "deterministic_list"
                     ),
                     same_group_evidence_projection=projected,
                 )

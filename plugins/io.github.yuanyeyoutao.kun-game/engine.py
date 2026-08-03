@@ -1103,9 +1103,7 @@ class _Engine:
             damage = float(self.rng.randint(50, 300)) if assault_hit else 0.0
         elif action == "吞噬":
             critical = kun["attribute"] == "怒" and self.rng.random() < 0.25
-            multiplier = (
-                CRITICAL_MULTIPLIER if critical else self.rng.uniform(0.3, 0.6)
-            )
+            multiplier = CRITICAL_MULTIPLIER if critical else self.rng.uniform(0.3, 0.6)
             damage = kun["weight"] * multiplier
         else:
             critical = kun["attribute"] == "怒" and self.rng.random() < 0.25
@@ -1125,13 +1123,9 @@ class _Engine:
             action_detail += "（致命一击）"
         if action == "强袭":
             action_detail = (
-                f"强袭BOSS造成了{format_weight(damage)}伤害"
-                if assault_hit
-                else "强袭BOSS未命中"
+                f"强袭BOSS造成了{format_weight(damage)}伤害" if assault_hit else "强袭BOSS未命中"
             )
-            action_detail += (
-                f"，神器余量：{player['divine_weapon']}，节操：{player['jie_cao']}"
-            )
+            action_detail += f"，神器余量：{player['divine_weapon']}，节操：{player['jie_cao']}"
         if boss["weight"] <= 0:
             boss["weight"] = 0
             boss["alive"] = False

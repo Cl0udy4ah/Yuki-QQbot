@@ -1024,9 +1024,7 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
             runtime,
         )
     )
-    assert projected_fact.id in {
-        row["fact_id"] for row in queried["data"]["memories"]
-    }
+    assert projected_fact.id in {row["fact_id"] for row in queried["data"]["memories"]}
     group_lookup = json.loads(
         await tools.execute(
             "get_memory_fact",
