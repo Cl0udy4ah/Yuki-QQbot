@@ -14,12 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.enums import (
+    MemoryAuthority,
     MemoryConflictState,
     MemoryFactRelationType,
     MemoryInvalidationReason,
     MemoryJobStatus,
     MemoryProcessingSource,
     MemoryRebuildJobOutcome,
+    MemoryScopeType,
     MemoryStateAction,
     MemoryStatus,
 )
@@ -119,6 +121,72 @@ class MemoryFactRepository:
         )
         rows = (await session.execute(statement)).all()
         return tuple(self._project_fact(row, int(evidence_count)) for row, evidence_count in rows)
+
+    async def list_person_facts_projected_to_group(
+        self,
+        user_id: str,
+        group_id: str,
+        *,
+        limit: int = 100,
+        session: AsyncSession | None = None,
+    ) -> tuple[MemoryFact, ...]:
+        """Project global person facts supported by that person's evidence in one group.
+
+        This is a read-only visibility query.  It never changes the canonical fact scope,
+        and deliberately requires an inbound event and self/explicit evidence from the
+        target user in the current group.
+        """
+
+        if session is None:
+            async with self._database.sessions() as owned:
+                return await self.list_person_facts_projected_to_group(
+                    user_id,
+                    group_id,
+                    limit=limit,
+                    session=owned,
+                )
+        qualifying_evidence = (
+            select(MemoryEvidenceModel.id)
+            .join(ChatEventModel, ChatEventModel.id == MemoryEvidenceModel.event_id)
+            .where(
+                MemoryEvidenceModel.fact_id == MemoryFactModel.id,
+                MemoryEvidenceModel.source_speaker_user_id == user_id,
+                MemoryEvidenceModel.authority.in_(
+                    (MemoryAuthority.SELF_REPORT.value, MemoryAuthority.EXPLICIT.value)
+                ),
+                ChatEventModel.scope_type == "group",
+                ChatEventModel.group_id == group_id,
+                ChatEventModel.sender_user_id == user_id,
+                ChatEventModel.direction == "inbound",
+            )
+            .correlate(MemoryFactModel)
+            .exists()
+        )
+        statement = (
+            select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
+            .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
+            .where(
+                MemoryFactModel.scope_type == MemoryScopeType.PERSON.value,
+                MemoryFactModel.subject_user_id == user_id,
+                MemoryFactModel.group_id.is_(None),
+                MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                or_(
+                    MemoryFactModel.valid_until.is_(None),
+                    MemoryFactModel.valid_until > datetime.now(UTC),
+                ),
+                qualifying_evidence,
+            )
+            .group_by(MemoryFactModel.id)
+            .order_by(
+                MemoryFactModel.importance.desc(),
+                MemoryFactModel.confidence.desc(),
+                MemoryFactModel.updated_at.desc(),
+                MemoryFactModel.id.asc(),
+            )
+            .limit(max(1, limit))
+        )
+        rows = (await session.execute(statement)).all()
+        return tuple(self._project_fact(row, int(count)) for row, count in rows)
 
     async def get_fact(
         self,

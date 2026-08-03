@@ -98,6 +98,51 @@ async def test_context_assembler_enforces_one_dynamic_character_budget(
 
 
 @pytest.mark.asyncio
+async def test_context_exposes_event_bound_memory_subject_refs(database: Database) -> None:
+    settings = make_settings(database.url)
+    harness = build_harness(database, settings)
+    await harness.groups.set_enabled("2001", True)
+    await harness.profiles.observe(
+        user_id="1002",
+        nickname="群友昵称",
+        group_id="2001",
+        group_card="查无此人",
+    )
+    message = InboundMessage(
+        message_id="memory-subject-refs",
+        event_type="message:group:normal",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="1001", nickname="提问者"),
+        text="查一下被提及群友的记忆",
+        group_id="2001",
+        mentions_bot=True,
+        bot_user_id="9999",
+        mentioned_user_ids=("9999", "1002"),
+        reply_sender_user_id="1002",
+    )
+
+    await harness.processor.handle(message, MemorySender())
+
+    request = harness.provider.requests[0]  # type: ignore[attr-defined]
+    envelope = next(
+        item.content or ""
+        for item in request.messages
+        if item.role == "system" and '"id":"context.people_and_scene"' in (item.content or "")
+    )
+    envelope_items = json.loads(envelope[envelope.index("[") :])
+    context_item = next(item for item in envelope_items if item["id"] == "context.people_and_scene")
+    payload_items = {item["id"]: item["data"] for item in context_item["data"]["items"]}
+    subjects = payload_items["available_memory_subjects"]
+
+    assert subjects == [
+        {"subject_ref": "current_speaker", "display_name": "提问者"},
+        {"subject_ref": "mentioned_user_1", "display_name": "查无此人"},
+        {"subject_ref": "replied_message_author", "display_name": "查无此人"},
+    ]
+    assert all("user_id" not in subject for subject in subjects)
+
+
+@pytest.mark.asyncio
 async def test_related_people_batch_queries_keep_group_cards_isolated(database: Database) -> None:
     people = PeopleRepository(database)
     await people.observe(
@@ -126,6 +171,43 @@ async def test_related_people_batch_queries_keep_group_cards_isolated(database: 
     assert first_group["1002"].display_name == "乙的一群名片"
     assert second_group["1001"].display_name == "二群名片"
     assert second_group["1002"].display_name == "乙"
+
+
+@pytest.mark.asyncio
+async def test_exact_name_lookup_is_unique_to_the_current_group(database: Database) -> None:
+    people = PeopleRepository(database)
+    await people.observe(
+        user_id="1001",
+        nickname="旧昵称",
+        group_id="2001",
+        group_card="本群名片",
+    )
+    await people.observe(
+        user_id="1001",
+        nickname="新昵称",
+        group_id="2002",
+        group_card="别群名片",
+    )
+    await people.observe(
+        user_id="1002",
+        nickname="同名",
+        group_id="2001",
+        group_card="本群同名",
+    )
+    await people.observe(
+        user_id="1003",
+        nickname="同名",
+        group_id="2001",
+        group_card="另一个同名",
+    )
+
+    assert await people.find_group_members_by_exact_name("本群名片", "2001") == ("1001",)
+    assert await people.find_group_members_by_exact_name("旧昵称", "2001") == ("1001",)
+    assert await people.find_group_members_by_exact_name("别群名片", "2001") == ()
+    assert await people.find_group_members_by_exact_name("同名", "2001") == (
+        "1002",
+        "1003",
+    )
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryClaimOperation,
     MemoryConflictState,
+    MemoryEvidenceRelation,
     MemoryInvalidationReason,
     MemoryKind,
     MemoryProcessingSource,
@@ -30,7 +31,7 @@ from qq_ai_bot.memory.enums import (
     MemoryStatus,
 )
 from qq_ai_bot.memory.extraction import MemoryClaim
-from qq_ai_bot.memory.models import MemoryFactCreate
+from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.memory.mutation.models import (
     MemoryDecisionActorType,
     MemoryMutationAppliedOperation,
@@ -46,7 +47,11 @@ from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import MemoryMutationReceiptModel
-from qq_ai_bot.persistence.repositories import AgentActionRepository, EventLedgerRepository
+from qq_ai_bot.persistence.repositories import (
+    AgentActionRepository,
+    EventLedgerRepository,
+    PeopleRepository,
+)
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
@@ -861,11 +866,11 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
 ) -> None:
     service, facts, ledger, _processor = _service(database)
     del service
-    await _event(
+    current_group_event = await _event(
         ledger,
         message_id="member-in-group",
         sender_user_id="2002",
-        content="大家好",
+        content="我喜欢天文",
         group_id="3001",
     )
     global_fact = await facts.remember(
@@ -897,6 +902,57 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
             authority=MemoryAuthority.THIRD_PARTY,
         )
     )
+    projected_fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="2002",
+            kind=MemoryKind.FACT,
+            memory_key="hobby:astronomy",
+            category="hobby",
+            content="喜欢天文",
+            importance=4,
+            confidence=0.9,
+            source_type=MemorySourceType.AUTOMATIC,
+            authority=MemoryAuthority.SELF_REPORT,
+        ),
+        evidence=MemoryEvidenceCreate(
+            event_id=current_group_event.id,
+            source_speaker_user_id="2002",
+            relation=MemoryEvidenceRelation.SELF_STATEMENT,
+            confidence=0.9,
+            authority=MemoryAuthority.SELF_REPORT,
+            excerpt="我喜欢天文",
+        ),
+    )
+    other_group_event = await _event(
+        ledger,
+        message_id="member-other-group",
+        sender_user_id="2002",
+        content="我喜欢围棋",
+        group_id="3002",
+    )
+    other_group_fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON,
+            subject_user_id="2002",
+            kind=MemoryKind.FACT,
+            memory_key="hobby:go",
+            category="hobby",
+            content="喜欢围棋",
+            importance=4,
+            confidence=0.9,
+            source_type=MemorySourceType.AUTOMATIC,
+            authority=MemoryAuthority.SELF_REPORT,
+        ),
+        evidence=MemoryEvidenceCreate(
+            event_id=other_group_event.id,
+            source_speaker_user_id="2002",
+            relation=MemoryEvidenceRelation.SELF_STATEMENT,
+            confidence=0.9,
+            authority=MemoryAuthority.SELF_REPORT,
+            excerpt="我喜欢围棋",
+        ),
+    )
     inbound = InboundMessage(
         message_id="member-read",
         event_type="message:group:normal",
@@ -921,6 +977,34 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
         current_group_id="3001",
         mentioned_user_ids=("2002",),
     )
+    definition = next(
+        tool for tool in tools.definitions(runtime) if tool.name == "get_person_memories"
+    )
+    properties = definition.parameters["properties"]
+    assert definition.parameters["required"] == []
+    assert set(properties) >= {"subject_ref", "display_name", "user_id"}  # type: ignore[arg-type]
+    assert "mentioned_user_1" in properties["subject_ref"]["enum"]  # type: ignore[index]
+
+    by_reference = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps({"subject_ref": "mentioned_user_1"}),
+            runtime,
+        )
+    )
+    reference_ids = {row["fact_id"] for row in by_reference["data"]["memories"]}
+    assert by_reference["data"]["resolved_by"] == "subject_ref"
+    assert by_reference["data"]["subject_ref"] == "mentioned_user_1"
+    assert group_fact.id in reference_ids
+    assert projected_fact.id in reference_ids
+    assert global_fact.id not in reference_ids
+    assert other_group_fact.id not in reference_ids
+    projected_row = next(
+        row for row in by_reference["data"]["memories"] if row["fact_id"] == projected_fact.id
+    )
+    assert projected_row["access_scope"] == "same_group_evidence_projection"
+    assert projected_row["read_only"] is True
+
     listed = json.loads(
         await tools.execute(
             "get_person_memories",
@@ -930,7 +1014,19 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
     )
     visible_ids = {row["fact_id"] for row in listed["data"]["memories"]}
     assert group_fact.id in visible_ids
+    assert projected_fact.id in visible_ids
     assert global_fact.id not in visible_ids
+    assert other_group_fact.id not in visible_ids
+    queried = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps({"subject_ref": "mentioned_user_1", "query": "天文"}),
+            runtime,
+        )
+    )
+    assert projected_fact.id in {
+        row["fact_id"] for row in queried["data"]["memories"]
+    }
     group_lookup = json.loads(
         await tools.execute(
             "get_memory_fact",
@@ -945,8 +1041,110 @@ async def test_mentioned_member_read_is_limited_to_current_group_person_group(
             runtime,
         )
     )
+    projected_lookup = json.loads(
+        await tools.execute(
+            "get_memory_fact",
+            json.dumps({"fact_id": projected_fact.id}),
+            runtime,
+        )
+    )
     assert group_lookup["ok"]
     assert not global_lookup["ok"]
+    assert not projected_lookup["ok"]
+
+
+@pytest.mark.asyncio
+async def test_manual_qq_and_exact_name_lookup_stay_inside_current_group(
+    database: Database,
+) -> None:
+    _service_unused, facts, ledger, _processor = _service(database)
+    people = PeopleRepository(database)
+    await people.observe(
+        user_id="2002",
+        nickname="查无此人",
+        group_id="3001",
+        group_card="摄影师",
+    )
+    group_fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.PERSON_GROUP,
+            subject_user_id="2002",
+            group_id="3001",
+            kind=MemoryKind.FACT,
+            memory_key="role:photographer",
+            category="role",
+            content="在本群负责摄影",
+            importance=3,
+            confidence=0.8,
+            source_type=MemorySourceType.AUTOMATIC,
+            authority=MemoryAuthority.THIRD_PARTY,
+        )
+    )
+    inbound = InboundMessage(
+        message_id="manual-member-read",
+        event_type="message:group:normal",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="1001"),
+        text="查一下摄影师的记忆",
+        bot_user_id="8000",
+        group_id="3001",
+    )
+    tools = AgentToolService(
+        settings=make_settings("sqlite+aiosqlite:///:memory:"),
+        ledger=ledger,
+        memories=facts,
+        actions=AgentActionRepository(database),
+    )
+    runtime = ToolRuntime(
+        inbound=inbound,
+        gateway=None,
+        allow_generic_onebot=False,
+        actor_user_id="1001",
+        current_group_id="3001",
+    )
+
+    by_qq = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps({"user_id": "2002"}),
+            runtime,
+        )
+    )
+    by_name = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps({"display_name": "摄影师"}),
+            runtime,
+        )
+    )
+    assert by_qq["ok"] and by_qq["data"]["resolved_by"] == "user_id"
+    assert by_name["ok"] and by_name["data"]["resolved_by"] == "display_name"
+    assert {row["fact_id"] for row in by_qq["data"]["memories"]} == {group_fact.id}
+    assert {row["fact_id"] for row in by_name["data"]["memories"]} == {group_fact.id}
+
+    nonmember = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps({"user_id": "9999"}),
+            runtime,
+        )
+    )
+    assert not nonmember["ok"] and nonmember["error"] == "permission_denied"
+
+    await people.observe(
+        user_id="2003",
+        nickname="另一个人",
+        group_id="3001",
+        group_card="摄影师",
+    )
+    ambiguous = json.loads(
+        await tools.execute(
+            "get_person_memories",
+            json.dumps({"display_name": "摄影师"}),
+            runtime,
+        )
+    )
+    assert not ambiguous["ok"] and ambiguous["error"] == "ambiguous_person"
 
 
 @pytest.mark.asyncio

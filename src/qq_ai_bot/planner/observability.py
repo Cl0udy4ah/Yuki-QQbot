@@ -154,12 +154,20 @@ class PlannerObservability:
             self._last_planned_at = now
         logger.info(
             "planner_planned conversation_hash=%s decision=%s reason=%s delivery=%s "
-            "memory=%s fallback=%s latency_seconds=%.4f",
+            "memory=%s tool_mode=%s planner_scope_source=%s planner_scopes=%s "
+            "fallback=%s latency_seconds=%.4f",
             token.conversation_key_hash,
             plan.decision.value,
             plan.reason_code.value,
             plan.delivery_mode.value,
             plan.memory_context.mode.value,
+            plan.tool_selection.mode.value,
+            "explicit" if plan.tool_selection_explicit else "inherited",
+            (
+                ",".join(sorted(plan.tool_selection.scope_ids)) or "none"
+                if plan.tool_selection_explicit
+                else "backend_authorized"
+            ),
             fallback,
             max(0.0, latency_seconds),
         )

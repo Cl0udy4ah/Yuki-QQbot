@@ -146,6 +146,52 @@ def test_validator_rejects_context_only_or_semantically_different_claims() -> No
     )
 
 
+@pytest.mark.parametrize(
+    ("text", "content"),
+    [
+        ("江环是魅魔", "江环是魅魔"),
+        ("廉政这爱好倒是挺稳定的，六年前到现在都没变", "廉政的爱好很稳定"),
+    ],
+)
+def test_validator_rejects_named_other_misattributed_to_speaker(
+    text: str,
+    content: str,
+) -> None:
+    event = replace(_event(scope_type=ScopeType.GROUP, group_id="3001"), content=text)
+
+    assert (
+        MemoryClaimValidator().validate(
+            _claim(
+                scope_type="person_group",
+                content=content,
+                evidence_quote=text,
+            ),
+            event,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["我喜欢猫娘", "最近喜欢猫娘", "爱好是摄影", "大家叫我队长"],
+)
+def test_validator_keeps_first_person_and_subjectless_self_reports(text: str) -> None:
+    event = replace(_event(scope_type=ScopeType.GROUP, group_id="3001"), content=text)
+
+    assert (
+        MemoryClaimValidator().validate(
+            _claim(
+                scope_type="person",
+                content=text,
+                evidence_quote=text,
+            ),
+            event,
+        )
+        is not None
+    )
+
+
 def test_interaction_preferences_are_not_stored_as_person_facts() -> None:
     event = _event()
     event = replace(event, content="以后回复我时请简短一点")

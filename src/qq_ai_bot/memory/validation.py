@@ -22,6 +22,7 @@ from qq_ai_bot.persistence.repository_records import EventRecord
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
 _EXPLICIT_MARKERS = ("记住", "记得", "别忘", "请保存", "加入记忆")
+_MEMORY_COMMAND_PREFIX = re.compile(r"^(?:请)?(?:记住|记得|别忘|保存|加入记忆)\s*")
 _INTERACTION_MARKERS = (
     "回复",
     "回答",
@@ -34,6 +35,56 @@ _INTERACTION_MARKERS = (
     "引用",
     "yuki",
     "机器人",
+)
+_NAMED_OTHER_PREFIX = re.compile(
+    r"^(?:(?:据说|听说|我听说|我觉得|听人说|其实|不过|而且|原来|好像|感觉|话说)\s*)?"
+    r"(?P<subject>[\u4e00-\u9fff·]{2,8}|[A-Za-z][A-Za-z0-9_.-]{1,31})\s*"
+    r"(?:不是|没有|不会|不能|住在|来自|负责|擅长|喜欢|讨厌|想要|已经|曾经|今年|"
+    r"是|有|爱|想|会|能|在|叫|姓|这(?:个|些|种|爱好|习惯|人)|"
+    r"那(?:个|些|种|爱好|习惯|人))"
+)
+_SELF_OR_TOPIC_SUBJECTS = frozenset(
+    {
+        "本人",
+        "自己",
+        "咱们",
+        "我们",
+        "俺们",
+        "现在",
+        "最近",
+        "以后",
+        "之前",
+        "一直",
+        "已经",
+        "曾经",
+        "平时",
+        "通常",
+        "目前",
+        "今天",
+        "昨天",
+        "明天",
+        "比较",
+        "非常",
+        "特别",
+        "目标",
+        "计划",
+        "梦想",
+        "爱好",
+        "工作",
+        "职业",
+        "生日",
+        "家乡",
+        "名字",
+        "昵称",
+        "习惯",
+        "口味",
+        "偏好",
+        "性格",
+        "愿望",
+        "专业",
+        "学校",
+        "公司",
+    }
 )
 
 
@@ -116,6 +167,8 @@ class MemoryClaimValidator:
             kind = MemoryKind.PREFERENCE
         subject_is_speaker = resolved.subject_user_id == event.sender_user_id
         is_third_party = bool(resolved.subject_user_id) and not subject_is_speaker
+        if subject_is_speaker and self._appears_to_describe_named_other(quote):
+            return None
         if is_third_party and resolved.scope_type is not MemoryScopeType.PERSON_GROUP:
             return None
         source_type = claim.source_type
@@ -176,6 +229,30 @@ class MemoryClaimValidator:
             evidence=evidence,
             subject_is_speaker=subject_is_speaker,
             occurred_at=event.occurred_at,
+        )
+
+    @staticmethod
+    def _appears_to_describe_named_other(quote: str) -> bool:
+        """Reject high-confidence named third-person text attributed to the speaker.
+
+        The extractor has no authority to resolve ordinary names.  This deliberately
+        narrow guard catches a leading name plus a person-like predicate while keeping
+        first-person and common subjectless self-report forms available.
+        """
+
+        compact = quote.strip().lstrip("，。！？、,.!?：:；;（）()[]【】 ")
+        compact = _MEMORY_COMMAND_PREFIX.sub("", compact).lstrip(
+            "，。！？、,.!?：:；;（）()[]【】 "
+        )
+        matched = _NAMED_OTHER_PREFIX.match(compact)
+        if matched is None:
+            return False
+        subject = matched.group("subject")
+        predicate_tail = compact[matched.end("subject") :].lstrip()
+        if re.match(r"^(?:都)?(?:叫|称|称呼)我", predicate_tail):
+            return False
+        return not (
+            subject.startswith(("我", "咱", "俺")) or subject in _SELF_OR_TOPIC_SUBJECTS
         )
 
     @staticmethod
