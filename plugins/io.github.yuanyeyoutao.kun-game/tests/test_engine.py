@@ -313,6 +313,110 @@ def test_boss_killer_also_receives_top_five_reward() -> None:
     assert player["eggs"] == 120
 
 
+def test_failed_training_reports_the_actual_weight_gain() -> None:
+    envelope = _envelope()
+    envelope["state"]["players"][USER_ID]["kun"].update(attribute="无", weight=1000.0)
+
+    result = _play(envelope, "磨炼 100", seed=7)
+
+    assert result.envelope is not None
+    assert result.envelope["state"]["players"][USER_ID]["kun"]["weight"] == 1900.0
+    assert "体重增加900千克" in result.text
+    assert "现体重1.9吨" in result.text
+
+
+def test_boss_actions_use_distinct_damage_and_assault_consumes_resources() -> None:
+    seed = 11
+    results: dict[str, engine.GameResult] = {}
+    for action in ("攻击", "吞噬", "强袭"):
+        envelope = _envelope()
+        envelope["state"]["players"][USER_ID]["kun"]["attribute"] = "无"
+        results[action] = _play(envelope, f"{action}BOSS", seed=seed)
+
+    attack_rng = random.Random(seed)
+    expected_attack = 1000.0 * attack_rng.uniform(0.1, 0.3)
+    devour_rng = random.Random(seed)
+    expected_devour = 1000.0 * devour_rng.uniform(0.3, 0.6)
+    assault_rng = random.Random(seed)
+    assert assault_rng.random() < 0.7
+    expected_assault = float(assault_rng.randint(50, 300))
+
+    expected = {
+        "攻击": expected_attack,
+        "吞噬": expected_devour,
+        "强袭": expected_assault,
+    }
+    damages: dict[str, float] = {}
+    for action, result in results.items():
+        assert result.envelope is not None
+        state = result.envelope["state"]
+        damages[action] = state["boss"]["damage_rank"][USER_ID]
+        assert damages[action] == pytest.approx(expected[action])
+
+    assert len({round(value, 6) for value in damages.values()}) == 3
+    assert results["攻击"].envelope["state"]["players"][USER_ID]["divine_weapon"] == 10
+    assert results["吞噬"].envelope["state"]["players"][USER_ID]["divine_weapon"] == 10
+    assault_player = results["强袭"].envelope["state"]["players"][USER_ID]
+    assert assault_player["divine_weapon"] == 9
+    assert assault_player["jie_cao"] == 998
+    assert "神器余量：9" in results["强袭"].text
+
+
+def test_boss_assault_without_weapon_is_rejected_without_state_change() -> None:
+    envelope = _envelope()
+    envelope["state"]["players"][USER_ID]["divine_weapon"] = 0
+    before = deepcopy(envelope)
+
+    result = _play(envelope, "强袭BOSS")
+
+    assert result.changed is False
+    assert result.envelope == before
+    assert "没有神器" in result.text
+
+
+def test_missed_boss_assault_still_consumes_weapon_without_ranking_damage() -> None:
+    envelope = _envelope()
+    envelope["state"]["players"][USER_ID]["kun"]["attribute"] = "无"
+    boss_weight = envelope["state"]["boss"]["weight"]
+
+    result = _play(envelope, "强袭BOSS", seed=0)
+
+    assert result.envelope is not None
+    state = result.envelope["state"]
+    player = state["players"][USER_ID]
+    assert player["divine_weapon"] == 9
+    assert player["jie_cao"] == 998
+    assert state["boss"]["weight"] == boss_weight
+    assert USER_ID not in state["boss"]["damage_rank"]
+    assert "强袭BOSS未命中" in result.text
+
+
+def test_death_list_is_compacted_in_storage_and_stays_bounded_after_kill() -> None:
+    envelope = _envelope()
+    envelope["state"]["death_list"] = [
+        {"qq": f"death-{index}", "reason": "测试阵亡"} for index in range(25)
+    ]
+
+    compacted = _play(envelope, "阵亡名单")
+
+    assert compacted.envelope is not None
+    entries = compacted.envelope["state"]["death_list"]
+    assert len(entries) == engine.DEATH_LIST_LIMIT
+    assert entries[0]["qq"] == "death-5"
+    assert "death-0" not in compacted.text
+    assert "death-24" in compacted.text
+
+    compacted.envelope["state"]["players"][USER_ID]["kun"]["attribute"] = "无"
+    compacted.envelope["state"]["players"][TARGET_ID]["kun"]["weight"] = 1.0
+    killed = _play(compacted.envelope, "攻击", mentions=(TARGET_ID,), seed=7)
+
+    assert killed.envelope is not None
+    entries_after_kill = killed.envelope["state"]["death_list"]
+    assert len(entries_after_kill) == engine.DEATH_LIST_LIMIT
+    assert entries_after_kill[0]["qq"] == "death-6"
+    assert entries_after_kill[-1]["qq"] == TARGET_ID
+
+
 def test_auction_escrow_preserves_assets_and_refuses_buyer_with_kun() -> None:
     envelope = _envelope()
     seller_before = deepcopy(envelope["state"]["players"][USER_ID]["kun"])

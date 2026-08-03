@@ -491,6 +491,132 @@ class MemoryFactStateEventModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MemoryMutationReceiptModel(Base):
+    """One atomic result and provenance record for a Memory V2 mutation."""
+
+    __tablename__ = "memory_mutation_receipts"
+    __table_args__ = (
+        UniqueConstraint("mutation_id", name="uq_memory_mutation_receipts_mutation_id"),
+        UniqueConstraint("idempotency_key", name="uq_memory_mutation_receipts_idempotency"),
+        UniqueConstraint("claim_fingerprint", name="uq_memory_mutation_receipts_claim"),
+        CheckConstraint(
+            "decision_actor_type IN "
+            "('agent','worker','command','admin','plugin','reflection','system')",
+            name="ck_memory_mutation_decision_actor_type",
+        ),
+        CheckConstraint(
+            "requested_operation IN "
+            "('create','correct','invalidate','restore','contest','merge','reassign',"
+            "'update_metadata')",
+            name="ck_memory_mutation_requested_operation",
+        ),
+        CheckConstraint(
+            "applied_operation IN "
+            "('create','correct','invalidate','restore','contest','merge','reassign',"
+            "'update_metadata','merge_evidence','noop')",
+            name="ck_memory_mutation_applied_operation",
+        ),
+        CheckConstraint(
+            "outcome IN "
+            "('processing','committed','committed_as_contested','deduplicated',"
+            "'no_change','rejected')",
+            name="ck_memory_mutation_outcome",
+        ),
+        Index(
+            "ix_memory_mutation_receipts_event_created",
+            "trigger_event_id",
+            "created_at",
+        ),
+        Index(
+            "ix_memory_mutation_receipts_target_created",
+            "target_fingerprint",
+            "created_at",
+        ),
+        Index("ix_memory_mutation_receipts_old_fact", "old_fact_id"),
+        Index("ix_memory_mutation_receipts_new_fact", "new_fact_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mutation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    claim_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    trigger_event_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    current_group_id: Mapped[str | None] = mapped_column(
+        ForeignKey("groups.group_id", ondelete="CASCADE"), nullable=True
+    )
+    turn_origin: Mapped[str] = mapped_column(String(32), nullable=False)
+    delegation_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    trigger_actor_user_id: Mapped[str] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
+    )
+    decision_actor_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    decision_actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    executed_by_bot_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("people.user_id", ondelete="SET NULL"), nullable=True
+    )
+    requested_operation: Mapped[str] = mapped_column(String(24), nullable=False)
+    applied_operation: Mapped[str] = mapped_column(String(24), nullable=False)
+    old_fact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="SET NULL"), nullable=True
+    )
+    new_fact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="SET NULL"), nullable=True
+    )
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryReflectionJobModel(Base):
+    """One restart-safe bounded governance task over existing memory evidence."""
+
+    __tablename__ = "memory_reflection_jobs"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_memory_reflection_jobs_fingerprint"),
+        CheckConstraint(
+            "issue_type IN ('duplicate','contested','attribution')",
+            name="ck_memory_reflection_jobs_issue_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending','processing','completed','failed')",
+            name="ck_memory_reflection_jobs_status",
+        ),
+        CheckConstraint(
+            "attempts >= 0 AND max_attempts BETWEEN 1 AND 20",
+            name="ck_memory_reflection_jobs_attempts",
+        ),
+        Index("ix_memory_reflection_jobs_status_next", "status", "next_attempt_at"),
+        Index("ix_memory_reflection_jobs_fact_issue", "fact_id", "issue_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    issue_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    fact_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
+    )
+    related_fact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_facts.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default="3"
+    )
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class MemoryRebuildRunModel(Base):
     """Administrator-created immutable historical rebuild snapshot."""
 

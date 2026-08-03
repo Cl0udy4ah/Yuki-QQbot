@@ -26,6 +26,7 @@ WEIGHT_LIMIT = 10**15
 DEFAULT_WEIGHT_MIN = 50
 DEFAULT_WEIGHT_MAX = 200
 CRITICAL_MULTIPLIER = 1.5
+DEATH_LIST_LIMIT = 20
 
 KUN_NAMES = (
     "菜虚鲲",
@@ -475,6 +476,7 @@ class _Engine:
         return _mapping(player, f"player {user_id}")
 
     def new_day_reset(self) -> None:
+        self.trim_death_list()
         if self.state.get("last_boss_date") != self.game_date:
             self.state["boss"] = None
             self.state["last_boss_date"] = self.game_date
@@ -698,7 +700,7 @@ class _Engine:
             ["阵亡名单："]
             + [
                 f"  {entry.get('qq', '?')} - {entry.get('reason', '未知')}"
-                for entry in entries[-20:]
+                for entry in entries[-DEATH_LIST_LIMIT:]
             ]
             + ["缅怀以上各位勇士！"]
         )
@@ -835,12 +837,13 @@ class _Engine:
                 f"@{name} 磨炼成功！【{kun['attribute']}】体重减少{format_weight(value)}，"
                 f"剩余体重{format_weight(kun['weight'])}"
             )
-        kun["weight"] += kun["weight"] - value
+        gain = kun["weight"] - value
+        kun["weight"] += gain
         if kun["attribute"] == "馋" and kun["weight"] > 1000:
             self.kill(player, "馋属性磨炼暴食而死")
             return f"@{name} 因暴食而死！人为鸟死，鲲为食亡！"
         return (
-            f"@{name} 磨炼失败！【{kun['attribute']}】体重增加{format_weight(value)}，"
+            f"@{name} 磨炼失败！【{kun['attribute']}】体重增加{format_weight(gain)}，"
             f"现体重{format_weight(kun['weight'])}"
         )
 
@@ -1089,16 +1092,40 @@ class _Engine:
         immunity = {"强袭": "魑", "吞噬": "魅", "攻击": "魍"}
         if immunity[action] in boss["attributes"]:
             _reject(f"BOSS免疫{action}！")
-        damage = kun["weight"] * self.rng.uniform(0.05, 0.2)
+        assault_hit = True
+        critical = False
+        if action == "强袭":
+            if player["divine_weapon"] <= 0:
+                _reject(f"@{name} 你没有神器+夨￥宀♂牮√，无法强袭BOSS")
+            player["divine_weapon"] -= 1
+            player["jie_cao"] = max(0, player["jie_cao"] - 2)
+            assault_hit = self.rng.random() < 0.7
+            damage = float(self.rng.randint(50, 300)) if assault_hit else 0.0
+        elif action == "吞噬":
+            critical = kun["attribute"] == "怒" and self.rng.random() < 0.25
+            multiplier = CRITICAL_MULTIPLIER if critical else self.rng.uniform(0.3, 0.6)
+            damage = kun["weight"] * multiplier
+        else:
+            critical = kun["attribute"] == "怒" and self.rng.random() < 0.25
+            damage = kun["weight"] * self.rng.uniform(0.1, 0.3)
+            if critical:
+                damage *= CRITICAL_MULTIPLIER
         if kun["attribute"] == "傲":
             damage *= 1.5
-        if kun["attribute"] == "怒" and self.rng.random() < 0.25:
-            damage *= CRITICAL_MULTIPLIER
         boss["weight"] -= damage
-        boss["damage_rank"][user_id] = boss["damage_rank"].get(user_id, 0) + damage
+        if damage > 0:
+            boss["damage_rank"][user_id] = boss["damage_rank"].get(user_id, 0) + damage
         reflect = max(0, boss["weight"]) * 0.1
         reflected = min(reflect, kun["weight"] * 0.3)
         kun["weight"] -= reflected
+        action_detail = f"{action}BOSS造成了{format_weight(damage)}伤害"
+        if critical:
+            action_detail += "（致命一击）"
+        if action == "强袭":
+            action_detail = (
+                f"强袭BOSS造成了{format_weight(damage)}伤害" if assault_hit else "强袭BOSS未命中"
+            )
+            action_detail += f"，神器余量：{player['divine_weapon']}，节操：{player['jie_cao']}"
         if boss["weight"] <= 0:
             boss["weight"] = 0
             boss["alive"] = False
@@ -1115,9 +1142,9 @@ class _Engine:
         if kun["weight"] <= 0:
             kun["weight"] = 0
             self.kill(player, "讨伐BOSS阵亡", killer="BOSS")
-            return f"@{name} 对BOSS造成了{format_weight(damage)}伤害，但被BOSS反击致死！"
+            return f"@{name} {action_detail}，但被BOSS反击致死！"
         return (
-            f"@{name} 对BOSS造成了{format_weight(damage)}伤害！\n"
+            f"@{name} {action_detail}！\n"
             f"BOSS剩余体重：{format_weight(boss['weight'])}\n"
             f"你的鲲受到{format_weight(reflected)}反伤"
         )
@@ -1519,6 +1546,12 @@ class _Engine:
         kun["weight"] = max(0, kun["weight"])
         kun["killer"] = killer
         self.state["death_list"].append({"qq": player["qq"], "reason": reason})
+        self.trim_death_list()
+
+    def trim_death_list(self) -> None:
+        entries = self.state["death_list"]
+        if len(entries) > DEATH_LIST_LIMIT:
+            del entries[:-DEATH_LIST_LIMIT]
 
 
 def _validate_envelope(envelope: JsonObject, scope_type: ScopeType, scope_id: str) -> None:

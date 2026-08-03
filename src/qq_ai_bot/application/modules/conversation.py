@@ -14,8 +14,11 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
+from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.rebuild.worker import MemoryRebuildWorker
+from qq_ai_bot.memory.reflection.repository import MemoryReflectionRepository
+from qq_ai_bot.memory.reflection.worker import MemoryReflectionWorker
 from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.planner.context import PlannerContextBuilder
@@ -61,10 +64,12 @@ class ConversationBundle:
     agent_tools: AgentToolService
     plugin_agent_tools: PluginAgentToolBackend
     chat: ChatService
+    memory_mutations: MemoryMutationService
     memory_worker: MemoryWorker
     memory_rebuild_service: MemoryRebuildService
     memory_rebuild_worker: MemoryRebuildWorker
     memory_maintenance_worker: MemoryMaintenanceWorker
+    memory_reflection_worker: MemoryReflectionWorker
     relationship_worker: RelationshipWorker
 
 
@@ -156,11 +161,28 @@ class ConversationModule:
             per_user=settings.per_user_requests_per_minute,
             per_group=settings.per_group_requests_per_minute,
         )
+        memory_worker = MemoryWorker(
+            settings=settings,
+            jobs=persistence.memory_jobs,
+            facts=persistence.memories,
+            ledger=persistence.ledger,
+            model_executor=models,
+            concurrency=self._concurrency,
+            runtime_config=self._runtime_config,
+            candidate_resolver=MemoryConflictCandidateResolver(
+                persistence.memories.repository,
+                retriever=persistence.memory_context.retriever,
+                limit=settings.memory_consolidation_candidate_limit,
+            ),
+            metrics=persistence.memory_metrics,
+        )
+        memory_mutations = memory_worker.mutations
         agent_tools = AgentToolService(
             settings=settings,
             ledger=persistence.ledger,
             memories=persistence.memories,
             memory_context=persistence.memory_context,
+            memory_mutations=memory_mutations,
             actions=persistence.agent_actions,
             web_provider=self._web_provider,
             web_sources=persistence.web_sources,
@@ -191,21 +213,6 @@ class ConversationModule:
             tool_artifacts=self._tool_artifacts,
             tool_invocations=self._tool_invocations,
         )
-        memory_worker = MemoryWorker(
-            settings=settings,
-            jobs=persistence.memory_jobs,
-            facts=persistence.memories,
-            ledger=persistence.ledger,
-            model_executor=models,
-            concurrency=self._concurrency,
-            runtime_config=self._runtime_config,
-            candidate_resolver=MemoryConflictCandidateResolver(
-                persistence.memories.repository,
-                retriever=persistence.memory_context.retriever,
-                limit=settings.memory_consolidation_candidate_limit,
-            ),
-            metrics=persistence.memory_metrics,
-        )
         memory_rebuild_service = MemoryRebuildService(
             settings=settings,
             repository=persistence.memory_rebuilds,
@@ -221,6 +228,14 @@ class ConversationModule:
             settings=settings,
             facts=persistence.memories,
             runtime_config=self._runtime_config,
+            metrics=persistence.memory_metrics,
+            mutations=memory_mutations,
+        )
+        memory_reflection_worker = MemoryReflectionWorker(
+            settings=settings,
+            repository=MemoryReflectionRepository(persistence.database),
+            facts=persistence.memories,
+            mutations=memory_mutations,
             metrics=persistence.memory_metrics,
         )
         relationship_worker = RelationshipWorker(
@@ -243,10 +258,12 @@ class ConversationModule:
             agent_tools,
             plugin_agent_tools,
             chat,
+            memory_mutations,
             memory_worker,
             memory_rebuild_service,
             memory_rebuild_worker,
             memory_maintenance_worker,
+            memory_reflection_worker,
             relationship_worker,
         )
 
@@ -266,6 +283,11 @@ class ConversationModule:
             "memory_maintenance_worker",
             start=bundle.memory_maintenance_worker.start,
             close=bundle.memory_maintenance_worker.close,
+        )
+        lifecycle.register(
+            "memory_reflection_worker",
+            start=bundle.memory_reflection_worker.start,
+            close=bundle.memory_reflection_worker.close,
         )
         lifecycle.register(
             "relationship_worker",

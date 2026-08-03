@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -968,6 +968,7 @@ async def test_llm_planner_materializes_sparse_output_with_backend_defaults() ->
     assert plan.reply_to_message_id is None
     assert plan.tool_mode is ToolMode.INHERIT
     assert plan.tool_selection.scope_ids == ()
+    assert plan.tool_selection_explicit is False
     assert plan.memory_context.mode is MemoryContextMode.LEXICAL
     assert plan.emoji.mode is EmojiReplyMode.NONE
     assert plan.voice.mode is VoiceMode.TEXT
@@ -1007,6 +1008,27 @@ def test_sparse_planner_derives_secondary_effect_defaults() -> None:
     assert plan.emoji.placement is EmojiPlacement.ONLY
     assert plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
     assert plan.voice.language is SpeechLanguageHint.AUTO
+
+
+def test_sparse_planner_preserves_explicit_empty_tool_selection() -> None:
+    output = PlannerModelOutput.model_validate(
+        {
+            "decision": "reply",
+            "confidence": 0.98,
+            "reason_code": "direct_request",
+            "delivery_mode": "single",
+            "desired_messages": 1,
+            "tool_selection": {"mode": "inherit", "scopes": []},
+            "memory_context": {"mode": "lexical"},
+            "emoji": {"intent": "neutral", "mode": "none"},
+            "voice": {"mode": "text", "intent": "neutral"},
+        }
+    )
+
+    plan = output.materialize()
+
+    assert plan.tool_selection.scope_ids == ()
+    assert plan.tool_selection_explicit is True
 
 
 @pytest.mark.asyncio
@@ -1142,34 +1164,64 @@ async def test_fake_planner_obeys_the_same_cancellation_event() -> None:
         await asyncio.wait_for(task, timeout=1)
 
 
-def test_observability_tracks_active_fallback_and_hashes_identifiers(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_observability_tracks_active_fallback_and_hashes_identifiers() -> None:
     metrics = PlannerObservability()
     planner_input = _planner_input()
-    caplog.set_level(logging.INFO, logger="qq_ai_bot.planner.observability")
-    token = metrics.request_started(
-        conversation_key=planner_input.conversation_key,
-        sender_user_id=planner_input.current_sender_user_id,
-        group_id=planner_input.current_group_id,
+    with patch("qq_ai_bot.planner.observability.logger.info") as log_info:
+        token = metrics.request_started(
+            conversation_key=planner_input.conversation_key,
+            sender_user_id=planner_input.current_sender_user_id,
+            group_id=planner_input.current_group_id,
+        )
+        assert metrics.snapshot().active_requests == 1
+        plan = TurnPlan(
+            decision=PlannerDecision.REPLY,
+            intent="reply",
+            delivery_mode=DeliveryMode.SINGLE,
+            desired_messages=1,
+            tool_mode=ToolMode.NONE,
+            wait_seconds=0.0,
+            confidence=0.0,
+            reason_code=PlannerReasonCode.PLANNER_FALLBACK,
+        )
+        metrics.request_finished(token, plan=plan, latency_seconds=0.2, fallback=True)
+    rendered_logs = "\n".join(
+        str(call.args[0]) % tuple(call.args[1:]) for call in log_info.call_args_list
     )
-    assert metrics.snapshot().active_requests == 1
-    plan = TurnPlan(
-        decision=PlannerDecision.REPLY,
-        intent="reply",
-        delivery_mode=DeliveryMode.SINGLE,
-        desired_messages=1,
-        tool_mode=ToolMode.NONE,
-        wait_seconds=0.0,
-        confidence=0.0,
-        reason_code=PlannerReasonCode.PLANNER_FALLBACK,
-    )
-    metrics.request_finished(token, plan=plan, latency_seconds=0.2, fallback=True)
     snapshot = metrics.snapshot()
     assert snapshot.active_requests == 0
     assert snapshot.total_requests == 1
     assert snapshot.successful_plans == 1
     assert snapshot.fallback_plans == 1
     assert snapshot.last_decision is PlannerDecision.REPLY
-    assert "private:1001" not in caplog.text
-    assert "sender_user_id=1001" not in caplog.text
+    assert "tool_mode=none" in rendered_logs
+    assert "planner_scope_source=explicit" in rendered_logs
+    assert "planner_scopes=none" in rendered_logs
+    assert "private:1001" not in rendered_logs
+    assert "sender_user_id=1001" not in rendered_logs
+
+
+def test_observability_records_inherited_tool_scopes() -> None:
+    metrics = PlannerObservability()
+    with patch("qq_ai_bot.planner.observability.logger.info") as log_info:
+        token = metrics.request_started(
+            conversation_key="private:1001",
+            sender_user_id="1001",
+            group_id=None,
+        )
+        plan = TurnPlan(
+            decision=PlannerDecision.REPLY,
+            delivery_mode=DeliveryMode.SINGLE,
+            desired_messages=1,
+            confidence=1.0,
+            reason_code=PlannerReasonCode.DIRECT_REQUEST,
+        )
+
+        metrics.request_finished(token, plan=plan, latency_seconds=0.1)
+    rendered_logs = "\n".join(
+        str(call.args[0]) % tuple(call.args[1:]) for call in log_info.call_args_list
+    )
+
+    assert "planner_scope_source=inherited" in rendered_logs
+    assert "planner_scopes=backend_authorized" in rendered_logs
+    assert "private:1001" not in rendered_logs

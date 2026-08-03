@@ -6,6 +6,8 @@ import asyncio
 from dataclasses import dataclass
 from datetime import UTC
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.llm.base import LLMError
@@ -141,6 +143,8 @@ class MemoryClaimProcessor:
         self,
         claim: MemoryClaim | ValidatedMemoryClaim,
         context: MemoryProcessingContext,
+        *,
+        session: AsyncSession | None = None,
     ) -> MemoryClaimProcessResult:
         validated = (
             claim
@@ -176,6 +180,7 @@ class MemoryClaimProcessor:
                     create_new_fact=True,
                 ),
                 limit=None,
+                session=session,
             )
             return MemoryClaimProcessResult(
                 fact.id if fact is not None else None,
@@ -269,6 +274,7 @@ class MemoryClaimProcessor:
             candidates=candidates,
             plan=plan,
             limit=None if context.preserve_capacity else limit,
+            session=session,
         )
         return MemoryClaimProcessResult(
             fact.id if fact is not None else None,

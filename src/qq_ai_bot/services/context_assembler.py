@@ -148,6 +148,10 @@ class ContextAssembler:
                 "group_card": profile.group_card,
             },
         }
+        context["available_memory_subjects"] = await self._available_memory_subjects(
+            inbound,
+            profile,
+        )
 
         related_count = 0
         if inbound.group_id is not None:
@@ -311,6 +315,68 @@ class ContextAssembler:
             )
         return related
 
+    async def _available_memory_subjects(
+        self,
+        inbound: InboundMessage,
+        current_profile: UserProfileSnapshot,
+    ) -> list[dict[str, str]]:
+        """Expose only backend-verifiable refs that memory tools can consume this turn."""
+
+        subjects = [
+            {
+                "subject_ref": "current_speaker",
+                "display_name": current_profile.display_name,
+            }
+        ]
+        group_id = inbound.group_id
+        if group_id is None:
+            return subjects
+
+        mentioned: list[str] = []
+        for user_id in inbound.mentioned_user_ids:
+            if not user_id or user_id in {inbound.sender.user_id, inbound.bot_user_id}:
+                continue
+            if user_id not in mentioned:
+                mentioned.append(user_id)
+            if len(mentioned) >= 5:
+                break
+        reply_user_id = inbound.reply_sender_user_id
+        candidates = tuple(
+            dict.fromkeys(
+                (
+                    *mentioned,
+                    *(
+                        (reply_user_id,)
+                        if reply_user_id
+                        and reply_user_id not in {inbound.sender.user_id, inbound.bot_user_id}
+                        else ()
+                    ),
+                )
+            )
+        )
+        members = await self._people.members_in_group(candidates, group_id)
+        profiles = await self._people.get_many(tuple(members), group_id=group_id)
+
+        for index, user_id in enumerate(mentioned, start=1):
+            if user_id not in members:
+                continue
+            person = profiles.get(user_id)
+            subjects.append(
+                {
+                    "subject_ref": f"mentioned_user_{index}",
+                    "display_name": person.display_name if person else "被提及群成员",
+                }
+            )
+        if reply_user_id in members:
+            person = profiles.get(reply_user_id)
+            subjects.append(
+                {
+                    "subject_ref": "replied_message_author",
+                    "display_name": person.display_name if person else "被回复群成员",
+                }
+            )
+        return subjects
+
     @staticmethod
     def _related_ids(
         inbound: InboundMessage,
@@ -459,6 +525,15 @@ class ContextAssembler:
                     relevance=0.9,
                 )
         add("scene", context.get("scene", {}), priority=100, relevance=1, required=True)
+        memory_subjects = context.get("available_memory_subjects")
+        if isinstance(memory_subjects, list) and memory_subjects:
+            add(
+                "available_memory_subjects",
+                memory_subjects,
+                priority=100,
+                relevance=1,
+                required=True,
+            )
         for key, priority in (("current_group", 55), ("current_person_in_group", 65)):
             block = context.get(key)
             if not isinstance(block, dict):

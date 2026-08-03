@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 import time
 from dataclasses import replace
 from typing import Protocol, cast
@@ -89,6 +90,7 @@ from qq_ai_bot.planner.models import (
     ToolScopeSummary,
     ToolSelection,
 )
+from qq_ai_bot.planner.observability import identifier_hash
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRuntime,
@@ -239,6 +241,7 @@ class _ChatAgentBackend(AgentToolBackend):
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         self._web_was_used = self._web_was_used or web_was_used
         if self._tools_closed:
+            self._log_tool_exposure((), selected_scopes=(), reason="tools_closed")
             return ()
         request_runtime = self._request_runtime()
         self._provider_registry = self._service._build_tool_registry(
@@ -382,6 +385,12 @@ class _ChatAgentBackend(AgentToolBackend):
                 for entry in filtered_catalog.entries
             )
         ):
+            self._callable_tool_names = set()
+            self._log_tool_exposure(
+                (),
+                selected_scopes=selected_scopes,
+                reason="selected_scopes_unavailable",
+            )
             return ()
         budgeted = ToolSchemaBudgeter(
             selected_tool_limit=tooling.selected_tool_limit if tooling is not None else None,
@@ -416,7 +425,47 @@ class _ChatAgentBackend(AgentToolBackend):
             definitions = tuple(
                 tool for tool in definitions if tool.name == self._admin_retry_constraint[0]
             )
+        self._log_tool_exposure(
+            definitions,
+            selected_scopes=selected_scopes,
+            reason="ready",
+        )
         return definitions
+
+    def _log_tool_exposure(
+        self,
+        definitions: tuple[ChatTool, ...],
+        *,
+        selected_scopes: tuple[str, ...],
+        reason: str,
+    ) -> None:
+        """Log bounded capability metadata without message text or tool arguments."""
+
+        planner_scope_source = "explicit" if self._runtime.planner_scopes_explicit else "inherited"
+        planner_scopes = (
+            ",".join(sorted(self._runtime.tool_groups)) or "none"
+            if self._runtime.planner_scopes_explicit
+            else "backend_authorized"
+        )
+        effective_scopes = ",".join(selected_scopes) or (
+            "none" if self._runtime.planner_scopes_explicit else "backend_authorized"
+        )
+        exposed_tools = ",".join(sorted(tool.name for tool in definitions)) or "none"
+        logger.info(
+            "agent_tools_exposed conversation_hash=%s origin=%s tool_mode=%s "
+            "planner_scope_source=%s planner_scopes=%s effective_scopes=%s "
+            "tools=%s exposed_count=%d requestable_count=%d reason=%s",
+            identifier_hash(self._runtime.conversation_key) or "missing",
+            self._runtime.origin.value,
+            self._runtime.tool_mode.value,
+            planner_scope_source,
+            planner_scopes,
+            effective_scopes,
+            exposed_tools,
+            len(definitions),
+            len(self._requestable_catalog.entries) if self._requestable_catalog is not None else 0,
+            reason,
+        )
 
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
         self._batch = list(calls)
@@ -1335,7 +1384,10 @@ class ChatService:
                     planned_turn is not None
                     and planned_turn.plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
                 ),
-                planner_scopes_explicit=(scheduled_automation_intent or planned_turn is not None),
+                planner_scopes_explicit=(
+                    scheduled_automation_intent
+                    or (planned_turn is not None and planned_turn.plan.tool_selection_explicit)
+                ),
                 selection_query=content,
                 planner_intent=(
                     "创建未来触发的持久化自动化任务"
@@ -1858,10 +1910,46 @@ class ChatService:
                     required_scope_ids=candidate_scopes,
                 )
             )
+        candidates = self._retain_turn_required_tools(
+            candidates,
+            catalog.entries,
+            runtime,
+        )
         return replace(
             runtime,
             selected_tool_names=frozenset(item.descriptor.model_name for item in candidates),
         )
+
+    @staticmethod
+    def _retain_turn_required_tools(
+        selected: list[UnifiedToolCatalogEntry],
+        available: tuple[UnifiedToolCatalogEntry, ...],
+        runtime: ToolRuntime,
+    ) -> list[UnifiedToolCatalogEntry]:
+        """Keep deterministic event/query-bound tools even when the flash reranker omits them."""
+
+        required_names: set[str] = set()
+        if ToolGroup.MEMORY.value in runtime.tool_groups:
+            inbound = runtime.inbound
+            referenced_people = any(
+                user_id not in {inbound.sender.user_id, inbound.bot_user_id}
+                for user_id in inbound.mentioned_user_ids
+            ) or bool(
+                inbound.reply_sender_user_id and inbound.reply_sender_user_id != inbound.bot_user_id
+            )
+            lookup_text = f"{runtime.selection_query} {runtime.planner_intent}"
+            contains_qq = re.search(r"(?<!\d)[1-9]\d{4,19}(?!\d)", lookup_text) is not None
+            if referenced_people or contains_qq or "记忆" in lookup_text:
+                required_names.add("get_person_memories")
+
+        selected_names = {item.descriptor.model_name for item in selected}
+        retained = list(selected)
+        for item in available:
+            name = item.descriptor.model_name
+            if name in required_names and name not in selected_names:
+                retained.append(item)
+                selected_names.add(name)
+        return retained
 
     @staticmethod
     def _retain_required_tools(

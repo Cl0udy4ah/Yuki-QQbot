@@ -256,10 +256,12 @@ class ApplicationContainer:
         self.plugin_agent_tools = conversation.plugin_agent_tools
         self.chat = conversation.chat
         self.chat.register_tool_provider(self.mcp_tools)
+        self.memory_mutations = conversation.memory_mutations
         self.memory_worker = conversation.memory_worker
         self.memory_rebuild_service = conversation.memory_rebuild_service
         self.memory_rebuild_worker = conversation.memory_rebuild_worker
         self.memory_maintenance_worker = conversation.memory_maintenance_worker
+        self.memory_reflection_worker = conversation.memory_reflection_worker
         self.relationship_worker = conversation.relationship_worker
         admin = AdminModule(
             settings=settings,
@@ -283,6 +285,8 @@ class ApplicationContainer:
             emoji_worker=self.emoji_worker,
             speech_admin=self.speech_admin,
             memory_rebuild=self.memory_rebuild_service,
+            memory_mutations=self.memory_mutations,
+            ledger=self.ledger,
         ).build()
         self.admin = admin
         self.admin_audit = admin.audit

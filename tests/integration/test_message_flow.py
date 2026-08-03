@@ -319,6 +319,44 @@ async def test_explicit_empty_planner_scopes_keep_only_direct_capability_tool(
 
 
 @pytest.mark.asyncio
+async def test_omitted_planner_scopes_inherit_backend_capability_tools(
+    database: Database,
+) -> None:
+    def responder(request: ChatRequest) -> ChatResponse:
+        tool_names = {tool.name for tool in request.tools}
+        assert "get_person_memories" in tool_names
+        assert "get_my_capabilities" in tool_names
+        return ChatResponse(content="可以，我先检查相关记忆", latency_seconds=0)
+
+    harness = build_harness(
+        database,
+        make_settings(database.url),
+        FakeLLMProvider(responder),
+    )
+    plan = TurnPlan(
+        decision=PlannerDecision.REPLY,
+        intent="处理当前用户的记忆请求",
+        target_user_ids=("1001",),
+        delivery_mode=DeliveryMode.SINGLE,
+        desired_messages=1,
+        confidence=1.0,
+        reason_code=PlannerReasonCode.DIRECT_REQUEST,
+    )
+    assert plan.tool_selection_explicit is False
+    harness.processor._planner = PlannerService(
+        provider=FakePlannerProvider(plan),
+        observability=PlannerObservability(),
+    )
+
+    result = await harness.processor.handle(
+        normalize_event(private_event(Message("忘掉我之前的一条记忆"), message_id=107)),
+        MemorySender(),
+    )
+
+    assert result.reason == "chat"
+
+
+@pytest.mark.asyncio
 async def test_ordinary_capability_payload_echo_is_neither_sent_nor_persisted(
     database: Database,
 ) -> None:

@@ -240,6 +240,39 @@ class PeopleRepository:
             ).all()
         return frozenset(values)
 
+    async def find_group_members_by_exact_name(
+        self,
+        name: str,
+        group_id: str,
+    ) -> tuple[str, ...]:
+        """Resolve an exact nickname, group card, or in-scope alias inside one group."""
+
+        normalized = name.strip()
+        if not normalized:
+            return ()
+        alias_in_group = and_(
+            PersonAliasModel.user_id == MembershipModel.user_id,
+            PersonAliasModel.group_scope.in_(("", group_id)),
+        )
+        statement = (
+            select(MembershipModel.user_id)
+            .join(PersonModel, PersonModel.user_id == MembershipModel.user_id)
+            .outerjoin(PersonAliasModel, alias_in_group)
+            .where(
+                MembershipModel.group_id == group_id,
+                or_(
+                    MembershipModel.group_card == normalized,
+                    PersonModel.nickname == normalized,
+                    PersonAliasModel.alias == normalized,
+                ),
+            )
+            .distinct()
+            .order_by(MembershipModel.user_id)
+        )
+        async with self._database.sessions() as session:
+            values = (await session.scalars(statement)).all()
+        return tuple(values)
+
     async def set_enabled(
         self,
         user_id: str,

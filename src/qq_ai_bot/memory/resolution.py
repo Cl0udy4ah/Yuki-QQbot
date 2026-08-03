@@ -7,6 +7,7 @@ from qq_ai_bot.memory.enums import (
     MemoryConflictState,
     MemoryFactRelationType,
     MemoryResolutionAction,
+    MemoryScopeType,
     MemorySemanticRelation,
     MemoryStatus,
 )
@@ -47,8 +48,11 @@ class MemoryResolutionPolicy:
             )
 
         exact = tuple(candidate for candidate in candidates if candidate.exact_key)
+        subject_controls_target = (
+            claim.subject_is_speaker or claim.fact.scope_type is MemoryScopeType.GROUP
+        )
         if claim.operation is MemoryClaimOperation.RETRACT:
-            if len(exact) == 1 and claim.subject_is_speaker:
+            if len(exact) == 1 and subject_controls_target:
                 return self._plan(
                     MemoryResolutionAction.INVALIDATE,
                     existing=exact[0].fact.id,
@@ -56,14 +60,14 @@ class MemoryResolutionPolicy:
                 )
             return self._plan(MemoryResolutionAction.NOOP, reason="retract_target_ambiguous")
         if claim.operation is MemoryClaimOperation.CORRECT and len(exact) == 1:
-            if claim.subject_is_speaker:
+            if subject_controls_target:
                 return self._plan(
                     MemoryResolutionAction.SUPERSEDE,
                     existing=exact[0].fact.id,
                     reason="explicit_correction",
                     create=True,
                 )
-            return self._plan(MemoryResolutionAction.NOOP, reason="third_party_correction_denied")
+            return self._contest(exact[0].fact.id, "third_party_correction_contested")
         if not candidates:
             return self._plan(
                 MemoryResolutionAction.CREATE,
@@ -92,7 +96,7 @@ class MemoryResolutionPolicy:
                 reason=suggested.relation.value,
             )
         if suggested.relation is MemorySemanticRelation.RETRACTS:
-            if claim.subject_is_speaker:
+            if subject_controls_target:
                 return self._plan(
                     MemoryResolutionAction.INVALIDATE,
                     existing=candidate.fact.id,
@@ -100,7 +104,7 @@ class MemoryResolutionPolicy:
                 )
             return self._plan(MemoryResolutionAction.NOOP, reason="retraction_denied")
         if suggested.relation is MemorySemanticRelation.SUPERSEDES:
-            if claim.subject_is_speaker or self._stronger(claim, candidate):
+            if subject_controls_target or self._stronger(claim, candidate):
                 return self._plan(
                     MemoryResolutionAction.SUPERSEDE,
                     existing=candidate.fact.id,

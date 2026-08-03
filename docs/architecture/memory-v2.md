@@ -19,6 +19,10 @@ Memory V2 将长期记忆拆为事实、证据、逐事件提取任务和可重�
   内容无关状态审计；`memory_facts` / `memory_evidence` 同时增加 authority、冲突和聚合元数据。
 - `memory_rebuild_runs`、`memory_rebuild_items` 和 `memory_rebuild_proposals` 是 Alembic `0024`
   创建的可审阅暂存区；它们不构成第二套事实库，只有 commit 才会经共享事实服务写入。
+- `memory_mutation_receipts` 是 Alembic `0025` 创建的统一变更回执，记录触发者、决策者、Bot
+  执行者、请求/实际操作、双指纹、事实版本和真实结果；事实写入与回执处于同一事务。
+- `memory_reflection_jobs` 是 Alembic `0026` 创建的可恢复后台治理队列；它只保存内容无关的
+  候选事实 ID、问题类型、领取/重试状态和错误类别，不构成第二套事实库。
 - 三个 partial unique index 保证每个主体、kind、memory_key 最多一个 active fact。
 
 ## 可信身份映射
@@ -30,8 +34,8 @@ Memory V2 将长期记忆拆为事实、证据、逐事件提取任务和可重�
 
 读取时由 `MemoryTargetResolver` 根据当前真实事件生成目标：私聊只有当前人物；群聊包含当前
 人物、当前人物在本群和当前群。只有当前事件真实 `@` 的群成员或被回复消息的真实发送者，才会
-新增独立的 `referenced_person` 与 `referenced_person_group`。最近发言者不会成为长期记忆目标，
-昵称和模型输出也不能改变主体范围。
+新增独立的 `referenced_person_group`。被提及群友的跨群 `person` 不会投影给普通成员；最近
+发言者不会成为长期记忆目标，昵称和模型输出也不能改变主体范围。
 
 ## 查询驱动检索
 

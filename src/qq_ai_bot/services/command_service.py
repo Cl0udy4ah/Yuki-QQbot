@@ -207,6 +207,7 @@ class CommandService:
             current_group_id=message.group_id,
             mentioned_user_ids=message.mentioned_user_ids,
             current_message_text=message.text,
+            bot_user_id=message.bot_user_id,
         )
         record_reply = command is not CommandName.FORGETME
         reset_after_reply = False

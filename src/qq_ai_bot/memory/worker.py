@@ -15,6 +15,7 @@ from qq_ai_bot.memory.enums import MemoryProcessingSource, MemoryRebuildJobOutco
 from qq_ai_bot.memory.event_extractor import MemoryEventExtractor
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import MemoryJob
+from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.repository import MemoryJobRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
@@ -48,6 +49,7 @@ class MemoryWorker:
         metrics: MemoryLifecycleMetrics | None = None,
         extractor: MemoryEventExtractor | None = None,
         processor: MemoryClaimProcessor | None = None,
+        mutations: MemoryMutationService | None = None,
     ) -> None:
         self._settings = settings
         self._jobs = jobs
@@ -79,6 +81,12 @@ class MemoryWorker:
             validator=validator,
             runtime_config=runtime_config,
             metrics=self.metrics,
+        )
+        self.mutations = mutations or MemoryMutationService(
+            settings=settings,
+            facts=facts,
+            processor=self.processor,
+            ledger=ledger,
         )
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
@@ -158,14 +166,15 @@ class MemoryWorker:
             self.metrics.increment(f"claims_{claim.operation.value}ed")
             if validated.fact.authority.value == "third_party":
                 self.metrics.increment("claims_third_party")
-            result = await self.processor.process(
+            result = await self.mutations.mutate_validated_claim(
                 validated,
                 MemoryProcessingContext(
                     source=MemoryProcessingSource.LIVE,
                     event=job.event,
                 ),
+                conversation_key=job.conversation_key,
             )
-            if result.fact_id is not None:
+            if result.ok and (result.new_fact_id is not None or result.old_fact_id is not None):
                 applied += 1
         return (
             MemoryRebuildJobOutcome.CLAIMS_APPLIED if applied else MemoryRebuildJobOutcome.NO_CLAIMS

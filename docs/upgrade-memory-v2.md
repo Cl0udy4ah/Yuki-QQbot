@@ -13,7 +13,7 @@ Alembic `0020` 不提供 downgrade，也不迁移、导入或双写旧记忆。�
 1. 停止 bot 写入，但不必退出或重建 NapCat。
 2. 完整复制仓库的 `data/` 到仓库外或带时间戳的备份目录，并确认数据库文件已复制。
 3. 拉取代码后对照 `.env.example`；本次没有新增密钥。
-4. 执行 `uv run alembic upgrade head`，确认版本为 `0024`。
+4. 执行 `uv run alembic upgrade head`，确认版本为 `0026`。
 5. 执行 `docker compose up -d --build bot`，只重建 bot 可保留 NapCat 登录状态。
 6. 检查 `/healthz`、bot 日志和一轮私聊/群聊；新记忆应从空库开始产生。
 
@@ -76,3 +76,27 @@ uv run qq-ai-bot-cli memory release-check --database-url sqlite+aiosqlite:///./d
 
 如审计发现可明确治理的问题，先运行 `memory hygiene scan` 查看内容无关计划；只有人工确认
 fingerprint 后才运行 `memory hygiene apply <fingerprint>`。不要把 hygiene 当作启动步骤。
+
+## Memory Mutation V2 增量升级
+
+Alembic `0025` 只新增 `memory_mutation_receipts` 及索引，不扫描聊天、不改写既有事实、证据、
+版本链、FTS 或 Embedding。升级前仍应停止 Bot 写入并备份 `data/`；NapCat 无需停止或重建。
+
+```powershell
+docker compose stop bot
+Copy-Item data data-backup-before-0025 -Recurse
+uv run alembic upgrade head
+uv run alembic current
+docker compose up -d --build --no-deps bot
+```
+
+回执与事实写入处于同一事务。Embedding 调度发生在提交之后；调度失败不会回滚已提交事实，
+后续由既有任务机制重试。`0025 → 0024` 只删除 mutation receipts，不删除事实及状态历史。
+
+Alembic `0026` 只新增 `memory_reflection_jobs` 任务表与索引，不在迁移或启动时扫描聊天，
+也不直接改写任何事实。后台反思复用既有维护开关和批量上限，有界发现重复、长期争议及
+`person_group` 归属异常；每项任务先持久化、领取，再通过 `MemoryMutationService` 提交，
+失败会退避重试，进程中断后的超时领取可恢复。
+
+`0026 → 0025` 只删除反思任务状态。已经由统一变更服务提交的事实状态、证据、版本关系和
+mutation receipt 不会被回滚；需要完整恢复数据时仍应使用升级前的 `data/` 备份。

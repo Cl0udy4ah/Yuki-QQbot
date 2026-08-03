@@ -2,13 +2,26 @@
 
 ## Unreleased
 
-## 3.1.0 - 2026-08-02
+### Memory Mutation V2
+
+- 新增主 Agent 唯一记忆写工具 `memory_change`，支持 create、correct、invalidate、restore、
+  contest、merge、reassign 和 update_metadata，并以实际 applied operation/outcome 驱动回复。
+- 新增统一 `MemoryMutationService` 与 Alembic `0025` mutation receipt；Agent 与 Worker 通过
+  request/claim 双指纹去重，事实、证据、状态和回执原子提交。
+- 新增 Alembic `0026` 可恢复反思任务；有界扫描重复、争议和 `person_group` 归属异常，支持
+  持久领取、指数退避、进程中断恢复，并只经统一变更服务执行合并或争议标记。
+- 生产 Memory Worker、确定性记忆/偏好命令、管理员 Action、Plugin Memory Facade 和有界
+  lifecycle reflection 接入统一变更边界；普通成员可影响本人、当前群及群内人物记忆，同时
+  保留 `third_party` 来源。
+- 群友读取以当前群 `person_group` 为基础，并只读投影由目标本人在当前群 evidence 支持的
+  `person`；不暴露 evidence、其他群事实或变更权限。
 
 ### Host 管理的插件直达绑定
 
 - 新增启动期静态 `PLUGIN_DIRECT_COMMAND_BINDINGS`，把受审阅前缀绑定到已批准、已启用、运行中的 `USER` 插件命令；拒绝空白、控制字符、斜杠、AI 前缀和任意互相重叠的前缀。
 - 直达匹配只新增明确触发信号；群/私聊准入、持久消息去重、入站账本、命令限流、图片写隔离、插件权限、真实调用上下文和超时保持不变。
 - configured-but-inactive 绑定失败关闭且不进入 Planner，插件 doctor 输出 active/inactive 原因。
+- 确定性插件直达命令不再进入自动 Memory Worker，避免把 `*签到` 等游戏语法误抽取为长期记忆。
 
 ### Plugin API 与养鲲游戏
 
@@ -16,7 +29,8 @@
 - 内置 `io.github.yuanyeyoutao.kun-game`，完整覆盖养成、PVP、BOSS、拍卖、小游戏和 SUPERUSER 管理动作；`*` 只绑定普通 `play`，管理动作仅保留长入口。
 - 游戏规则为无 I/O 的确定性引擎，使用上海消息时间与局部 RNG；状态按群/私聊隔离，以每作用域锁和完整状态 CAS 一次提交。
 - 修复负数和非有限数、重复处罚、属性重复显示、数星星答案、BOSS 排行、拍卖买方覆盖和文本 QQ 目标问题；不提供旧 AstrBot JSON 运行时迁移。
-- 版本提升至 `3.1.0`；Plugin API 仍为 `1.0`，无 Alembic 迁移，head 仍为 `0024`。
+- 版本提升至 `3.1.0`；Plugin API 仍为 `1.0`，养鲲功能本身不新增迁移；当前开发分支的
+  Alembic head 为 Memory Mutation V2 的 `0026`。
 
 ## 3.0.3 - 2026-08-02
 

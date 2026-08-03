@@ -69,7 +69,7 @@ class FakePlannerProvider:
             produced = result(planner_input)
             plan = await produced if inspect.isawaitable(produced) else produced
         return constrain_turn_plan(
-            plan.model_dump(mode="python"),
+            plan.model_dump(mode="python", exclude_unset=True),
             planner_input,
             hard_max_messages=(
                 runtime.reply.plan_hard_max_messages or self._hard_max_messages or 10

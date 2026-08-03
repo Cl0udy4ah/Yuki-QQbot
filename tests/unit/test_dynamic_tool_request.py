@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -26,7 +28,7 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.planner.models import ToolMode
 from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.chat import _ChatAgentBackend
+from qq_ai_bot.services.chat import ChatService, _ChatAgentBackend
 
 
 def _tool(name: str, description: str) -> ChatTool:
@@ -126,6 +128,78 @@ def test_request_matcher_prefers_song_capability_and_has_no_arbitrary_fallback()
 
     assert matches[0].entry.descriptor.model_name == "song_share"
     assert match_requestable_tools(catalog, query="完全无关的量子天气", limit=2) == ()
+
+
+def test_tool_exposure_log_records_scopes_and_final_tool_names(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="qq_ai_bot.services.chat")
+    backend = _ChatAgentBackend(_Service(_registry([])), _runtime())  # type: ignore[arg-type]
+
+    backend.definitions(SimpleNamespace(), web_was_used=False)
+
+    assert "agent_tools_exposed" in caplog.text
+    assert "planner_scope_source=explicit" in caplog.text
+    assert "planner_scopes=plugin" in caplog.text
+    assert "effective_scopes=plugin" in caplog.text
+    assert "tools=album_share,request_tools" in caplog.text
+    assert "exposed_count=2" in caplog.text
+    assert "private:10001" not in caplog.text
+
+
+def test_tool_exposure_log_distinguishes_inherited_scopes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="qq_ai_bot.services.chat")
+    runtime = replace(
+        _runtime(),
+        tool_groups=frozenset(),
+        planner_scopes_explicit=False,
+    )
+    backend = _ChatAgentBackend(_Service(_registry([])), runtime)  # type: ignore[arg-type]
+
+    backend.definitions(SimpleNamespace(), web_was_used=False)
+
+    assert "planner_scope_source=inherited" in caplog.text
+    assert "planner_scopes=backend_authorized" in caplog.text
+    assert "effective_scopes=backend_authorized" in caplog.text
+
+
+def test_person_memory_lookup_survives_flash_reranker_omission() -> None:
+    calls: list[str] = []
+
+    async def execute(name: str, _arguments: str, _runtime: object) -> object:
+        calls.append(name)
+        return {"ok": True}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _runtime: (
+                _tool("get_group_memories", "查询群整体记忆"),
+                _tool("get_person_memories", "查询某个群友在本群的记忆"),
+            ),
+            execute=execute,
+        )
+    )
+    catalog = registry.catalog(object())
+    group_only = [catalog.by_model_name("get_group_memories")]
+    selected = [item for item in group_only if item is not None]
+    runtime = replace(
+        _runtime(),
+        tool_groups=frozenset({"memory"}),
+        selection_query="查一下917568554的群记忆",
+        planner_intent="查询群友信息",
+    )
+
+    retained = ChatService._retain_turn_required_tools(selected, catalog.entries, runtime)
+
+    assert {item.descriptor.model_name for item in retained} == {
+        "get_group_memories",
+        "get_person_memories",
+    }
 
 
 @pytest.mark.asyncio

@@ -440,6 +440,7 @@ class AutomationService:
             current_group_id=inbound.group_id,
             mentioned_user_ids=inbound.mentioned_user_ids,
             current_message_text=inbound.text,
+            bot_user_id=inbound.bot_user_id,
         )
 
     def _capability_provenance(

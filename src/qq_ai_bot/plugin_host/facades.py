@@ -1201,11 +1201,15 @@ class _MemoryFacade:
         if current is None or current.subject_user_id != invocation.actor_user_id:
             changed = False
         else:
+            service = _require_service(self._host._services.memory_admin, "memory mutation")
             changed = (
-                await memories.correct_fact(
+                await service.correct_fact(
+                    _admin_actor(
+                        invocation,
+                        is_superuser=self._host._is_real_superuser(invocation),
+                    ),
                     numeric_id,
-                    content=_bounded_text(content, maximum=4_000, field_name="content"),
-                    actor_user_id=invocation.actor_user_id,
+                    _bounded_text(content, maximum=4_000, field_name="content"),
                 )
                 is not None
             )
@@ -1232,15 +1236,18 @@ class _MemoryFacade:
         numeric_id = _person_memory_id(memory_id)
         memories = _require_service(self._host._services.memories, "memory")
         current = await memories.get_fact(numeric_id)
-        changed = bool(
-            current is not None
-            and current.subject_user_id == invocation.actor_user_id
-            and await memories.invalidate_fact(
+        if current is None or current.subject_user_id != invocation.actor_user_id:
+            changed = False
+        else:
+            service = _require_service(self._host._services.memory_admin, "memory mutation")
+            changed = await service.invalidate_fact(
+                _admin_actor(
+                    invocation,
+                    is_superuser=self._host._is_real_superuser(invocation),
+                ),
                 numeric_id,
-                reason=MemoryInvalidationReason.PLUGIN_EXPLICIT_INVALIDATION,
-                actor_user_id=invocation.actor_user_id,
+                MemoryInvalidationReason.PLUGIN_EXPLICIT_INVALIDATION.value,
             )
-        )
         await self._host._audit(
             invocation,
             operation="memory.delete",
@@ -2868,6 +2875,9 @@ def _admin_actor(
         current_group_id=invocation.current_group_id,
         mentioned_user_ids=inbound.mentioned_user_ids if inbound else (),
         current_message_text=inbound.text if inbound else "",
+        bot_user_id=invocation.bot_user_id,
+        decision_actor_type="plugin",
+        decision_actor_id=invocation.plugin_id,
     )
 
 

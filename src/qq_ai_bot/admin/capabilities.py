@@ -502,6 +502,9 @@ class AdminCapabilityService:
             current_group_id=runtime.current_group_id,
             mentioned_user_ids=runtime.mentioned_user_ids,
             current_message_text=inbound.text,
+            bot_user_id=inbound.bot_user_id,
+            decision_actor_type="admin",
+            decision_actor_id="admin_agent",
         )
 
     def _list_capabilities(

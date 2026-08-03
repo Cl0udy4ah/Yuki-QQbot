@@ -126,6 +126,9 @@ class AdminActor:
     current_group_id: str | None = None
     mentioned_user_ids: tuple[str, ...] = ()
     current_message_text: str = ""
+    bot_user_id: str = ""
+    decision_actor_type: str = "command"
+    decision_actor_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

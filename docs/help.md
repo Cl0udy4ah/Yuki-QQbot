@@ -2,7 +2,13 @@
 
 > **3.1.0 养鲲插件与安全直达绑定：**新增 Host 静态 `prefix → plugin_id:command` 路由、
 > `CurrentMessage.mentioned_user_ids` 可信投影和内置养鲲游戏。直达命令继续经过现有安全链；
-> 无数据库迁移，Alembic head 仍为 `0024`。
+> 养鲲功能不新增数据库迁移，当前开发分支 Alembic head 为 `0026`。
+
+> **Memory Mutation V2 开发版：**新增唯一的 `memory_change` Agent 写工具和统一
+> `MemoryMutationService`；Alembic head 为 `0026`。Agent、自动 Worker、记忆命令、管理员、
+> 插件和可恢复的有界后台治理共享事务回执与双指纹去重。群友读取以当前群 `person_group`
+> 为基础，并只读投影由目标本人在本群 evidence 支持的 `person`；不会暴露 evidence、其他群
+> 事实或全局记忆修改权限。
 
 > **3.0.3 日常表情节奏：**新增可热修改的 `emoji.spontaneous_frequency`，默认 `0.15`。
 > Planner 复用近期账本中的真实投递记录限制自发 `optional` 表情；明确索要表情不受影响。

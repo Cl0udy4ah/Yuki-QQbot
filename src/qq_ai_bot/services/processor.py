@@ -551,7 +551,10 @@ class MessageProcessor:
         record, created = await self._ledger.append_inbound(
             message, bot_user_id=message.bot_user_id or "unknown-bot"
         )
-        if created:
+        # Deterministic native and direct-plugin commands execute their own reviewed
+        # mutation path. Feeding command syntax to the extraction Worker would create
+        # a second interpretation of the same write and may pollute long-term memory.
+        if created and decision.command is None and direct_match is None:
             await self._memory_worker.enqueue(record.id, identity.key)
         is_explicit_emoji_import = bool(
             decision.command is CommandName.EMOJI

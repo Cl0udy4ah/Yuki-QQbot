@@ -72,21 +72,13 @@ class MemoryTargetResolver:
             if candidate not in members:
                 continue
             try:
-                targets.extend(
-                    (
-                        MemoryEntityTarget(
-                            role=MemoryTargetRole.REFERENCED_PERSON,
-                            scope_type=MemoryScopeType.PERSON,
-                            subject_user_id=candidate,
-                            block_id=f"referenced_person:{candidate}",
-                        ),
-                        MemoryEntityTarget(
-                            role=MemoryTargetRole.REFERENCED_PERSON_GROUP,
-                            scope_type=MemoryScopeType.PERSON_GROUP,
-                            subject_user_id=candidate,
-                            group_id=group_id,
-                            block_id=f"referenced_person_group:{candidate}:{group_id}",
-                        ),
+                targets.append(
+                    MemoryEntityTarget(
+                        role=MemoryTargetRole.REFERENCED_PERSON_GROUP,
+                        scope_type=MemoryScopeType.PERSON_GROUP,
+                        subject_user_id=candidate,
+                        group_id=group_id,
+                        block_id=f"referenced_person_group:{candidate}:{group_id}",
                     )
                 )
             except ValidationError as exc:
