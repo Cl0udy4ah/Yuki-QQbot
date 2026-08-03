@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## 3.2.0 - 2026-08-03
+
+### Yuki 自我长期记忆
+
+- Memory V2 新增 `self` 作用域和 `current_self` 检索目标，用于保存 Yuki 自己形成的事实、
+  偏好、经历、反思和原则；静态核心人格与系统规则仍保持更高优先级。
+- Planner 新增默认关闭的 `self_recall`，只有问题明确涉及 Yuki 自己的过去、偏好、观点变化或
+  自我认识时，才构造 SELF 目标并复用现有 FTS、Embedding、混合 RRF 和上下文预算。
+- SELF 事实按 `global`、`private`、`group` 可见范围在候选查询前硬过滤，避免跨私聊或跨群泄露；
+  Alembic `0027` 非破坏性增加可见范围字段、约束和唯一 active slot 索引。
+- 统一 `memory_change` 支持 Yuki 自主创建、纠正、撤销、恢复、争议和合并自我记忆，要求当前
+  真实入站消息证据，并拒绝 identity、core、safety、system、permission 和 runtime 保护键。
+- 新增只读 `get_self_memories`，支持相关检索和总览，只返回当前会话可见的 SELF 事实投影，
+  不暴露可见用户/群 ID、原始证据身份或审计内部信息。
+
+### 工具链可靠性
+
+- 允许绑定当前真实群消息的自主回应调用 `memory_change`，定时任务、系统任务和无真实事件的
+  后台流程仍不可调用。
+- 自动化意图检测改为按句判断，避免把一处“今天”和另一句“告诉我”拼成不存在的定时任务，
+  从而错误覆盖 Planner 的 memory 工具域。
+- SELF category 白名单成为统一领域契约，并同时暴露在工具 Schema 和拒绝回执中，使 Yuki 能
+  使用 `self_fact`、`self_preference`、`self_episode`、`self_reflection`、`self_principle`
+  正确提交或自行纠错。
+
+### 发布
+
+- 版本提升至 `3.2.0`；Plugin API 仍为 `1.0`，Alembic head 为 `0027`。
+
+## 3.1.0 - 2026-08-03
+
 ### Memory Mutation V2
 
 - 新增主 Agent 唯一记忆写工具 `memory_change`，支持 create、correct、invalidate、restore、

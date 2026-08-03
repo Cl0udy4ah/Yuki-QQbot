@@ -147,6 +147,9 @@ class MemoryFactService:
                 scope_type=prepared.scope_type,
                 subject_user_id=prepared.subject_user_id,
                 group_id=prepared.group_id,
+                visibility_type=prepared.visibility_type,
+                visibility_user_id=prepared.visibility_user_id,
+                visibility_group_id=prepared.visibility_group_id,
             )
             if not await self._repository.make_room(query, limit=limit, session=session):
                 raise ValueError("memory capacity is occupied by explicit facts")
@@ -315,6 +318,9 @@ class MemoryFactService:
                 scope_type=claim.fact.scope_type,
                 subject_user_id=claim.fact.subject_user_id,
                 group_id=claim.fact.group_id,
+                visibility_type=claim.fact.visibility_type,
+                visibility_user_id=claim.fact.visibility_user_id,
+                visibility_group_id=claim.fact.visibility_group_id,
             )
             if not await self._repository.make_room(query, limit=limit, session=session):
                 raise ValueError("memory capacity is occupied by explicit facts")
@@ -418,9 +424,21 @@ class MemoryFactService:
             claim.fact.scope_type,
             claim.fact.subject_user_id,
             claim.fact.group_id,
+            claim.fact.visibility_type,
+            claim.fact.visibility_user_id,
+            claim.fact.visibility_group_id,
         )
         if any(
-            (row.scope_type, row.subject_user_id, row.group_id) != target for row in by_id.values()
+            (
+                row.scope_type,
+                row.subject_user_id,
+                row.group_id,
+                row.visibility_type,
+                row.visibility_user_id,
+                row.visibility_group_id,
+            )
+            != target
+            for row in by_id.values()
         ):
             raise ValueError("memory resolution plan crosses identity targets")
         if (
@@ -759,17 +777,30 @@ class MemoryFactService:
         collision = await self._repository.find_active(replacement, session=session)
         if collision is not None and collision.id != current.id:
             raise ValueError("memory replacement target already has an active fact for this key")
-        old_target = (current.scope_type, current.subject_user_id, current.group_id)
+        old_target = (
+            current.scope_type,
+            current.subject_user_id,
+            current.group_id,
+            current.visibility_type,
+            current.visibility_user_id,
+            current.visibility_group_id,
+        )
         new_target = (
             replacement.scope_type,
             replacement.subject_user_id,
             replacement.group_id,
+            replacement.visibility_type,
+            replacement.visibility_user_id,
+            replacement.visibility_group_id,
         )
         if old_target != new_target and limit is not None:
             query = MemoryFactQuery(
                 scope_type=replacement.scope_type,
                 subject_user_id=replacement.subject_user_id,
                 group_id=replacement.group_id,
+                visibility_type=replacement.visibility_type,
+                visibility_user_id=replacement.visibility_user_id,
+                visibility_group_id=replacement.visibility_group_id,
             )
             if not await self._repository.make_room(query, limit=limit, session=session):
                 raise ValueError("memory capacity is occupied by explicit facts")
@@ -1186,8 +1217,22 @@ class MemoryFactService:
             return None
         if source.status not in {MemoryStatus.ACTIVE, MemoryStatus.CONTESTED}:
             raise ValueError("memory merge source must be active or contested")
-        source_target = (source.scope_type, source.subject_user_id, source.group_id)
-        target_target = (target.scope_type, target.subject_user_id, target.group_id)
+        source_target = (
+            source.scope_type,
+            source.subject_user_id,
+            source.group_id,
+            source.visibility_type,
+            source.visibility_user_id,
+            source.visibility_group_id,
+        )
+        target_target = (
+            target.scope_type,
+            target.subject_user_id,
+            target.group_id,
+            target.visibility_type,
+            target.visibility_user_id,
+            target.visibility_group_id,
+        )
         if source_target != target_target:
             raise ValueError("memory merge cannot cross identity targets")
         if target.status is not MemoryStatus.ACTIVE:
@@ -1264,6 +1309,9 @@ class MemoryFactService:
                 preferred.scope_type,
                 preferred.subject_user_id,
                 preferred.group_id,
+                preferred.visibility_type,
+                preferred.visibility_user_id,
+                preferred.visibility_group_id,
                 preferred.kind,
                 preferred.memory_key,
             )
@@ -1278,6 +1326,9 @@ class MemoryFactService:
                     fact.scope_type,
                     fact.subject_user_id,
                     fact.group_id,
+                    fact.visibility_type,
+                    fact.visibility_user_id,
+                    fact.visibility_group_id,
                     fact.kind,
                     fact.memory_key,
                 ) != target:
@@ -1289,6 +1340,9 @@ class MemoryFactService:
                         scope_type=preferred.scope_type,
                         subject_user_id=preferred.subject_user_id,
                         group_id=preferred.group_id,
+                        visibility_type=preferred.visibility_type,
+                        visibility_user_id=preferred.visibility_user_id,
+                        visibility_group_id=preferred.visibility_group_id,
                         kind=preferred.kind,
                         memory_key=preferred.memory_key,
                         category=preferred.category,

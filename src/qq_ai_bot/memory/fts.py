@@ -253,6 +253,23 @@ class SQLiteMemoryFTSIndex:
         else:
             clauses.append(" AND mf.group_id = :group_id")
             params["group_id"] = target.group_id
+        if target.scope_type.value == "self":
+            clauses.append(
+                " AND (mf.visibility_type = 'global' OR (mf.visibility_type = :visibility_type"
+            )
+            params["visibility_type"] = (
+                target.visibility_type.value if target.visibility_type else ""
+            )
+            if target.visibility_user_id is None:
+                clauses.append(" AND mf.visibility_user_id IS NULL")
+            else:
+                clauses.append(" AND mf.visibility_user_id = :visibility_user_id")
+                params["visibility_user_id"] = target.visibility_user_id
+            if target.visibility_group_id is None:
+                clauses.append(" AND mf.visibility_group_id IS NULL))")
+            else:
+                clauses.append(" AND mf.visibility_group_id = :visibility_group_id))")
+                params["visibility_group_id"] = target.visibility_group_id
         return "".join(clauses), params
 
     @staticmethod

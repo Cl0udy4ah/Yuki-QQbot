@@ -7,6 +7,15 @@ class MemoryScopeType(StrEnum):
     PERSON = "person"
     PERSON_GROUP = "person_group"
     GROUP = "group"
+    SELF = "self"
+
+
+class SelfMemoryVisibility(StrEnum):
+    """Conversation boundary for one single-instance Yuki self memory."""
+
+    GLOBAL = "global"
+    PRIVATE = "private"
+    GROUP = "group"
 
 
 class MemoryKind(StrEnum):
@@ -40,6 +49,7 @@ class MemoryAuthority(StrEnum):
     SELF_REPORT = "self_report"
     GROUP_REPORT = "group_report"
     THIRD_PARTY = "third_party"
+    AGENT_REFLECTION = "agent_reflection"
 
 
 class MemoryConflictState(StrEnum):
@@ -63,6 +73,7 @@ class MemoryEvidenceRelation(StrEnum):
     CORRECTION = "correction"
     RETRACTION = "retraction"
     REBUILD = "rebuild"
+    AGENT_REFLECTION = "agent_reflection"
 
 
 class MemoryStateAction(StrEnum):
@@ -195,6 +206,7 @@ class MemoryRetrievalMode(StrEnum):
 
 
 class MemoryTargetRole(StrEnum):
+    CURRENT_SELF = "current_self"
     CURRENT_PERSON = "current_person"
     CURRENT_PERSON_GROUP = "current_person_group"
     CURRENT_GROUP = "current_group"

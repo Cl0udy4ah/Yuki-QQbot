@@ -22,6 +22,13 @@ def test_information_about_time_is_not_mistaken_for_a_scheduled_action() -> None
     assert not is_scheduled_automation_request("查看昨天九点的聊天记录")
 
 
+def test_time_and_action_in_separate_memory_sentences_do_not_form_automation() -> None:
+    assert not is_scheduled_automation_request(
+        "请把这件事作为你自己的长期经历记住：今天我们第一次测试了你的自我记忆功能。"
+        "这是当前群的共同经历，只在本群可见。保存成功后告诉我你记住了什么。"
+    )
+
+
 def test_success_claim_requires_persisted_confirmation() -> None:
     assert (
         enforce_creation_claim(

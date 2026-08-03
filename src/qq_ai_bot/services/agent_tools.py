@@ -22,11 +22,17 @@ from qq_ai_bot.conversation.reply import ReplyEffect
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatTool, InboundMessage
 from qq_ai_bot.memory.context import MemoryContextService
-from qq_ai_bot.memory.enums import MemoryRetrievalMode, MemoryScopeType, MemoryTargetRole
+from qq_ai_bot.memory.enums import (
+    MemoryRetrievalMode,
+    MemoryScopeType,
+    MemoryTargetRole,
+    SelfMemoryVisibility,
+)
 from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.models import MemoryEntityTarget
 from qq_ai_bot.memory.mutation.models import (
+    SELF_MEMORY_CATEGORIES,
     MemoryDecisionActorType,
     MemoryMutationContext,
     MemoryMutationRequest,
@@ -57,6 +63,7 @@ _URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 _CQ_CODE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]", re.IGNORECASE)
 _HISTORY_TEXT_MAX = 4000
 _HISTORY_SEGMENT_MAX = 100
+_MEMORY_CHANGE_ORIGINS = frozenset({TurnOrigin.USER_MESSAGE, TurnOrigin.AUTONOMOUS_GROUP})
 _RUNTIME_SNAPSHOT: ContextVar[RuntimeConfigSnapshot | None] = ContextVar(
     "agent_tool_runtime_snapshot",
     default=None,
@@ -236,6 +243,8 @@ class AgentToolService:
                     "目标时必须使用 subject_ref，不要把昵称、[提及成员1] 等占位符填入 user_id；"
                     "手输昵称/群名片使用 display_name，手输 QQ 号使用兼容字段 user_id。"
                     "用户询问‘某人的群记忆’仍属于本工具；get_group_memories 只查询群整体事实。"
+                    "本工具不能读取 Yuki 自己；读取 Yuki 的自我长期记忆必须使用"
+                    " get_self_memories。"
                 ),
                 parameters=_object_schema(
                     {
@@ -301,17 +310,51 @@ class AgentToolService:
                 ),
             ),
         ]
-        if self._memory_mutations is not None and runtime.origin is TurnOrigin.USER_MESSAGE:
+        if self._settings.self_memory_enabled:
+            tools.append(
+                ChatTool(
+                    name="get_self_memories",
+                    description=(
+                        "读取 Yuki 自己在当前会话中有权回忆的长期记忆。用户询问 Yuki 的过去、"
+                        "经历、偏好、反思、原则，或要求展示 Yuki 自己的长期记忆时使用。"
+                        "无 query 时默认总览；有 query 时默认相关检索。后端只返回全局记忆加当前"
+                        "私聊用户或当前群可见的记忆，不得用 get_person_memories 代替，也不能指定"
+                        "用户、群或其他会话的可见范围。"
+                    ),
+                    parameters=_object_schema(
+                        {
+                            "query": {
+                                "type": "string",
+                                "maxLength": 400,
+                                "description": "可选；要检索的 Yuki 自我记忆主题",
+                            },
+                            "mode": {
+                                "type": "string",
+                                "enum": ["relevant", "overview"],
+                            },
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                        }
+                    ),
+                )
+            )
+        if self._memory_mutations is not None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
             tools.append(
                 ChatTool(
                     name="memory_change",
                     description=(
                         "Yuki 唯一的长期记忆变更工具。只能根据当前用户这条真实入站消息"
+                        "（包括由当前群消息触发的自主回应）"
                         "创建、纠正、撤销、恢复、争议、合并、改归属或更新记忆元数据；"
                         "不能把 Yuki 自己的输出当证据，也不能传 QQ 号、群号或事件 ID。"
                         "target.subject_ref 只能使用 current_speaker、current_group、"
                         "mentioned_user、mentioned_user_1 等本轮可验证别名，或"
-                        "replied_message_author。工具回执中的 applied_operation 和 outcome"
+                        "replied_message_author；Yuki 自我记忆使用 self + self。自我记忆仅在"
+                        "功能开启且 Yuki 根据当前真实用户消息形成自己的判断时变更，visibility"
+                        "只能用 current_scope 或 global；global 只适合抽象偏好、反思和原则，"
+                        "SELF 的 category 必须精确使用 self_fact、self_preference、self_episode、"
+                        "self_reflection 或 self_principle；"
+                        "不能保存私聊原始经历，也不能修改 identity/core/safety/system/permission/"
+                        "runtime 等保护键。工具回执中的 applied_operation 和 outcome"
                         "才是真实结果，回复用户时必须以回执为准；被降级为 contest 或 noop"
                         "时不得声称已经覆盖、删除或纠正成功。"
                     ),
@@ -346,18 +389,31 @@ class AgentToolService:
                                             "mentioned_user_4",
                                             "mentioned_user_5",
                                             "replied_message_author",
+                                            "self",
                                         ],
                                     },
                                     "scope_type": {
                                         "type": "string",
-                                        "enum": ["person", "person_group", "group"],
+                                        "enum": ["person", "person_group", "group", "self"],
                                     },
                                 },
                                 required=("subject_ref", "scope_type"),
                             ),
+                            "visibility": {
+                                "type": "string",
+                                "enum": ["current_scope", "global"],
+                            },
                             "new_content": {"type": "string", "maxLength": 4000},
                             "memory_key": {"type": "string", "maxLength": 128},
-                            "category": {"type": "string", "maxLength": 64},
+                            "category": {
+                                "type": "string",
+                                "maxLength": 64,
+                                "description": (
+                                    "target.scope_type=self 时必须精确使用："
+                                    "self_fact、self_preference、self_episode、"
+                                    "self_reflection、self_principle；其他作用域使用其普通分类。"
+                                ),
+                            },
                             "kind": {
                                 "type": "string",
                                 "enum": ["fact", "preference", "episode"],
@@ -514,6 +570,8 @@ class AgentToolService:
                     return await self._search(arguments, runtime)
                 if name == "get_person_memories":
                     return await self._person_memories(arguments, runtime)
+                if name == "get_self_memories":
+                    return await self._self_memories(arguments, runtime)
                 if name == "get_group_memories":
                     return await self._group_memories(arguments, runtime)
                 if name == "get_memory_fact":
@@ -1199,6 +1257,62 @@ class AgentToolService:
             }
         )
 
+    async def _self_memories(
+        self,
+        arguments: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
+        if not self._settings.self_memory_enabled:
+            return self._result(error="self_memory_unavailable", detail="自我记忆功能未启用")
+        limit = self._memory_limit(arguments)
+        query, mode = self._memory_query(arguments)
+        targets = await self._memory_context.resolve_targets(
+            runtime.inbound,
+            self._runtime(),
+            self_recall=True,
+        )
+        target = next(
+            (
+                item
+                for item in targets
+                if item.role is MemoryTargetRole.CURRENT_SELF
+                and item.scope_type is MemoryScopeType.SELF
+            ),
+            None,
+        )
+        if target is None:
+            return self._result(error="self_memory_unavailable", detail="当前会话不能读取自我记忆")
+        result = await self._memory_context.search(
+            text=query or "",
+            mode=mode
+            or (
+                MemoryRetrievalMode.RELEVANT if query is not None else MemoryRetrievalMode.OVERVIEW
+            ),
+            targets=(target,),
+            runtime=self._runtime(),
+            limit=limit,
+        )
+        visible_hits = tuple(
+            hit for hit in result.hits if hit.fact.scope_type is MemoryScopeType.SELF
+        )
+        await self._memory_context.mark_used(
+            result,
+            tuple(hit.fact.id for hit in visible_hits),
+        )
+        return self._result(
+            data={
+                "visible_scope": (
+                    "global_and_current_private"
+                    if runtime.inbound.scope_type is ScopeType.PRIVATE
+                    else "global_and_current_group"
+                ),
+                "memories": [
+                    self._self_memory_json(hit.fact, retrieval_reason=hit.selection_reason)
+                    for hit in visible_hits
+                ],
+            }
+        )
+
     @staticmethod
     def _memory_limit(arguments: dict[str, Any]) -> int:
         value = arguments.get("limit", 20)
@@ -1247,7 +1361,7 @@ class AgentToolService:
         runtime: ToolRuntime,
     ) -> str:
         service = self._memory_mutations
-        if service is None or runtime.origin is not TurnOrigin.USER_MESSAGE:
+        if service is None or runtime.origin not in _MEMORY_CHANGE_ORIGINS:
             return self._result(error="memory_change_unavailable", detail="当前轮不能变更记忆")
         try:
             request = MemoryMutationRequest.model_validate(arguments)
@@ -1293,21 +1407,36 @@ class AgentToolService:
                 ),
             ),
         )
-        return self._result(
-            data={
-                "ok": result.ok,
-                "mutation_id": result.mutation_id,
-                "requested_operation": result.requested_operation.value,
-                "applied_operation": result.applied_operation.value,
-                "outcome": result.outcome.value,
-                "old_fact_id": result.old_fact_id,
-                "new_fact_id": result.new_fact_id,
-                "reason_code": result.reason_code,
-                "deduplicated": result.deduplicated,
-            }
-        )
+        payload: dict[str, Any] = {
+            "ok": result.ok,
+            "mutation_id": result.mutation_id,
+            "requested_operation": result.requested_operation.value,
+            "applied_operation": result.applied_operation.value,
+            "outcome": result.outcome.value,
+            "old_fact_id": result.old_fact_id,
+            "new_fact_id": result.new_fact_id,
+            "reason_code": result.reason_code,
+            "deduplicated": result.deduplicated,
+        }
+        if result.reason_code == "invalid_self_memory_category":
+            payload["allowed_self_categories"] = list(SELF_MEMORY_CATEGORIES)
+        return self._result(data=payload)
 
     def _can_read_fact(self, fact: Any, runtime: ToolRuntime) -> bool:
+        if fact.scope_type is MemoryScopeType.SELF and self._settings.self_memory_enabled:
+            if fact.visibility_type is SelfMemoryVisibility.GLOBAL:
+                return True
+            if (
+                fact.visibility_type is SelfMemoryVisibility.PRIVATE
+                and fact.visibility_user_id == runtime.inbound.sender.user_id
+                and runtime.inbound.scope_type is ScopeType.PRIVATE
+            ):
+                return True
+            if (
+                fact.visibility_type is SelfMemoryVisibility.GROUP
+                and fact.visibility_group_id == runtime.inbound.group_id
+            ):
+                return True
         if fact.subject_user_id == runtime.inbound.sender.user_id:
             return True
         if (
@@ -1385,6 +1514,21 @@ class AgentToolService:
                 }
             )
         return payload
+
+    @staticmethod
+    def _self_memory_json(row: Any, *, retrieval_reason: str) -> dict[str, Any]:
+        """Project SELF facts without visibility identities or evidence internals."""
+
+        return {
+            "fact_id": row.id,
+            "kind": row.kind.value,
+            "category": row.category,
+            "content": row.content,
+            "importance": row.importance,
+            "confidence": row.confidence,
+            "status": row.status.value,
+            "retrieval_reason": retrieval_reason,
+        }
 
     async def _call_onebot(self, arguments: dict[str, Any], runtime: ToolRuntime) -> str:
         if (

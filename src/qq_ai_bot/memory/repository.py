@@ -77,6 +77,9 @@ class MemoryFactRepository:
                 scope_type=fact.scope_type,
                 subject_user_id=fact.subject_user_id,
                 group_id=fact.group_id,
+                visibility_type=fact.visibility_type,
+                visibility_user_id=fact.visibility_user_id,
+                visibility_group_id=fact.visibility_group_id,
             )
         )
 
@@ -102,6 +105,7 @@ class MemoryFactRepository:
             conditions.append(MemoryFactModel.group_id.is_(None))
         else:
             conditions.append(MemoryFactModel.group_id == query.group_id)
+        conditions.extend(self._exact_visibility_conditions(query))
         if query.kind is not None:
             conditions.append(MemoryFactModel.kind == query.kind.value)
         if query.status is MemoryStatus.ACTIVE:
@@ -263,23 +267,15 @@ class MemoryFactRepository:
                     limit=limit,
                     session=owned,
                 )
-        target = MemoryEntityTarget(
-            role={
-                "person": "current_person",
-                "person_group": "current_person_group",
-                "group": "current_group",
-            }[fact.scope_type.value],
-            scope_type=fact.scope_type,
-            subject_user_id=fact.subject_user_id,
-            group_id=fact.group_id,
-            block_id="conflict_candidates",
-        )
         rows = (
             await session.execute(
                 select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
                 .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
                 .where(
-                    *self._target_conditions(target),
+                    MemoryFactModel.scope_type == fact.scope_type.value,
+                    MemoryFactModel.subject_user_id == fact.subject_user_id,
+                    MemoryFactModel.group_id == fact.group_id,
+                    *self._exact_visibility_conditions(fact),
                     MemoryFactModel.status.in_(
                         (
                             MemoryStatus.ACTIVE.value,
@@ -400,18 +396,19 @@ class MemoryFactRepository:
         *,
         session: AsyncSession,
     ) -> MemoryFactModel | None:
+        conditions = [
+            MemoryFactModel.scope_type == fact.scope_type.value,
+            MemoryFactModel.subject_user_id == fact.subject_user_id,
+            MemoryFactModel.group_id == fact.group_id,
+            MemoryFactModel.memory_key == fact.memory_key,
+            MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+            *self._exact_visibility_conditions(fact),
+        ]
+        if fact.scope_type is not MemoryScopeType.SELF:
+            conditions.append(MemoryFactModel.kind == fact.kind.value)
         return cast(
             MemoryFactModel | None,
-            await session.scalar(
-                select(MemoryFactModel).where(
-                    MemoryFactModel.scope_type == fact.scope_type.value,
-                    MemoryFactModel.subject_user_id == fact.subject_user_id,
-                    MemoryFactModel.group_id == fact.group_id,
-                    MemoryFactModel.kind == fact.kind.value,
-                    MemoryFactModel.memory_key == fact.memory_key,
-                    MemoryFactModel.status == MemoryStatus.ACTIVE.value,
-                )
-            ),
+            await session.scalar(select(MemoryFactModel).where(*conditions)),
         )
 
     async def create_fact(
@@ -447,6 +444,9 @@ class MemoryFactRepository:
             scope_type=fact.scope_type.value,
             subject_user_id=fact.subject_user_id,
             group_id=fact.group_id,
+            visibility_type=(fact.visibility_type.value if fact.visibility_type else None),
+            visibility_user_id=fact.visibility_user_id,
+            visibility_group_id=fact.visibility_group_id,
             kind=fact.kind.value,
             memory_key=fact.memory_key,
             category=fact.category,
@@ -627,6 +627,16 @@ class MemoryFactRepository:
         *,
         session: AsyncSession,
     ) -> bool:
+        reflection_authority = evidence.authority is MemoryAuthority.AGENT_REFLECTION
+        reflection_relation = evidence.relation.value == "agent_reflection"
+        if reflection_authority != reflection_relation:
+            raise ValueError("agent reflection evidence relation and authority must match")
+        if reflection_authority:
+            scope_type = await session.scalar(
+                select(MemoryFactModel.scope_type).where(MemoryFactModel.id == fact_id)
+            )
+            if scope_type != MemoryScopeType.SELF.value:
+                raise ValueError("agent reflection evidence is only valid for self memory")
         statement = insert(MemoryEvidenceModel).values(
             fact_id=fact_id,
             event_id=evidence.event_id,
@@ -809,6 +819,7 @@ class MemoryFactRepository:
             or_(
                 MemoryFactModel.valid_until <= now,
                 and_(
+                    MemoryFactModel.scope_type != MemoryScopeType.SELF.value,
                     MemoryFactModel.source_type == "automatic",
                     MemoryFactModel.importance <= max_importance,
                     MemoryFactModel.confidence <= max_confidence,
@@ -923,6 +934,9 @@ class MemoryFactRepository:
             scope_type=row.scope_type,
             subject_user_id=row.subject_user_id,
             group_id=row.group_id,
+            visibility_type=row.visibility_type,
+            visibility_user_id=row.visibility_user_id,
+            visibility_group_id=row.visibility_group_id,
             kind=row.kind,
             memory_key=row.memory_key,
             category=row.category,
@@ -947,7 +961,7 @@ class MemoryFactRepository:
 
     @staticmethod
     def _target_conditions(target: MemoryEntityTarget) -> tuple[Any, ...]:
-        return (
+        conditions: list[Any] = [
             MemoryFactModel.scope_type == target.scope_type.value,
             (
                 MemoryFactModel.subject_user_id.is_(None)
@@ -958,6 +972,53 @@ class MemoryFactRepository:
                 MemoryFactModel.group_id.is_(None)
                 if target.group_id is None
                 else MemoryFactModel.group_id == target.group_id
+            ),
+        ]
+        if target.scope_type is MemoryScopeType.SELF:
+            current_visibility = and_(
+                MemoryFactModel.visibility_type
+                == (target.visibility_type.value if target.visibility_type else ""),
+                (
+                    MemoryFactModel.visibility_user_id.is_(None)
+                    if target.visibility_user_id is None
+                    else MemoryFactModel.visibility_user_id == target.visibility_user_id
+                ),
+                (
+                    MemoryFactModel.visibility_group_id.is_(None)
+                    if target.visibility_group_id is None
+                    else MemoryFactModel.visibility_group_id == target.visibility_group_id
+                ),
+            )
+            conditions.append(or_(MemoryFactModel.visibility_type == "global", current_visibility))
+        else:
+            conditions.extend(
+                (
+                    MemoryFactModel.visibility_type.is_(None),
+                    MemoryFactModel.visibility_user_id.is_(None),
+                    MemoryFactModel.visibility_group_id.is_(None),
+                )
+            )
+        return tuple(conditions)
+
+    @staticmethod
+    def _exact_visibility_conditions(
+        target: MemoryFactCreate | MemoryFactQuery,
+    ) -> tuple[Any, ...]:
+        return (
+            (
+                MemoryFactModel.visibility_type.is_(None)
+                if target.visibility_type is None
+                else MemoryFactModel.visibility_type == target.visibility_type.value
+            ),
+            (
+                MemoryFactModel.visibility_user_id.is_(None)
+                if target.visibility_user_id is None
+                else MemoryFactModel.visibility_user_id == target.visibility_user_id
+            ),
+            (
+                MemoryFactModel.visibility_group_id.is_(None)
+                if target.visibility_group_id is None
+                else MemoryFactModel.visibility_group_id == target.visibility_group_id
             ),
         )
 

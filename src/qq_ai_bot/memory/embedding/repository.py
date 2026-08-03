@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.memory.embedding.models import (
@@ -98,6 +98,22 @@ class MemoryEmbeddingRepository:
             if target.group_id is None
             else MemoryFactModel.group_id == target.group_id
         )
+        if target.scope_type.value == "self":
+            current_visibility = and_(
+                MemoryFactModel.visibility_type
+                == (target.visibility_type.value if target.visibility_type else ""),
+                (
+                    MemoryFactModel.visibility_user_id.is_(None)
+                    if target.visibility_user_id is None
+                    else MemoryFactModel.visibility_user_id == target.visibility_user_id
+                ),
+                (
+                    MemoryFactModel.visibility_group_id.is_(None)
+                    if target.visibility_group_id is None
+                    else MemoryFactModel.visibility_group_id == target.visibility_group_id
+                ),
+            )
+            conditions.append(or_(MemoryFactModel.visibility_type == "global", current_visibility))
         if kinds:
             conditions.append(MemoryFactModel.kind.in_(kinds))
         async with self._database.sessions() as session:

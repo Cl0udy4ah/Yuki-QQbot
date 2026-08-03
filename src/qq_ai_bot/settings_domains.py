@@ -182,6 +182,7 @@ class MemorySettings(DomainSettings):
     memory_batch_trigger_count: int = Field(gt=0)
     memory_batch_max_events: int = Field(gt=0)
     memory_retrieval_enabled: bool
+    self_memory_enabled: bool
     memory_lexical_candidate_limit: int = Field(gt=0)
     memory_context_limit_per_entity: int = Field(gt=0)
     memory_overview_limit_per_entity: int = Field(gt=0)

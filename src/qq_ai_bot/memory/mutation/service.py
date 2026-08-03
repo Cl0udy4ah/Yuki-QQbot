@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.config import Settings
+from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -29,6 +30,7 @@ from qq_ai_bot.memory.enums import (
     MemorySourceType,
     MemoryStatus,
     MemoryTemporalMode,
+    SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.models import (
@@ -39,6 +41,7 @@ from qq_ai_bot.memory.models import (
     MemoryResolutionPlan,
 )
 from qq_ai_bot.memory.mutation.models import (
+    SELF_MEMORY_CATEGORIES,
     MemoryDecisionActorType,
     MemoryMutationAppliedOperation,
     MemoryMutationContext,
@@ -47,6 +50,7 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryMutationRequest,
     MemoryMutationResult,
     MemoryMutationTarget,
+    SelfMemoryVisibilityMode,
 )
 from qq_ai_bot.memory.mutation.repository import MemoryMutationReceiptRepository
 from qq_ai_bot.memory.service import MemoryFactService
@@ -241,6 +245,11 @@ class MemoryMutationService:
             "scope_type": claim.fact.scope_type.value,
             "subject_user_id": claim.fact.subject_user_id,
             "group_id": claim.fact.group_id,
+            "visibility_type": (
+                claim.fact.visibility_type.value if claim.fact.visibility_type is not None else None
+            ),
+            "visibility_user_id": claim.fact.visibility_user_id,
+            "visibility_group_id": claim.fact.visibility_group_id,
         }
         common = {
             "event_id": event.id,
@@ -416,9 +425,11 @@ class MemoryMutationService:
             raise MemoryMutationRejected("target_not_available_in_current_event")
         if request.target.scope_type is not target.scope_type:
             raise MemoryMutationRejected("target_scope_mismatch")
-        self._authorize(request.operation, target, context)
         fact = await self._load_fact(request.fact_id)
         merge_fact = await self._load_fact(request.merge_fact_id)
+        target = self._resolve_visibility(request, target, event, fact=fact)
+        self._validate_self_request(request, target, event, fact=fact, merge_fact=merge_fact)
+        self._authorize(request.operation, target, context)
         self._validate_fact_requirements(request, target, fact, merge_fact, context)
         quote = self._evidence_quote(request, event.content)
         authority, source_type = self._provenance(target, context)
@@ -438,6 +449,7 @@ class MemoryMutationService:
             source_type=source_type,
             evidence=evidence,
             target_override=target if target_override is not None else None,
+            resolved_target=target,
         )
         content = normalize_memory_text(
             request.new_content or (fact.content if fact is not None else ""),
@@ -451,6 +463,11 @@ class MemoryMutationService:
             "scope_type": target.scope_type.value,
             "subject_user_id": target.subject_user_id,
             "group_id": target.group_id,
+            "visibility_type": (
+                target.visibility_type.value if target.visibility_type is not None else None
+            ),
+            "visibility_user_id": target.visibility_user_id,
+            "visibility_group_id": target.visibility_group_id,
         }
         target_fingerprint = _fingerprint(target_payload)
         common = {
@@ -638,6 +655,9 @@ class MemoryMutationService:
                 fact.scope_type,
                 fact.subject_user_id,
                 fact.group_id,
+                fact.visibility_type,
+                fact.visibility_user_id,
+                fact.visibility_group_id,
             )
         )
         authority, source_type = self._provenance(target, prepared.context)
@@ -658,6 +678,9 @@ class MemoryMutationService:
             scope_type=target.scope_type,
             subject_user_id=target.subject_user_id,
             group_id=target.group_id,
+            visibility_type=target.visibility_type,
+            visibility_user_id=target.visibility_user_id,
+            visibility_group_id=target.visibility_group_id,
             kind=request.kind or fact.kind,
             memory_key=normalize_memory_text(
                 request.memory_key or fact.memory_key,
@@ -710,6 +733,7 @@ class MemoryMutationService:
         source_type: MemorySourceType,
         evidence: MemoryEvidenceCreate,
         target_override: ResolvedSubject | None,
+        resolved_target: ResolvedSubject,
     ) -> ValidatedMemoryClaim | None:
         if request.operation not in {
             MemoryMutationOperation.CREATE,
@@ -758,7 +782,10 @@ class MemoryMutationService:
             valid_from=request.valid_from,
             valid_until=request.valid_until,
         )
-        if target_override is not None:
+        direct_target = target_override or (
+            resolved_target if resolved_target.scope_type is MemoryScopeType.SELF else None
+        )
+        if direct_target is not None:
             try:
                 temporal = self._temporal.resolve(
                     mode=claim.temporal_mode,
@@ -769,13 +796,16 @@ class MemoryMutationService:
                 )
             except ValueError as exc:
                 raise MemoryMutationRejected("invalid_memory_temporal_range") from exc
-            authority, _source_type = self._provenance(target_override, context)
+            authority, _source_type = self._provenance(direct_target, context)
             return ValidatedMemoryClaim(
                 operation=claim.operation,
                 fact=MemoryFactCreate(
-                    scope_type=target_override.scope_type,
-                    subject_user_id=target_override.subject_user_id,
-                    group_id=target_override.group_id,
+                    scope_type=direct_target.scope_type,
+                    subject_user_id=direct_target.subject_user_id,
+                    group_id=direct_target.group_id,
+                    visibility_type=direct_target.visibility_type,
+                    visibility_user_id=direct_target.visibility_user_id,
+                    visibility_group_id=direct_target.visibility_group_id,
                     kind=claim.kind,
                     memory_key=key,
                     category=category,
@@ -788,9 +818,7 @@ class MemoryMutationService:
                     valid_until=temporal.valid_until,
                 ),
                 evidence=evidence,
-                subject_is_speaker=(
-                    target_override.subject_user_id == context.event.sender_user_id
-                ),
+                subject_is_speaker=(direct_target.subject_user_id == context.event.sender_user_id),
                 occurred_at=context.event.occurred_at,
             )
         validated = self._processor.validate(claim, context.event)
@@ -805,6 +833,114 @@ class MemoryMutationService:
         if fact is None:
             raise MemoryMutationRejected("memory_fact_not_found")
         return fact
+
+    def _resolve_visibility(
+        self,
+        request: MemoryMutationRequest,
+        target: ResolvedSubject,
+        event: EventRecord,
+        *,
+        fact: MemoryFact | None,
+    ) -> ResolvedSubject:
+        if target.scope_type is not MemoryScopeType.SELF:
+            if request.visibility is not None:
+                raise MemoryMutationRejected("visibility_only_valid_for_self_memory")
+            return target
+        if not self._settings.self_memory_enabled:
+            raise MemoryMutationRejected("self_memory_disabled")
+        if request.target is None or request.target.subject_ref.strip().casefold() != "self":
+            raise MemoryMutationRejected("self_memory_requires_self_subject_ref")
+        if (
+            request.visibility is None
+            and fact is not None
+            and fact.scope_type is MemoryScopeType.SELF
+        ):
+            return ResolvedSubject(
+                MemoryScopeType.SELF,
+                None,
+                None,
+                fact.visibility_type,
+                fact.visibility_user_id,
+                fact.visibility_group_id,
+            )
+        mode = request.visibility or SelfMemoryVisibilityMode.CURRENT_SCOPE
+        if mode is SelfMemoryVisibilityMode.GLOBAL:
+            return ResolvedSubject(
+                MemoryScopeType.SELF,
+                None,
+                None,
+                SelfMemoryVisibility.GLOBAL,
+            )
+        if event.scope_type is ScopeType.PRIVATE or event.group_id is None:
+            return ResolvedSubject(
+                MemoryScopeType.SELF,
+                None,
+                None,
+                SelfMemoryVisibility.PRIVATE,
+                event.sender_user_id,
+                None,
+            )
+        return ResolvedSubject(
+            MemoryScopeType.SELF,
+            None,
+            None,
+            SelfMemoryVisibility.GROUP,
+            None,
+            event.group_id,
+        )
+
+    @staticmethod
+    def _validate_self_request(
+        request: MemoryMutationRequest,
+        target: ResolvedSubject,
+        event: EventRecord,
+        *,
+        fact: MemoryFact | None,
+        merge_fact: MemoryFact | None,
+    ) -> None:
+        if target.scope_type is not MemoryScopeType.SELF:
+            return
+        category = normalize_memory_text(
+            request.category or (fact.category if fact is not None else ""),
+            maximum=64,
+        ).casefold()
+        if category and category not in SELF_MEMORY_CATEGORIES:
+            raise MemoryMutationRejected("invalid_self_memory_category")
+        keys = (
+            request.memory_key,
+            fact.memory_key if fact is not None else None,
+            merge_fact.memory_key if merge_fact is not None else None,
+        )
+        if any(
+            MemoryMutationService._is_protected_self_key(key) for key in keys if key is not None
+        ):
+            raise MemoryMutationRejected("protected_self_memory_key")
+        kind = request.kind or (fact.kind if fact is not None else MemoryKind.FACT)
+        if target.visibility_type is SelfMemoryVisibility.GLOBAL:
+            if kind is MemoryKind.EPISODE or category == "self_episode":
+                raise MemoryMutationRejected("self_episode_cannot_be_global")
+            if event.scope_type is ScopeType.PRIVATE and category not in {
+                "self_preference",
+                "self_reflection",
+                "self_principle",
+            }:
+                raise MemoryMutationRejected("private_self_fact_cannot_be_global")
+
+    @staticmethod
+    def _is_protected_self_key(value: str) -> bool:
+        key = normalize_memory_text(value, maximum=128).casefold()
+        if key in {"identity:name", "identity:age", "identity:birthday"}:
+            return True
+        return key.startswith(
+            (
+                "identity:appearance:",
+                "core:",
+                "safety:",
+                "system:",
+                "permission:",
+                "runtime:",
+            )
+        )
 
     @staticmethod
     def _validate_fact_requirements(
@@ -825,8 +961,22 @@ class MemoryMutationService:
             and fact.status is not request.expected_fact_state
         ):
             raise MemoryMutationRejected("expected_fact_state_mismatch")
-        fact_target = (fact.scope_type, fact.subject_user_id, fact.group_id)
-        requested_target = (target.scope_type, target.subject_user_id, target.group_id)
+        fact_target = (
+            fact.scope_type,
+            fact.subject_user_id,
+            fact.group_id,
+            fact.visibility_type,
+            fact.visibility_user_id,
+            fact.visibility_group_id,
+        )
+        requested_target = (
+            target.scope_type,
+            target.subject_user_id,
+            target.group_id,
+            target.visibility_type,
+            target.visibility_user_id,
+            target.visibility_group_id,
+        )
         if (
             request.operation is not MemoryMutationOperation.REASSIGN
             and fact_target != requested_target
@@ -854,6 +1004,9 @@ class MemoryMutationService:
                 merge_fact.scope_type,
                 merge_fact.subject_user_id,
                 merge_fact.group_id,
+                merge_fact.visibility_type,
+                merge_fact.visibility_user_id,
+                merge_fact.visibility_group_id,
             )
             if merge_target != requested_target:
                 raise MemoryMutationRejected("merge_target_mismatch")
@@ -870,6 +1023,20 @@ class MemoryMutationService:
             MemoryDecisionActorType.REFLECTION,
             MemoryDecisionActorType.SYSTEM,
         }:
+            return
+        if target.scope_type is MemoryScopeType.SELF:
+            if context.decision_actor_type is not MemoryDecisionActorType.AGENT:
+                raise MemoryMutationRejected("self_memory_requires_agent_judgment")
+            allowed = {
+                MemoryMutationOperation.CREATE,
+                MemoryMutationOperation.CORRECT,
+                MemoryMutationOperation.INVALIDATE,
+                MemoryMutationOperation.RESTORE,
+                MemoryMutationOperation.CONTEST,
+                MemoryMutationOperation.MERGE,
+            }
+            if operation not in allowed:
+                raise MemoryMutationRejected("operation_not_allowed_for_self_memory")
             return
         if target.subject_user_id == context.trigger_actor_user_id:
             allowed = {
@@ -942,6 +1109,8 @@ class MemoryMutationService:
         target: ResolvedSubject,
         context: MemoryMutationContext,
     ) -> tuple[MemoryAuthority, MemorySourceType]:
+        if target.scope_type is MemoryScopeType.SELF:
+            return MemoryAuthority.AGENT_REFLECTION, MemorySourceType.AUTOMATIC
         if target.subject_user_id and target.subject_user_id != context.trigger_actor_user_id:
             return MemoryAuthority.THIRD_PARTY, MemorySourceType.AUTOMATIC
         if target.scope_type is MemoryScopeType.GROUP:
@@ -956,6 +1125,8 @@ class MemoryMutationService:
         authority: MemoryAuthority,
         source_type: MemorySourceType,
     ) -> MemoryEvidenceRelation:
+        if authority is MemoryAuthority.AGENT_REFLECTION:
+            return MemoryEvidenceRelation.AGENT_REFLECTION
         if operation is MemoryMutationOperation.INVALIDATE:
             return MemoryEvidenceRelation.RETRACTION
         if operation in {
@@ -980,6 +1151,8 @@ class MemoryMutationService:
             return self._settings.person_memory_max_entries
         if scope_type is MemoryScopeType.GROUP:
             return self._settings.group_memory_max_entries
+        if scope_type is MemoryScopeType.SELF:
+            return self._settings.person_memory_max_entries
         return self._settings.person_group_memory_max_entries
 
     @staticmethod

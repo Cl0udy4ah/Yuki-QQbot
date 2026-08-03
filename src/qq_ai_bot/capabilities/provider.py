@@ -28,6 +28,7 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "get_recent_chat_history": ("memory", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "search_chat_history": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "get_person_memories": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "get_self_memories": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "get_group_memories": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "memory_change": ("memory", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
     "web_search": ("web", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),

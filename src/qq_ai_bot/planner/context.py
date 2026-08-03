@@ -219,6 +219,7 @@ class PlannerContextBuilder:
             memory=PlannerMemoryContext(
                 retrieval_enabled=runtime.memory.retrieval_enabled,
                 semantic_enabled=runtime.memory.semantic_enabled,
+                self_enabled=runtime.memory.self_enabled,
             ),
         )
 

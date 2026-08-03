@@ -262,7 +262,7 @@ class MemoryFactModel(Base):
     __tablename__ = "memory_facts"
     __table_args__ = (
         CheckConstraint(
-            "scope_type IN ('person', 'person_group', 'group')",
+            "scope_type IN ('person', 'person_group', 'group', 'self')",
             name="ck_memory_facts_scope_type",
         ),
         CheckConstraint(
@@ -278,8 +278,13 @@ class MemoryFactModel(Base):
             name="ck_memory_facts_status",
         ),
         CheckConstraint(
-            "authority IN ('explicit', 'self_report', 'group_report', 'third_party')",
+            "authority IN ('explicit', 'self_report', 'group_report', 'third_party', "
+            "'agent_reflection')",
             name="ck_memory_facts_authority",
+        ),
+        CheckConstraint(
+            "authority != 'agent_reflection' OR scope_type = 'self'",
+            name="ck_memory_facts_agent_reflection_scope",
         ),
         CheckConstraint(
             "conflict_state IN ('clear', 'contested')",
@@ -300,8 +305,21 @@ class MemoryFactModel(Base):
             "(scope_type = 'person' AND subject_user_id IS NOT NULL AND group_id IS NULL) OR "
             "(scope_type = 'person_group' AND subject_user_id IS NOT NULL "
             "AND group_id IS NOT NULL) OR "
-            "(scope_type = 'group' AND subject_user_id IS NULL AND group_id IS NOT NULL)",
+            "(scope_type = 'group' AND subject_user_id IS NULL AND group_id IS NOT NULL) OR "
+            "(scope_type = 'self' AND subject_user_id IS NULL AND group_id IS NULL)",
             name="ck_memory_facts_scope_identity",
+        ),
+        CheckConstraint(
+            "(scope_type != 'self' AND visibility_type IS NULL AND "
+            "visibility_user_id IS NULL AND visibility_group_id IS NULL) OR "
+            "(scope_type = 'self' AND ("
+            "(visibility_type = 'global' AND visibility_user_id IS NULL AND "
+            "visibility_group_id IS NULL) OR "
+            "(visibility_type = 'private' AND visibility_user_id IS NOT NULL AND "
+            "visibility_group_id IS NULL) OR "
+            "(visibility_type = 'group' AND visibility_user_id IS NULL AND "
+            "visibility_group_id IS NOT NULL)))",
+            name="ck_memory_facts_self_visibility",
         ),
         Index(
             "uq_memory_facts_active_person_key",
@@ -329,6 +347,15 @@ class MemoryFactModel(Base):
             sqlite_where=text("status = 'active' AND scope_type = 'group'"),
         ),
         Index(
+            "uq_memory_facts_active_self_key",
+            "memory_key",
+            "visibility_type",
+            text("COALESCE(visibility_user_id, '')"),
+            text("COALESCE(visibility_group_id, '')"),
+            unique=True,
+            sqlite_where=text("status = 'active' AND scope_type = 'self'"),
+        ),
+        Index(
             "ix_memory_facts_scope_status_updated",
             "scope_type",
             "subject_user_id",
@@ -346,6 +373,9 @@ class MemoryFactModel(Base):
     group_id: Mapped[str | None] = mapped_column(
         ForeignKey("groups.group_id", ondelete="CASCADE"), nullable=True
     )
+    visibility_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    visibility_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    visibility_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     memory_key: Mapped[str] = mapped_column(String(128), nullable=False)
     category: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -383,12 +413,14 @@ class MemoryEvidenceModel(Base):
         UniqueConstraint("fact_id", "event_id", name="uq_memory_evidence_fact_event"),
         CheckConstraint(
             "relation IN ('self_statement', 'group_statement', 'third_party_statement', "
-            "'explicit_command', 'confirmation', 'correction', 'retraction', 'rebuild')",
+            "'explicit_command', 'confirmation', 'correction', 'retraction', 'rebuild', "
+            "'agent_reflection')",
             name="ck_memory_evidence_relation",
         ),
         CheckConstraint("confidence BETWEEN 0 AND 1", name="ck_memory_evidence_confidence"),
         CheckConstraint(
-            "authority IN ('explicit', 'self_report', 'group_report', 'third_party')",
+            "authority IN ('explicit', 'self_report', 'group_report', 'third_party', "
+            "'agent_reflection')",
             name="ck_memory_evidence_authority",
         ),
         Index("ix_memory_evidence_fact", "fact_id"),

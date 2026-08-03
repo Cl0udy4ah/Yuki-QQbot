@@ -25,7 +25,8 @@ _AUTHORITY_RANK = {
     MemoryAuthority.THIRD_PARTY: 0,
     MemoryAuthority.GROUP_REPORT: 1,
     MemoryAuthority.SELF_REPORT: 2,
-    MemoryAuthority.EXPLICIT: 3,
+    MemoryAuthority.AGENT_REFLECTION: 3,
+    MemoryAuthority.EXPLICIT: 4,
 }
 
 

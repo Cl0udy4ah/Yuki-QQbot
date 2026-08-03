@@ -54,10 +54,12 @@ from qq_ai_bot.planner import (
 )
 from qq_ai_bot.planner.models import (
     PlannerEmojiContext,
+    PlannerMemoryOutput,
     PlannerModelOutput,
     PlannerSpeechContext,
     ToolScopeSummary,
 )
+from qq_ai_bot.planner.prompt import PLANNER_SYSTEM_PROMPT
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.speech.models import (
@@ -203,6 +205,19 @@ def _runtime() -> RuntimeConfigSnapshot:
             text_fallback_enabled=True,
         ),
     )
+
+
+def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
+    output = PlannerMemoryOutput(mode=MemoryContextMode.HYBRID)
+    assert output.materialize().self_recall is False
+    opened = PlannerMemoryOutput(
+        mode=MemoryContextMode.HYBRID,
+        reason_code=MemoryContextReasonCode.SELF_MEMORY_RECALL,
+        self_recall=True,
+    ).materialize()
+    assert opened.self_recall is True
+    assert "你喜欢咖啡吗" in PLANNER_SYSTEM_PROMPT
+    assert "帮我查天气" in PLANNER_SYSTEM_PROMPT
 
 
 def _planner_input(
@@ -641,6 +656,7 @@ def test_planner_memory_context_is_separate_and_semantic_mode_degrades_cleanly()
             memory_context=MemoryContextPlan(
                 mode=MemoryContextMode.HYBRID,
                 reason_code=MemoryContextReasonCode.PERSON_REFERENCE,
+                self_recall=True,
             )
         )
     )
@@ -648,6 +664,9 @@ def test_planner_memory_context_is_separate_and_semantic_mode_degrades_cleanly()
     lexical_runtime = replace(
         semantic_runtime,
         memory=replace(semantic_runtime.memory, semantic_enabled=False),
+    )
+    self_enabled_input = planner_input.model_copy(
+        update={"memory": planner_input.memory.model_copy(update={"self_enabled": True})}
     )
 
     hybrid = PlannerService._constrain_business_rules(
@@ -662,10 +681,21 @@ def test_planner_memory_context_is_separate_and_semantic_mode_degrades_cleanly()
         lexical_runtime,
         administrator_request=False,
     )
+    self_enabled = PlannerService._constrain_business_rules(
+        model_plan,
+        self_enabled_input,
+        replace(
+            semantic_runtime,
+            memory=replace(semantic_runtime.memory, self_enabled=True),
+        ),
+        administrator_request=False,
+    )
 
     assert hybrid.memory_context.mode is MemoryContextMode.HYBRID
     assert lexical.memory_context.mode is MemoryContextMode.LEXICAL
     assert lexical.memory_context.reason_code is MemoryContextReasonCode.PERSON_REFERENCE
+    assert hybrid.memory_context.self_recall is False
+    assert self_enabled.memory_context.self_recall is True
 
 
 def test_planner_semantic_voice_intent_is_enforced_without_keyword_matching() -> None:

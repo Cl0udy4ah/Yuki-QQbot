@@ -146,6 +146,7 @@ class MemoryRetrievalRuntimeConfig:
     always_on_explicit_preference_limit: int
     query_term_limit: int
     short_query_fallback_enabled: bool
+    self_enabled: bool = False
     semantic_enabled: bool = True
     semantic_candidate_limit: int = 50
     semantic_min_similarity: float = 0.35
