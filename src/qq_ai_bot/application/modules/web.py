@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.settings_domains import WebSettings
 from qq_ai_bot.web.base import WebSearchProvider
+from qq_ai_bot.web.models import WebMode
 from qq_ai_bot.web.tavily import TavilyWebSearchProvider
 
 
@@ -22,7 +23,7 @@ class WebModule:
 
     def build(self) -> WebBundle:
         settings = self._settings
-        if not settings.web_enabled:
+        if settings.mode not in {WebMode.TAVILY, WebMode.NATIVE_WITH_TAVILY_FALLBACK}:
             return WebBundle(None)
         provider = TavilyWebSearchProvider(
             api_key=settings.tavily_api_key,

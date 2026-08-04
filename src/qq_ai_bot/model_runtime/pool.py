@@ -8,9 +8,10 @@ from collections.abc import Mapping
 import httpx
 
 from qq_ai_bot.llm.base import LLMConfigurationError, LLMProvider
+from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
-from qq_ai_bot.model_runtime.models import ModelProfile
+from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
 
 
 class ModelClientPool:
@@ -57,13 +58,26 @@ class ModelClientPool:
                     limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
                 )
                 self._connection_pools[connection_key] = connection_pool
-            provider = OpenAICompatibleProvider(
-                base_url=profile.base_url,
-                api_key=api_key,
-                timeout_seconds=profile.timeout_seconds,
-                max_retries=profile.max_retries,
-                client=connection_pool,
-            )
+            if profile.protocol is ModelProtocol.CHAT_COMPLETIONS:
+                provider = OpenAICompatibleProvider(
+                    base_url=profile.base_url,
+                    api_key=api_key,
+                    timeout_seconds=profile.timeout_seconds,
+                    max_retries=profile.max_retries,
+                    client=connection_pool,
+                )
+            elif profile.provider.casefold() == "deepseek":
+                provider = DeepSeekResponsesProvider(
+                    base_url=profile.base_url,
+                    api_key=api_key,
+                    timeout_seconds=profile.timeout_seconds,
+                    max_retries=profile.max_retries,
+                    client=connection_pool,
+                )
+            else:
+                raise LLMConfigurationError(
+                    f"model profile {profile.id} uses an unsupported responses provider"
+                )
         else:
             raise LLMConfigurationError(
                 f"model profile {profile.id} uses unsupported provider {profile.provider}"

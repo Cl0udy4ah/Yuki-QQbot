@@ -93,6 +93,7 @@ from qq_ai_bot.planner.models import (
 from qq_ai_bot.planner.observability import identifier_hash
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
+    AgentRunResult,
     AgentRuntime,
     AgentToolBackend,
 )
@@ -124,6 +125,7 @@ from qq_ai_bot.speech.reply_effect import (
 )
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
+from qq_ai_bot.web.native_sources import recover_native_web_response
 from yuki_plugin_sdk.events import EventName
 
 logger = logging.getLogger(__name__)
@@ -237,6 +239,17 @@ class _ChatAgentBackend(AgentToolBackend):
         self._provider_registry: ToolProviderRegistry | None = None
         self._requested_tool_names: set[str] = set()
         self._callable_tool_names: set[str] = set()
+        self._native_web_fallback = runtime.native_web_fallback
+
+    def enable_native_web_fallback(self) -> None:
+        """Allow Tavily tools only after the Runner verifies a fallback condition."""
+
+        self._native_web_fallback = True
+
+    def mark_native_web_used(self) -> None:
+        """Apply post-Web isolation before same-response local calls execute."""
+
+        self._web_was_used = True
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         self._web_was_used = self._web_was_used or web_was_used
@@ -547,6 +560,15 @@ class _ChatAgentBackend(AgentToolBackend):
                     "ok": False,
                     "error": "duplicate_mutation",
                     "detail": "本轮已经成功执行过相同修改，不再重复执行。",
+                },
+                ensure_ascii=False,
+            )
+        elif mutation_identity is not None and self._web_was_used:
+            result = json.dumps(
+                {
+                    "ok": False,
+                    "error": "web_mutation_isolation",
+                    "detail": "使用外部网页内容后，本轮不允许修改长期状态。",
                 },
                 ensure_ascii=False,
             )
@@ -904,6 +926,7 @@ class _ChatAgentBackend(AgentToolBackend):
             self._runtime,
             allow_generic_onebot=(self._runtime.allow_generic_onebot and not self._web_was_used),
             allow_admin_actions=(self._runtime.allow_admin_actions and not self._web_was_used),
+            native_web_fallback=self._native_web_fallback,
         )
 
 
@@ -1401,9 +1424,55 @@ class ChatService:
                 response_text = ""
             elif turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
-                    response_text = await self._run_agent(identity.key, messages, runtime)
+                    agent_result = await self._run_agent(identity.key, messages, runtime)
             else:
-                response_text = await self._run_agent(identity.key, messages, runtime)
+                agent_result = await self._run_agent(identity.key, messages, runtime)
+            if not planner_emoji_only:
+                response_text = agent_result.text
+                if agent_result.native_tool_events:
+                    native_response = recover_native_web_response(
+                        events=agent_result.native_tool_events,
+                        citations=agent_result.citations,
+                        answer_text=agent_result.text,
+                    )
+                    await self._web_sources.save_response(
+                        conversation_key=identity.key,
+                        trigger_message_id=inbound.message_id,
+                        provider="deepseek_native",
+                        response=native_response,
+                        max_runs=runtime_config.web.source_max_runs_per_conversation,
+                    )
+                    if not native_response.sources:
+                        logger.warning(
+                            "native_web_source_parse_failed conversation_hash=%s action_count=%d",
+                            identifier_hash(identity.key) or "missing",
+                            len(agent_result.native_tool_events),
+                        )
+                        if (
+                            source_display_requested
+                            and runtime_config.web.mode == "native_with_tavily_fallback"
+                            and not runtime.native_web_fallback
+                        ):
+                            logger.warning(
+                                "web_provider_fallback from_provider=deepseek_native "
+                                "to_provider=tavily reason_category=source_parse_failed"
+                            )
+                            fallback_limit = min(
+                                2,
+                                runtime.max_model_requests_override
+                                or runtime_config.agent.max_model_requests,
+                            )
+                            fallback_runtime = replace(
+                                runtime,
+                                native_web_fallback=True,
+                                max_model_requests_override=fallback_limit,
+                            )
+                            agent_result = await self._run_agent(
+                                identity.key,
+                                messages,
+                                fallback_runtime,
+                            )
+                            response_text = agent_result.text
             sources = await self._web_sources.for_trigger(
                 conversation_key=identity.key,
                 trigger_message_id=inbound.message_id,
@@ -1788,7 +1857,7 @@ class ChatService:
         conversation_key: str,
         initial_messages: tuple[ChatMessage, ...],
         runtime: ToolRuntime,
-    ) -> str:
+    ) -> AgentRunResult:
         config = runtime.runtime_config
         if config is None:
             config = await self._runtime_config.snapshot(
@@ -1811,7 +1880,7 @@ class ChatService:
                 gateway=runtime.gateway,
                 runtime_config=config,
                 current_time=current_time,
-                allowed_capabilities=frozenset(),
+                allowed_capabilities=runtime.tool_groups,
                 max_tool_calls=config.agent.max_tool_calls,
                 max_model_requests=(
                     min(
@@ -1821,10 +1890,11 @@ class ChatService:
                     if runtime.max_model_requests_override is not None
                     else config.agent.max_model_requests
                 ),
+                force_tavily_fallback=runtime.native_web_fallback,
             ),
             _ChatAgentBackend(self, runtime),
         )
-        return result.text
+        return result
 
     async def _prepare_tool_candidates(self, runtime: ToolRuntime) -> ToolRuntime:
         """Discover selected lazy scopes, then locally select and optionally rerank tools."""

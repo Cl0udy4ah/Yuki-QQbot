@@ -28,6 +28,46 @@ class ReasoningEffort(StrEnum):
     MAX = "max"
 
 
+class NativeToolType(StrEnum):
+    """Provider-executed tools supported by the compatibility layer."""
+
+    WEB_SEARCH = "web_search"
+
+
+class NativeToolStatus(StrEnum):
+    """Normalized lifecycle state for a provider-executed tool."""
+
+    IN_PROGRESS = "in_progress"
+    SEARCHING = "searching"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class CitationOrigin(StrEnum):
+    """Where a provider-neutral source URL was recovered."""
+
+    ANNOTATION = "annotation"
+    OPEN_PAGE_ACTION = "open_page_action"
+    ANSWER_TEXT = "answer_text"
+
+
+class ModelResponseStatus(StrEnum):
+    """Successful provider response states returned to the Agent loop."""
+
+    COMPLETED = "completed"
+    INCOMPLETE = "incomplete"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderContinuation:
+    """Opaque provider-owned state that may only live inside one Agent turn."""
+
+    provider: str
+    protocol: str
+    payload: object = field(repr=False)
+    profile_id: str = ""
+
+
 @dataclass(frozen=True, slots=True)
 class MessageAttachment:
     """Transient event media reference; payload fields are never persisted verbatim."""
@@ -183,6 +223,44 @@ class ChatTool:
 
 
 @dataclass(frozen=True, slots=True)
+class NativeToolDefinition:
+    """One provider-executed tool authorized for this request."""
+
+    type: NativeToolType
+
+
+@dataclass(frozen=True, slots=True)
+class NativeToolEvent:
+    """Sanitized event emitted by a provider-executed tool."""
+
+    tool_type: NativeToolType
+    call_id: str
+    status: NativeToolStatus
+    action_type: str = ""
+    query: str = field(default="", repr=False)
+    url: str = field(default="", repr=False)
+    error_category: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseCitation:
+    """Provider-returned or deterministically recovered public citation."""
+
+    url: str = field(repr=False)
+    title: str = ""
+    origin: CitationOrigin = CitationOrigin.ANNOTATION
+    call_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FunctionCallOutput:
+    """Result of a local Function Tool for a Responses continuation."""
+
+    call_id: str
+    output: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class ChatRequest:
     """Provider-independent chat request."""
 
@@ -196,6 +274,9 @@ class ChatRequest:
     tool_choice: str | None = None
     response_format: dict[str, object] | None = None
     structured_output: bool = False
+    native_tools: tuple[NativeToolDefinition, ...] = ()
+    continuation: ProviderContinuation | None = None
+    function_outputs: tuple[FunctionCallOutput, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,3 +292,9 @@ class ChatResponse:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     cached_prompt_tokens: int | None = None
+    status: ModelResponseStatus = ModelResponseStatus.COMPLETED
+    native_tool_events: tuple[NativeToolEvent, ...] = ()
+    citations: tuple[ResponseCitation, ...] = ()
+    continuation: ProviderContinuation | None = None
+    reasoning_tokens: int | None = None
+    incomplete_reason: str | None = None

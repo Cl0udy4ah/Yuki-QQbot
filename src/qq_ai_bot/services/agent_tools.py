@@ -53,6 +53,7 @@ from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import (
+    WebMode,
     WebSearchRequest,
     WebSearchResponse,
     WebSearchTimeRange,
@@ -106,6 +107,7 @@ class ToolRuntime:
     selected_tool_names: frozenset[str] | None = None
     scheduled_automation_intent: bool = False
     max_model_requests_override: int | None = None
+    native_web_fallback: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,7 +442,13 @@ class AgentToolService:
                 )
             )
         if (
-            self._settings.web_enabled
+            (
+                self._settings.web.mode is WebMode.TAVILY
+                or (
+                    self._settings.web.mode is WebMode.NATIVE_WITH_TAVILY_FALLBACK
+                    and runtime.native_web_fallback
+                )
+            )
             and self._web_provider is not None
             and self._web_sources is not None
         ):
@@ -1648,7 +1656,11 @@ class AgentToolService:
         self,
     ) -> tuple[WebSearchProvider, WebSearchSourceRepository]:
         if (
-            not self._settings.web_enabled
+            self._settings.web.mode
+            not in {
+                WebMode.TAVILY,
+                WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+            }
             or self._web_provider is None
             or self._web_sources is None
         ):

@@ -19,6 +19,9 @@ from qq_ai_bot.domain.messages import (
     ChatResponse,
     ChatTool,
     InboundMessage,
+    NativeToolEvent,
+    NativeToolStatus,
+    NativeToolType,
     SenderIdentity,
     ToolCall,
     ToolFunction,
@@ -115,6 +118,48 @@ class VisibleEffectBackend(VoiceEffectBackend):
         return True
 
 
+class NativeThenLocalProvider(LLMProvider):
+    """Return a native event and a local call in the same model response."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        del request
+        self.calls += 1
+        if self.calls == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                native_tool_events=(
+                    NativeToolEvent(
+                        tool_type=NativeToolType.WEB_SEARCH,
+                        call_id="native-1",
+                        status=NativeToolStatus.COMPLETED,
+                        action_type="search",
+                    ),
+                ),
+                tool_calls=(
+                    ToolCall(
+                        id="local-1",
+                        function=ToolFunction(name="send_voice", arguments="{}"),
+                    ),
+                ),
+            )
+        return ChatResponse(content="isolated", latency_seconds=0)
+
+
+class NativeIsolationBackend(VoiceEffectBackend):
+    native_web_used = False
+
+    def mark_native_web_used(self) -> None:
+        self.native_web_used = True
+
+    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
+        assert self.native_web_used
+        return await super().execute(name, arguments_json, runtime)
+
+
 def _agent_runtime() -> AgentRuntime:
     now = datetime.now(UTC)
     config = cast(
@@ -173,6 +218,19 @@ async def test_empty_model_response_is_valid_when_planner_has_visible_media() ->
     assert result.text == ""
     assert result.model_requests == 1
     assert len(provider.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_native_web_state_is_marked_before_same_response_local_calls() -> None:
+    backend = NativeIsolationBackend()
+    result = await AgentRunner(
+        NativeThenLocalProvider(),
+        ConcurrencyManager(1),
+    ).run((ChatMessage(role="user", content="search then act"),), _agent_runtime(), backend)
+
+    assert result.text == "isolated"
+    assert result.web_was_used
+    assert backend.native_web_used
 
 
 def test_voice_effect_cannot_complete_chat_without_text() -> None:

@@ -30,7 +30,7 @@ class ModelRuntimeConfigurationError(ValueError):
 class _ProfileDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     profiles: dict[str, dict[str, Any]]
     routes: dict[str, str]
 

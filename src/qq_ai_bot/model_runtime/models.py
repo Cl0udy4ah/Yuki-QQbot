@@ -33,6 +33,14 @@ class ModelCapability(StrEnum):
     STRUCTURED_OUTPUT = "structured_output"
     REASONING = "reasoning"
     LONG_CONTEXT = "long_context"
+    NATIVE_WEB_SEARCH = "native_web_search"
+
+
+class ModelProtocol(StrEnum):
+    """Wire protocol used by one model profile."""
+
+    CHAT_COMPLETIONS = "chat_completions"
+    RESPONSES = "responses"
 
 
 class StructuredOutputMode(StrEnum):
@@ -52,6 +60,7 @@ class ModelProfile(_FrozenModel):
 
     id: str = Field(min_length=1, pattern=r"^[a-zA-Z0-9_.-]+$")
     provider: str = Field(min_length=1)
+    protocol: ModelProtocol = ModelProtocol.CHAT_COMPLETIONS
     base_url: str = ""
     api_key_env: str = ""
     model: str = Field(min_length=1)
@@ -74,6 +83,11 @@ class ModelProfile(_FrozenModel):
             raise ValueError("reasoning_effort requires the reasoning capability")
         if self.reasoning_effort is not None and self.thinking_enabled is False:
             raise ValueError("reasoning_effort cannot be used with disabled thinking")
+        if self.protocol is ModelProtocol.RESPONSES and self.provider.casefold() not in {
+            "deepseek",
+            "fake",
+        }:
+            raise ValueError("responses protocol is currently supported only for deepseek")
         return self
 
 

@@ -1218,6 +1218,7 @@ class RuntimeConfigService:
                 artifact_retention_seconds=int(cast(int, value("mcp.artifact_retention_seconds"))),
             ),
             web=WebRuntimeConfig(
+                mode=self._settings.web.mode.value,
                 search_max_results=int(cast(int, value("web.search_max_results"))),
                 extract_max_results=int(cast(int, value("web.extract_max_results"))),
                 max_calls_per_turn=int(cast(int, value("web.max_calls_per_turn"))),

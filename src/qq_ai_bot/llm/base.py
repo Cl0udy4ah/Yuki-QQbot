@@ -23,6 +23,34 @@ class LLMConfigurationError(LLMError):
     """Required provider configuration is missing."""
 
 
+class LLMAuthenticationError(LLMError):
+    """Provider credentials were rejected."""
+
+
+class LLMRateLimitError(LLMUnavailableError):
+    """The provider rejected the bounded request due to rate limits."""
+
+
+class LLMInvalidRequestError(LLMError):
+    """The provider rejected a request shape or parameter."""
+
+
+class LLMUnsupportedFeatureError(LLMError):
+    """The selected provider does not support a requested feature."""
+
+
+class LLMInvalidResponseError(LLMError):
+    """The provider returned malformed or contradictory data."""
+
+
+class LLMIncompleteResponseError(LLMError):
+    """The bounded recovery request also failed to complete."""
+
+
+class LLMNativeToolError(LLMError):
+    """A provider-native tool produced an unsupported or fatal result."""
+
+
 class LLMEmptyResponseError(LLMError):
     """The provider returned no usable text."""
 

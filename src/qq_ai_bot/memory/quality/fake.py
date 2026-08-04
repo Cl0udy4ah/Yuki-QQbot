@@ -14,7 +14,12 @@ from qq_ai_bot.memory.embedding.models import (
 )
 from qq_ai_bot.memory.embedding.provider import EmbeddingProvider
 from qq_ai_bot.model_runtime.executor import ModelExecutor
-from qq_ai_bot.model_runtime.models import ModelTask, StructuredOutputMode
+from qq_ai_bot.model_runtime.models import (
+    ModelCapability,
+    ModelProtocol,
+    ModelTask,
+    StructuredOutputMode,
+)
 
 
 class QualityFakeModel(LLMProvider):
@@ -58,6 +63,12 @@ class CountingModelExecutor:
 
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
         return self._delegate.structured_output_mode(task)
+
+    def protocol(self, task: ModelTask) -> ModelProtocol:
+        return self._delegate.protocol(task)
+
+    def capabilities(self, task: ModelTask) -> frozenset[ModelCapability]:
+        return self._delegate.capabilities(task)
 
     def count(self, task: ModelTask) -> int:
         return int(self._counts[task])
