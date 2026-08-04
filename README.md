@@ -11,7 +11,7 @@
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/Version-3.2.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Version-3.3.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python Version">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -36,11 +36,11 @@
 
 Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agent。它通过 NapCatQQ 接入 QQ，使用 Planner、Agent、长期记忆、工具系统和插件系统完成聊天、检索、自动化与外部服务调用。
 
-> **当前版本：3.2.0**
+> **当前版本：3.3.0**
 >
-> 本版本新增 Yuki 自我长期记忆：按需检索自己的偏好、经历、反思和原则，通过统一
-> `memory_change` 自主变更，并可使用 `get_self_memories` 读取当前会话可见的自我记忆。
-> Alembic `0027` 为非破坏性迁移，SELF 记忆按 global、private、group 硬隔离。
+> 本版本新增 DeepSeek Responses API 与 Provider 原生联网搜索，Tavily 可继续独立使用或作为
+> 有界回退。Planner 选择的工具 scope 会保留，自动化提示只追加 `automation` 候选能力，
+> 由 Yuki 自行判断当前请求需要联网、立即执行还是创建持久化任务。
 
 ## ✨ 主要功能
 
@@ -54,7 +54,7 @@ Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agen
 - **统一工具内核**：Core、Admin、Automation、Plugin 与 MCP 工具统一交给 Planner 和 Agent 调用。
 - **MCP Client**：支持 stdio 与 Streamable HTTP，可接入麦当劳、网易云音乐等 MCP Server。
 - **插件系统**：提供 Plugin API v1、独立 SDK、权限、事件、Prompt、Planner Signal、静态直达绑定和后台服务扩展点。
-- **多模态扩展**：可选图片理解、表情系统、受控联网搜索和本地 Genie-TTS 语音回复。
+- **多模态扩展**：可选图片理解、表情系统、DeepSeek 原生或 Tavily 联网搜索和本地 Genie-TTS 语音回复。
 - **运行时管理**：支持管理员自然语言配置、权限审计、健康检查和数据库迁移。
 
 ---
@@ -66,10 +66,10 @@ Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agen
 - OneBot v11 / NapCatQQ
 - SQLite / SQLAlchemy / Alembic
 - Pydantic
-- OpenAI-compatible Chat Completions API，建议使用 DeepSeek
+- OpenAI-compatible Chat Completions / Responses API，建议使用 DeepSeek
 - MCP Python SDK
 - Docker Compose
-- 可选 Qwen Vision、Qwen Embedding、Tavily 与 Genie-TTS
+- 可选 DeepSeek 原生联网、Tavily、Qwen Vision、Qwen Embedding 与 Genie-TTS
 
 ---
 

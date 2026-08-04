@@ -1,5 +1,9 @@
 # Yuki-QQbot
 
+> **3.3.0 DeepSeek Responses API 与原生联网：**主聊天模型可使用 `/responses`、Function Tool
+> 续接和 Provider 原生 `web_search`。`WEB_MODE` 支持 native、tavily、原生优先有界回退和禁用；
+> 自动化识别只追加候选 scope，不再覆盖 Planner 已选择的 web、memory、MCP 等能力。
+
 > **3.2.0 Yuki 自我长期记忆：**新增 `self` 作用域、按需 SELF RAG、统一 `memory_change`
 > 自我变更和只读 `get_self_memories`。SELF 事实按 global、private、group 可见范围硬隔离；
 > Alembic `0027` 为非破坏性迁移，功能通过 `SELF_MEMORY_ENABLED` 控制。
@@ -75,7 +79,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.2.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions API 的人物中心 QQ Agent。
+Yuki-QQbot 3.3.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -88,12 +92,12 @@ Yuki-QQbot 3.2.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 私聊默认向所有 QQ 开放；`/ai private <QQ> off` 用于阻止指定用户。
 - 当前人物事实可以在私聊与群聊间自然复用，群事实和当前人物的群内事实严格按群隔离；
   其他群友的长期事实默认不进入当前上下文。
-- 机器人支持 DeepSeek 普通/思考模式的多轮工具调用。
+- 机器人支持 DeepSeek Chat Completions / Responses API、普通/思考模式和多轮工具调用。
 - 内置 Tool Kernel 将 Core、Admin、Automation、Plugin 与 MCP 工具统一为同一目录、
   Planner scope、Binding、结果预算和 AgentRunner 执行链。
 - 可按 `.mcp.json` 接入 stdio 与 Streamable HTTP MCP Server；默认关闭，不影响原有聊天。
 - 可选使用 Qwen3.7-Plus 作为独立视觉前端，动态思考并识别图片、虚构角色、图片表情、动态表情和回复图片；DeepSeek 仍是唯一主聊天模型并负责最终回复。
-- 可选接入 Tavily 受控联网搜索，由后端严格控制来源保存、隔离和显示。
+- 可选使用 DeepSeek Provider 原生联网搜索、Tavily 搜索或原生优先的有界 Tavily 回退；来源仍由后端严格保存、隔离和显示。
 - 每个 QQ 拥有独立、持久化的好感度和信任度，关系阶段会自然影响 Yuki 的语气。
 - 关系分数不会改变程序权限；只有当前真实发送者属于 `SUPERUSERS` 才能获得管理员工具。
 - 超级管理员可以用自然语言管理注册配置、关系、记忆、偏好、群和私聊准入。
@@ -891,10 +895,14 @@ Worker 默认每 2 秒轮询，用租约防止多实例重复执行，并以 `(a
 - `get_person_memories`：按 QQ 读取人物记忆。
 - `get_group_memories`：按群号读取群记忆。
 
-启用联网后，普通聊天轮还可使用：
+启用联网后，普通聊天轮按 `WEB_MODE` 获得对应能力：
 
-- `web_search`：搜索当前公开信息，并在一次调用内批量提取最多 3 个网页的查询相关正文。
-- `read_webpage`：通过 Tavily Extract 读取用户明确发送或本轮搜索真实返回的网页。
+- `native`：DeepSeek Responses API 接收 Provider 原生 `web_search`，搜索与打开页面由 Provider
+  执行，不伪装成本地 Function Tool。
+- `tavily`：Agent 获得本地 `web_search` 和 `read_webpage`；后者只读取用户明确发送或本轮
+  搜索真实返回的网页。
+- `native_with_tavily_fallback`：优先使用原生搜索，只在超时、暂时不可用、失败、空结果，
+  或用户明确索要来源但原生来源无法恢复时进行一次有界 Tavily 回退。HTTP 429 不回退。
 
 只有当前真实 OneBot 事件的 `sender.user_id` 属于 `SUPERUSERS` 时，该触发轮还会获得：
 
@@ -926,6 +934,7 @@ Worker 默认每 2 秒轮询，用租约防止多实例重复执行，并以 `(a
 
 实现依据：
 
+- [DeepSeek Responses API](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)
 - [DeepSeek Tool Calls](https://api-docs.deepseek.com/guides/tool_calls/)
 - [DeepSeek 思考模式](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/)
 - [NapCat API 列表](https://napneko.github.io/onebot/api)
@@ -934,10 +943,30 @@ Worker 默认每 2 秒轮询，用租约防止多实例重复执行，并以 `(a
 
 ## 受控联网搜索
 
-联网默认关闭。申请 Tavily API Key 后，在 `.env` 中设置：
+3.3.0 推荐使用 DeepSeek Responses 原生联网，不需要 Tavily Key：
 
 ```dotenv
-WEB_ENABLED=true
+WEB_MODE=native
+MODEL_PROFILES_FILE=config/model_profiles.toml
+```
+
+对应的主聊天档案必须使用 Responses 协议并声明原生联网能力：
+
+```toml
+[profiles.pro]
+provider = "deepseek"
+protocol = "responses"
+capabilities = ["tools", "reasoning", "long_context", "native_web_search"]
+
+[routes]
+chat_agent = "pro"
+```
+
+也可以继续使用 Tavily，或让它仅在原生搜索满足有界失败条件时回退：
+
+```dotenv
+# WEB_MODE=tavily
+WEB_MODE=native_with_tavily_fallback
 TAVILY_API_KEY=你的Tavily密钥
 WEB_SEARCH_DEPTH=advanced
 ```
@@ -945,13 +974,17 @@ WEB_SEARCH_DEPTH=advanced
 然后只重建 Bot 容器：
 
 ```bash
-docker compose up -d --no-deps --force-recreate bot
+docker compose up -d --build --no-deps bot
 ```
 
 配置规则：
 
-- `WEB_ENABLED=false` 时不向模型注册联网工具。
-- `WEB_ENABLED=true` 但 `TAVILY_API_KEY` 为空时会明确拒绝启动。
+- `WEB_MODE=disabled`：不注册任何联网能力。
+- `WEB_MODE=native`：只使用 Responses 原生联网，不创建本地 Tavily 客户端。
+- `WEB_MODE=tavily`：只使用本地 Tavily Function Tool，必须配置 `TAVILY_API_KEY`。
+- `WEB_MODE=native_with_tavily_fallback`：原生优先并允许一次有界 Tavily 回退，也必须配置 Key。
+- 未设置 `WEB_MODE` 时兼容旧 `WEB_ENABLED`：`true` 映射为 `tavily`，`false` 映射为
+  `disabled`。
 - 搜索词最多 400 字符，不会自动拼入完整聊天历史、人物记忆或系统提示词。
 - 只接受公开 HTTP(S) URL；拒绝凭据 URL、localhost、私有 IP、链路本地地址和内部 Docker 主机名。
 - 搜索结果正文只存在于当轮 LLM 工具上下文，不写入聊天账本或人物/群记忆。
