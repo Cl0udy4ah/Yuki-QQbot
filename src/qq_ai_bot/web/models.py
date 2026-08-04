@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Literal
@@ -18,6 +18,40 @@ class WebMode(StrEnum):
     NATIVE = "native"
     TAVILY = "tavily"
     NATIVE_WITH_TAVILY_FALLBACK = "native_with_tavily_fallback"
+
+
+class WebProvider(StrEnum):
+    """Concrete provider selected for one web-capable Agent run."""
+
+    NATIVE = "native"
+    TAVILY = "tavily"
+
+
+class WebRouteReason(StrEnum):
+    """Stable, non-sensitive explanation for a provider routing decision."""
+
+    MODE = "mode"
+    USER_OVERRIDE = "user_override"
+    DOMAIN_RULE = "domain_rule"
+    DEFAULT_NATIVE = "default_native"
+    NATIVE_TIMEOUT = "native_timeout"
+    NATIVE_UNAVAILABLE = "native_unavailable"
+    NATIVE_EMPTY = "native_empty"
+    NATIVE_ACCESS_DENIED = "native_access_denied"
+    TARGET_NOT_OPENED = "target_not_opened"
+    SOURCE_NOT_RECOVERED = "source_not_recovered"
+
+
+@dataclass(frozen=True, slots=True)
+class WebRouteDecision:
+    """One bounded and auditable provider selection for the current turn."""
+
+    provider: WebProvider
+    reason: WebRouteReason
+    fallback_allowed: bool
+    attempt: int = 1
+    matched_domain: str | None = None
+    target_urls: tuple[str, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True, slots=True)

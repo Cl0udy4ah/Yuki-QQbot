@@ -11,7 +11,7 @@
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/Version-3.3.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Version-3.3.1-blue" alt="Version">
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python Version">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -36,11 +36,11 @@
 
 Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agent。它通过 NapCatQQ 接入 QQ，使用 Planner、Agent、长期记忆、工具系统和插件系统完成聊天、检索、自动化与外部服务调用。
 
-> **当前版本：3.3.0**
+> **当前版本：3.3.1**
 >
-> 本版本新增 DeepSeek Responses API 与 Provider 原生联网搜索，Tavily 可继续独立使用或作为
-> 有界回退。Planner 选择的工具 scope 会保留，自动化提示只追加 `automation` 候选能力，
-> 由 Yuki 自行判断当前请求需要联网、立即执行还是创建持久化任务。
+> 本版本新增精简 Web Provider 路由器：混合模式可按用户显式选择和目标域名在 DeepSeek
+> 原生联网与 Tavily 之间选择；原生访问失败、未打开指定 URL 或缺少必需来源时只进行一次
+> 有界回退。Router 只选择联网后端，不会自行授予 web 权限或强迫 Yuki 联网。
 
 ## ✨ 主要功能
 

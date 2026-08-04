@@ -54,6 +54,7 @@ from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import (
     WebMode,
+    WebRouteDecision,
     WebSearchRequest,
     WebSearchResponse,
     WebSearchTimeRange,
@@ -109,6 +110,7 @@ class ToolRuntime:
     scheduled_automation_intent: bool = False
     max_model_requests_override: int | None = None
     native_web_fallback: bool = False
+    web_route: WebRouteDecision | None = None
 
 
 @dataclass(frozen=True, slots=True)

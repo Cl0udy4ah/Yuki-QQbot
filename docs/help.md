@@ -1,5 +1,9 @@
 # Yuki-QQbot
 
+> **3.3.1 Web Provider 规则路由：**混合模式支持用户显式选择和域名直达 Tavily；
+> DeepSeek 原生访问失败、没有打开明确目标 URL 或无法提供所需来源时，只允许一次 Tavily
+> 回退。Router 不改变 Planner 的 web 授权，也不会强迫 Agent 调用联网工具。
+
 > **3.3.0 DeepSeek Responses API 与原生联网：**主聊天模型可使用 `/responses`、Function Tool
 > 续接和 Provider 原生 `web_search`。`WEB_MODE` 支持 native、tavily、原生优先有界回退和禁用；
 > 自动化识别只追加候选 scope，不再覆盖 Planner 已选择的 web、memory、MCP 等能力。
@@ -79,7 +83,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.3.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
+Yuki-QQbot 3.3.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -943,7 +947,7 @@ Worker 默认每 2 秒轮询，用租约防止多实例重复执行，并以 `(a
 
 ## 受控联网搜索
 
-3.3.0 推荐使用 DeepSeek Responses 原生联网，不需要 Tavily Key：
+可以只使用 DeepSeek Responses 原生联网，不需要 Tavily Key：
 
 ```dotenv
 WEB_MODE=native
@@ -968,6 +972,11 @@ chat_agent = "pro"
 # WEB_MODE=tavily
 WEB_MODE=native_with_tavily_fallback
 TAVILY_API_KEY=你的Tavily密钥
+# 明确 URL 命中以下域名时直接使用 Tavily；子域名也会匹配。
+WEB_TAVILY_DOMAINS=github.com,raw.githubusercontent.com
+WEB_ALLOW_PROVIDER_OVERRIDE=true
+WEB_FALLBACK_ON_ACCESS_DENIED=true
+WEB_FALLBACK_ON_TARGET_MISS=true
 WEB_SEARCH_DEPTH=advanced
 ```
 
@@ -983,6 +992,12 @@ docker compose up -d --build --no-deps bot
 - `WEB_MODE=native`：只使用 Responses 原生联网，不创建本地 Tavily 客户端。
 - `WEB_MODE=tavily`：只使用本地 Tavily Function Tool，必须配置 `TAVILY_API_KEY`。
 - `WEB_MODE=native_with_tavily_fallback`：原生优先并允许一次有界 Tavily 回退，也必须配置 Key。
+- 混合模式下，`WEB_TAVILY_DOMAINS` 使用逗号分隔域名。规则按主机名边界匹配，
+  `github.com` 会匹配 `api.github.com`，不会匹配 `evilgithub.com`。
+- `WEB_ALLOW_PROVIDER_OVERRIDE=true` 时，用户可在当前消息中明确要求使用 Tavily 或
+  DeepSeek 原生联网；网页正文和工具结果不能改变 Provider。
+- 原生 `open_page` 失败或没有真正打开用户明确给出的目标 URL 时，可进行一次
+  `native -> Tavily` 回退；不会在两个 Provider 之间循环。
 - 未设置 `WEB_MODE` 时兼容旧 `WEB_ENABLED`：`true` 映射为 `tavily`，`false` 映射为
   `disabled`。
 - 搜索词最多 400 字符，不会自动拼入完整聊天历史、人物记忆或系统提示词。

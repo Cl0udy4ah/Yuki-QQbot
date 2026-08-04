@@ -125,7 +125,9 @@ from qq_ai_bot.speech.reply_effect import (
 )
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
+from qq_ai_bot.web.models import WebProvider
 from qq_ai_bot.web.native_sources import recover_native_web_response
+from qq_ai_bot.web.router import WebProviderRouter
 from yuki_plugin_sdk.events import EventName
 
 logger = logging.getLogger(__name__)
@@ -997,7 +999,13 @@ class ChatService:
         self._source_policy = source_policy or SourceDisplayPolicy()
         self._source_renderer = source_renderer or SourceRenderer()
         self._runtime_config = runtime_config
-        self._agent_runner = AgentRunner(models, concurrency)
+        self._web_router = WebProviderRouter(
+            tavily_domains=settings.web.tavily_domains,
+            allow_provider_override=settings.web.web_allow_provider_override,
+            fallback_on_access_denied=settings.web.web_fallback_on_access_denied,
+            fallback_on_target_miss=settings.web.web_fallback_on_target_miss,
+        )
+        self._agent_runner = AgentRunner(models, concurrency, web_router=self._web_router)
         self._tool_selector = ToolCandidateSelector()
         self._tool_reranker = FlashToolReranker(models)
         self._admin_tools: AdminToolService | None = None
@@ -1387,6 +1395,22 @@ class ChatService:
             tool_groups = planner_tool_groups
             if scheduled_automation_allowed and (planned_turn is None or planner_scopes_explicit):
                 tool_groups = frozenset((*tool_groups, ToolGroup.AUTOMATION.value))
+            web_route = self._web_router.select(content, runtime_config.web.mode)
+            web_scope_authorized = not planner_scopes_explicit or any(
+                scope == ToolGroup.WEB.value or scope.startswith(f"{ToolGroup.WEB.value}.")
+                for scope in tool_groups
+            )
+            if web_route is not None and web_scope_authorized:
+                logger.info(
+                    "web_route_selected conversation_hash=%s provider=%s reason=%s "
+                    "matched_domain=%s attempt=%d fallback_allowed=%s",
+                    identifier_hash(identity.key) or "missing",
+                    web_route.provider.value,
+                    web_route.reason.value,
+                    web_route.matched_domain or "none",
+                    web_route.attempt,
+                    web_route.fallback_allowed,
+                )
             runtime = ToolRuntime(
                 inbound=inbound,
                 gateway=gateway,
@@ -1436,6 +1460,10 @@ class ChatService:
                 planner_intent=(planned_turn.plan.intent if planned_turn is not None else ""),
                 scheduled_automation_intent=scheduled_automation_allowed,
                 max_model_requests_override=(1 if fallback_plan else None),
+                native_web_fallback=bool(
+                    web_route is not None and web_route.provider is WebProvider.TAVILY
+                ),
+                web_route=web_route,
             )
             if planner_emoji_only:
                 response_text = ""
@@ -1465,14 +1493,17 @@ class ChatService:
                             identifier_hash(identity.key) or "missing",
                             len(agent_result.native_tool_events),
                         )
-                        if (
-                            source_display_requested
-                            and runtime_config.web.mode == "native_with_tavily_fallback"
-                            and not runtime.native_web_fallback
-                        ):
+                        completed_route = agent_result.web_route
+                        source_failure = self._web_router.missing_source_failure(
+                            completed_route,
+                            source_display_requested=source_display_requested,
+                            source_count=len(native_response.sources),
+                        )
+                        if source_failure is not None and completed_route is not None:
                             logger.warning(
                                 "web_provider_fallback from_provider=deepseek_native "
-                                "to_provider=tavily reason_category=source_parse_failed"
+                                "to_provider=tavily reason_category=%s",
+                                source_failure.value,
                             )
                             fallback_limit = min(
                                 2,
@@ -1482,6 +1513,10 @@ class ChatService:
                             fallback_runtime = replace(
                                 runtime,
                                 native_web_fallback=True,
+                                web_route=self._web_router.fallback(
+                                    completed_route,
+                                    source_failure,
+                                ),
                                 max_model_requests_override=fallback_limit,
                             )
                             agent_result = await self._run_agent(
@@ -1908,6 +1943,7 @@ class ChatService:
                     else config.agent.max_model_requests
                 ),
                 force_tavily_fallback=runtime.native_web_fallback,
+                web_route=runtime.web_route,
             ),
             _ChatAgentBackend(self, runtime),
         )
