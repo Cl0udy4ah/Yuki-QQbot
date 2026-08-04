@@ -102,6 +102,7 @@ class ToolRuntime:
     reply_effects: list[ReplyEffect] | None = None
     voice_tool_authorized: bool = False
     planner_scopes_explicit: bool = False
+    planner_tool_groups: frozenset[str] | None = None
     selection_query: str = ""
     planner_intent: str = ""
     selected_tool_names: frozenset[str] | None = None

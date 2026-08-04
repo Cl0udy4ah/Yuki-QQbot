@@ -8,6 +8,7 @@ import json
 import pytest
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.fakes import FakeWebSearchProvider
 from tests.unit.test_normalizer import group_event, private_event
 from tests.unit.test_runtime_admin import admin_stack
 
@@ -40,6 +41,7 @@ from qq_ai_bot.planner.observability import PlannerObservability
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
 from qq_ai_bot.time.service import TimeContextService
+from qq_ai_bot.web.models import WebMode, WebSearchResponse, WebSearchSource
 
 
 def _attach_test_automation(database: Database, harness, settings):
@@ -82,10 +84,10 @@ async def test_future_mcd_query_is_persisted_instead_of_executed_immediately(
     def responder(request: ChatRequest) -> ChatResponse:
         nonlocal calls
         calls += 1
-        assert {tool.name for tool in request.tools} == {
+        assert {
             "automation_create",
             "get_my_capabilities",
-        }
+        } <= {tool.name for tool in request.tools}
         if calls == 1:
             return ChatResponse(
                 content="",
@@ -161,10 +163,10 @@ async def test_future_task_success_claim_is_blocked_without_create_tool_result(
     settings = make_settings(database.url, automation_enabled=True)
 
     def responder(request: ChatRequest) -> ChatResponse:
-        assert {tool.name for tool in request.tools} == {
+        assert {
             "automation_create",
             "get_my_capabilities",
-        }
+        } <= {tool.name for tool in request.tools}
         return ChatResponse(content="设好了，明天九点四十五分准时查", latency_seconds=0)
 
     harness = build_harness(database, settings, FakeLLMProvider(responder))
@@ -184,6 +186,112 @@ async def test_future_task_success_claim_is_blocked_without_create_tool_result(
 
     assert await repository.list_for_creator("1001") == ()
     assert sender.messages[0].text == "这个定时任务还没有写入任务列表，不能算创建成功。"
+
+
+@pytest.mark.asyncio
+async def test_automation_hint_adds_scope_without_replacing_planner_web_scope(
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("INFO")
+    calls = 0
+
+    def responder(request: ChatRequest) -> ChatResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            tool_names = {tool.name for tool in request.tools}
+            assert "automation_create" in tool_names
+            assert "web_search" in tool_names
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="current-web-query",
+                        function=ToolFunction(
+                            name="web_search",
+                            arguments=json.dumps(
+                                {"query": "DeepSeek Responses API 官方文档"},
+                                ensure_ascii=False,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        payload = json.loads(request.messages[-1].content or "{}")
+        assert payload["ok"] is True
+        return ChatResponse(content="已根据当前网页总结三项功能。", latency_seconds=0)
+
+    settings = make_settings(
+        database.url,
+        automation_enabled=True,
+        web_enabled=True,
+        web_mode=WebMode.TAVILY,
+        tavily_api_key="test-placeholder",
+        split_daily_chat_sentences=False,
+    )
+    web = FakeWebSearchProvider(
+        response=WebSearchResponse(
+            query="DeepSeek Responses API 官方文档",
+            sources=(
+                WebSearchSource(
+                    source_id="deepseek-docs",
+                    title="DeepSeek Responses API",
+                    url="https://api-docs.deepseek.com/zh-cn/guides/responses_api/",
+                    domain="api-docs.deepseek.com",
+                    snippet="Responses API 官方说明",
+                    relevant_content="Responses API 支持文本生成和工具调用。",
+                ),
+            ),
+            provider_request_id="deepseek-docs-request",
+            latency_seconds=0,
+        )
+    )
+    harness = build_harness(
+        database,
+        settings,
+        FakeLLMProvider(responder),
+        web_provider=web,
+    )
+    repository, _registry = _attach_test_automation(database, harness, settings)
+    plan = TurnPlan(
+        decision=PlannerDecision.REPLY,
+        intent="联网查询当前文档",
+        target_user_ids=("1001",),
+        delivery_mode=DeliveryMode.SINGLE,
+        desired_messages=1,
+        tool_selection=ToolSelection(mode=ToolMode.INHERIT, scopes=("web",)),
+        confidence=1.0,
+        reason_code=PlannerReasonCode.DIRECT_REQUEST,
+    )
+    harness.processor._planner = PlannerService(
+        provider=FakePlannerProvider(plan),
+        observability=PlannerObservability(),
+    )
+    sender = MemorySender()
+
+    result = await harness.processor.handle(
+        normalize_event(
+            private_event(
+                Message(
+                    "请联网搜索 DeepSeek Responses API 官方文档当前支持的功能。"
+                    "请只根据你这次实际打开的网页回答，列出 3 点，并附上实际来源链接。"
+                ),
+                message_id=108,
+            )
+        ),
+        sender,
+    )
+
+    assert result.reason == "chat"
+    assert calls == 2
+    assert len(web.search_requests) == 1
+    assert await repository.list_for_creator("1001") == ()
+    assert sender.messages[0].text == "已根据当前网页总结三项功能。"
+    assert (
+        "planner_scopes=web automation_scope_added=True effective_scopes=automation,web"
+    ) in caplog.text
 
 
 @pytest.mark.asyncio
