@@ -272,6 +272,88 @@ class NativeSourceFailureThenTavilyLLM(LLMProvider):
         return ChatResponse(content="已通过备用搜索核验。", latency_seconds=0)
 
 
+class DomainRoutedTavilyLLM(LLMProvider):
+    """Use Tavily immediately when an explicit URL matches a routing rule."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.requests: list[ChatRequest] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            assert not request.native_tools
+            assert "read_webpage" in {tool.name for tool in request.tools}
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="domain-routed-read",
+                        function=ToolFunction(
+                            name="read_webpage",
+                            arguments=json.dumps(
+                                {"url": self.url, "question": "这个项目是什么"},
+                                ensure_ascii=False,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        payload = json.loads(request.messages[-1].content or "{}")
+        assert payload["ok"] is True
+        return ChatResponse(content="这个仓库是 Yuki QQ 机器人项目。", latency_seconds=0)
+
+
+class TargetMissThenTavilyLLM(LLMProvider):
+    """Fall back when native web completes without opening the requested URL."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.requests: list[ChatRequest] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            assert "read_webpage" not in {tool.name for tool in request.tools}
+            return ChatResponse(
+                content="原生搜索只找到了一篇无关页面。",
+                latency_seconds=0,
+                native_tool_events=(
+                    NativeToolEvent(
+                        tool_type=NativeToolType.WEB_SEARCH,
+                        call_id="native-other",
+                        status=NativeToolStatus.COMPLETED,
+                        action_type="open_page",
+                        url="https://example.com/other",
+                    ),
+                ),
+                citations=(
+                    ResponseCitation(
+                        url="https://example.com/other",
+                        origin=CitationOrigin.ANNOTATION,
+                    ),
+                ),
+            )
+        if len(self.requests) == 2:
+            assert not request.native_tools
+            assert "read_webpage" in {tool.name for tool in request.tools}
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="target-miss-read",
+                        function=ToolFunction(
+                            name="read_webpage",
+                            arguments=json.dumps({"url": self.url}, ensure_ascii=False),
+                        ),
+                    ),
+                ),
+            )
+        return ChatResponse(content="Tavily 已经读取到指定页面。", latency_seconds=0)
+
+
 def web_settings(database: Database):
     return make_settings(
         database.url,
@@ -339,6 +421,85 @@ async def test_explicit_source_request_uses_bounded_tavily_fallback(
     assert sender.messages[0].text == "已通过备用搜索核验。"
     assert "https://example.com/deepseek-update" in sender.messages[1].text
     assert len(llm.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_explicit_domain_rule_routes_directly_to_tavily(
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("INFO")
+    target_url = "https://github.com/YuanYeYouTao/Yuki-QQbot"
+    source = WebSearchSource(
+        source_id="github-yuki",
+        title="Yuki-QQbot",
+        url=target_url,
+        domain="github.com",
+        snippet="Yuki QQ bot repository",
+        relevant_content="Yuki-QQbot is a QQ AI Agent project.",
+    )
+    settings = make_settings(
+        database.url,
+        web_enabled=False,
+        web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+        tavily_api_key="test-placeholder",
+        web_tavily_domains_csv="github.com",
+        split_daily_chat_sentences=False,
+    )
+    llm = DomainRoutedTavilyLLM(target_url)
+    web = FakeWebSearchProvider(extracted={target_url: source})
+    harness = build_harness(database, settings, llm, web_provider=web)
+    sender = MemorySender()
+
+    result = await harness.processor.handle(
+        event(f"请读取 {target_url} 并告诉我这个项目是什么。", message_id="domain-route"),
+        sender,
+    )
+
+    assert result.reason == "chat"
+    assert [message.text for message in sender.messages] == ["这个仓库是 Yuki QQ 机器人项目。"]
+    assert web.extract_requests == [(target_url, "这个项目是什么")]
+    assert len(llm.requests) == 2
+    assert "provider=tavily reason=domain_rule matched_domain=github.com" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_native_target_miss_falls_back_to_tavily_once(
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("INFO")
+    target_url = "https://docs.example.org/required-page"
+    source = WebSearchSource(
+        source_id="required-page",
+        title="Required page",
+        url=target_url,
+        domain="docs.example.org",
+        snippet="Requested content",
+        relevant_content="The requested page content.",
+    )
+    settings = make_settings(
+        database.url,
+        web_enabled=False,
+        web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+        tavily_api_key="test-placeholder",
+        split_daily_chat_sentences=False,
+    )
+    llm = TargetMissThenTavilyLLM(target_url)
+    web = FakeWebSearchProvider(extracted={target_url: source})
+    harness = build_harness(database, settings, llm, web_provider=web)
+    sender = MemorySender()
+
+    result = await harness.processor.handle(
+        event(f"读取 {target_url} 并总结。", message_id="target-miss-route"),
+        sender,
+    )
+
+    assert result.reason == "chat"
+    assert [message.text for message in sender.messages] == ["Tavily 已经读取到指定页面。"]
+    assert web.extract_requests == [(target_url, "读取用户指定的网页")]
+    assert len(llm.requests) == 3
+    assert "reason_category=target_not_opened" in caplog.text
 
 
 @pytest.mark.asyncio

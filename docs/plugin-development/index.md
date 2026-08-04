@@ -47,7 +47,7 @@ Yuki 2.0.0 不改变 Plugin API `1.0` 的公共含义。插件 Prompt Fragment �
 
 | 标识 | 当前值 | 用途 |
 |---|---:|---|
-| Yuki | `3.3.0` | Host 产品版本 |
+| Yuki | `3.3.1` | Host 产品版本 |
 | Plugin API | `1.0` | SDK 主兼容边界 |
 | Event/Tool/Automation Schema | `1` | 单类载荷的结构版本 |
 | Feature | 如 `planner.signal.v1` | 运行时能力探测 |
