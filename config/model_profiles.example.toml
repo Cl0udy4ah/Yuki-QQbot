@@ -1,10 +1,11 @@
-schema_version = 1
+schema_version = 2
 
 # Copy to config/model_profiles.toml to opt in to explicit task routing.
 # Secrets stay in environment variables; this file only names them.
 
 [profiles.pro]
-provider = "openai_compatible"
+provider = "deepseek"
+protocol = "responses"
 base_url_env = "LLM_BASE_URL"
 api_key_env = "LLM_API_KEY"
 model_env = "LLM_MODEL"
@@ -15,10 +16,11 @@ default_max_output_tokens = 8192
 thinking_mode = "configurable"
 reasoning_effort_env = "LLM_REASONING_EFFORT"
 structured_output_mode = "function_tool"
-capabilities = ["tools", "structured_output", "reasoning", "long_context"]
+capabilities = ["tools", "reasoning", "long_context", "native_web_search"]
 
 [profiles.flash]
-provider = "openai_compatible"
+provider = "deepseek"
+protocol = "chat_completions"
 base_url_env = "LLM_FLASH_BASE_URL"
 api_key_env = "LLM_FLASH_API_KEY"
 model_env = "LLM_FLASH_MODEL"

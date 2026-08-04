@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from qq_ai_bot.domain.messages import ReasoningEffort
+from qq_ai_bot.web.models import WebMode
 
 _PLUGIN_ID = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,126}[a-z0-9])?$")
 _COMMAND_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -268,6 +269,7 @@ class RelationshipSettings(DomainSettings):
 
 class WebSettings(DomainSettings):
     web_enabled: bool
+    web_mode: WebMode | None = None
     tavily_api_key: str
     web_search_depth: str
     web_search_max_results: int = Field(gt=0)
@@ -282,9 +284,19 @@ class WebSettings(DomainSettings):
 
     @model_validator(mode="after")
     def _credentials(self) -> WebSettings:
-        if self.web_enabled and not self.tavily_api_key:
-            raise ValueError("TAVILY_API_KEY is required when WEB_ENABLED=true")
+        if self.mode in {WebMode.TAVILY, WebMode.NATIVE_WITH_TAVILY_FALLBACK} and not (
+            self.tavily_api_key
+        ):
+            raise ValueError("TAVILY_API_KEY is required for tavily and fallback web modes")
         return self
+
+    @property
+    def mode(self) -> WebMode:
+        """Resolve WEB_MODE while preserving the legacy WEB_ENABLED behavior."""
+
+        if self.web_mode is not None:
+            return self.web_mode
+        return WebMode.TAVILY if self.web_enabled else WebMode.DISABLED
 
 
 class VisionSettings(DomainSettings):

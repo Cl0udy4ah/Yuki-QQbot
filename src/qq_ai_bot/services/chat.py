@@ -93,6 +93,7 @@ from qq_ai_bot.planner.models import (
 from qq_ai_bot.planner.observability import identifier_hash
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
+    AgentRunResult,
     AgentRuntime,
     AgentToolBackend,
 )
@@ -124,6 +125,7 @@ from qq_ai_bot.speech.reply_effect import (
 )
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.vision.models import VisualObservation
+from qq_ai_bot.web.native_sources import recover_native_web_response
 from yuki_plugin_sdk.events import EventName
 
 logger = logging.getLogger(__name__)
@@ -237,6 +239,17 @@ class _ChatAgentBackend(AgentToolBackend):
         self._provider_registry: ToolProviderRegistry | None = None
         self._requested_tool_names: set[str] = set()
         self._callable_tool_names: set[str] = set()
+        self._native_web_fallback = runtime.native_web_fallback
+
+    def enable_native_web_fallback(self) -> None:
+        """Allow Tavily tools only after the Runner verifies a fallback condition."""
+
+        self._native_web_fallback = True
+
+    def mark_native_web_used(self) -> None:
+        """Apply post-Web isolation before same-response local calls execute."""
+
+        self._web_was_used = True
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         self._web_was_used = self._web_was_used or web_was_used
@@ -299,6 +312,26 @@ class _ChatAgentBackend(AgentToolBackend):
                 if entry.descriptor.model_name in visible_names
             ),
         )
+        if self._runtime.scheduled_automation_intent:
+            # A deterministic automation hint grants visibility, not an
+            # obligation to create a task.  Keep automation_create present
+            # through schema selection while preserving every other
+            # Planner-approved scope for the Agent's own decision.
+            filtered_catalog = replace(
+                filtered_catalog,
+                entries=tuple(
+                    replace(
+                        entry,
+                        descriptor=replace(
+                            entry.descriptor,
+                            exposure=CapabilityExposure.DIRECT_ALWAYS,
+                        ),
+                    )
+                    if entry.descriptor.model_name == "automation_create"
+                    else entry
+                    for entry in filtered_catalog.entries
+                ),
+            )
         if self._runtime.planner_scopes_explicit and not self._runtime.tool_groups:
             filtered_catalog = replace(
                 filtered_catalog,
@@ -403,8 +436,7 @@ class _ChatAgentBackend(AgentToolBackend):
         definitions = tuple(entry.descriptor.as_chat_tool() for entry in budgeted.entries)
         exposed_names = {tool.name for tool in definitions}
         may_request_more = bool(
-            not self._runtime.scheduled_automation_intent
-            and self._runtime.tool_mode is not ToolMode.NONE
+            self._runtime.tool_mode is not ToolMode.NONE
             and not (self._runtime.planner_scopes_explicit and not self._runtime.tool_groups)
             and self._requestable_catalog is not None
             and any(
@@ -442,10 +474,20 @@ class _ChatAgentBackend(AgentToolBackend):
         """Log bounded capability metadata without message text or tool arguments."""
 
         planner_scope_source = "explicit" if self._runtime.planner_scopes_explicit else "inherited"
+        planner_tool_groups = (
+            self._runtime.planner_tool_groups
+            if self._runtime.planner_tool_groups is not None
+            else self._runtime.tool_groups
+        )
         planner_scopes = (
-            ",".join(sorted(self._runtime.tool_groups)) or "none"
+            ",".join(sorted(planner_tool_groups)) or "none"
             if self._runtime.planner_scopes_explicit
             else "backend_authorized"
+        )
+        automation_scope_added = bool(
+            self._runtime.scheduled_automation_intent
+            and ToolGroup.AUTOMATION.value in self._runtime.tool_groups
+            and ToolGroup.AUTOMATION.value not in planner_tool_groups
         )
         effective_scopes = ",".join(selected_scopes) or (
             "none" if self._runtime.planner_scopes_explicit else "backend_authorized"
@@ -453,13 +495,15 @@ class _ChatAgentBackend(AgentToolBackend):
         exposed_tools = ",".join(sorted(tool.name for tool in definitions)) or "none"
         logger.info(
             "agent_tools_exposed conversation_hash=%s origin=%s tool_mode=%s "
-            "planner_scope_source=%s planner_scopes=%s effective_scopes=%s "
+            "planner_scope_source=%s planner_scopes=%s automation_scope_added=%s "
+            "effective_scopes=%s "
             "tools=%s exposed_count=%d requestable_count=%d reason=%s",
             identifier_hash(self._runtime.conversation_key) or "missing",
             self._runtime.origin.value,
             self._runtime.tool_mode.value,
             planner_scope_source,
             planner_scopes,
+            automation_scope_added,
             effective_scopes,
             exposed_tools,
             len(definitions),
@@ -529,24 +573,21 @@ class _ChatAgentBackend(AgentToolBackend):
             (call.function.name, call.function.arguments) if self._is_mutating_call(call) else None
         )
         mutation_committed = False
-        if (
-            self._runtime.scheduled_automation_intent
-            and effective_descriptor.trust_source is not CapabilityTrustSource.AUTOMATION
-        ):
-            result = json.dumps(
-                {
-                    "ok": False,
-                    "error": "scheduled_intent_requires_automation_create",
-                    "detail": "这是未来触发任务；本轮只能创建自动化，不能立即执行目标工具。",
-                },
-                ensure_ascii=False,
-            )
-        elif mutation_identity is not None and mutation_identity in self._completed_admin_mutations:
+        if mutation_identity is not None and mutation_identity in self._completed_admin_mutations:
             result = json.dumps(
                 {
                     "ok": False,
                     "error": "duplicate_mutation",
                     "detail": "本轮已经成功执行过相同修改，不再重复执行。",
+                },
+                ensure_ascii=False,
+            )
+        elif mutation_identity is not None and self._web_was_used:
+            result = json.dumps(
+                {
+                    "ok": False,
+                    "error": "web_mutation_isolation",
+                    "detail": "使用外部网页内容后，本轮不允许修改长期状态。",
                 },
                 ensure_ascii=False,
             )
@@ -904,6 +945,7 @@ class _ChatAgentBackend(AgentToolBackend):
             self._runtime,
             allow_generic_onebot=(self._runtime.allow_generic_onebot and not self._web_was_used),
             allow_admin_actions=(self._runtime.allow_admin_actions and not self._web_was_used),
+            native_web_fallback=self._native_web_fallback,
         )
 
 
@@ -1299,15 +1341,18 @@ class ChatService:
                 )
                 and is_scheduled_automation_request(content)
             )
-            if scheduled_automation_intent:
+            fallback_plan = planned_turn is not None and planned_turn.fallback_used
+            scheduled_automation_allowed = scheduled_automation_intent and not fallback_plan
+            if scheduled_automation_allowed:
                 messages = (
                     *messages,
                     ChatMessage(
                         role="system",
                         content=(
-                            "当前消息是明确的未来触发任务。必须使用 automation_create 提交高层 "
-                            "TaskSpec；本轮禁止提前执行任务目标中的 MCP、联网、OneBot 或其他业务"
-                            "工具。时间含糊时直接追问。只有工具返回 confirmation=persisted 和真实 "
+                            "当前消息可能涉及未来触发任务，automation_create 已作为候选能力提供。"
+                            "请根据用户的真实意图自行决定是否创建自动化；如果只是当前查询、"
+                            "列举、讨论或无需持久化，则不要创建。可以使用本轮其他已授权工具。"
+                            "只有 automation_create 返回 confirmation=persisted 和真实 "
                             "automation_id 后，才能声称任务已经创建。"
                         ),
                     ),
@@ -1331,8 +1376,17 @@ class ChatService:
                         source="planner",
                     )
                 )
-            fallback_plan = planned_turn is not None and planned_turn.fallback_used
-            scheduled_automation_allowed = scheduled_automation_intent and not fallback_plan
+            planner_scopes_explicit = bool(
+                planned_turn is not None and planned_turn.plan.tool_selection_explicit
+            )
+            planner_tool_groups = (
+                frozenset(planned_turn.plan.tool_selection.scope_ids)
+                if planned_turn is not None
+                else frozenset(group.value for group in ToolGroup)
+            )
+            tool_groups = planner_tool_groups
+            if scheduled_automation_allowed and (planned_turn is None or planner_scopes_explicit):
+                tool_groups = frozenset((*tool_groups, ToolGroup.AUTOMATION.value))
             runtime = ToolRuntime(
                 inbound=inbound,
                 gateway=gateway,
@@ -1369,31 +1423,17 @@ class ChatService:
                         else ToolMode.INHERIT
                     )
                 ),
-                tool_groups=(
-                    frozenset({ToolGroup.AUTOMATION.value})
-                    if scheduled_automation_allowed
-                    else (
-                        frozenset(planned_turn.plan.tool_selection.scope_ids)
-                        if planned_turn is not None
-                        else frozenset(group.value for group in ToolGroup)
-                    )
-                ),
+                tool_groups=tool_groups,
                 turn_token=turn_token,
                 reply_effects=reply_effects,
                 voice_tool_authorized=(
                     planned_turn is not None
                     and planned_turn.plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
                 ),
-                planner_scopes_explicit=(
-                    scheduled_automation_intent
-                    or (planned_turn is not None and planned_turn.plan.tool_selection_explicit)
-                ),
+                planner_scopes_explicit=planner_scopes_explicit,
+                planner_tool_groups=planner_tool_groups,
                 selection_query=content,
-                planner_intent=(
-                    "创建未来触发的持久化自动化任务"
-                    if scheduled_automation_allowed
-                    else (planned_turn.plan.intent if planned_turn is not None else "")
-                ),
+                planner_intent=(planned_turn.plan.intent if planned_turn is not None else ""),
                 scheduled_automation_intent=scheduled_automation_allowed,
                 max_model_requests_override=(1 if fallback_plan else None),
             )
@@ -1401,9 +1441,55 @@ class ChatService:
                 response_text = ""
             elif turn_token is not None:
                 async with self._turn_coordinator.track(turn_token, "generation"):
-                    response_text = await self._run_agent(identity.key, messages, runtime)
+                    agent_result = await self._run_agent(identity.key, messages, runtime)
             else:
-                response_text = await self._run_agent(identity.key, messages, runtime)
+                agent_result = await self._run_agent(identity.key, messages, runtime)
+            if not planner_emoji_only:
+                response_text = agent_result.text
+                if agent_result.native_tool_events:
+                    native_response = recover_native_web_response(
+                        events=agent_result.native_tool_events,
+                        citations=agent_result.citations,
+                        answer_text=agent_result.text,
+                    )
+                    await self._web_sources.save_response(
+                        conversation_key=identity.key,
+                        trigger_message_id=inbound.message_id,
+                        provider="deepseek_native",
+                        response=native_response,
+                        max_runs=runtime_config.web.source_max_runs_per_conversation,
+                    )
+                    if not native_response.sources:
+                        logger.warning(
+                            "native_web_source_parse_failed conversation_hash=%s action_count=%d",
+                            identifier_hash(identity.key) or "missing",
+                            len(agent_result.native_tool_events),
+                        )
+                        if (
+                            source_display_requested
+                            and runtime_config.web.mode == "native_with_tavily_fallback"
+                            and not runtime.native_web_fallback
+                        ):
+                            logger.warning(
+                                "web_provider_fallback from_provider=deepseek_native "
+                                "to_provider=tavily reason_category=source_parse_failed"
+                            )
+                            fallback_limit = min(
+                                2,
+                                runtime.max_model_requests_override
+                                or runtime_config.agent.max_model_requests,
+                            )
+                            fallback_runtime = replace(
+                                runtime,
+                                native_web_fallback=True,
+                                max_model_requests_override=fallback_limit,
+                            )
+                            agent_result = await self._run_agent(
+                                identity.key,
+                                messages,
+                                fallback_runtime,
+                            )
+                            response_text = agent_result.text
             sources = await self._web_sources.for_trigger(
                 conversation_key=identity.key,
                 trigger_message_id=inbound.message_id,
@@ -1788,7 +1874,7 @@ class ChatService:
         conversation_key: str,
         initial_messages: tuple[ChatMessage, ...],
         runtime: ToolRuntime,
-    ) -> str:
+    ) -> AgentRunResult:
         config = runtime.runtime_config
         if config is None:
             config = await self._runtime_config.snapshot(
@@ -1811,7 +1897,7 @@ class ChatService:
                 gateway=runtime.gateway,
                 runtime_config=config,
                 current_time=current_time,
-                allowed_capabilities=frozenset(),
+                allowed_capabilities=runtime.tool_groups,
                 max_tool_calls=config.agent.max_tool_calls,
                 max_model_requests=(
                     min(
@@ -1821,10 +1907,11 @@ class ChatService:
                     if runtime.max_model_requests_override is not None
                     else config.agent.max_model_requests
                 ),
+                force_tavily_fallback=runtime.native_web_fallback,
             ),
             _ChatAgentBackend(self, runtime),
         )
-        return result.text
+        return result
 
     async def _prepare_tool_candidates(self, runtime: ToolRuntime) -> ToolRuntime:
         """Discover selected lazy scopes, then locally select and optionally rerank tools."""
@@ -1846,17 +1933,6 @@ class ChatService:
             if callable(prepare):
                 await prepare(scopes, runtime)
         catalog = registry.catalog(runtime)
-        if (
-            runtime.scheduled_automation_intent
-            and catalog.by_model_name("automation_create") is not None
-        ):
-            return replace(
-                runtime,
-                tool_mode=ToolMode.INHERIT,
-                tool_groups=frozenset({ToolGroup.AUTOMATION.value}),
-                selected_tool_names=frozenset({"automation_create"}),
-                planner_scopes_explicit=True,
-            )
         known_scopes = {scope.scope_id for scope in catalog.scopes}
         candidate_scopes = tuple(scope for scope in scopes if scope in known_scopes)
         if (

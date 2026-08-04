@@ -271,6 +271,7 @@ class WebRuntimeConfig:
     tool_result_max_characters: int
     source_retention_days: int
     source_max_runs_per_conversation: int
+    mode: str = "disabled"
 
 
 @dataclass(frozen=True, slots=True)

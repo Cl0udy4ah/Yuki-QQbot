@@ -30,6 +30,7 @@ from qq_ai_bot.settings_domains import (
     WebSettings,
     validate_direct_command_bindings,
 )
+from qq_ai_bot.web.models import WebMode
 
 
 def _csv_set(value: str) -> frozenset[str]:
@@ -260,6 +261,7 @@ class Settings(BaseSettings):
     conflict_preference_min_gap: int = 15
 
     web_enabled: bool = False
+    web_mode: WebMode | None = None
     tavily_api_key: str = Field(default="", repr=False)
     web_search_depth: str = "advanced"
     web_search_max_results: int = 5
@@ -647,7 +649,10 @@ class Settings(BaseSettings):
     def web_configured(self) -> bool:
         """Whether controlled web search is enabled with provider credentials."""
 
-        return bool(self.web_enabled and self.tavily_api_key)
+        mode = self.web.mode
+        return bool(
+            mode is not WebMode.DISABLED and (mode is WebMode.NATIVE or bool(self.tavily_api_key))
+        )
 
     @property
     def vision_configured(self) -> bool:

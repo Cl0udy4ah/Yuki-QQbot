@@ -12,17 +12,23 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatResponse,
+    CitationOrigin,
     InboundMessage,
+    NativeToolEvent,
+    NativeToolStatus,
+    NativeToolType,
     OutboundMessage,
     OutboundSendReceipt,
+    ResponseCitation,
     SenderIdentity,
     ToolCall,
     ToolFunction,
 )
 from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.web_repository import WebSearchSourceRepository
 from qq_ai_bot.web.base import WebSearchError
-from qq_ai_bot.web.models import WebSearchResponse, WebSearchSource
+from qq_ai_bot.web.models import WebMode, WebSearchResponse, WebSearchSource
 
 
 def event(
@@ -189,6 +195,83 @@ class RepeatedWebToolLLM(LLMProvider):
         return ChatResponse(content="已根据前三次搜索完成回答。", latency_seconds=0)
 
 
+class NativeWebLLM(LLMProvider):
+    """Return provider-native events without fabricating a local Function Call."""
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        del request
+        return ChatResponse(
+            content="公开文档确认了该信息：https://example.com/native-docs",
+            latency_seconds=0,
+            native_tool_events=(
+                NativeToolEvent(
+                    tool_type=NativeToolType.WEB_SEARCH,
+                    call_id="native-search",
+                    status=NativeToolStatus.COMPLETED,
+                    action_type="search",
+                    query="public docs",
+                ),
+                NativeToolEvent(
+                    tool_type=NativeToolType.WEB_SEARCH,
+                    call_id="native-open",
+                    status=NativeToolStatus.COMPLETED,
+                    action_type="open_page",
+                    url="https://example.com/native-docs#ws_call_id=test",
+                ),
+            ),
+            citations=(
+                ResponseCitation(
+                    url="https://example.com/native-docs",
+                    title="Native docs",
+                    origin=CitationOrigin.ANNOTATION,
+                ),
+            ),
+        )
+
+
+class NativeSourceFailureThenTavilyLLM(LLMProvider):
+    """Require a bounded Tavily retry when native source recovery is empty."""
+
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            assert "web_search" not in {tool.name for tool in request.tools}
+            return ChatResponse(
+                content="原生搜索给出了回答，但没有可验证链接。",
+                latency_seconds=0,
+                native_tool_events=(
+                    NativeToolEvent(
+                        tool_type=NativeToolType.WEB_SEARCH,
+                        call_id="native-no-source",
+                        status=NativeToolStatus.COMPLETED,
+                        action_type="search",
+                        query="public docs",
+                    ),
+                ),
+            )
+        if len(self.requests) == 2:
+            assert "web_search" in {tool.name for tool in request.tools}
+            assert not request.native_tools
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="tavily-fallback",
+                        function=ToolFunction(
+                            name="web_search",
+                            arguments='{"query":"最新 DeepSeek 更新"}',
+                        ),
+                    ),
+                ),
+            )
+        assert request.messages[-1].role == "tool"
+        return ChatResponse(content="已通过备用搜索核验。", latency_seconds=0)
+
+
 def web_settings(database: Database):
     return make_settings(
         database.url,
@@ -196,6 +279,66 @@ def web_settings(database: Database):
         tavily_api_key="test-placeholder",
         split_daily_chat_sentences=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_native_web_sources_are_persisted_before_backend_rendering(
+    database: Database,
+) -> None:
+    settings = make_settings(
+        database.url,
+        web_enabled=False,
+        web_mode=WebMode.NATIVE,
+        tavily_api_key="",
+        split_daily_chat_sentences=False,
+    )
+    harness = build_harness(database, settings, NativeWebLLM())
+    sender = MemorySender()
+
+    result = await harness.processor.handle(
+        event("请联网确认并附上来源。", message_id="native-visible"),
+        sender,
+    )
+
+    assert result.sent_messages == 2
+    assert sender.messages[0].text == "公开文档确认了该信息："
+    assert sender.messages[1].text == ("来源：\n1. Native docs\n   https://example.com/native-docs")
+    stored = await WebSearchSourceRepository(database).for_trigger(
+        conversation_key="private:1001",
+        trigger_message_id="native-visible",
+    )
+    assert [source.url for source in stored] == ["https://example.com/native-docs"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_source_request_uses_bounded_tavily_fallback(
+    database: Database,
+) -> None:
+    settings = make_settings(
+        database.url,
+        web_enabled=False,
+        web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+        tavily_api_key="test-placeholder",
+        split_daily_chat_sentences=False,
+    )
+    llm = NativeSourceFailureThenTavilyLLM()
+    harness = build_harness(
+        database,
+        settings,
+        llm,
+        web_provider=FakeWebSearchProvider(response=web_response()),
+    )
+    sender = MemorySender()
+
+    result = await harness.processor.handle(
+        event("请联网确认并附上来源。", message_id="native-fallback-visible"),
+        sender,
+    )
+
+    assert result.sent_messages == 2
+    assert sender.messages[0].text == "已通过备用搜索核验。"
+    assert "https://example.com/deepseek-update" in sender.messages[1].text
+    assert len(llm.requests) == 3
 
 
 @pytest.mark.asyncio

@@ -4,10 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from enum import StrEnum
 from typing import Literal
 
 WebSearchTopic = Literal["general", "news"]
 WebSearchTimeRange = Literal["day", "week", "month", "year"]
+
+
+class WebMode(StrEnum):
+    """Configured backend strategy for model-approved web access."""
+
+    DISABLED = "disabled"
+    NATIVE = "native"
+    TAVILY = "tavily"
+    NATIVE_WITH_TAVILY_FALLBACK = "native_with_tavily_fallback"
 
 
 @dataclass(frozen=True, slots=True)
