@@ -56,3 +56,37 @@ def test_subscription_filters_bot_actor_and_branch() -> None:
     )
     assert bot is not None
     assert not event_allowed(bot, subscription)
+
+
+def test_release_event_preserves_bounded_card_details() -> None:
+    event = normalize_event(
+        "owner/repo",
+        {
+            "id": "release-1",
+            "type": "ReleaseEvent",
+            "actor": {"login": "alice", "type": "User"},
+            "created_at": "2026-08-05T10:30:00Z",
+            "payload": {
+                "action": "published",
+                "release": {
+                    "id": 42,
+                    "name": "Yuki 3.4.2",
+                    "tag_name": "v3.4.2",
+                    "target_commitish": "main",
+                    "body": "新增 Release 通知卡片。",
+                    "html_url": "https://github.com/owner/repo/releases/tag/v3.4.2",
+                    "draft": False,
+                    "prerelease": False,
+                    "assets": [{"id": 1}, {"id": 2}],
+                },
+            },
+        },
+    )
+
+    assert event is not None
+    assert event.title == "Yuki 3.4.2"
+    assert event.payload["tag"] == "v3.4.2"
+    assert event.payload["target"] == "main"
+    assert event.payload["assets_count"] == 2
+    assert event.payload["prerelease"] is False
+    assert event.payload["excerpt"] == "新增 Release 通知卡片。"

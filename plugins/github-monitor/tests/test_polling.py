@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 import pytest
 from github_monitor.config import (
@@ -8,7 +9,7 @@ from github_monitor.config import (
     NotificationTargetConfig,
     RepositorySubscription,
 )
-from github_monitor.models import GitHubAPIResponse
+from github_monitor.models import GitHubAPIResponse, NormalizedGitHubEvent
 from github_monitor.polling import GitHubPoller
 from github_monitor.state import load_repository_state
 
@@ -58,3 +59,30 @@ async def test_first_baseline_marks_cursor_and_only_publishes_enabled_notice() -
     assert state.etag == '"baseline"'
     assert len(context.notifications.published) == 1
     assert context.notifications.published[0].event_type == "monitor_enabled"
+
+
+@pytest.mark.asyncio
+async def test_release_publication_attaches_card_to_enabled_target() -> None:
+    context = FakePluginContext(plugin_id="github-monitor")
+    subscription = RepositorySubscription(
+        repository="owner/repo",
+        targets=(NotificationTargetConfig(target_type="group", target_id="2001"),),
+    )
+    event = NormalizedGitHubEvent(
+        github_event_id="release-1",
+        repository="owner/repo",
+        event_type="ReleaseEvent",
+        actor="alice",
+        created_at=datetime(2026, 8, 5, 13, 53, tzinfo=UTC),
+        action="published",
+        title="Yuki 3.4.2",
+        summary="owner/repo 发布了 v3.4.2",
+        event_key="github:owner/repo:ReleaseEvent:42:published",
+        payload={"tag": "v3.4.2", "target": "main", "assets_count": 0},
+    )
+
+    await GitHubPoller(context, asyncio.Event()).publish_event(subscription, event)
+
+    assert len(context.notifications.published) == 1
+    assert context.notifications.published[0].event_type == "ReleaseEvent"
+    assert len(context.notifications.published[0].media_handles) == 1

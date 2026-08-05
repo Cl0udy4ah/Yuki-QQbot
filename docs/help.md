@@ -1,5 +1,8 @@
 # Yuki-QQbot
 
+> **3.4.2 GitHub Release 卡片：**Release 事件新增与 Push 同风格的中文 PNG 卡片，展示
+> 版本类型、目标分支、附件数量和发布说明；不新增数据库迁移。
+
 > **3.4.1 GitHub Monitor：**新增多仓库 GitHub 事件监控、中文 Push 卡片、持久通知 Outbox
 > 与可选 Yuki 点评；Plugin API 升级为 `1.1`，Alembic head 为 `0028`。
 
@@ -90,7 +93,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.4.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
+Yuki-QQbot 3.4.2 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -516,7 +519,7 @@ uv run qq-ai-bot-cli plugin test plugins/com.example.echo
 #### 可选：GitHub Monitor
 
 仓库内置 [`github-monitor`](../plugins/github-monitor/README.md)。它可以监控多个 GitHub 仓库，
-把新 Push、PR、Issue、Comment、Release 和 Discussion 等事件以中文文本、Push PNG 卡片和
+把新 Push、PR、Issue、Comment、Release 和 Discussion 等事件以中文文本、Push/Release PNG 卡片和
 可选 Yuki 点评投递到多个 QQ 群或私聊。配置 `/github` 直达命令和可选 Token：
 
 ```dotenv

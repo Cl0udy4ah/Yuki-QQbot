@@ -11,7 +11,7 @@
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/Version-3.4.1-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Version-3.4.2-blue" alt="Version">
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python Version">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -36,10 +36,10 @@
 
 Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agent。它通过 NapCatQQ 接入 QQ，使用 Planner、Agent、长期记忆、工具系统和插件系统完成聊天、检索、自动化与外部服务调用。
 
-> **当前版本：3.4.1**
+> **当前版本：3.4.2**
 >
-> 本版本加入 GitHub Monitor 仓库管家、Plugin API 1.1 与持久外部通知链路；支持多仓库、
-> 多 QQ 目标、中文事件、Push 卡片、稳定去重和可选 Yuki 点评，并修复 Linux 容器中文字体。
+> GitHub Monitor 的 Release 事件现在会生成与 Push 同风格的中文 PNG 卡片，展示版本类型、
+> 目标分支、附件数量和发布说明；媒体投递、持久去重与 Yuki 点评链路保持不变。
 
 ## ✨ 主要功能
 
@@ -53,7 +53,7 @@ Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agen
 - **统一工具内核**：Core、Admin、Automation、Plugin 与 MCP 工具统一交给 Planner 和 Agent 调用。
 - **MCP Client**：支持 stdio 与 Streamable HTTP，可接入麦当劳、网易云音乐等 MCP Server。
 - **插件系统**：提供 Plugin API 1.1、独立 SDK、权限、事件、Prompt、Planner Signal、静态直达绑定、后台服务与持久通知扩展点。
-- **GitHub 仓库管家**：可选 GitHub Monitor 支持多仓库、多 QQ 目标、事件过滤、中文 Push 卡片、去重推送和 Yuki 自然点评。
+- **GitHub 仓库管家**：可选 GitHub Monitor 支持多仓库、多 QQ 目标、事件过滤、中文 Push/Release 卡片、去重推送和 Yuki 自然点评。
 - **多模态扩展**：可选图片理解、表情系统、DeepSeek 原生或 Tavily 联网搜索和本地 Genie-TTS 语音回复。
 - **运行时管理**：支持管理员自然语言配置、权限审计、健康检查和数据库迁移。
 

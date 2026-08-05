@@ -15,7 +15,7 @@ from .errors import GitHubAPIError
 from .events import event_allowed, normalize_event, stable_event_key
 from .formatter import apply_compare, external_payload, notification_text
 from .models import NormalizedGitHubEvent, RepositoryState
-from .renderer import render_push_card
+from .renderer import render_event_card
 from .state import load_repository_state, save_repository_state
 
 AGENT_INTENT = "根据当前主会话关系和仓库事件，自然说一句真实反应；不要复述完整卡片。"
@@ -195,16 +195,18 @@ class GitHubPoller:
         event: NormalizedGitHubEvent,
     ) -> None:
         media_handle = ""
-        if event.event_type == "PushEvent" and any(t.send_card for t in subscription.targets):
+        if any(t.send_card for t in subscription.targets):
             try:
-                png = await asyncio.to_thread(render_push_card, event)
-                handle = await self._context.media.create_artifact(
-                    data=png,
-                    content_type="image/png",
-                    filename="github-push.png",
-                    ttl_seconds=86_400,
-                )
-                media_handle = handle.handle_id
+                rendered = await asyncio.to_thread(render_event_card, event)
+                if rendered is not None:
+                    png, filename = rendered
+                    handle = await self._context.media.create_artifact(
+                        data=png,
+                        content_type="image/png",
+                        filename=filename,
+                        ttl_seconds=86_400,
+                    )
+                    media_handle = handle.handle_id
             except Exception as exc:
                 self._context.logger.warning(
                     "github_card_render_failed repository=%s error_category=%s",

@@ -112,7 +112,17 @@ def _extract(
     elif event_type == "ReleaseEvent":
         release = as_mapping(payload.get("release"))
         title = _text(release.get("name"), 300) or _text(release.get("tag_name"), 128)
-        safe_payload["tag"] = _text(release.get("tag_name"), 128)
+        assets = release.get("assets") if isinstance(release.get("assets"), list) else []
+        safe_payload.update(
+            {
+                "tag": _text(release.get("tag_name"), 128),
+                "name": title,
+                "target": _text(release.get("target_commitish"), 255),
+                "prerelease": bool(release.get("prerelease", False)),
+                "draft": bool(release.get("draft", False)),
+                "assets_count": len(assets),
+            }
+        )
     elif event_type in {"CreateEvent", "DeleteEvent"}:
         branch = _text(payload.get("ref"), 255)
         safe_payload.update({"ref": branch, "ref_type": _text(payload.get("ref_type"), 32)})
