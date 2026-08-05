@@ -280,7 +280,7 @@ def test_category_filter_recomputes_counts_and_preserves_sorted_output() -> None
         category="memory",
     )
 
-    assert report.mutable_config_count == 45
+    assert report.mutable_config_count == 46
     assert report.business_action_count == 5
     assert report.mutating_action_count == 4
     assert report.self_service_operation_count == 16

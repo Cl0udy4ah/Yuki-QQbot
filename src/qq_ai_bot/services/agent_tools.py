@@ -778,6 +778,10 @@ class AgentToolService:
         )
         if not message_id or not sender_id:
             return False
+        sender = item.get("sender")
+        sender = sender if isinstance(sender, dict) else {}
+        sender_nickname = sender.get("nickname")
+        sender_group_card = sender.get("card")
         raw_segments = item.get("message")
         segments = self._segments(raw_segments)
         content = self._segments_text(segments)
@@ -802,6 +806,12 @@ class AgentToolService:
             ),
             reply_to_message_id=self._reply_id(segments),
             occurred_at=occurred_at,
+            sender_nickname=(
+                sender_nickname if isinstance(sender_nickname, str) else ""
+            ),
+            sender_group_card=(
+                sender_group_card if isinstance(sender_group_card, str) else ""
+            ),
             sender_is_bot=sender_id == inbound.bot_user_id,
         )
         return created
@@ -1821,6 +1831,9 @@ class AgentToolService:
         return {
             "id": row.id,
             "sender_user_id": row.sender_user_id,
+            "sender_nickname": row.sender_nickname,
+            "sender_group_card": row.sender_group_card,
+            "sender_display_name": row.sender_display_name,
             "scope": row.scope_type.value,
             "group_id": row.group_id,
             "direction": row.direction,

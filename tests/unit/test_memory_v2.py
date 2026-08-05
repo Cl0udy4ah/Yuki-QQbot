@@ -504,8 +504,6 @@ async def test_context_keeps_facts_in_current_entity_blocks_only(database: Datab
         "当前群内称呼"
     ]
     assert [item["content"] for item in blocks["current_group"]["facts"]] == ["只属于当前群"]
-    related = blocks["related_person.0"]
-    assert set(related) == {"user_id", "display_name", "group_card"}
     assert "另一个人的秘密" not in envelope
 
 

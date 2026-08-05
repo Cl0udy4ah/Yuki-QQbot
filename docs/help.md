@@ -1200,7 +1200,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | 模式 | 配置键 |
 |---|---|
 | HOT | `planner.enabled`、`planner.direct_enabled`、`planner.group_enabled`、`planner.group_debounce_seconds`、`planner.confidence_threshold`、`planner.reply_necessity_threshold`、`planner.max_pending_messages`、`planner.recent_presence_window_seconds`、`planner.max_wait_seconds`、`planner.interrupt_autonomous_on_new_message` |
-| HOT | `context.local_event_limit`、`context.related_people_limit` |
+| HOT | `context.local_event_limit`、`memory.max_referenced_targets` |
 | HOT | `reply.daily_split_enabled`、`reply.daily_split_max_characters`、`reply.daily_split_max_messages`、`reply.delay_min_seconds`、`reply.delay_max_seconds`、`reply.max_qq_message_chars` |
 | HOT | `llm.temperature`、`llm.max_output_tokens`、`llm.thinking_enabled` |
 | HOT | `agent.max_tool_calls`、`agent.max_model_requests`、`agent.tool_result_max_characters` |
@@ -1230,7 +1230,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `RECENT_HISTORY_TOOL_LIMIT` | `20` |
 | `LOCAL_CONTEXT_EVENT_LIMIT` | `30` |
 | `MAX_CONTEXT_CHARACTERS` | `12000` |
-| `RELATED_PEOPLE_LIMIT` | `5` |
+| `MEMORY_MAX_REFERENCED_TARGETS` | `5` |
 | `PERSON_MEMORY_MAX_ENTRIES` | `100` |
 | `GROUP_MEMORY_MAX_ENTRIES` | `100` |
 | `PERSON_GROUP_MEMORY_MAX_ENTRIES` | `50` |

@@ -179,6 +179,12 @@ class ChatEventModel(Base):
     sender_user_id: Mapped[str] = mapped_column(
         ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
     )
+    sender_nickname: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="", server_default=text("''")
+    )
+    sender_group_card: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="", server_default=text("''")
+    )
     direction: Mapped[str] = mapped_column(String(16), nullable=False)
     event_kind: Mapped[str] = mapped_column(
         String(32),

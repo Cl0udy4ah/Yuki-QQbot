@@ -83,7 +83,8 @@ FTS 查询先做 NFKC、casefold、空白压缩和有界词项提取，再由后
 }
 ```
 
-`related_people` 可以继续携带最近群友的当前群身份元数据，但不附带其关系或长期事实。
+聊天历史中的发送者 QQ、昵称和群名片来自 `chat_events` 的不可变事件快照，不从人物目录二次拼装；
+只有当前消息明确提及或回复的人物才会进入引用主体记忆检索。
 `last_used_at` 只在事实通过最终 `ContextBudgeter` 后一次性更新；候选、被预算删除的事实、管理
 列表和索引重建都不会更新它。Core Agent、管理员诊断和 Plugin API v1 的相关搜索均复用同一个
 `MemoryRetriever`。

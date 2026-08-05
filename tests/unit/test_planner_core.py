@@ -96,9 +96,10 @@ def _runtime() -> RuntimeConfigSnapshot:
             max_prompt_characters_per_plugin=4000,
             max_total_prompt_characters=8000,
         ),
-        context=ContextRuntimeConfig(local_event_limit=30, related_people_limit=5),
+        context=ContextRuntimeConfig(local_event_limit=30),
         memory=MemoryRetrievalRuntimeConfig(
             retrieval_enabled=True,
+            max_referenced_targets=5,
             lexical_candidate_limit=50,
             context_limit_per_entity=8,
             overview_limit_per_entity=20,

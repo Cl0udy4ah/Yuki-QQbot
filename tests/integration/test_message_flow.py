@@ -596,9 +596,9 @@ async def test_ten_concurrent_conversations_do_not_cross_context(database: Datab
             identity, max_messages=10, max_characters=1000
         )
         contents = [item.content for item in history]
-        expected = f"FakeLLM: [QQ {1001 + index}] unique-{index}"
-        assert contents == [f"unique-{index}", expected]
-        assert senders[index].messages[0].text == expected
+        assert contents[0] == f"unique-{index}"
+        assert contents[1] == f"FakeLLM: unique-{index}"
+        assert senders[index].messages[0].text == contents[1]
 
 
 @pytest.mark.asyncio

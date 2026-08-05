@@ -1633,7 +1633,7 @@ async def test_two_admin_service_facades_share_atomic_versions(database: Databas
             trigger_message_id="different-a",
         ),
         second.set_override(
-            "context.related_people_limit",
+            "memory.max_referenced_targets",
             4,
             scope_type="global",
             scope_id="",

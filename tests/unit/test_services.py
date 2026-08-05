@@ -133,6 +133,17 @@ def test_model_output_never_exposes_internal_history_timestamps() -> None:
     )
 
 
+def test_model_output_never_exposes_event_identity_envelopes() -> None:
+    text = (
+        "前缀 [发送者:奶鼠|QQ:2186567848|消息:1742835379|"
+        "时间:2026-08-05T15:39:05.884399] 看到了。\n"
+        "[发送者:远野|QQ:2186567848|消息:1742835380|回复:Yuki/消息:1742835379] "
+        "第二句。"
+    )
+
+    assert clean_model_output(text, max_characters=200) == "前缀 看到了。\n第二句。"
+
+
 @pytest.mark.asyncio
 async def test_conversation_isolation_and_clear(database: Database) -> None:
     repository = ConversationRepository(database)

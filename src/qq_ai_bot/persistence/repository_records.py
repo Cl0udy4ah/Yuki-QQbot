@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from qq_ai_bot.domain.conversations import ConversationMode, ScopeType
+from qq_ai_bot.domain.messages import sanitize_display_name
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,8 @@ class EventRecord:
     visual_summary: str
     segments: tuple[dict[str, Any], ...]
     occurred_at: datetime
+    sender_nickname: str = ""
+    sender_group_card: str = ""
     group_id: str | None = None
     private_peer_user_id: str | None = None
     reply_to_message_id: str | None = None
@@ -57,6 +60,20 @@ class EventRecord:
     external_event_key: str | None = None
     external_event_type: str | None = None
     external_payload: dict[str, Any] | None = None
+
+    @property
+    def sender_display_name(self) -> str:
+        """Return the immutable event-time display identity without a database lookup."""
+
+        group_card = sanitize_display_name(self.sender_group_card)
+        if group_card:
+            return group_card
+        nickname = sanitize_display_name(self.sender_nickname)
+        if nickname:
+            return nickname
+        if self.sender_user_id == self.bot_user_id:
+            return "Yuki"
+        return f"QQ {self.sender_user_id}"
 
 
 @dataclass(frozen=True, slots=True)

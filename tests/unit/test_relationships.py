@@ -660,7 +660,7 @@ async def test_bonded_non_superuser_keeps_normal_tools_without_admin_tool(
 
 
 @pytest.mark.asyncio
-async def test_relationship_context_contains_only_current_relationship_for_related_people(
+async def test_relationship_context_contains_only_current_speaker_relationship(
     database: Database,
 ) -> None:
     provider = ToolDefinitionProvider()

@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 
 from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
+
+
+def sanitize_display_name(value: str) -> str:
+    """Flatten untrusted platform identity text for one-line model metadata."""
+
+    visible = "".join(
+        " " if character.isspace() else character
+        for character in value
+        if not unicodedata.category(character).startswith("C")
+    )
+    return " ".join(visible.split())[:128]
 
 
 class AttachmentKind(StrEnum):

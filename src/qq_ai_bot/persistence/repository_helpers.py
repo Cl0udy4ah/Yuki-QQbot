@@ -148,6 +148,8 @@ def _event_record(row: ChatEventModel) -> EventRecord:
         platform_message_id=row.platform_message_id,
         scope_type=ScopeType(row.scope_type),
         sender_user_id=row.sender_user_id,
+        sender_nickname=row.sender_nickname,
+        sender_group_card=row.sender_group_card,
         direction=row.direction,
         content=row.content,
         visual_summary=row.visual_summary,

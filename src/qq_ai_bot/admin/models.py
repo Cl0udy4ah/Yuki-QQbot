@@ -134,12 +134,12 @@ class AdminActor:
 @dataclass(frozen=True, slots=True)
 class ContextRuntimeConfig:
     local_event_limit: int
-    related_people_limit: int
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryRetrievalRuntimeConfig:
     retrieval_enabled: bool
+    max_referenced_targets: int
     lexical_candidate_limit: int
     context_limit_per_entity: int
     overview_limit_per_entity: int

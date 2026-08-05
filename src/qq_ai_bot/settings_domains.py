@@ -107,7 +107,6 @@ class ConversationSettings(DomainSettings):
     observe_enabled_groups: bool
     recent_history_tool_limit: int = Field(gt=0)
     local_context_event_limit: int = Field(gt=0)
-    related_people_limit: int = Field(gt=0)
     agent_max_tool_calls: int = Field(gt=0)
     agent_max_model_requests: int = Field(gt=0)
     agent_tool_result_max_characters: int = Field(gt=0)
@@ -184,6 +183,7 @@ class MemorySettings(DomainSettings):
     memory_batch_max_events: int = Field(gt=0)
     memory_retrieval_enabled: bool
     self_memory_enabled: bool
+    memory_max_referenced_targets: int = Field(gt=0)
     memory_lexical_candidate_limit: int = Field(gt=0)
     memory_context_limit_per_entity: int = Field(gt=0)
     memory_overview_limit_per_entity: int = Field(gt=0)

@@ -5,13 +5,19 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ConversationIdentity
-from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, SenderIdentity
+from qq_ai_bot.domain.messages import (
+    ChatMessage,
+    InboundMessage,
+    SenderIdentity,
+    sanitize_display_name,
+)
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.domain.relationships import RelationshipSnapshot
 from qq_ai_bot.memory.context import (
@@ -27,6 +33,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
 )
 from qq_ai_bot.prompting import ContextBudgeter, ContextContribution
+from qq_ai_bot.services.renderer import strip_internal_history_markers
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.time.service import TimeContextService
 
@@ -45,7 +52,6 @@ class ContextMetrics:
     metadata_characters: int
     history_characters: int
     history_messages: int
-    related_people: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,7 +175,6 @@ class ContextAssembler:
             profile,
         )
 
-        related_count = 0
         if inbound.group_id is not None:
             context["current_person_in_group"] = {
                 "user_id": inbound.sender.user_id,
@@ -215,12 +220,6 @@ class ContextAssembler:
                 entry[key] = [retrieval_fact_context(hit) for hit in block.hits]
             if referenced:
                 context["referenced_people"] = list(referenced.values())
-            related_ids = self._related_ids(inbound, recent, runtime.context.related_people_limit)
-            related_count = len(related_ids)
-            context["related_people"] = await self._related_people(
-                related_ids,
-                inbound.group_id,
-            )
 
         total_budget = self._settings.max_context_characters
         metadata_budget = max(
@@ -247,15 +246,13 @@ class ContextAssembler:
             metadata_characters=len(metadata_json),
             history_characters=history_characters,
             history_messages=len(history_messages),
-            related_people=related_count,
         )
         logger.debug(
             "context_assembled metadata_characters=%d history_characters=%d "
-            "history_messages=%d related_people=%d",
+            "history_messages=%d",
             metrics.metadata_characters,
             metrics.history_characters,
             metrics.history_messages,
-            metrics.related_people,
         )
         return AssembledContext(
             metadata_payload=metadata_payload,
@@ -356,7 +353,6 @@ class ContextAssembler:
                 ),
                 history_characters=sum(len(item.content or "") for item in history),
                 history_messages=len(history),
-                related_people=0,
             ),
             external_events=external_events,
         )
@@ -407,24 +403,6 @@ class ContextAssembler:
                 break
         delivered.reverse()
         return tuple(delivered)
-
-    async def _related_people(
-        self,
-        user_ids: tuple[str, ...],
-        group_id: str,
-    ) -> list[dict[str, Any]]:
-        profiles = await self._people.get_many(user_ids, group_id=group_id)
-        related: list[dict[str, Any]] = []
-        for user_id in user_ids:
-            person = profiles.get(user_id)
-            related.append(
-                {
-                    "user_id": user_id,
-                    "display_name": person.display_name if person else "当前群成员",
-                    "group_card": person.group_card if person else "",
-                }
-            )
-        return related
 
     async def _available_memory_subjects(
         self,
@@ -489,25 +467,6 @@ class ContextAssembler:
                 }
             )
         return subjects
-
-    @staticmethod
-    def _related_ids(
-        inbound: InboundMessage,
-        recent: tuple[EventRecord, ...],
-        limit: int,
-    ) -> tuple[str, ...]:
-        related: list[str] = []
-        for user_id in (
-            *inbound.mentioned_user_ids,
-            *(row.sender_user_id for row in reversed(recent)),
-        ):
-            if user_id in {inbound.sender.user_id, inbound.bot_user_id}:
-                continue
-            if user_id not in related:
-                related.append(user_id)
-            if len(related) >= limit:
-                break
-        return tuple(related)
 
     @staticmethod
     def relationship_json(snapshot: RelationshipSnapshot) -> dict[str, Any]:
@@ -705,8 +664,6 @@ class ContextAssembler:
             add(key, identity, priority=95, relevance=1, required=True)
             for index, value in enumerate(block.get("facts", ())):
                 add(f"{key}.fact.{index}", value, priority=priority, relevance=0.8)
-        for index, person in enumerate(context.get("related_people", ())):
-            add(f"related_person.{index}", person, priority=40, relevance=0.6)
         for index, person in enumerate(context.get("referenced_people", ())):
             if not isinstance(person, dict):
                 continue
@@ -754,6 +711,9 @@ class ContextAssembler:
         content: str,
         character_budget: int,
     ) -> tuple[ChatMessage, ...]:
+        events_by_message_id = {
+            row.platform_message_id: row for row in recent if row.platform_message_id
+        }
         current_row = next(
             (row for row in reversed(recent) if row.platform_message_id == inbound.message_id),
             None,
@@ -765,9 +725,10 @@ class ContextAssembler:
                     current_row,
                     current_message_id=inbound.message_id,
                     current_content=content,
+                    events_by_message_id=events_by_message_id,
                 )
                 if current_row is not None
-                else f"[QQ {inbound.sender.user_id}] {content}"
+                else cls._current_inbound_content(inbound, content)
             ),
         )
         used = len(current_message.content or "")
@@ -779,6 +740,7 @@ class ContextAssembler:
                 row,
                 current_message_id=inbound.message_id,
                 current_content=content,
+                events_by_message_id=events_by_message_id,
             )
             if not rendered_content.strip():
                 continue
@@ -806,6 +768,7 @@ class ContextAssembler:
         *,
         current_message_id: str,
         current_content: str,
+        events_by_message_id: Mapping[str, EventRecord] | None = None,
     ) -> str:
         content = cls._history_event_content(row, current_message_id, current_content)
         if not content:
@@ -817,9 +780,72 @@ class ContextAssembler:
                 f"type={row.external_event_type or 'event'}; "
                 f"occurred_at={row.occurred_at.isoformat()}\n{content}"
             )
-        if row.direction == "outbound":
-            return content
-        return f"[QQ {row.sender_user_id}] {content}"
+        envelope = cls._event_sender_envelope(row, events_by_message_id or {})
+        return f"{envelope} {content}"
+
+    @classmethod
+    def _current_inbound_content(cls, inbound: InboundMessage, content: str) -> str:
+        display_name = cls._display_name(
+            user_id=inbound.sender.user_id,
+            bot_user_id=inbound.bot_user_id,
+            nickname=inbound.sender.nickname,
+            group_card=inbound.sender.group_card,
+        )
+        fields = [
+            f"发送者:{display_name}",
+            f"QQ:{inbound.sender.user_id}",
+            f"消息:{inbound.message_id}",
+        ]
+        if inbound.reply_to_message_id:
+            reply_sender = inbound.reply_sender_user_id or "未知"
+            reply_name = "Yuki" if reply_sender == inbound.bot_user_id else f"QQ {reply_sender}"
+            fields.append(f"回复:{reply_name}/消息:{inbound.reply_to_message_id}")
+        return f"[{'|'.join(fields)}] {content}"
+
+    @classmethod
+    def _event_sender_envelope(
+        cls,
+        row: EventRecord,
+        events_by_message_id: Mapping[str, EventRecord],
+    ) -> str:
+        fields = [
+            f"发送者:{row.sender_display_name}",
+            f"QQ:{row.sender_user_id}",
+            f"消息:{row.platform_message_id}",
+        ]
+        if row.reply_to_message_id:
+            target = events_by_message_id.get(row.reply_to_message_id)
+            reply_user_id = row.reply_sender_user_id or (
+                target.sender_user_id if target is not None else ""
+            )
+            if target is not None:
+                reply_name = target.sender_display_name
+            elif reply_user_id == row.bot_user_id:
+                reply_name = "Yuki"
+            elif reply_user_id:
+                reply_name = f"QQ {reply_user_id}"
+            else:
+                reply_name = "未知发送者"
+            fields.append(f"回复:{reply_name}/消息:{row.reply_to_message_id}")
+        return f"[{'|'.join(fields)}]"
+
+    @staticmethod
+    def _display_name(
+        *,
+        user_id: str,
+        bot_user_id: str,
+        nickname: str,
+        group_card: str,
+    ) -> str:
+        group_card = sanitize_display_name(group_card)
+        if group_card:
+            return group_card
+        nickname = sanitize_display_name(nickname)
+        if nickname:
+            return nickname
+        if user_id == bot_user_id:
+            return "Yuki"
+        return f"QQ {user_id}"
 
     def _external_event_context(
         self,
@@ -864,10 +890,14 @@ class ContextAssembler:
         current_event: EventRecord,
         character_budget: int,
     ) -> tuple[ChatMessage, ...]:
+        events_by_message_id = {
+            row.platform_message_id: row for row in recent if row.platform_message_id
+        }
         trigger = cls._history_message_content(
             current_event,
             current_message_id="",
             current_content=current_event.content,
+            events_by_message_id=events_by_message_id,
         )
         used = len(trigger)
         selected: list[ChatMessage] = []
@@ -878,6 +908,7 @@ class ContextAssembler:
                 row,
                 current_message_id="",
                 current_content="",
+                events_by_message_id=events_by_message_id,
             )
             if not content:
                 continue
@@ -929,7 +960,8 @@ class ContextAssembler:
             # repeated that contaminated line as ordinary text, so recognize
             # the exact generated prefix independently of the segment type.
             return ""
-        base = _LEGACY_HISTORY_PREFIX.sub("", row.content, count=1).strip()
+        base = _LEGACY_HISTORY_PREFIX.sub("", row.content, count=1)
+        base = strip_internal_history_markers(base).strip()
         if row.direction == "outbound" and _MEDIA_DESCRIPTION.fullmatch(base):
             return ""
         if not row.visual_summary:

@@ -279,15 +279,30 @@ def test_model_history_omits_transport_annotations_and_media_only_events() -> No
         content="[21:10] [表情：不应作为台词]",
         segments=({"type": "text", "data": {"text": "[21:10] [表情：不应作为台词]"}},),
     )
+    leaked_identity = replace(
+        contaminated_text,
+        id=4,
+        platform_message_id="leaked-identity",
+        content=(
+            "[发送者:Yuki|QQ:8000|消息:old-output|时间:2026-08-05T15:39:05.884399] "
+            "看到了。"
+        ),
+    )
 
     assert ContextAssembler._history_event_content(image, "current", "当前消息") == ""
+    rendered = ContextAssembler._history_message_content(
+        contaminated_text,
+        current_message_id="current",
+        current_content="当前消息",
+    )
+    assert rendered == "[发送者:Yuki|QQ:8000|消息:text] 我会正常说话。"
     assert (
-        ContextAssembler._history_message_content(
-            contaminated_text,
-            current_message_id="current",
-            current_content="当前消息",
+        ContextAssembler._history_event_content(
+            leaked_identity,
+            "current",
+            "当前消息",
         )
-        == "我会正常说话。"
+        == "看到了。"
     )
     assert (
         ContextAssembler._history_event_content(

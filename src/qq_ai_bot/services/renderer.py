@@ -14,6 +14,11 @@ _INTERNAL_HISTORY_MARKER = re.compile(
     r"\[(?:(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]) )?"
     r"(?:[01]\d|2[0-3]):[0-5]\d(?: QQ [1-9]\d{4,19})?\]\s*"
 )
+_EVENT_IDENTITY_MARKER = re.compile(
+    r"\[发送者:[^\]\r\n]{1,128}\|QQ:[^|\]\r\n]{1,64}"
+    r"\|消息:[^|\]\r\n]{1,128}(?:\|时间:[^|\]\r\n]{1,128})?"
+    r"(?:\|回复:[^\]\r\n]{1,256})?\]\s*"
+)
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")
 _STRUCTURED_OUTPUT = re.compile(r"(?m)^\s*(?:```|~~~|[-*+]\s+|\d+[.)、]\s+|>\s+|\|.*\|\s*$)")
 _DAILY_SENTENCE_ENDINGS = frozenset("。！？!?")
@@ -28,16 +33,22 @@ def sanitize_input(text: str) -> str:
     return "\n".join(line.rstrip() for line in normalized.splitlines()).strip()
 
 
+def strip_internal_history_markers(text: str) -> str:
+    """Remove model-only annotations from generated or persisted chat text."""
+
+    cleaned = _INTERNAL_HISTORY_MARKER.sub("", text)
+    return _EVENT_IDENTITY_MARKER.sub("", cleaned)
+
+
 def clean_model_output(text: str, *, max_characters: int) -> str:
     """Validate model text and remove backend-only history annotations."""
 
     cleaned = sanitize_input(text)
     if not cleaned:
         raise LLMEmptyResponseError("model returned empty content")
-    # Recent history is timestamped only so the model can reason about chronology.
-    # Treat an echoed marker as an internal annotation, wherever it appears in a
-    # generated reply, and never expose it as ordinary QQ message text.
-    cleaned = _INTERNAL_HISTORY_MARKER.sub("", cleaned)
+    # Identity envelopes belong only to model input. Treat an echoed envelope as
+    # an internal annotation wherever it appears, never as ordinary QQ text.
+    cleaned = strip_internal_history_markers(cleaned)
     cleaned = _MARKDOWN_LINK.sub(r"\1 (\2)", cleaned)
     cleaned = _HEADING.sub("", cleaned)
     cleaned = _HORIZONTAL_RULE.sub("", cleaned)

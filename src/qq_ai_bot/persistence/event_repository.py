@@ -212,6 +212,7 @@ class EventLedgerRepository:
         reply_to_message_id: str | None = None,
         occurred_at: datetime | None = None,
         sender_nickname: str = "",
+        sender_group_card: str = "",
         sender_is_bot: bool = False,
         origin: str = "user_message",
         automation_id: int | None = None,
@@ -242,6 +243,8 @@ class EventLedgerRepository:
                     group_id=group_id,
                     private_peer_user_id=private_peer_user_id,
                     sender_user_id=sender_user_id,
+                    sender_nickname=sender_nickname[:128],
+                    sender_group_card=sender_group_card[:128],
                     direction=direction,
                     content=content,
                     visual_summary="",
@@ -300,6 +303,7 @@ class EventLedgerRepository:
             reply_to_message_id=message.reply_to_message_id,
             occurred_at=message.received_at,
             sender_nickname=message.sender.nickname,
+            sender_group_card=message.sender.group_card,
             sender_is_bot=message.sender.is_bot,
         )
 
@@ -515,6 +519,8 @@ class EventLedgerRepository:
                     platform_message_id=str(row["platform_message_id"]),
                     scope_type=ScopeType(str(row["scope_type"])),
                     sender_user_id=str(row["sender_user_id"]),
+                    sender_nickname=str(row["sender_nickname"] or ""),
+                    sender_group_card=str(row["sender_group_card"] or ""),
                     direction=str(row["direction"]),
                     content=str(row["content"]),
                     visual_summary=str(row["visual_summary"] or ""),

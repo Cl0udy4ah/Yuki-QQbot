@@ -47,7 +47,7 @@ class MemoryReleaseCheck:
             )
         )
         head = self._alembic_head()
-        items.append(self._item("alembic_head", head == "0028", f"Alembic head is {head}"))
+        items.append(self._item("alembic_head", head == "0029", f"Alembic head is {head}"))
         try:
             suite = load_quality_suite(self._root / "tests/fixtures/memory_quality/v1")
             items.append(
@@ -195,12 +195,13 @@ class MemoryReleaseCheck:
             "0026_memory_reflection_jobs.py",
             "0027_yuki_self_memory.py",
             "0028_plugin_external_notifications.py",
+            "0029_chat_event_sender_identity.py",
         }
         missing = sorted(required - versions)
         return self._item(
             "migration_contract",
-            not missing and self._alembic_head() == "0028",
-            "fresh/upgrade matrix is current through 0028"
+            not missing and self._alembic_head() == "0029",
+            "fresh/upgrade matrix is current through 0029"
             if not missing
             else f"missing migration files: {','.join(missing)}",
         )

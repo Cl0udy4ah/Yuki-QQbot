@@ -103,7 +103,6 @@ class Settings(BaseSettings):
     observe_enabled_groups: bool = True
     recent_history_tool_limit: int = 20
     local_context_event_limit: int = 30
-    related_people_limit: int = 5
     person_memory_max_entries: int = 100
     person_group_memory_max_entries: int = 50
     preference_max_entries: int = 30
@@ -112,6 +111,7 @@ class Settings(BaseSettings):
     memory_batch_max_events: int = 20
     memory_retrieval_enabled: bool = True
     self_memory_enabled: bool = False
+    memory_max_referenced_targets: int = 5
     memory_lexical_candidate_limit: int = 50
     memory_context_limit_per_entity: int = 8
     memory_overview_limit_per_entity: int = 20

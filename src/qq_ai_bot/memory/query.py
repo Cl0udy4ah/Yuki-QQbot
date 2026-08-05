@@ -71,7 +71,7 @@ class MemoryQueryBuilder:
     ) -> MemoryQuery:
         targets = await self.resolve_targets(
             inbound,
-            max_referenced=runtime.context.related_people_limit,
+            max_referenced=runtime.memory.max_referenced_targets,
             self_recall=self_recall and runtime.memory.self_enabled,
         )
         mode = (

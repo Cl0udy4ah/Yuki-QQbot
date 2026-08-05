@@ -128,7 +128,10 @@ async def test_context_assembler_enforces_one_dynamic_character_budget(
 
     assert len(payload_text) <= settings.max_context_characters * 55 // 100
     assert len(payload_text) + history_characters <= settings.max_context_characters
-    assert request.messages[-1].content == "[QQ 1001] 请根据已有信息简短回答"
+    current_history = request.messages[-1].content or ""
+    assert current_history == (
+        "[发送者:测试名片|QQ:1001|消息:bounded-context] 请根据已有信息简短回答"
+    )
     assert payload_items["current_person"]["user_id"] == "1001"
     assert len(payload_items["current_person"]["facts"]) < 30
     assert len(payload_items["current_group"]["facts"]) < 30
@@ -183,7 +186,124 @@ async def test_context_exposes_event_bound_memory_subject_refs(database: Databas
 
 
 @pytest.mark.asyncio
-async def test_related_people_batch_queries_keep_group_cards_isolated(database: Database) -> None:
+async def test_chat_event_preserves_sender_identity_snapshot_for_prompt(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    message = InboundMessage(
+        message_id="identity-snapshot",
+        event_type="message:group:normal",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(
+            user_id="1001",
+            nickname="平台昵称",
+            group_card="发言时群名片",
+        ),
+        text="这是我说的话",
+        group_id="2001",
+        bot_user_id="9999",
+    )
+
+    event, created = await ledger.append_inbound(message, bot_user_id="9999")
+
+    assert created
+    assert event.sender_nickname == "平台昵称"
+    assert event.sender_group_card == "发言时群名片"
+    await PeopleRepository(database).observe(
+        user_id="1001",
+        nickname="后来昵称",
+        group_id="2001",
+        group_card="后来群名片",
+    )
+    persisted = await ledger.get_event(event.id)
+    assert persisted is not None
+    assert persisted.sender_nickname == "平台昵称"
+    assert persisted.sender_group_card == "发言时群名片"
+    rendered = ContextAssembler._history_message_content(
+        persisted,
+        current_message_id="",
+        current_content="",
+    )
+    assert rendered == "[发送者:发言时群名片|QQ:1001|消息:identity-snapshot] 这是我说的话"
+
+
+def test_history_prompt_keeps_speakers_and_reply_target_self_contained() -> None:
+    now = datetime.now(UTC)
+    events = (
+        EventRecord(
+            id=1,
+            bot_user_id="9999",
+            platform_message_id="member-message",
+            scope_type=ScopeType.GROUP,
+            sender_user_id="1002",
+            sender_nickname="池宇健",
+            sender_group_card="池宇健",
+            direction="inbound",
+            content="这个项目完结",
+            visual_summary="",
+            segments=(),
+            occurred_at=now,
+            group_id="2001",
+        ),
+        EventRecord(
+            id=2,
+            bot_user_id="9999",
+            platform_message_id="yuki-message",
+            scope_type=ScopeType.GROUP,
+            sender_user_id="9999",
+            direction="outbound",
+            content="说好的完结呢",
+            visual_summary="",
+            segments=(),
+            occurred_at=now,
+            group_id="2001",
+        ),
+        EventRecord(
+            id=3,
+            bot_user_id="9999",
+            platform_message_id="current-message",
+            scope_type=ScopeType.GROUP,
+            sender_user_id="1001",
+            sender_nickname="远野",
+            sender_group_card="远野",
+            direction="inbound",
+            content="完结的不是我啊",
+            visual_summary="",
+            segments=(),
+            occurred_at=now,
+            group_id="2001",
+            reply_to_message_id="yuki-message",
+            reply_sender_user_id="9999",
+        ),
+    )
+    inbound = InboundMessage(
+        message_id="current-message",
+        event_type="message:group:normal",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="1001", nickname="远野", group_card="远野"),
+        text="完结的不是我啊",
+        group_id="2001",
+        bot_user_id="9999",
+        reply_to_message_id="yuki-message",
+        reply_sender_user_id="9999",
+    )
+
+    history = ContextAssembler._bounded_history(
+        events,
+        inbound=inbound,
+        content=inbound.text,
+        character_budget=10_000,
+    )
+
+    assert [item.role for item in history] == ["user", "assistant", "user"]
+    assert history[0].content == "[发送者:池宇健|QQ:1002|消息:member-message] 这个项目完结"
+    assert history[1].content == "[发送者:Yuki|QQ:9999|消息:yuki-message] 说好的完结呢"
+    assert "[发送者:远野|QQ:1001|消息:current-message|" in (history[2].content or "")
+    assert "|回复:Yuki/消息:yuki-message] 完结的不是我啊" in (history[2].content or "")
+
+
+@pytest.mark.asyncio
+async def test_profile_batch_queries_keep_group_cards_isolated(database: Database) -> None:
     people = PeopleRepository(database)
     await people.observe(
         user_id="1001",
