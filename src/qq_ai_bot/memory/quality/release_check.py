@@ -42,7 +42,7 @@ class MemoryReleaseCheck:
         items.append(
             self._item(
                 "version",
-                __version__ == "3.4.2",
+                __version__ == "3.4.3",
                 f"project version is {__version__}",
             )
         )
@@ -235,7 +235,7 @@ class MemoryReleaseCheck:
             integrity = str(await session.scalar(text("PRAGMA integrity_check")))
             foreign_keys = tuple((await session.execute(text("PRAGMA foreign_key_check"))).all())
             revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
-        return integrity == "ok" and not foreign_keys and str(revision) == "0028"
+        return integrity == "ok" and not foreign_keys and str(revision) == "0029"
 
     @staticmethod
     def _item(code: str, passed: bool, detail: str) -> ReleaseCheckItem:

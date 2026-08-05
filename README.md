@@ -11,7 +11,7 @@
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/Version-3.4.2-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Version-3.4.3-blue" alt="Version">
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python Version">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -36,10 +36,10 @@
 
 Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agent。它通过 NapCatQQ 接入 QQ，使用 Planner、Agent、长期记忆、工具系统和插件系统完成聊天、检索、自动化与外部服务调用。
 
-> **当前版本：3.4.2**
+> **当前版本：3.4.3**
 >
-> GitHub Monitor 的 Release 事件现在会生成与 Push 同风格的中文 PNG 卡片，展示版本类型、
-> 目标分支、附件数量和发布说明；媒体投递、持久去重与 Yuki 点评链路保持不变。
+> 群聊历史现在直接使用 `chat_events` 保存的昵称与群名片，逐条明确发送者、QQ、消息 ID 和
+> 回复目标；Planner 不再把当前消息同时作为历史与本轮输入，避免误判用户重复发送。
 
 ## ✨ 主要功能
 
@@ -75,33 +75,100 @@ Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agen
 
 ## 🏗️ 架构概览
 
-```text
-QQ / NapCatQQ
-      ↓
-NoneBot2 消息入口
-      ↓
-回复必要性判断 → Planner
-      ↓
-AgentRunner
-      ↓
-Tool Kernel
-├── Core
-├── Admin
-├── Automation
-├── Plugin
-└── MCP
-      ↓
-回复序列 / 表情 / 语音
-```
+实线表示当前轮同步路径，虚线表示持久化、后台 Worker 或下一轮回流。模型只能通过经过授权的
+工具和服务访问外部能力，不能直接读写数据库或调用 OneBot。
 
-长期记忆流程：
+```mermaid
+flowchart TD
+    subgraph INBOUND["1. QQ 入站与可信事实"]
+        USER["QQ群 / 私聊用户"] --> NAPCAT["NapCatQQ"]
+        NAPCAT --> ONEBOT["OneBot v11 反向 WebSocket"]
+        ONEBOT --> NONEBOT["NoneBot2 消息入口"]
+        NONEBOT --> NORMALIZER["消息标准化<br/>正文、回复、@、图片、群名片、QQ"]
+        NORMALIZER --> GUARD["准入与治理<br/>群/私聊策略、去重、限流、权限"]
+        GUARD --> LEDGER[("SQLite chat_events<br/>原始消息、身份快照、回复关系")]
+        NORMALIZER -.-> PEOPLE[("人物 / 群 / 成员身份目录")]
+    end
 
-```text
-聊天事件账本
-→ 身份安全提取
-→ 事实、证据与冲突治理
-→ FTS + Embedding 混合检索
-→ 按实体分块注入当前对话
+    GUARD --> ROUTER{"消息路由"}
+
+    subgraph DIRECT["2A. 确定性入口"]
+        ROUTER -->|"/ai 管理命令"| COMMANDS["Command Service"]
+        ROUTER -->|"已绑定插件命令"| PLUGIN_COMMAND["Plugin Host 命令"]
+        COMMANDS --> OUTPUT
+        PLUGIN_COMMAND --> OUTPUT
+    end
+
+    subgraph PLAN["2B. 普通会话规划"]
+        ROUTER -->|"聊天 / 图片 / 回复"| VISION{"存在视觉输入？"}
+        VISION -->|"是"| VISION_SERVICE["Vision Service<br/>图片、动图、表情理解与缓存"]
+        VISION -->|"否"| PLANNER_CONTEXT
+        VISION_SERVICE --> PLANNER_CONTEXT["Planner Context<br/>历史 messages 不含当前消息<br/>current_message 独占本轮输入"]
+        LEDGER --> PLANNER_CONTEXT
+        TOOL_CATALOG["能力目录<br/>Core、Admin、Automation、Plugin、MCP、Web"] --> PLANNER_CONTEXT
+        PLANNER_CONTEXT --> NECESSITY["回复必要性与会话节奏"]
+        NECESSITY --> PLANNER["Planner<br/>reply / wait / silent、工具域、记忆深度、表情、语音"]
+        PLANNER -->|"silent / wait"| END["本轮静默或等待新消息"]
+    end
+
+    subgraph CONTEXT["3. 上下文与长期记忆"]
+        LEDGER --> HISTORY["短期历史<br/>逐条发送者、QQ、消息 ID、回复目标"]
+        PEOPLE --> SCENE["当前人物、群、关系与时区"]
+        MEMORY[("Memory V2<br/>person / person_group / group / self<br/>事实、证据、状态与版本链")]
+        MEMORY --> RETRIEVAL["作用域硬过滤<br/>FTS / 可选 Embedding / RRF"]
+        HISTORY --> ASSEMBLER["Context Assembler<br/>统一字符预算"]
+        SCENE --> ASSEMBLER
+        RETRIEVAL --> ASSEMBLER
+        VISION_SERVICE --> ASSEMBLER
+        PLUGIN_PROMPT["插件 Prompt Fragment"] --> ASSEMBLER
+        PLANNER -->|"reply plan"| COMPILER["Prompt Compiler<br/>人格、契约、运行态、计划与历史"]
+        ASSEMBLER --> COMPILER
+    end
+
+    subgraph AGENT["4. 主 Agent 与统一工具内核"]
+        COMPILER --> MODEL["Model Runtime<br/>Chat Completions / Responses API"]
+        MODEL <--> RUNNER["AgentRunner<br/>有界多轮工具调用"]
+        RUNNER <--> KERNEL["Tool Kernel<br/>Origin、创建者、群、权限与预算"]
+        KERNEL --> CORE["Core<br/>历史查询、Memory Change、自我记忆"]
+        KERNEL --> ADMIN["Admin / Runtime Config"]
+        KERNEL --> AUTO_TOOL["Automation Tool"]
+        KERNEL --> PLUGIN_TOOL["Plugin Tool / Facade"]
+        KERNEL --> MCP["MCP Client<br/>stdio / Streamable HTTP"]
+        KERNEL --> WEB["Web Router<br/>DeepSeek Native / Tavily"]
+        CORE --> MUTATION["统一 Memory Mutation Service"]
+        MUTATION --> MEMORY
+        MODEL --> RESPONSE["最终文本与工具结果"]
+    end
+
+    subgraph OUTPUT_FLOW["5. 输出与真实投递回执"]
+        RESPONSE --> CLEANER["输出清理器<br/>移除内部身份头与模型标记"]
+        CLEANER --> OUTPUT["Reply Sequence<br/>分句、引用与长度边界"]
+        PLANNER --> EFFECTS["回复效果计划"]
+        EFFECTS --> EMOJI["表情选择与媒体制品"]
+        EFFECTS --> SPEECH["Genie-TTS 语音"]
+        EMOJI --> OUTPUT
+        SPEECH --> OUTPUT
+        OUTPUT --> SENDER["OneBot Sender"]
+        SENDER --> NAPCAT_OUT["NapCatQQ"]
+        NAPCAT_OUT --> RECEIVED["QQ群 / 私聊收到回复"]
+        SENDER -.-> RECEIPT[("投递回执<br/>chat_events、Planner / Model / Tool 审计")]
+    end
+
+    subgraph BACKGROUND["6. 持久后台循环"]
+        LEDGER -.-> MEMORY_JOB["Memory Worker<br/>候选提取、反思与质量治理"]
+        MEMORY_JOB -.-> MUTATION
+        LEDGER -.-> REL_JOB["Relationship Worker"]
+        REL_JOB -.-> PEOPLE
+        AUTO_TOOL --> AUTOMATIONS[("Automation Repository<br/>任务、版本与运行记录")]
+        AUTOMATIONS -.-> SCHEDULER["Scheduler / Automation Worker"]
+        SCHEDULER -.-> SCHEDULED["Scheduled Automation Turn<br/>真实创建者、Origin 与权限"]
+        SCHEDULED -.-> PLANNER_CONTEXT
+        PLUGIN_TOOL --> PLUGIN_HOST["Plugin Host<br/>权限、配置、私有存储与生命周期"]
+        PLUGIN_HOST -.-> PLUGIN_BG["后台 Worker / 外部事件 / Planner Signal"]
+        PLUGIN_BG -.-> PLANNER_CONTEXT
+        PLUGIN_BG -.-> OUTBOX["Notification Outbox<br/>文本、Push / Release 卡片"]
+        OUTBOX -.-> OUTPUT
+    end
 ```
 
 ---

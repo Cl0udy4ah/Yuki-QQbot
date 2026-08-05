@@ -5,7 +5,7 @@ import inspect
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -27,11 +27,13 @@ from qq_ai_bot.admin.models import (
 )
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode, EmojiReplyPlan
 from qq_ai_bot.emoji.request_detector import EmojiRequestDetector
 from qq_ai_bot.llm.base import LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.enums import MemoryContextMode
+from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.planner import (
     DeliveryMode,
     FakePlannerProvider,
@@ -52,6 +54,7 @@ from qq_ai_bot.planner import (
     TurnPlan,
     constrain_turn_plan,
 )
+from qq_ai_bot.planner.context import PlannerContextBuilder
 from qq_ai_bot.planner.models import (
     PlannerEmojiContext,
     PlannerMemoryOutput,
@@ -288,6 +291,64 @@ def _valid_plan_payload(**updates: object) -> dict[str, object]:
     }
     payload.update(updates)
     return payload
+
+
+@pytest.mark.asyncio
+async def test_planner_history_excludes_the_separate_current_message() -> None:
+    now = datetime.now(UTC)
+    previous = EventRecord(
+        id=1,
+        bot_user_id="9999",
+        platform_message_id="previous",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="9999",
+        direction="outbound",
+        content="上一条回复",
+        visual_summary="",
+        segments=(),
+        occurred_at=now - timedelta(seconds=10),
+        private_peer_user_id="1001",
+    )
+    current = EventRecord(
+        id=2,
+        bot_user_id="9999",
+        platform_message_id="current",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="1001",
+        direction="inbound",
+        content="有时候还要学会调用工具",
+        visual_summary="",
+        segments=(),
+        occurred_at=now,
+        private_peer_user_id="1001",
+    )
+    ledger = AsyncMock()
+    ledger.list_recent.return_value = (previous, current)
+    relationships = AsyncMock()
+    relationships.get.return_value = None
+    builder = PlannerContextBuilder(ledger=ledger, relationships=relationships)
+    inbound = InboundMessage(
+        message_id="current",
+        event_type="message:private:friend",
+        scope_type=ScopeType.PRIVATE,
+        sender=SenderIdentity(user_id="1001", nickname="远野"),
+        text=current.content,
+        bot_user_id="9999",
+        received_at=now,
+    )
+
+    planner_input = await builder.build(
+        inbound=inbound,
+        conversation_key="private:1001",
+        content=current.content,
+        origin=TurnOrigin.USER_MESSAGE,
+        runtime=_runtime(),
+        now=now,
+    )
+
+    assert [message.message_id for message in planner_input.messages] == ["previous"]
+    assert planner_input.current_message.message_id == "current"
+    assert planner_input.necessity.pending_message_count == 1
 
 
 @pytest.mark.parametrize(

@@ -129,7 +129,11 @@ class PlannerContextBuilder:
                 now=current_time,
             )
         )
-        messages = tuple(self._planner_message(row) for row in recent)
+        messages = tuple(
+            self._planner_message(row)
+            for row in recent
+            if row.platform_message_id != inbound.message_id
+        )
         current = PlannerMessage(
             message_id=inbound.message_id,
             sender_user_id=inbound.sender.user_id,
