@@ -55,6 +55,7 @@ from qq_ai_bot.domain.messages import (
     OutboundMedia,
     OutboundMessage,
     OutboundSendReceipt,
+    SenderIdentity,
     ToolCall,
 )
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
@@ -83,6 +84,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
     WebSearchSourceRepository,
 )
+from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.planner.models import (
     PlannedTurn,
     ToolGroup,
@@ -1947,6 +1949,82 @@ class ChatService:
             _ChatAgentBackend(self, runtime),
         )
         return result
+
+    async def generate_external_reply(
+        self,
+        *,
+        event: EventRecord,
+        authorization_user_id: str,
+        conversation_key: str,
+        runtime: RuntimeConfigSnapshot,
+        agent_intent: str,
+        planned_turn: PlannedTurn,
+        turn_token: TurnToken,
+    ) -> AgentRunResult:
+        """Generate one tool-free reply for a persisted external event.
+
+        The synthetic envelope below is authority metadata only.  It is never
+        appended to the ledger and the prompt identifies the trigger as an
+        untrusted external event rather than a QQ user message.
+        """
+
+        context = await self._context_assembler.assemble_external(
+            event=event,
+            authorization_user_id=authorization_user_id,
+            runtime=runtime,
+            agent_intent=agent_intent,
+        )
+        messages = self._prompt_composer.compose_external(
+            context=context,
+            runtime=runtime,
+            source_plugin_id=event.source_plugin_id or "",
+            external_source=event.external_source or "external",
+            event_type=event.external_event_type or "event",
+            agent_intent=agent_intent,
+            planned_turn=planned_turn,
+        )
+        inbound = InboundMessage(
+            message_id=event.platform_message_id,
+            event_type="external_event",
+            scope_type=event.scope_type,
+            sender=SenderIdentity(user_id=authorization_user_id),
+            text=event.content,
+            bot_user_id=event.bot_user_id,
+            group_id=event.group_id,
+            received_at=event.occurred_at,
+        )
+        tool_runtime = ToolRuntime(
+            inbound=inbound,
+            gateway=None,
+            allow_generic_onebot=False,
+            allow_admin_actions=False,
+            allow_automation=False,
+            conversation_key=conversation_key,
+            trigger_message_id=event.platform_message_id,
+            actor_user_id=authorization_user_id,
+            actor_is_superuser=False,
+            current_group_id=event.group_id,
+            runtime_config=runtime,
+            origin=TurnOrigin.PLUGIN_BACKGROUND,
+            tool_mode=ToolMode.NONE,
+            tool_groups=frozenset(),
+            turn_token=turn_token,
+            planner_scopes_explicit=True,
+            planner_tool_groups=frozenset(),
+            selection_query=event.content,
+            planner_intent=planned_turn.plan.intent,
+            selected_tool_names=frozenset(),
+            max_model_requests_override=min(2, runtime.agent.max_model_requests),
+        )
+        result = await self._run_agent(conversation_key, messages, tool_runtime)
+        try:
+            rendered = clean_model_output(
+                result.text,
+                max_characters=self._settings.max_output_characters,
+            )
+        except LLMEmptyResponseError:
+            rendered = ""
+        return replace(result, text=rendered)
 
     async def _prepare_tool_candidates(self, runtime: ToolRuntime) -> ToolRuntime:
         """Discover selected lazy scopes, then locally select and optionally rerank tools."""

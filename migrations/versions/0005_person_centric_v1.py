@@ -95,6 +95,10 @@ def upgrade() -> None:
             "memory_rebuild_proposals",
             "memory_mutation_receipts",
             "memory_reflection_jobs",
+            "plugin_background_target_grants",
+            "plugin_media_artifacts",
+            "plugin_notification_outbox",
+            "plugin_background_turn_jobs",
         }
     ]
     Base.metadata.create_all(bind=bind, tables=v1_tables, checkfirst=True)

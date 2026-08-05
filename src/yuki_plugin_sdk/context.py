@@ -8,7 +8,16 @@ from typing import Protocol
 
 from yuki_plugin_sdk.events import EventEnvelope
 from yuki_plugin_sdk.features import FeatureRegistry
-from yuki_plugin_sdk.models import CurrentMessage, GeneratedSpeechHandle, JsonValue
+from yuki_plugin_sdk.models import (
+    BackgroundTargetGrantView,
+    CurrentMessage,
+    GeneratedSpeechHandle,
+    JsonValue,
+    MediaArtifactHandle,
+    NotificationPublishReceipt,
+    NotificationTarget,
+    PublishNotificationRequest,
+)
 from yuki_plugin_sdk.results import PluginResult
 from yuki_plugin_sdk.sessions import AgentSessionFacade
 
@@ -168,6 +177,7 @@ class HttpFacade(Protocol):
         *,
         headers: Mapping[str, str] | None = None,
         body: bytes | None = None,
+        auth_secret: str | None = None,
     ) -> PluginResult: ...
 
 
@@ -179,6 +189,35 @@ class VisionFacade(Protocol):
 
 class MediaFacade(Protocol):
     async def get_current(self) -> tuple[Mapping[str, JsonValue], ...]: ...
+
+    async def create_artifact(
+        self,
+        *,
+        data: bytes,
+        content_type: str,
+        filename: str,
+        ttl_seconds: int = 86_400,
+    ) -> MediaArtifactHandle: ...
+
+
+class NotificationFacade(Protocol):
+    async def publish(
+        self,
+        request: PublishNotificationRequest,
+    ) -> NotificationPublishReceipt: ...
+
+    async def grant_target(
+        self,
+        target: NotificationTarget,
+        *,
+        bot_user_id: str,
+    ) -> BackgroundTargetGrantView: ...
+
+    async def revoke_target(self, target: NotificationTarget) -> bool: ...
+
+    async def list_grants(self) -> tuple[BackgroundTargetGrantView, ...]: ...
+
+    async def status(self) -> Mapping[str, int]: ...
 
 
 class EmojiFacade(Protocol):
@@ -396,6 +435,9 @@ class PluginContext(Protocol):
 
     @property
     def media(self) -> MediaFacade: ...
+
+    @property
+    def notifications(self) -> NotificationFacade: ...
 
     @property
     def emoji(self) -> EmojiFacade: ...

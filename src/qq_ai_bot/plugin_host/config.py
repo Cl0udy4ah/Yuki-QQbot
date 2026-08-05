@@ -117,7 +117,9 @@ class BoundConfigFacade:
 def _json_value(value: object) -> JsonValue:
     if value is None or isinstance(value, str | int | float | bool):
         return value
-    if isinstance(value, list | tuple):
+    if isinstance(value, BaseModel):
+        return _json_value(value.model_dump(mode="json"))
+    if isinstance(value, list | tuple | set | frozenset):
         return [_json_value(item) for item in value]
     if isinstance(value, dict):
         return {str(key): _json_value(item) for key, item in value.items()}

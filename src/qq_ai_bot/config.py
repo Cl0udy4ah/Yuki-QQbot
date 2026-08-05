@@ -230,7 +230,7 @@ class Settings(BaseSettings):
     # Local in-process plugins.  Approval is API governance, not a Python sandbox.
     plugin_system_enabled: bool = False
     plugin_directory: Path = Path("plugins")
-    plugin_api_version: str = "1.0"
+    plugin_api_version: str = "1.1"
     plugin_direct_command_bindings: dict[str, str] = Field(default_factory=dict)
     plugin_hook_timeout_seconds: float = 3.0
     plugin_start_timeout_seconds: float = 10.0
@@ -243,6 +243,8 @@ class Settings(BaseSettings):
     plugin_http_max_response_bytes: int = 2_097_152
     plugin_http_timeout_seconds: float = 15.0
     plugin_ai_session_max_history_messages: int = 200
+    plugin_external_event_context_limit: int = 10
+    plugin_external_event_context_characters: int = 6000
 
     relationship_enabled: bool = True
     relationship_initial_affection: int = 50

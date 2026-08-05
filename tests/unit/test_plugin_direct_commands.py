@@ -90,10 +90,18 @@ def test_settings_parse_and_validate_static_direct_bindings(
     assert settings.plugins.plugin_direct_command_bindings == {"*": TARGET}
 
 
+def test_settings_accepts_slash_direct_binding() -> None:
+    settings = Settings(
+        _env_file=None,
+        plugin_direct_command_bindings={"/github": TARGET},
+    )
+
+    assert settings.plugins.plugin_direct_command_bindings == {"/github": TARGET}
+
+
 @pytest.mark.parametrize(
     "bindings",
     [
-        {"/kun": TARGET},
         {"": TARGET},
         {" *": TARGET},
         {"*\n": TARGET},
@@ -116,7 +124,7 @@ def test_settings_reject_direct_binding_that_overlaps_ai_prefix() -> None:
         )
 
 
-def test_router_resolves_only_running_user_commands() -> None:
+def test_router_resolves_running_commands() -> None:
     registry = ExtensionRegistry()
     _register_command(registry)
     manager = RunningManager((PLUGIN_ID,))
@@ -156,7 +164,7 @@ def test_router_keeps_configured_but_inactive_bindings_fail_closed() -> None:
     "permission",
     [PermissionLevel.TRUSTED, PermissionLevel.MODERATOR, PermissionLevel.SUPERUSER],
 )
-def test_router_rejects_non_user_command_targets(permission: PermissionLevel) -> None:
+def test_router_keeps_permissioned_command_targets_active(permission: PermissionLevel) -> None:
     registry = ExtensionRegistry()
     _register_command(registry, permission=permission)
     router = DirectCommandRouter(
@@ -166,8 +174,8 @@ def test_router_rejects_non_user_command_targets(permission: PermissionLevel) ->
     )
 
     match = router.match("*数据清除")
-    assert match is not None and match.active is False
-    assert match.reason == "command_not_user"
+    assert match is not None and match.active is True
+    assert match.reason == "active"
 
 
 @pytest.mark.asyncio
@@ -318,6 +326,36 @@ def _inbound(
         attachments=(MessageAttachment(AttachmentKind.IMAGE, "image"),) if image else (),
         received_at=datetime.now(UTC),
     )
+
+
+@pytest.mark.asyncio
+async def test_management_enable_reports_start_failure_instead_of_success() -> None:
+    class FailedManager:
+        running_plugin_ids: tuple[str, ...] = ()
+
+        @staticmethod
+        async def enable(plugin_id: str, *, actor_user_id: str) -> SimpleNamespace:
+            assert actor_user_id == "10001"
+            return SimpleNamespace(
+                plugin_id=plugin_id,
+                last_error_category="PluginLifecycleError",
+            )
+
+    adapter = PluginCommandAdapter(
+        manager=cast(PluginManager, FailedManager()),
+        registry=ExtensionRegistry(),
+        superusers=frozenset({"10001"}),
+    )
+
+    result = await adapter.execute(
+        message=_inbound("/ai plugin enable github-monitor", message_id="plugin-enable-failed"),
+        identity=ConversationIdentity.group("2001", "10001"),
+        argument="enable github-monitor",
+        runtime=cast(RuntimeConfigSnapshot, SimpleNamespace()),
+    )
+
+    assert "启动失败：PluginLifecycleError" in result
+    assert "/ai plugin doctor github-monitor" in result
 
 
 @pytest.mark.asyncio

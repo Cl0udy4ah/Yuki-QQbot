@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -48,6 +49,7 @@ class TurnOrigin(StrEnum):
     SCHEDULED_AUTOMATION = "scheduled_automation"
     SYSTEM_TASK = "system_task"
     PLUGIN_SESSION = "plugin_session"
+    PLUGIN_BACKGROUND = "plugin_background"
 
 
 class PromptStage(StrEnum):
@@ -163,3 +165,48 @@ class GeneratedSpeechHandle(StrictModel):
     profile_id: str = Field(min_length=1, max_length=128)
     duration_milliseconds: int = Field(ge=0)
     expires_at: datetime | None = None
+
+
+class NotificationTarget(StrictModel):
+    target_type: Literal["group", "private"]
+    target_id: str = Field(min_length=1, max_length=64)
+
+
+class PublishNotificationRequest(StrictModel):
+    event_key: str = Field(min_length=1, max_length=255)
+    event_type: str = Field(min_length=1, max_length=128)
+    external_source: str = Field(min_length=1, max_length=64)
+    target: NotificationTarget
+    occurred_at: datetime
+    summary: str = Field(min_length=1, max_length=4_000)
+    payload: dict[str, JsonValue] = Field(default_factory=dict)
+    text: str = Field(default="", max_length=12_000)
+    media_handles: tuple[str, ...] = Field(default=(), max_length=4)
+    ask_agent: bool = False
+    agent_intent: str = Field(default="", max_length=1_000)
+
+
+class NotificationPublishReceipt(StrictModel):
+    notification_id: str = Field(min_length=1, max_length=64)
+    source_event_id: int = Field(ge=1)
+    event_created: bool
+    delivery_enqueued: bool
+    agent_turn_enqueued: bool
+    deduplicated: bool
+
+
+class BackgroundTargetGrantView(StrictModel):
+    target_type: Literal["group", "private"]
+    target_id: str = Field(min_length=1, max_length=64)
+    bot_user_id: str = Field(min_length=1, max_length=64)
+    enabled: bool
+    created_by_user_id: str = Field(min_length=1, max_length=64)
+
+
+class MediaArtifactHandle(StrictModel):
+    handle_id: str = Field(min_length=1, max_length=128)
+    content_type: str = Field(min_length=1, max_length=128)
+    filename: str = Field(min_length=1, max_length=255)
+    byte_size: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    expires_at: datetime

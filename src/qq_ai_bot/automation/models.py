@@ -129,6 +129,7 @@ class TurnOrigin(StrEnum):
     SCHEDULED_AUTOMATION = "scheduled_automation"
     SYSTEM_TASK = "system_task"
     PLUGIN_SESSION = "plugin_session"
+    PLUGIN_BACKGROUND = "plugin_background"
 
 
 class RiskClass(StrEnum):

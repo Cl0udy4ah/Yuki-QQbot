@@ -54,6 +54,7 @@
 | `vision.current.read` | 读取当前已有视觉观察 |
 | `vision.analyze` | 请求分析当前真实媒体 |
 | `media.current.read` | 读取当前媒体段投影 |
+| `media.artifact.create` | 创建 Host 托管、带配额和 TTL 的媒体产物 |
 
 ## 自动化、配置与存储
 
@@ -83,7 +84,9 @@
 | `command.register` | 注册确定性命令 |
 | `event.subscribe` | 注册通知 Hook |
 | `background.worker` | 注册 Host 托管后台服务 |
+| `notification.publish` | 向已授权目标发布外部事件和持久通知 |
+| `notification.agent` | 请求已授权外部事件进入主会话 Agent；高风险 |
 | `planner.signal.register` | 注册有界 PlannerSignal |
 
-`HIGH_RISK_PERMISSIONS` 当前包含：`relationship.write`、`memory.delete`、`runtime.config.write`、`network.http.unrestricted`、`onebot.mutate`、`agent.run`、`agent.session`。
+`HIGH_RISK_PERMISSIONS` 当前包含：`relationship.write`、`memory.delete`、`runtime.config.write`、`network.http.unrestricted`、`onebot.mutate`、`agent.run`、`agent.session`、`notification.agent` 等管理型能力。
 

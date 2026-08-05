@@ -23,6 +23,7 @@ from yuki_plugin_sdk.testing.fake_services import (
     FakeMediaFacade,
     FakeMemoryFacade,
     FakeMessageFacade,
+    FakeNotificationFacade,
     FakeOneBotFacade,
     FakePeopleFacade,
     FakeRelationshipFacade,
@@ -53,6 +54,7 @@ class FakePluginContext:
     http: FakeHttpFacade = field(default_factory=FakeHttpFacade)
     vision: FakeVisionFacade = field(default_factory=FakeVisionFacade)
     media: FakeMediaFacade = field(default_factory=FakeMediaFacade)
+    notifications: FakeNotificationFacade = field(default_factory=FakeNotificationFacade)
     automation: FakeAutomationFacade = field(default_factory=FakeAutomationFacade)
     config: FakeConfigFacade = field(default_factory=FakeConfigFacade)
     emoji: FakeEmojiFacade = field(default_factory=FakeEmojiFacade)

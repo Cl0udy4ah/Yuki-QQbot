@@ -86,11 +86,26 @@ agent_sessions.close(session_id: UUID) -> AgentSession
 ```python
 web.search(query) -> PluginResult
 web.read(url, question="") -> PluginResult
-http.request(method, url, *, headers=None, body=None) -> PluginResult
+http.request(method, url, *, headers=None, body=None, auth_secret=None) -> PluginResult
 vision.get_current_observation() -> Mapping | None
 vision.analyze_current_media(question="") -> PluginResult
 media.get_current() -> tuple[Mapping, ...]
+media.create_artifact(*, data, content_type, filename, ttl_seconds=86400) -> MediaArtifactHandle
 ```
+
+`auth_secret` 只能引用 Manifest 已声明的 Secret。Host 仅在同源请求中注入 Bearer credential，跨源重定向会移除；响应只返回 ETag、Last-Modified、Retry-After、Link 和有限的 Rate Limit / request-id Header。
+
+## Background Notification
+
+```python
+notifications.publish(PublishNotificationRequest) -> NotificationPublishReceipt
+notifications.grant_target(NotificationTarget, *, bot_user_id) -> BackgroundTargetGrantView
+notifications.revoke_target(NotificationTarget) -> bool
+notifications.list_grants() -> tuple[BackgroundTargetGrantView, ...]
+notifications.status() -> Mapping[str, int]
+```
+
+后台发布不需要伪造当前用户调用，但只能投向 Host 已授权目标。外部事件先进入目标主会话 EventLedger；文字、媒体和可选主 Agent 回复由持久 Outbox 独立发送。Grant 的增删仍要求真实 `SUPERUSERS` 调用上下文。
 
 ## Automation
 

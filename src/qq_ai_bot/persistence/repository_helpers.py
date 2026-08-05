@@ -134,6 +134,14 @@ def _event_record(row: ChatEventModel) -> EventRecord:
         else ()
     )
     raw_reply_sender = context.get("reply_sender_user_id")
+    external_payload: dict[str, object] | None = None
+    if row.external_payload_json:
+        try:
+            raw_payload = json.loads(row.external_payload_json)
+        except json.JSONDecodeError:
+            raw_payload = None
+        if isinstance(raw_payload, dict):
+            external_payload = raw_payload
     return EventRecord(
         id=row.id,
         bot_user_id=row.bot_user_id,
@@ -153,6 +161,12 @@ def _event_record(row: ChatEventModel) -> EventRecord:
         automation_run_id=row.automation_run_id,
         mentioned_user_ids=mentioned_user_ids,
         reply_sender_user_id=str(raw_reply_sender) if raw_reply_sender else None,
+        event_kind=row.event_kind,
+        source_plugin_id=row.source_plugin_id,
+        external_source=row.external_source,
+        external_event_key=row.external_event_key,
+        external_event_type=row.external_event_type,
+        external_payload=external_payload,
     )
 
 

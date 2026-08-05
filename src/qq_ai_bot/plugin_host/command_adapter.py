@@ -80,6 +80,12 @@ class PluginCommandAdapter:
                 target,
                 actor_user_id=message.sender.user_id,
             )
+            if target not in self._manager.running_plugin_ids:
+                error_category = getattr(row, "last_error_category", None) or "unknown"
+                return (
+                    "插件启用开关已写入，但启动失败："
+                    f"{error_category}。请使用 /ai plugin doctor {target} 查看诊断。"
+                )
             return f"已启用插件：{getattr(row, 'plugin_id', target)}。"
         if operation == "disable":
             row = await self._manager.disable(
@@ -124,7 +130,6 @@ class PluginCommandAdapter:
             raw_arguments=match.arguments,
             runtime=runtime,
             allow_alias=False,
-            direct=True,
         )
 
     async def _run_command(
@@ -147,7 +152,6 @@ class PluginCommandAdapter:
             raw_arguments=raw_arguments,
             runtime=runtime,
             allow_alias=True,
-            direct=False,
         )
 
     async def _execute_registered_command(
@@ -160,7 +164,6 @@ class PluginCommandAdapter:
         raw_arguments: str,
         runtime: RuntimeConfigSnapshot,
         allow_alias: bool,
-        direct: bool,
     ) -> str:
         if plugin_id not in self._manager.running_plugin_ids:
             return "插件当前未运行。"
@@ -170,8 +173,6 @@ class PluginCommandAdapter:
         if item is None or item.kind is not ExtensionKind.COMMAND or item.plugin_id != plugin_id:
             return "没有找到该插件命令。"
         registration = cast(CommandRegistration, item.registration)
-        if direct and registration.metadata.permission is not PermissionLevel.USER:
-            return "插件直达绑定只能执行普通用户命令。"
         if not _level_allowed(
             registration.metadata.permission,
             message.sender.user_id in self._superusers,

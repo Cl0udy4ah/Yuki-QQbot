@@ -244,3 +244,153 @@ class PluginAgentMessageModel(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PluginBackgroundTargetGrantModel(Base):
+    """An administrator-approved target for one plugin's background notifications."""
+
+    __tablename__ = "plugin_background_target_grants"
+    __table_args__ = (
+        UniqueConstraint(
+            "plugin_id", "target_type", "target_id", name="uq_plugin_background_target"
+        ),
+        CheckConstraint(
+            "target_type IN ('group', 'private')",
+            name="ck_plugin_background_target_type",
+        ),
+        Index("ix_plugin_background_target_enabled", "plugin_id", "enabled"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plugin_id: Mapped[str] = mapped_column(
+        ForeignKey("plugin_installations.plugin_id", ondelete="CASCADE"), nullable=False
+    )
+    target_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by_user_id: Mapped[str] = mapped_column(
+        ForeignKey("people.user_id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PluginMediaArtifactModel(Base):
+    """Host-owned plugin media; paths never cross the SDK boundary."""
+
+    __tablename__ = "plugin_media_artifacts"
+    __table_args__ = (
+        CheckConstraint("byte_size > 0", name="ck_plugin_media_artifacts_size"),
+        Index("ix_plugin_media_artifacts_plugin_expires", "plugin_id", "expires_at"),
+        Index("ix_plugin_media_artifacts_sha", "plugin_id", "sha256"),
+    )
+
+    handle_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    plugin_id: Mapped[str] = mapped_column(
+        ForeignKey("plugin_installations.plugin_id", ondelete="CASCADE"), nullable=False
+    )
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PluginNotificationOutboxModel(Base):
+    """One independently retryable notification part."""
+
+    __tablename__ = "plugin_notification_outbox"
+    __table_args__ = (
+        UniqueConstraint("notification_id", "part_key", name="uq_plugin_notification_outbox_part"),
+        CheckConstraint(
+            "target_type IN ('group', 'private')",
+            name="ck_plugin_outbox_target_type",
+        ),
+        CheckConstraint(
+            "part_type IN ('text', 'media', 'agent_reply')",
+            name="ck_plugin_notification_outbox_part_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'sent', 'failed', 'uncertain', 'cancelled')",
+            name="ck_plugin_notification_outbox_status",
+        ),
+        CheckConstraint("attempts >= 0 AND max_attempts >= 1", name="ck_plugin_outbox_attempts"),
+        Index("ix_plugin_notification_outbox_due", "status", "next_attempt_at"),
+        Index("ix_plugin_notification_outbox_plugin", "plugin_id", "status"),
+        Index("ix_plugin_notification_outbox_source", "source_event_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    notification_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    part_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_event_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    )
+    plugin_id: Mapped[str] = mapped_column(
+        ForeignKey("plugin_installations.plugin_id", ondelete="CASCADE"), nullable=False
+    )
+    target_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    part_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    media_handle_id: Mapped[str | None] = mapped_column(
+        ForeignKey("plugin_media_artifacts.handle_id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    platform_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PluginBackgroundTurnJobModel(Base):
+    """A persistent request to let Yuki react inside the target main conversation."""
+
+    __tablename__ = "plugin_background_turn_jobs"
+    __table_args__ = (
+        UniqueConstraint("source_event_id", name="uq_plugin_background_turn_source"),
+        CheckConstraint(
+            "target_type IN ('group', 'private')",
+            name="ck_plugin_turn_target_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'completed', 'failed', 'cancelled')",
+            name="ck_plugin_background_turn_status",
+        ),
+        CheckConstraint("attempts >= 0 AND max_attempts >= 1", name="ck_plugin_turn_attempts"),
+        Index("ix_plugin_background_turn_due", "status", "next_attempt_at"),
+        Index("ix_plugin_background_turn_plugin", "plugin_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_event_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    )
+    plugin_id: Mapped[str] = mapped_column(
+        ForeignKey("plugin_installations.plugin_id", ondelete="CASCADE"), nullable=False
+    )
+    target_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    agent_intent: Mapped[str] = mapped_column(String(1000), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    generated_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    tool_calls_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    model_requests: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

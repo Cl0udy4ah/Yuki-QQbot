@@ -39,6 +39,7 @@ class PluginPermission(StrEnum):
     VISION_CURRENT_READ = "vision.current.read"
     VISION_ANALYZE = "vision.analyze"
     MEDIA_CURRENT_READ = "media.current.read"
+    MEDIA_ARTIFACT_CREATE = "media.artifact.create"
     EMOJI_READ = "emoji.read"
     EMOJI_COLLECT = "emoji.collect"
     EMOJI_SELECT = "emoji.select"
@@ -67,6 +68,8 @@ class PluginPermission(StrEnum):
     COMMAND_REGISTER = "command.register"
     EVENT_SUBSCRIBE = "event.subscribe"
     BACKGROUND_WORKER = "background.worker"
+    NOTIFICATION_PUBLISH = "notification.publish"
+    NOTIFICATION_AGENT = "notification.agent"
     STORAGE_PRIVATE = "storage.private"
     PLANNER_SIGNAL_REGISTER = "planner.signal.register"
     MCP_READ = "mcp.read"
@@ -82,6 +85,7 @@ HIGH_RISK_PERMISSIONS: frozenset[PluginPermission] = frozenset(
         PluginPermission.ONEBOT_MUTATE,
         PluginPermission.AGENT_RUN,
         PluginPermission.AGENT_SESSION,
+        PluginPermission.NOTIFICATION_AGENT,
         PluginPermission.EMOJI_MANAGE,
         PluginPermission.SPEECH_MANAGE,
         PluginPermission.SPEECH_PROVIDER_REGISTER,

@@ -8,7 +8,16 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from yuki_plugin_sdk.events import EventEnvelope
-from yuki_plugin_sdk.models import CurrentMessage, GeneratedSpeechHandle, JsonValue
+from yuki_plugin_sdk.models import (
+    BackgroundTargetGrantView,
+    CurrentMessage,
+    GeneratedSpeechHandle,
+    JsonValue,
+    MediaArtifactHandle,
+    NotificationPublishReceipt,
+    NotificationTarget,
+    PublishNotificationRequest,
+)
 from yuki_plugin_sdk.results import PluginResult
 from yuki_plugin_sdk.sessions import (
     AgentSession,
@@ -362,6 +371,7 @@ class FakeHttpFacade:
         *,
         headers: Mapping[str, str] | None = None,
         body: bytes | None = None,
+        auth_secret: str | None = None,
     ) -> PluginResult:
         self.requests.append((method, url))
         return PluginResult(data={"status_code": 200, "body": ""})
@@ -384,6 +394,70 @@ class FakeMediaFacade:
 
     async def get_current(self) -> tuple[Mapping[str, JsonValue], ...]:
         return tuple(self.current)
+
+    async def create_artifact(
+        self,
+        *,
+        data: bytes,
+        content_type: str,
+        filename: str,
+        ttl_seconds: int = 86_400,
+    ) -> MediaArtifactHandle:
+        import hashlib
+
+        return MediaArtifactHandle(
+            handle_id=uuid4().hex,
+            content_type=content_type,
+            filename=filename,
+            byte_size=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+            expires_at=datetime.now(UTC),
+        )
+
+
+class FakeNotificationFacade:
+    def __init__(self) -> None:
+        self.published: list[PublishNotificationRequest] = []
+        self.grants: dict[tuple[str, str], BackgroundTargetGrantView] = {}
+
+    async def publish(self, request: PublishNotificationRequest) -> NotificationPublishReceipt:
+        self.published.append(request)
+        return NotificationPublishReceipt(
+            notification_id=uuid4().hex,
+            source_event_id=len(self.published),
+            event_created=True,
+            delivery_enqueued=bool(request.text or request.media_handles),
+            agent_turn_enqueued=request.ask_agent,
+            deduplicated=False,
+        )
+
+    async def grant_target(
+        self,
+        target: NotificationTarget,
+        *,
+        bot_user_id: str,
+    ) -> BackgroundTargetGrantView:
+        view = BackgroundTargetGrantView(
+            target_type=target.target_type,
+            target_id=target.target_id,
+            bot_user_id=bot_user_id or "test-bot",
+            enabled=True,
+            created_by_user_id="test-admin",
+        )
+        self.grants[(target.target_type, target.target_id)] = view
+        return view
+
+    async def revoke_target(self, target: NotificationTarget) -> bool:
+        return self.grants.pop((target.target_type, target.target_id), None) is not None
+
+    async def list_grants(self) -> tuple[BackgroundTargetGrantView, ...]:
+        return tuple(self.grants.values())
+
+    async def status(self) -> Mapping[str, int]:
+        return {
+            "grants": len(self.grants),
+            "published": len(self.published),
+        }
 
 
 class FakeAutomationFacade:

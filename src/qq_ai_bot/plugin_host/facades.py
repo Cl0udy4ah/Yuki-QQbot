@@ -63,6 +63,8 @@ from qq_ai_bot.plugin_host.audit import PluginAuditService
 from qq_ai_bot.plugin_host.config import BoundConfigFacade
 from qq_ai_bot.plugin_host.event_bus import PluginEventBus
 from qq_ai_bot.plugin_host.http_client import BoundHttpFacade
+from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
+from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
 from qq_ai_bot.plugin_host.secrets import BoundSecretsFacade
 from qq_ai_bot.plugin_host.session_facade import BoundAgentSessionFacade
 from qq_ai_bot.plugin_host.storage import BoundStorageFacade
@@ -97,6 +99,7 @@ from yuki_plugin_sdk.context import (
     MediaFacade,
     MemoryFacade,
     MessageFacade,
+    NotificationFacade,
     OneBotFacade,
     PeopleFacade,
     PluginContext,
@@ -112,7 +115,16 @@ from yuki_plugin_sdk.context import (
 from yuki_plugin_sdk.errors import FeatureUnavailableError, PluginPermissionError
 from yuki_plugin_sdk.events import EventEnvelope
 from yuki_plugin_sdk.features import FeatureRegistry
-from yuki_plugin_sdk.models import CurrentMessage, GeneratedSpeechHandle, JsonValue
+from yuki_plugin_sdk.models import (
+    BackgroundTargetGrantView,
+    CurrentMessage,
+    GeneratedSpeechHandle,
+    JsonValue,
+    MediaArtifactHandle,
+    NotificationPublishReceipt,
+    NotificationTarget,
+    PublishNotificationRequest,
+)
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.results import PluginResult
 from yuki_plugin_sdk.sessions import (
@@ -276,6 +288,10 @@ class PluginFacadeServices:
     agent_sessions_factory: AgentSessionFacadeFactory | None = None
     events: PluginEventBus | None = None
     audit: PluginAuditService | None = None
+    notifications: PluginNotificationRepository | None = None
+    notification_wake: Callable[[], None] | None = None
+    media_artifacts: PluginMediaArtifactStore | None = None
+    media_storage_mb: int = 10
     agent_capabilities: frozenset[str] = field(default_factory=frozenset)
 
 
@@ -347,6 +363,7 @@ class HostPluginContext:
         "_media",
         "_memory",
         "_messages",
+        "_notifications",
         "_onebot",
         "_people",
         "_plugin_id",
@@ -394,6 +411,7 @@ class HostPluginContext:
         self._http = _HttpFacade(self)
         self._vision = _VisionFacade(self)
         self._media = _MediaFacade(self)
+        self._notifications = _NotificationFacade(self)
         self._emoji = _EmojiFacade(self)
         self._speech = _SpeechFacade(self)
         self._automation = _AutomationFacade(self)
@@ -474,6 +492,10 @@ class HostPluginContext:
     @property
     def media(self) -> MediaFacade:
         return self._media
+
+    @property
+    def notifications(self) -> NotificationFacade:
+        return self._notifications
 
     @property
     def emoji(self) -> EmojiFacade:
@@ -1656,6 +1678,7 @@ class _HttpFacade:
         *,
         headers: Mapping[str, str] | None = None,
         body: bytes | None = None,
+        auth_secret: str | None = None,
     ) -> PluginResult:
         self._host._require_any(
             (
@@ -1665,7 +1688,13 @@ class _HttpFacade:
             require_invocation=False,
         )
         facade = _require_service(self._host._services.http, "plugin HTTP")
-        return await facade.request(method, url, headers=headers, body=body)
+        return await facade.request(
+            method,
+            url,
+            headers=headers,
+            body=body,
+            auth_secret=auth_secret,
+        )
 
 
 class _VisionFacade:
@@ -1730,6 +1759,116 @@ class _MediaFacade:
             }
             for attachment in (*inbound.attachments, *inbound.reply_attachments)
         )
+
+    async def create_artifact(
+        self,
+        *,
+        data: bytes,
+        content_type: str,
+        filename: str,
+        ttl_seconds: int = 86_400,
+    ) -> MediaArtifactHandle:
+        self._host._require(
+            PluginPermission.MEDIA_ARTIFACT_CREATE,
+            mutation=True,
+            require_invocation=False,
+        )
+        store = _require_service(self._host._services.media_artifacts, "plugin media artifacts")
+        return await store.create(
+            plugin_id=self._host.plugin_id,
+            data=data,
+            content_type=content_type,
+            filename=filename,
+            ttl_seconds=ttl_seconds,
+            storage_mb=self._host._services.media_storage_mb,
+        )
+
+
+class _NotificationFacade:
+    def __init__(self, host: HostPluginContext) -> None:
+        self._host = host
+
+    async def publish(
+        self,
+        request: PublishNotificationRequest,
+    ) -> NotificationPublishReceipt:
+        self._host._require(
+            PluginPermission.NOTIFICATION_PUBLISH,
+            send=True,
+            require_invocation=False,
+        )
+        if request.ask_agent:
+            self._host._require(
+                PluginPermission.NOTIFICATION_AGENT,
+                require_invocation=False,
+            )
+        repository = _require_service(
+            self._host._services.notifications,
+            "plugin notifications",
+        )
+        receipt = await repository.publish(plugin_id=self._host.plugin_id, request=request)
+        if self._host._services.notification_wake is not None:
+            self._host._services.notification_wake()
+        return receipt
+
+    async def grant_target(
+        self,
+        target: NotificationTarget,
+        *,
+        bot_user_id: str,
+    ) -> BackgroundTargetGrantView:
+        invocation = self._host._require(
+            PluginPermission.NOTIFICATION_PUBLISH,
+            mutation=True,
+            privileged=True,
+        )
+        assert invocation is not None
+        if bot_user_id and bot_user_id != invocation.bot_user_id:
+            raise PluginPermissionError("grant bot must match the current connected bot")
+        repository = _require_service(
+            self._host._services.notifications,
+            "plugin notifications",
+        )
+        return await repository.grant_target(
+            plugin_id=self._host.plugin_id,
+            target=target,
+            bot_user_id=invocation.bot_user_id,
+            created_by_user_id=invocation.actor_user_id,
+        )
+
+    async def revoke_target(self, target: NotificationTarget) -> bool:
+        self._host._require(
+            PluginPermission.NOTIFICATION_PUBLISH,
+            mutation=True,
+            privileged=True,
+        )
+        repository = _require_service(
+            self._host._services.notifications,
+            "plugin notifications",
+        )
+        return await repository.revoke_target(plugin_id=self._host.plugin_id, target=target)
+
+    async def list_grants(self) -> tuple[BackgroundTargetGrantView, ...]:
+        self._host._require(
+            PluginPermission.NOTIFICATION_PUBLISH,
+            require_invocation=False,
+        )
+        repository = _require_service(
+            self._host._services.notifications,
+            "plugin notifications",
+        )
+        return await repository.list_grants(self._host.plugin_id)
+
+    async def status(self) -> Mapping[str, int]:
+        self._host._require(
+            PluginPermission.NOTIFICATION_PUBLISH,
+            require_invocation=False,
+        )
+        repository = _require_service(
+            self._host._services.notifications,
+            "plugin notifications",
+        )
+        return await repository.counts(self._host.plugin_id)
 
 
 class _EmojiFacade:

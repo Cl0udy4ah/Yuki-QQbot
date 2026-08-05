@@ -21,6 +21,20 @@ DnsResolver = Callable[[str, int], Awaitable[tuple[str, ...]]]
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _FORBIDDEN_REQUEST_HEADERS = frozenset({"authorization", "cookie", "host", "proxy-authorization"})
+_SAFE_RESPONSE_HEADERS = frozenset(
+    {
+        "etag",
+        "last-modified",
+        "retry-after",
+        "link",
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+        "x-ratelimit-used",
+        "x-ratelimit-reset",
+        "x-ratelimit-resource",
+        "x-github-request-id",
+    }
+)
 _REDACT_HTTPX_URL: ContextVar[bool] = ContextVar("plugin_http_redact_url", default=False)
 
 
@@ -96,6 +110,7 @@ class SafeHttpClient:
         allowed_hosts: frozenset[str] | None,
         headers: Mapping[str, str] | None = None,
         body: bytes | None = None,
+        authorization: str | None = None,
     ) -> PluginResult:
         current = url
         normalized_method = method.strip().upper()
@@ -125,6 +140,8 @@ class SafeHttpClient:
             elif caller_origin != origin:
                 caller_data_allowed = False
             request_headers = dict(caller_headers) if caller_data_allowed else {}
+            if authorization is not None and caller_data_allowed:
+                request_headers["Authorization"] = authorization
             request_headers["Host"] = target.host_header
             request_headers["Connection"] = "close"
             extensions: dict[str, object] = {"timeout": self._timeout.as_dict()}
@@ -176,18 +193,23 @@ class SafeHttpClient:
                 raw = b"".join(chunks)
                 charset = response.encoding or "utf-8"
                 text = raw.decode(charset, errors="replace")
+                successful = response.is_success or response.status_code == 304
+                safe_headers = {
+                    key.casefold(): value[:2_000]
+                    for key, value in response.headers.items()
+                    if key.casefold() in _SAFE_RESPONSE_HEADERS
+                }
                 return PluginResult(
-                    ok=response.is_success,
+                    ok=successful,
                     data={
                         "status_code": response.status_code,
                         "body": text,
                         "content_type": response.headers.get("content-type", "")[:256],
                         "url": _without_query(target.logical_url),
+                        "headers": safe_headers,
                     },
-                    error_code=None if response.is_success else "http.upstream_error",
-                    detail=(
-                        "" if response.is_success else "upstream returned a non-success status"
-                    ),
+                    error_code=None if successful else "http.upstream_error",
+                    detail=("" if successful else "upstream returned a non-success status"),
                 )
             except httpx.HTTPError:
                 # Never copy exception text into plugin-visible output: httpx errors may
@@ -262,6 +284,7 @@ class BoundHttpFacade:
         client: SafeHttpClient,
         approved_permissions: Iterable[PluginPermission],
         allowed_hosts: Iterable[str],
+        secrets: object | None = None,
         http_concurrency: int = 1,
     ) -> None:
         if isinstance(http_concurrency, bool) or not isinstance(http_concurrency, int):
@@ -274,6 +297,7 @@ class BoundHttpFacade:
         self._enabled = unrestricted or allowlisted
         self._allowed_hosts = None if unrestricted else frozenset(allowed_hosts)
         self._client = client
+        self._secrets = secrets
         self._semaphore = asyncio.Semaphore(http_concurrency)
 
     async def request(
@@ -283,9 +307,16 @@ class BoundHttpFacade:
         *,
         headers: Mapping[str, str] | None = None,
         body: bytes | None = None,
+        auth_secret: str | None = None,
     ) -> PluginResult:
         if not self._enabled:
             raise PluginPermissionError("plugin lacks an HTTP permission")
+        authorization: str | None = None
+        if auth_secret is not None:
+            get_secret = getattr(self._secrets, "get", None)
+            if not callable(get_secret):
+                raise PluginPermissionError("plugin HTTP credential service is unavailable")
+            authorization = f"Bearer {get_secret(auth_secret)}"
         async with self._semaphore:
             return await self._client.request(
                 method,
@@ -293,6 +324,7 @@ class BoundHttpFacade:
                 allowed_hosts=self._allowed_hosts,
                 headers=headers,
                 body=body,
+                authorization=authorization,
             )
 
 
