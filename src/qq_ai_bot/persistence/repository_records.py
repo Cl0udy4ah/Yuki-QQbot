@@ -51,6 +51,12 @@ class EventRecord:
     automation_run_id: int | None = None
     mentioned_user_ids: tuple[str, ...] = ()
     reply_sender_user_id: str | None = None
+    event_kind: str = "message"
+    source_plugin_id: str | None = None
+    external_source: str | None = None
+    external_event_key: str | None = None
+    external_event_type: str | None = None
+    external_payload: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

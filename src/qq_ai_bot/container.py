@@ -38,6 +38,7 @@ from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.mcp.admin import MCPCommandHandler
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.plugin_host.background_turns import PluginBackgroundTurnWorker
 from qq_ai_bot.plugin_host.config import BoundConfigFacade
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind
 from qq_ai_bot.plugin_host.facades import (
@@ -48,6 +49,9 @@ from qq_ai_bot.plugin_host.facades import (
 )
 from qq_ai_bot.plugin_host.http_client import BoundHttpFacade
 from qq_ai_bot.plugin_host.manifest import PluginManifest
+from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
+from qq_ai_bot.plugin_host.notification_delivery import PluginNotificationOutboxWorker
+from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
 from qq_ai_bot.plugin_host.secrets import BoundSecretsFacade
 from qq_ai_bot.plugin_host.session_facade import BoundAgentSessionFacade
 from qq_ai_bot.plugin_host.storage import BoundStorageFacade
@@ -334,6 +338,22 @@ class ApplicationContainer:
         self.automation_worker = automation.worker
         self.mcp_automation_bridge = automation.mcp_bridge
         self._plugin_contexts: dict[str, HostPluginContext] = {}
+        self.plugin_notification_repository = PluginNotificationRepository(self.database)
+        self.plugin_media_artifacts = PluginMediaArtifactStore(self.database)
+        self.plugin_notification_outbox = PluginNotificationOutboxWorker(
+            repository=self.plugin_notification_repository,
+            artifacts=self.plugin_media_artifacts,
+            ledger=self.ledger,
+        )
+        self.plugin_background_turns = PluginBackgroundTurnWorker(
+            repository=self.plugin_notification_repository,
+            ledger=self.ledger,
+            runtime_config=self.runtime_config,
+            planner_context=self.planner_context,
+            planner=self.planner,
+            chat=self.chat,
+            turns=self.turn_coordinator,
+        )
         self.plugin_module = PluginModule(
             settings=settings.plugins,
             superusers=settings.superusers,
@@ -509,6 +529,10 @@ class ApplicationContainer:
         if PluginPermission.WEB_READ in permissions:
             agent_capabilities.add("read_webpage")
 
+        secrets = BoundSecretsFacade(
+            plugin_id=manifest.id,
+            declared_names=manifest.secrets,
+        )
         context = HostPluginContext(
             plugin_id=manifest.id,
             approved_permissions=permissions,
@@ -547,23 +571,29 @@ class ApplicationContainer:
                     storage_mb=manifest.limits.storage_mb,
                 ),
                 config_factory=config_factory,
-                secrets=BoundSecretsFacade(
-                    plugin_id=manifest.id,
-                    declared_names=manifest.secrets,
-                ),
+                secrets=secrets,
                 http=BoundHttpFacade(
                     client=self.plugin_http,
                     approved_permissions=permissions,
                     allowed_hosts=manifest.network.allowed_hosts,
+                    secrets=secrets,
                     http_concurrency=manifest.limits.http_concurrency,
                 ),
                 agent_sessions_factory=session_factory,
                 events=self.plugin_events,
                 audit=self.plugin_audit,
+                notifications=self.plugin_notification_repository,
+                notification_wake=self._wake_plugin_notifications,
+                media_artifacts=self.plugin_media_artifacts,
+                media_storage_mb=manifest.limits.storage_mb,
             ),
         )
         self._plugin_contexts[manifest.id] = context
         return context
+
+    def _wake_plugin_notifications(self) -> None:
+        self.plugin_notification_outbox.wake()
+        self.plugin_background_turns.wake()
 
     def _plugin_invocation_scope(
         self,
@@ -665,6 +695,16 @@ class ApplicationContainer:
             health=self.memory_embeddings.health,
         )
         self.lifecycle.register("autonomous_groups", close=self.autonomous_groups.close)
+        self.lifecycle.register(
+            "plugin_notification_outbox",
+            start=self.plugin_notification_outbox.start,
+            close=self.plugin_notification_outbox.close,
+        )
+        self.lifecycle.register(
+            "plugin_background_turns",
+            start=self.plugin_background_turns.start,
+            close=self.plugin_background_turns.close,
+        )
         self.plugin_module.register_lifecycle(self.plugins, self.lifecycle)
         self.lifecycle.register("application_event", start=self._publish_started)
         if self.settings.speech_enabled:
@@ -748,6 +788,12 @@ class ApplicationContainer:
                 if automation_runs_deleted:
                     logger.info("automation_runs_cleaned count=%d", automation_runs_deleted)
                 plugin_state_deleted = await self.plugin_state.cleanup_expired()
+                media_artifacts_deleted = await self.plugin_media_artifacts.cleanup()
+                if media_artifacts_deleted:
+                    logger.info(
+                        "plugin_media_artifacts_cleaned count=%d",
+                        media_artifacts_deleted,
+                    )
                 if plugin_state_deleted:
                     logger.info("plugin_state_cleaned count=%d", plugin_state_deleted)
                 artifact_deleted = await self.tool_artifacts.cleanup()

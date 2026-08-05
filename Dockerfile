@@ -16,7 +16,10 @@ FROM python:3.12-slim AS runtime
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
-RUN groupadd --gid 10001 bot \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-wqy-microhei \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 bot \
     && useradd --uid 10001 --gid bot --home-dir /app --no-create-home bot
 WORKDIR /app
 COPY --from=builder --chown=bot:bot /app/.venv /app/.venv

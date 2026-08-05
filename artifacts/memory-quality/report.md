@@ -1,11 +1,11 @@
 # Memory V2 Quality Report
 
 - Suite: `memory-v2-quality-v1` / `full`
-- Commit: `3c97d89501d69242f75bca292bdd15779991393c`
+- Commit: `1e8d00b9835043c65d44d41576b0f2a20329b6e7`
 - Dataset: `6d2711f8d3882fefcbca82a39a073fd5f8e3c22cd26ffb36f89353170b0a3f15`
 - Cases: 18/18 passed
 - Failed IDs: none
-- Duration: 2.404s
+- Duration: 3.541s
 
 | Metric | Value | Numerator/denominator |
 |---|---:|---:|
@@ -20,7 +20,7 @@
 | `conflict_coactivation_rate` | 0.0 | 0/1 |
 | `conflict_resolution_accuracy` | 1.0 | 1/1 |
 | `contested_context_leak_rate` | 0.0 | 0/1 |
-| `context_latency_p50_ms` | 0.024499997380189598 | 0.0245/1 |
+| `context_latency_p50_ms` | 0.029799994081258774 | 0.0298/1 |
 | `context_latency_p95_ms` | null | 0/0 |
 | `context_precision` | 1.0 | 14/14 |
 | `context_recall` | 1.0 | 14/14 |
@@ -31,7 +31,7 @@
 | `duplicate_evidence_rate` | 0.0 | 0/12 |
 | `empty_query_fact_leak_rate` | 0.0 | 0/1 |
 | `evidence_provenance_accuracy` | 1.0 | 12/12 |
-| `extraction_latency_p50_ms` | 11.938399999053217 | 11.9384/1 |
+| `extraction_latency_p50_ms` | 9.60390002001077 | 9.6039/1 |
 | `extraction_latency_p95_ms` | null | 0/0 |
 | `fact_accuracy` | 1.0 | 23/23 |
 | `fact_state_accuracy` | 1.0 | 23/23 |
@@ -43,7 +43,7 @@
 | `outbound_evidence_rate` | 0.0 | 0/1 |
 | `pipeline_error_rate` | 0.0 | 0/18 |
 | `precision_at_k` | 1.0 | 14/14 |
-| `quality_suite_total_ms` | 419.45480000867974 | 419.455/1 |
+| `quality_suite_total_ms` | 648.3297001104802 | 648.33/1 |
 | `rebuild_duplicate_commit_rate` | 0.0 | 0/1 |
 | `rebuild_historical_overwrite_rate` | 0.0 | 0/1 |
 | `rebuild_receipt_accuracy` | 1.0 | 1/1 |
@@ -51,7 +51,7 @@
 | `rebuild_review_bypass_rate` | 0.0 | 0/1 |
 | `recall_at_k` | 1.0 | 14/14 |
 | `retraction_resolution_accuracy` | null | 0/0 |
-| `retrieval_latency_p50_ms` | 5.038000002969056 | 5.038/1 |
+| `retrieval_latency_p50_ms` | 7.474300044123083 | 7.4743/1 |
 | `retrieval_latency_p95_ms` | null | 0/0 |
 | `scope_attribution_accuracy` | 1.0 | 12/12 |
 | `source_event_mismatch_rate` | 0.0 | 0/12 |

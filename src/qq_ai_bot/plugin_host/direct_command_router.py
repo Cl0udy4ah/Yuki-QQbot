@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Protocol
 
 from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from qq_ai_bot.settings_domains import validate_direct_command_bindings
-from yuki_plugin_sdk.models import PermissionLevel
-from yuki_plugin_sdk.registrar import CommandRegistration
 
 
 class RunningPlugins(Protocol):
@@ -83,9 +81,6 @@ class DirectCommandRouter:
         item = self._registry.get(f"{plugin_id}:{command_name}")
         if item is None or item.kind is not ExtensionKind.COMMAND:
             return False, "command_not_registered"
-        registration = cast(CommandRegistration, item.registration)
-        if registration.metadata.permission is not PermissionLevel.USER:
-            return False, "command_not_user"
         return True, "active"
 
 

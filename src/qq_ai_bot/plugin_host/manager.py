@@ -426,9 +426,9 @@ class PluginManager:
             self._running[plugin_id] = managed
             if self._on_activated is not None:
                 self._on_activated(available.manifest)
+            await self._installations.set_status(plugin_id, status="running")
             for registration in background_services:
                 self._start_background_task(plugin_id, registration)
-            await self._installations.set_status(plugin_id, status="running")
             return True
         except asyncio.CancelledError:
             await self._rollback_start_unlocked(

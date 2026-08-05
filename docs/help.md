@@ -1,5 +1,8 @@
 # Yuki-QQbot
 
+> **3.4.1 GitHub Monitor：**新增多仓库 GitHub 事件监控、中文 Push 卡片、持久通知 Outbox
+> 与可选 Yuki 点评；Plugin API 升级为 `1.1`，Alembic head 为 `0028`。
+
 > **3.4.0 自由 Agent 自动化：**scheduled automation 与普通会话共用授权工具和插件注册；
 > Agent 可以在创建者权限内自主查询、发送消息并管理后续自动化。Planner scope 只决定首批
 > 工具优先级，不再截断其余已授权能力；DeepSeek Responses 多轮工具续写保持完整配对。
@@ -87,7 +90,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.4.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
+Yuki-QQbot 3.4.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -486,7 +489,7 @@ Planner 同时是聊天语音的唯一决策边界：它从语义识别本轮明
 ```dotenv
 PLUGIN_SYSTEM_ENABLED=true
 PLUGIN_DIRECTORY=plugins
-PLUGIN_API_VERSION=1.0
+PLUGIN_API_VERSION=1.1
 # 示例：让“*签到”等消息直达插件的 play 命令。
 PLUGIN_DIRECT_COMMAND_BINDINGS={"*":"io.github.yuanyeyoutao.kun-game:play"}
 ```
@@ -502,9 +505,35 @@ uv run qq-ai-bot-cli plugin test plugins/com.example.echo
 
 通过插件 CLI 发现、审阅权限、批准并启用后重启 Bot。Manifest 任何变化都会使批准失效，必须重新审阅。Docker Compose 将 `./plugins` 只读挂载到 `/app/plugins`，插件热更新和在线下载不属于 1.6.0。
 
-`PLUGIN_DIRECT_COMMAND_BINDINGS` 是启动期静态 JSON 对象。前缀不得为空、包含空白或控制字符、以 `/` 开头、与 `AI_PREFIX` 重叠，多个前缀之间也不得相同或互为前缀。目标必须写成 `plugin_id:command`，且只能是已批准、已启用、正在运行的普通用户命令。命中后仍会经过群/私聊准入、消息去重、入站账本、命令限流和插件调用隔离；配置目标暂时不可用时会失败关闭，不会回退 Planner。可用 `qq-ai-bot-cli plugin doctor <plugin_id>` 查看绑定状态。
+`PLUGIN_DIRECT_COMMAND_BINDINGS` 是启动期静态 JSON 对象。前缀不得为空、包含空白或控制字符、
+与 `AI_PREFIX` 重叠，多个前缀之间也不得相同或互为前缀；`/github` 这类斜杠命令可以绑定。
+目标必须写成 `plugin_id:command`，且只能是已批准、已启用、正在运行的命令。命中后仍会经过
+群/私聊准入、消息去重、入站账本、命令权限、限流和插件调用隔离；配置目标暂时不可用时会
+失败关闭，不会回退 Planner。可用 `qq-ai-bot-cli plugin doctor <plugin_id>` 查看绑定状态。
 
 插件需要连续独立上下文时可使用 `ctx.agent_sessions`。例如跑团插件可以创建 `durable + current_group` 会话；历史只写 `plugin_agent_messages`，不写主 `chat_events`，默认不注入主聊天或人物记忆，也不返回隐藏推理。详见 [独立 AI 会话](plugin-development/service-facades.md#独立-ai-会话跑团示例)。
+
+#### 可选：GitHub Monitor
+
+仓库内置 [`github-monitor`](../plugins/github-monitor/README.md)。它可以监控多个 GitHub 仓库，
+把新 Push、PR、Issue、Comment、Release 和 Discussion 等事件以中文文本、Push PNG 卡片和
+可选 Yuki 点评投递到多个 QQ 群或私聊。配置 `/github` 直达命令和可选 Token：
+
+```dotenv
+PLUGIN_DIRECT_COMMAND_BINDINGS={"/github":"github-monitor:github"}
+YUKI_PLUGIN__GITHUB_MONITOR__GITHUB_TOKEN=github_pat_replace_with_your_token
+```
+
+批准并启用后，可用以下命令完成首次配置和无网络合成测试：
+
+```text
+/github add YuanYeYouTao/Yuki-QQbot group:1049765710
+/github test YuanYeYouTao/Yuki-QQbot
+/github status
+```
+
+默认首次同步只建立基线，不补发历史。真实 Token 只能放在本机 `.env`，不要通过 QQ 命令发送。
+完整命令、过滤、Rate Limit、Outbox 与排障说明见插件 README。
 
 #### 可选：养鲲游戏
 

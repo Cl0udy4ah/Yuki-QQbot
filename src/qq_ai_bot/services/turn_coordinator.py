@@ -99,7 +99,7 @@ class ConversationTurnCoordinator:
                     to_cancel.add(reply)
             if (
                 self._interrupt_autonomous
-                and previous_origin is TurnOrigin.AUTONOMOUS_GROUP
+                and previous_origin in {TurnOrigin.AUTONOMOUS_GROUP, TurnOrigin.PLUGIN_BACKGROUND}
                 and not state.mutation_started
             ):
                 for stage in ("planner", "generation"):
@@ -175,6 +175,28 @@ class ConversationTurnCoordinator:
                 token.version,
                 TurnOrigin.AUTONOMOUS_GROUP,
                 token.created_at,
+            )
+
+    async def begin_background(self, conversation_key: str) -> TurnToken | None:
+        """Admit plugin background work only while the conversation is idle.
+
+        Unlike :meth:`notify_message`, this never cancels user work.  Once admitted,
+        the next real message advances the version and cooperatively interrupts the
+        background Planner or generation stage.
+        """
+
+        async with self._guard:
+            state = self._states.setdefault(conversation_key, _TurnState())
+            if any(not task.done() for task in state.tasks.values()):
+                return None
+            state.version += 1
+            state.origin = TurnOrigin.PLUGIN_BACKGROUND
+            state.mutation_started = False
+            state.protected_version = None
+            return TurnToken(
+                conversation_key,
+                state.version,
+                TurnOrigin.PLUGIN_BACKGROUND,
             )
 
     async def cancel_interruptible(self, conversation_key: str) -> bool:

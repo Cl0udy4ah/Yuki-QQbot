@@ -276,6 +276,7 @@ class PlannerInput(_StrictPlannerModel):
     emoji: PlannerEmojiContext = PlannerEmojiContext()
     speech: PlannerSpeechContext = PlannerSpeechContext()
     memory: PlannerMemoryContext = PlannerMemoryContext()
+    external_event: dict[str, Any] | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

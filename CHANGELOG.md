@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 3.4.1 - 2026-08-05
+
+### GitHub Monitor 与 Plugin API 1.1
+
+- 新增多仓库 GitHub Monitor，可向多个 QQ 群或私聊发送中文事件、Push PNG 卡片和可选
+  Yuki 自然点评；支持首次基线、事件过滤、稳定去重、条件请求与 Rate Limit 退避。
+- Plugin API 扩展为 `1.1`，新增后台服务、媒体制品、持久通知、目标授权、受控 Agent 点评和
+  Host HTTP Secret credential 注入。
+- Alembic `0028` 非破坏性增加外部事件字段、通知 Outbox、媒体制品和后台点评任务；原有
+  聊天、记忆、关系、自动化和插件数据保持不变。
+- 插件配置序列化支持 Pydantic Model、`set` 与 `frozenset`，修复添加仓库时的 `TypeError`；
+  插件启动失败也不再错误回复“已启用”。
+- 重新设计 GitHub Push 卡片，并在 Bot 镜像安装轻量中文字体，修复 Linux 容器中文方框乱码。
+- 版本提升至 `3.4.1`，完整说明见 `plugins/github-monitor/README.md` 和
+  `docs/releases/v3.4.1.md`。
+
 ## 3.2.0 - 2026-08-03
 
 ### Yuki 自我长期记忆

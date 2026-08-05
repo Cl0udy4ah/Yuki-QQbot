@@ -30,8 +30,6 @@ def validate_direct_command_bindings(value: dict[str, str]) -> dict[str, str]:
                 "PLUGIN_DIRECT_COMMAND_BINDINGS prefixes must not contain whitespace "
                 "or control characters"
             )
-        if prefix.startswith("/"):
-            raise ValueError("PLUGIN_DIRECT_COMMAND_BINDINGS prefixes must not start with '/'")
         target = raw_target.strip()
         if target != raw_target or ":" not in target:
             raise ValueError("PLUGIN_DIRECT_COMMAND_BINDINGS targets must use plugin_id:command")
@@ -156,6 +154,8 @@ class PluginSettings(DomainSettings):
     plugin_http_max_response_bytes: int = Field(gt=0)
     plugin_http_timeout_seconds: float = Field(gt=0)
     plugin_ai_session_max_history_messages: int = Field(gt=0)
+    plugin_external_event_context_limit: int = Field(gt=0, le=100)
+    plugin_external_event_context_characters: int = Field(gt=0, le=32_000)
 
     @field_validator("plugin_direct_command_bindings")
     @classmethod

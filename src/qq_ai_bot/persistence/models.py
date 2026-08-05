@@ -129,7 +129,7 @@ class MembershipModel(Base):
 
 
 class ChatEventModel(Base):
-    """An immutable inbound or outbound QQ message in the permanent ledger."""
+    """An immutable message or explicitly typed external conversation event."""
 
     __tablename__ = "chat_events"
     __table_args__ = (
@@ -143,6 +143,27 @@ class ChatEventModel(Base):
         Index("ix_chat_events_sender_time", "sender_user_id", "occurred_at"),
         Index("ix_chat_events_private_peer_time", "private_peer_user_id", "occurred_at"),
         Index("ix_chat_events_automation", "automation_id", "automation_run_id"),
+        Index(
+            "uq_chat_events_external_event_target",
+            "source_plugin_id",
+            "external_event_key",
+            "scope_type",
+            "external_target_id",
+            unique=True,
+            sqlite_where=text("event_kind = 'external_event'"),
+        ),
+        CheckConstraint(
+            "(event_kind = 'message' AND source_plugin_id IS NULL "
+            "AND external_source IS NULL AND external_event_key IS NULL "
+            "AND external_event_type IS NULL AND external_payload_json IS NULL "
+            "AND external_target_id IS NULL) OR "
+            "(event_kind = 'external_event' AND source_plugin_id IS NOT NULL "
+            "AND external_source IS NOT NULL AND external_event_key IS NOT NULL "
+            "AND external_event_type IS NOT NULL AND external_payload_json IS NOT NULL "
+            "AND external_target_id IS NOT NULL AND origin = 'plugin_background' "
+            "AND direction = 'external')",
+            name="ck_chat_events_kind_payload",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -159,6 +180,18 @@ class ChatEventModel(Base):
         ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
     )
     direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    event_kind: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="message",
+        server_default=text("'message'"),
+    )
+    source_plugin_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    external_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_event_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    external_event_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    external_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    external_target_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     visual_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     segments_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")

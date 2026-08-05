@@ -89,6 +89,7 @@ async def test_request_connects_to_validated_ip_and_preserves_host_sni() -> None
         "body": "ok",
         "content_type": "text/plain",
         "url": "https://api.example:8443/data",
+        "headers": {},
     }
     assert resolver_calls == [("api.example", 8443)]
     assert len(requests) == 1
@@ -99,6 +100,76 @@ async def test_request_connects_to_validated_ip_and_preserves_host_sni() -> None
     assert request.extensions["sni_hostname"] == "api.example"
     assert "authorization" not in request.headers
     assert "cookie" not in request.headers
+
+
+@pytest.mark.asyncio
+async def test_safe_response_headers_and_304_are_exposed() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            304,
+            headers={
+                "ETag": '"next"',
+                "X-RateLimit-Remaining": "42",
+                "X-GitHub-Request-Id": "request-1",
+                "Set-Cookie": "must-not-leak",
+            },
+        )
+
+    async def resolver(_host: str, _port: int) -> tuple[str, ...]:
+        return ("93.184.216.34",)
+
+    result = await _client(handler, resolver).request(
+        "GET",
+        "https://api.example/data",
+        allowed_hosts=frozenset({"api.example"}),
+    )
+
+    assert result.ok
+    assert result.data["status_code"] == 304
+    assert result.data["headers"] == {
+        "etag": '"next"',
+        "x-ratelimit-remaining": "42",
+        "x-github-request-id": "request-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_bound_credential_is_injected_only_on_same_origin() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(302, headers={"location": "https://other.example/final"})
+        return httpx.Response(200)
+
+    async def resolver(host: str, _port: int) -> tuple[str, ...]:
+        return {
+            "api.example": ("93.184.216.34",),
+            "other.example": ("93.184.216.35",),
+        }[host]
+
+    class Secrets:
+        @staticmethod
+        def get(name: str) -> str:
+            assert name == "GITHUB_TOKEN"
+            return "must-not-leak"
+
+    facade = BoundHttpFacade(
+        client=_client(handler, resolver),
+        approved_permissions=(PluginPermission.NETWORK_HTTP_ALLOWLISTED,),
+        allowed_hosts=("api.example", "other.example"),
+        secrets=Secrets(),
+    )
+    result = await facade.request(
+        "GET",
+        "https://api.example/start",
+        auth_secret="GITHUB_TOKEN",
+    )
+
+    assert result.ok
+    assert requests[0].headers["authorization"] == "Bearer must-not-leak"
+    assert "authorization" not in requests[1].headers
 
 
 @pytest.mark.asyncio
