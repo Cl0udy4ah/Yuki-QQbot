@@ -242,7 +242,7 @@ async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> N
     assert requested["data"]["loaded_tools"][0]["name"] == "song_share"
 
     second = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
-    assert second == {"album_share", "song_share"}
+    assert second == {"album_share", "song_share", REQUEST_TOOLS_NAME}
 
     song_call = ToolCall(id="song", function=ToolFunction(name="song_share", arguments="{}"))
     backend.begin_batch((song_call,), agent_runtime)
@@ -254,7 +254,7 @@ async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> N
 
 
 @pytest.mark.asyncio
-async def test_agent_cannot_request_a_tool_outside_planner_approved_scopes() -> None:
+async def test_agent_can_request_authorized_tool_outside_planner_priority_scopes() -> None:
     calls: list[str] = []
     backend = _ChatAgentBackend(_Service(_registry(calls)), _runtime())  # type: ignore[arg-type]
     agent_runtime = SimpleNamespace()
@@ -275,9 +275,6 @@ async def test_agent_cannot_request_a_tool_outside_planner_approved_scopes() -> 
         await backend.execute(REQUEST_TOOLS_NAME, arguments, agent_runtime)  # type: ignore[arg-type]
     )
 
-    assert result == {
-        "ok": False,
-        "error": "capability_not_found",
-        "detail": "当前真实用户和场景允许的工具目录中没有匹配能力",
-    }
+    assert result["ok"] is True
+    assert result["data"]["loaded_tools"][0]["name"] == "web_search"
     assert calls == []

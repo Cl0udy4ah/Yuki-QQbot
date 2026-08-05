@@ -18,6 +18,7 @@ from qq_ai_bot.domain.messages import (
     ChatTool,
     FunctionCallOutput,
     ModelResponseStatus,
+    NativeToolDefinition,
     NativeToolEvent,
     ProviderContinuation,
     ResponseCitation,
@@ -25,6 +26,7 @@ from qq_ai_bot.domain.messages import (
 )
 from qq_ai_bot.llm.base import (
     LLMEmptyResponseError,
+    LLMError,
     LLMIncompleteResponseError,
     LLMRateLimitError,
     LLMTimeoutError,
@@ -90,6 +92,8 @@ class AgentToolBackend(Protocol):
 
     def exhausted(self, runtime: AgentRuntime) -> str: ...
 
+    def post_commit_recovery_text(self) -> str | None: ...
+
 
 class AgentRunner:
     """Execute a provider-neutral bounded tool loop without fabricating inbound events."""
@@ -131,6 +135,8 @@ class AgentRunner:
         citations: list[ResponseCitation] = []
         response_status = ModelResponseStatus.COMPLETED
         incomplete_recovery_used = False
+        continuation_tools: tuple[ChatTool, ...] = ()
+        continuation_native_tools: tuple[NativeToolDefinition, ...] = ()
         web_route = runtime.web_route
         tavily_fallback = bool(
             runtime.force_tavily_fallback
@@ -156,13 +162,39 @@ class AgentRunner:
                 web_mode=web_mode,
                 web_was_used=web_was_used,
             )
+            if (
+                not tavily_fallback
+                and web_mode is WebMode.NATIVE_WITH_TAVILY_FALLBACK
+                and web_route is not None
+                and web_route.provider is WebProvider.NATIVE
+                and not native_definitions
+                and tools is not None
+            ):
+                # A Chat-Completions-only profile cannot accept native tools.
+                # Treat that as an unavailable native route before the first
+                # request, so the authorized Tavily fallback is actually shown.
+                enable_fallback = getattr(tools, "enable_native_web_fallback", None)
+                if callable(enable_fallback):
+                    enable_fallback()
+                    tavily_fallback = True
+                    web_route = self._fallback_route(web_route, WebRouteReason.NATIVE_UNAVAILABLE)
+                    definitions = tools.definitions(runtime, web_was_used=web_was_used)
             if tavily_fallback:
                 native_definitions = ()
             if native_definitions:
                 definitions = tuple(
                     item for item in definitions if item.name not in {"web_search", "read_webpage"}
                 )
-            if incomplete_recovery_used:
+            if continuation is not None:
+                # Responses continuations are one cumulative request chain.
+                # Tools may be added after request_tools, but removing a tool
+                # previously declared in the chain makes some providers reject
+                # the next function-output request with HTTP 400.
+                definitions = self._merge_function_tools(continuation_tools, definitions)
+                native_definitions = self._merge_native_tools(
+                    continuation_native_tools, native_definitions
+                )
+            if incomplete_recovery_used and continuation is None:
                 definitions = ()
                 native_definitions = ()
             try:
@@ -186,6 +218,19 @@ class AgentRunner:
                     ),
                 )
             except (LLMTimeoutError, LLMUnavailableError) as exc:
+                recovered = self._recover_committed_mutation(
+                    tools,
+                    calls_used=calls_used,
+                    model_requests=request_index + 1,
+                    web_was_used=web_was_used,
+                    native_events=native_events,
+                    citations=citations,
+                    response_status=response_status,
+                    web_route=web_route,
+                    exception_category=type(exc).__name__,
+                )
+                if recovered is not None:
+                    return recovered
                 if self._enable_tavily_fallback(
                     tools=tools,
                     web_mode=web_mode,
@@ -202,6 +247,9 @@ class AgentRunner:
                     web_route=web_route,
                 ):
                     tavily_fallback = True
+                    continuation = None
+                    continuation_tools = ()
+                    continuation_native_tools = ()
                     web_route = self._fallback_route(
                         web_route,
                         WebRouteReason.NATIVE_TIMEOUT
@@ -209,8 +257,24 @@ class AgentRunner:
                         else WebRouteReason.NATIVE_UNAVAILABLE,
                     )
                     continue
+                self._record_failure_usage(
+                    tools, tool_calls=calls_used, model_requests=request_index + 1
+                )
                 raise
-            except LLMEmptyResponseError:
+            except LLMEmptyResponseError as exc:
+                recovered = self._recover_committed_mutation(
+                    tools,
+                    calls_used=calls_used,
+                    model_requests=request_index + 1,
+                    web_was_used=web_was_used,
+                    native_events=native_events,
+                    citations=citations,
+                    response_status=response_status,
+                    web_route=web_route,
+                    exception_category=type(exc).__name__,
+                )
+                if recovered is not None:
+                    return recovered
                 if self._enable_tavily_fallback(
                     tools=tools,
                     web_mode=web_mode,
@@ -221,6 +285,9 @@ class AgentRunner:
                     web_route=web_route,
                 ):
                     tavily_fallback = True
+                    continuation = None
+                    continuation_tools = ()
+                    continuation_native_tools = ()
                     web_route = self._fallback_route(web_route, WebRouteReason.NATIVE_EMPTY)
                     continue
                 has_visible_effects = bool(
@@ -240,6 +307,9 @@ class AgentRunner:
                         web_route=web_route,
                     )
                 if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
+                    self._record_failure_usage(
+                        tools, tool_calls=calls_used, model_requests=request_index + 1
+                    )
                     raise
                 empty_retries += 1
                 logger.warning(
@@ -258,6 +328,24 @@ class AgentRunner:
                     )
                 )
                 continue
+            except LLMError as exc:
+                recovered = self._recover_committed_mutation(
+                    tools,
+                    calls_used=calls_used,
+                    model_requests=request_index + 1,
+                    web_was_used=web_was_used,
+                    native_events=native_events,
+                    citations=citations,
+                    response_status=response_status,
+                    web_route=web_route,
+                    exception_category=type(exc).__name__,
+                )
+                if recovered is not None:
+                    return recovered
+                self._record_failure_usage(
+                    tools, tool_calls=calls_used, model_requests=request_index + 1
+                )
+                raise
             pending_function_outputs = ()
             native_events.extend(response.native_tool_events)
             citations.extend(response.citations)
@@ -269,8 +357,23 @@ class AgentRunner:
                     mark_native_web()
             if response.continuation is not None:
                 continuation = response.continuation
+                continuation_tools = definitions
+                continuation_native_tools = native_definitions
             if response.status is ModelResponseStatus.INCOMPLETE:
                 if incomplete_recovery_used or request_index + 1 >= runtime.max_model_requests:
+                    recovered = self._recover_committed_mutation(
+                        tools,
+                        calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        native_events=native_events,
+                        citations=citations,
+                        response_status=response_status,
+                        web_route=web_route,
+                        exception_category=LLMIncompleteResponseError.__name__,
+                    )
+                    if recovered is not None:
+                        return recovered
                     raise LLMIncompleteResponseError(
                         "provider response remained incomplete after bounded recovery"
                     )
@@ -308,6 +411,9 @@ class AgentRunner:
                 web_route=web_route,
             ):
                 tavily_fallback = True
+                continuation = None
+                continuation_tools = ()
+                continuation_native_tools = ()
                 web_route = self._fallback_route(web_route, terminal_web_failure)
                 continue
             if not response.tool_calls:
@@ -320,6 +426,19 @@ class AgentRunner:
                     and tools.has_visible_effects()  # type: ignore[attr-defined]
                 )
                 if not content.strip() and not has_visible_effects:
+                    recovered = self._recover_committed_mutation(
+                        tools,
+                        calls_used=calls_used,
+                        model_requests=request_index + 1,
+                        web_was_used=web_was_used,
+                        native_events=native_events,
+                        citations=citations,
+                        response_status=response_status,
+                        web_route=web_route,
+                        exception_category=LLMEmptyResponseError.__name__,
+                    )
+                    if recovered is not None:
+                        return recovered
                     if empty_retries >= 2 or request_index + 1 >= runtime.max_model_requests:
                         raise LLMEmptyResponseError("model returned no final answer")
                     empty_retries += 1
@@ -397,6 +516,19 @@ class AgentRunner:
                 effect_probe = getattr(tools, "did_use_web", None)
                 if callable(effect_probe) and effect_probe():
                     web_was_used = True
+        recovered = self._recover_committed_mutation(
+            tools,
+            calls_used=calls_used,
+            model_requests=runtime.max_model_requests,
+            web_was_used=web_was_used,
+            native_events=native_events,
+            citations=citations,
+            response_status=response_status,
+            web_route=web_route,
+            exception_category="model_request_budget_exhausted",
+        )
+        if recovered is not None:
+            return recovered
         exhausted = (
             tools.exhausted(runtime) if tools is not None else "工具调用次数过多，Agent 已停止。"
         )
@@ -404,6 +536,72 @@ class AgentRunner:
             text=exhausted,
             tool_calls_used=calls_used,
             model_requests=runtime.max_model_requests,
+            web_was_used=web_was_used,
+            native_tool_events=tuple(native_events),
+            citations=tuple(citations),
+            response_status=response_status,
+            web_route=web_route,
+        )
+
+    @staticmethod
+    def _record_failure_usage(
+        tools: AgentToolBackend | None,
+        *,
+        tool_calls: int,
+        model_requests: int,
+    ) -> None:
+        recorder = getattr(tools, "record_failure_usage", None)
+        if callable(recorder):
+            recorder(tool_calls=tool_calls, model_requests=model_requests)
+
+    @staticmethod
+    def _merge_function_tools(
+        previous: tuple[ChatTool, ...],
+        current: tuple[ChatTool, ...],
+    ) -> tuple[ChatTool, ...]:
+        merged = {item.name: item for item in previous}
+        merged.update({item.name: item for item in current})
+        return tuple(merged.values())
+
+    @staticmethod
+    def _merge_native_tools(
+        previous: tuple[NativeToolDefinition, ...],
+        current: tuple[NativeToolDefinition, ...],
+    ) -> tuple[NativeToolDefinition, ...]:
+        merged = {item.type: item for item in previous}
+        merged.update({item.type: item for item in current})
+        return tuple(merged.values())
+
+    @staticmethod
+    def _recover_committed_mutation(
+        tools: AgentToolBackend | None,
+        *,
+        calls_used: int,
+        model_requests: int,
+        web_was_used: bool,
+        native_events: list[NativeToolEvent],
+        citations: list[ResponseCitation],
+        response_status: ModelResponseStatus,
+        web_route: WebRouteDecision | None,
+        exception_category: str,
+    ) -> AgentRunResult | None:
+        recovery = getattr(tools, "post_commit_recovery_text", None)
+        if not callable(recovery):
+            return None
+        text = recovery()
+        if not isinstance(text, str) or not text.strip():
+            return None
+        logger.warning(
+            "agent_post_commit_finalization_recovered exception_category=%s "
+            "tool_calls_used=%d model_requests=%d",
+            exception_category,
+            calls_used,
+            model_requests,
+        )
+        return AgentRunResult(
+            text=text.strip(),
+            tool_calls_used=calls_used,
+            model_requests=model_requests,
             web_was_used=web_was_used,
             native_tool_events=tuple(native_events),
             citations=tuple(citations),

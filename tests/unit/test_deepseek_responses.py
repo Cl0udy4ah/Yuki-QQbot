@@ -157,6 +157,81 @@ async def test_function_output_follows_cumulative_continuation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_function_outputs_remain_paired_across_three_requests() -> None:
+    requests: list[dict[str, object]] = []
+
+    def function_call_response(index: int) -> dict[str, object]:
+        return {
+            "id": f"resp_{index}",
+            "object": "response",
+            "status": "completed",
+            "output": [
+                {
+                    "id": f"fc_{index}",
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": f"call_{index}",
+                    "name": "demo",
+                    "arguments": "{}",
+                }
+            ],
+            "usage": {},
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) == 1:
+            response = function_call_response(1)
+        elif len(requests) == 2:
+            response = function_call_response(2)
+        else:
+            response = _fixture("text_completed.json")
+        return httpx.Response(200, request=request, json=response)
+
+    async with httpx.AsyncClient(
+        base_url="https://api.deepseek.com", transport=httpx.MockTransport(handler)
+    ) as client:
+        provider = DeepSeekResponsesProvider(
+            base_url="https://api.deepseek.com",
+            api_key="secret",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+        first = await provider.complete(_request())
+        assert first.continuation is not None
+        second = await provider.complete(
+            _request(
+                continuation=first.continuation,
+                function_outputs=(FunctionCallOutput(call_id="call_1", output='{"ok":true}'),),
+            )
+        )
+        assert second.continuation is not None
+        await provider.complete(
+            _request(
+                continuation=second.continuation,
+                function_outputs=(FunctionCallOutput(call_id="call_2", output='{"ok":true}'),),
+            )
+        )
+
+    third_inputs = requests[2]["input"]
+    assert isinstance(third_inputs, list)
+    assert [item["type"] for item in third_inputs[1:]] == [
+        "function_call",
+        "function_call_output",
+        "function_call",
+        "function_call_output",
+    ]
+    assert [item["call_id"] for item in third_inputs[1:]] == [
+        "call_1",
+        "call_1",
+        "call_2",
+        "call_2",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_native_web_events_and_last_message_are_parsed_from_incomplete_fixture() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

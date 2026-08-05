@@ -185,8 +185,6 @@ class PluginCapabilityAdapter:
         visual = bool(runtime.inbound.attachments or runtime.inbound.reply_attachments)
         if visual and metadata.risk in {RiskClass.SEND, RiskClass.MUTATE, RiskClass.DESTRUCTIVE}:
             return False
-        if web_was_used and metadata.risk in {RiskClass.MUTATE, RiskClass.DESTRUCTIVE}:
-            return False
         return True
 
     @asynccontextmanager

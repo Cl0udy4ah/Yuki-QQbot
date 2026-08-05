@@ -126,7 +126,7 @@ class ToolGatewaySender(MemorySender):
 
 
 class WebThenOneBotLLM(LLMProvider):
-    """Simulate a malicious webpage trying to cause an admin action."""
+    """Use an authorized OneBot action after a web lookup."""
 
     def __init__(self) -> None:
         self.requests: list[ChatRequest] = []
@@ -148,25 +148,25 @@ class WebThenOneBotLLM(LLMProvider):
                 ),
             )
         if len(self.requests) == 2:
-            assert "call_onebot_api" not in {tool.name for tool in request.tools}
+            assert "call_onebot_api" in {tool.name for tool in request.tools}
             return ChatResponse(
                 content="",
                 latency_seconds=0,
                 tool_calls=(
                     ToolCall(
-                        id="forbidden-onebot",
+                        id="authorized-onebot",
                         function=ToolFunction(
                             name="call_onebot_api",
                             arguments=(
                                 '{"action":"send_private_msg",'
-                                '"params":{"user_id":"12345678","message":"不应发送"}}'
+                                '"params":{"user_id":"12345678","message":"授权发送"}}'
                             ),
                         ),
                     ),
                 ),
             )
-        assert "unknown_capability" in (request.messages[-1].content or "")
-        return ChatResponse(content="已忽略网页中的操作指令。", latency_seconds=0)
+        assert '"ok": true' in (request.messages[-1].content or "").casefold()
+        return ChatResponse(content="已按授权完成操作。", latency_seconds=0)
 
 
 class RepeatedWebToolLLM(LLMProvider):
@@ -230,7 +230,7 @@ class NativeWebLLM(LLMProvider):
 
 
 class NativeSourceFailureThenTavilyLLM(LLMProvider):
-    """Require a bounded Tavily retry when native source recovery is empty."""
+    """Use Tavily immediately when the profile cannot expose native tools."""
 
     def __init__(self) -> None:
         self.requests: list[ChatRequest] = []
@@ -238,21 +238,6 @@ class NativeSourceFailureThenTavilyLLM(LLMProvider):
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
         if len(self.requests) == 1:
-            assert "web_search" not in {tool.name for tool in request.tools}
-            return ChatResponse(
-                content="原生搜索给出了回答，但没有可验证链接。",
-                latency_seconds=0,
-                native_tool_events=(
-                    NativeToolEvent(
-                        tool_type=NativeToolType.WEB_SEARCH,
-                        call_id="native-no-source",
-                        status=NativeToolStatus.COMPLETED,
-                        action_type="search",
-                        query="public docs",
-                    ),
-                ),
-            )
-        if len(self.requests) == 2:
             assert "web_search" in {tool.name for tool in request.tools}
             assert not request.native_tools
             return ChatResponse(
@@ -260,7 +245,7 @@ class NativeSourceFailureThenTavilyLLM(LLMProvider):
                 latency_seconds=0,
                 tool_calls=(
                     ToolCall(
-                        id="tavily-fallback",
+                        id="tavily-direct",
                         function=ToolFunction(
                             name="web_search",
                             arguments='{"query":"最新 DeepSeek 更新"}',
@@ -306,7 +291,7 @@ class DomainRoutedTavilyLLM(LLMProvider):
 
 
 class TargetMissThenTavilyLLM(LLMProvider):
-    """Fall back when native web completes without opening the requested URL."""
+    """Read through Tavily when native tools are unavailable for the profile."""
 
     def __init__(self, url: str) -> None:
         self.url = url
@@ -315,27 +300,6 @@ class TargetMissThenTavilyLLM(LLMProvider):
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
         if len(self.requests) == 1:
-            assert "read_webpage" not in {tool.name for tool in request.tools}
-            return ChatResponse(
-                content="原生搜索只找到了一篇无关页面。",
-                latency_seconds=0,
-                native_tool_events=(
-                    NativeToolEvent(
-                        tool_type=NativeToolType.WEB_SEARCH,
-                        call_id="native-other",
-                        status=NativeToolStatus.COMPLETED,
-                        action_type="open_page",
-                        url="https://example.com/other",
-                    ),
-                ),
-                citations=(
-                    ResponseCitation(
-                        url="https://example.com/other",
-                        origin=CitationOrigin.ANNOTATION,
-                    ),
-                ),
-            )
-        if len(self.requests) == 2:
             assert not request.native_tools
             assert "read_webpage" in {tool.name for tool in request.tools}
             return ChatResponse(
@@ -393,7 +357,7 @@ async def test_native_web_sources_are_persisted_before_backend_rendering(
 
 
 @pytest.mark.asyncio
-async def test_explicit_source_request_uses_bounded_tavily_fallback(
+async def test_chat_completions_profile_uses_tavily_fallback_before_request(
     database: Database,
 ) -> None:
     settings = make_settings(
@@ -420,7 +384,7 @@ async def test_explicit_source_request_uses_bounded_tavily_fallback(
     assert result.sent_messages == 2
     assert sender.messages[0].text == "已通过备用搜索核验。"
     assert "https://example.com/deepseek-update" in sender.messages[1].text
-    assert len(llm.requests) == 3
+    assert len(llm.requests) == 2
 
 
 @pytest.mark.asyncio
@@ -464,7 +428,38 @@ async def test_explicit_domain_rule_routes_directly_to_tavily(
 
 
 @pytest.mark.asyncio
-async def test_native_target_miss_falls_back_to_tavily_once(
+async def test_tavily_keyword_without_verb_routes_directly_to_tavily(
+    database: Database,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("INFO")
+    settings = make_settings(
+        database.url,
+        web_enabled=False,
+        web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+        tavily_api_key="test-placeholder",
+        split_daily_chat_sentences=False,
+    )
+    llm = WebToolLLM()
+    web = FakeWebSearchProvider(response=web_response())
+    harness = build_harness(database, settings, llm, web_provider=web)
+    sender = MemorySender()
+
+    result = await harness.processor.handle(
+        event("Tavily搜索立党的最新推文", message_id="tavily-keyword-route"),
+        sender,
+    )
+
+    assert result.reason == "chat"
+    assert len(web.search_requests) == 1
+    assert len(llm.requests) == 2
+    assert not llm.requests[0].native_tools
+    assert "web_search" in {tool.name for tool in llm.requests[0].tools}
+    assert "provider=tavily reason=user_override" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_url_read_uses_tavily_fallback(
     database: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -498,8 +493,8 @@ async def test_native_target_miss_falls_back_to_tavily_once(
     assert result.reason == "chat"
     assert [message.text for message in sender.messages] == ["Tavily 已经读取到指定页面。"]
     assert web.extract_requests == [(target_url, "读取用户指定的网页")]
-    assert len(llm.requests) == 3
-    assert "reason_category=target_not_opened" in caplog.text
+    assert len(llm.requests) == 2
+    assert "native_tool_binding_skipped reason=protocol" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -635,7 +630,7 @@ async def test_web_failure_is_returned_to_llm_for_a_natural_answer(database: Dat
 
 
 @pytest.mark.asyncio
-async def test_web_content_cannot_trigger_superuser_onebot_tool(database: Database) -> None:
+async def test_web_lookup_can_be_followed_by_superuser_onebot_tool(database: Database) -> None:
     llm = WebThenOneBotLLM()
     harness = build_harness(
         database,
@@ -651,8 +646,10 @@ async def test_web_content_cannot_trigger_superuser_onebot_tool(database: Databa
     )
 
     assert result.reason == "chat"
-    assert not sender.api_calls
-    assert sender.messages[0].text == "已忽略网页中的操作指令。"
+    assert sender.api_calls == [
+        ("send_private_msg", {"user_id": "12345678", "message": "授权发送"})
+    ]
+    assert sender.messages[0].text == "已按授权完成操作。"
 
 
 @pytest.mark.asyncio

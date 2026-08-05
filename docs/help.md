@@ -1,6 +1,10 @@
 # Yuki-QQbot
 
-> **3.3.1 Web Provider 规则路由：**混合模式支持用户显式选择和域名直达 Tavily；
+> **3.4.0 自由 Agent 自动化：**scheduled automation 与普通会话共用授权工具和插件注册；
+> Agent 可以在创建者权限内自主查询、发送消息并管理后续自动化。Planner scope 只决定首批
+> 工具优先级，不再截断其余已授权能力；DeepSeek Responses 多轮工具续写保持完整配对。
+
+> **3.3.1 Web Provider 规则路由：**混合模式支持 Tavily 关键词和域名直达 Tavily；
 > DeepSeek 原生访问失败、没有打开明确目标 URL 或无法提供所需来源时，只允许一次 Tavily
 > 回退。Router 不改变 Planner 的 web 授权，也不会强迫 Agent 调用联网工具。
 
@@ -83,7 +87,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.3.1 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
+Yuki-QQbot 3.4.0 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -215,7 +219,8 @@ Planner 只需选择 Bundle scope，成员就会整体进入候选与 Agent Sche
 ```
 
 桥接后的内部名称为 `mcp.<server_id>.<remote_tool_name>`。自然语言创建任务时，Yuki 只需从
-TaskSpec Schema 提供的模型安全 ID 中选择能力，后端会解析为真实名称并保存最小委托集合；
+TaskSpec Schema 提供的模型安全 ID 中选择能力，后端会解析为真实名称并保存创建者授权快照；
+`agentic` 任务省略 `capabilities` 时继承创建者当前可委托工具域，显式列出只用于主动缩小范围；
 无需手写名称或 Automation DSL。插件 SDK 和内部调用仍可直接使用底层 DSL。`includeTools`
 不能为空；未列出的远端工具不会进入后台任务目录。默认 `permission=superuser`，只有需要明确
 开放给普通用户的只读服务才应改为 `user`。远端 Schema 发生变化时，旧任务会停止执行并进入
@@ -812,8 +817,8 @@ relationship_weight = round(0.6 × affection_score + 0.4 × effective_trust)
   → automation_create
   → AutomationCompiler 解析模型安全 capability ID、选择策略并自动计算预算
   → 生成 ExecutionPlan 与内部 AutomationScript
-  → Schema、时间、来源目标、最小权限和模板污点校验
-  → SQLite 持久化脚本、版本和最小委托权限
+  → Schema、时间、来源目标、创建者权限和模板污点校验
+  → SQLite 持久化脚本、版本和授权快照
   → AutomationWorker 使用数据库租约领取
   → AutomationExecutor 顺序执行已登记 capability
   → 写运行/步骤审计；真实发送消息写回 chat_events
@@ -837,7 +842,7 @@ relationship_weight = round(0.6 × affection_score + 0.4 × effective_trust)
   },
   "timezone": "可选；默认使用用户保存的 IANA 时区",
   "strategy": "auto | static | generated | agentic",
-  "capabilities": ["由 Schema 枚举提供的模型安全 ID；只选本任务所需能力"],
+  "capabilities": ["可选；agentic 省略时继承创建者工具域，显式列出时缩小范围"],
   "constraints": ["运行时重新查询动态商品编号和价格", "只创建待支付订单，不代替支付"],
   "context": {
     "scene": "none | creator_private | current_group",
@@ -994,8 +999,9 @@ docker compose up -d --build --no-deps bot
 - `WEB_MODE=native_with_tavily_fallback`：原生优先并允许一次有界 Tavily 回退，也必须配置 Key。
 - 混合模式下，`WEB_TAVILY_DOMAINS` 使用逗号分隔域名。规则按主机名边界匹配，
   `github.com` 会匹配 `api.github.com`，不会匹配 `evilgithub.com`。
-- `WEB_ALLOW_PROVIDER_OVERRIDE=true` 时，用户可在当前消息中明确要求使用 Tavily 或
-  DeepSeek 原生联网；网页正文和工具结果不能改变 Provider。
+- `WEB_ALLOW_PROVIDER_OVERRIDE=true` 时，当前用户消息只要包含 `Tavily`、`Tavility` 或
+  `塔维利` 就直接选择 Tavily，不再要求“用”“搜索”等旧语法。网页正文和工具结果不能
+  改变 Provider。
 - 原生 `open_page` 失败或没有真正打开用户明确给出的目标 URL 时，可进行一次
   `native -> Tavily` 回退；不会在两个 Provider 之间循环。
 - 未设置 `WEB_MODE` 时兼容旧 `WEB_ENABLED`：`true` 映射为 `tavily`，`false` 映射为
@@ -1072,14 +1078,14 @@ Planner-first 自主参与规则：
 | `/ai preference list` | 查看本人的交互偏好 |
 | `/ai preference set <键> <值>` | 设置交互偏好 |
 | `/ai preference delete <键>` | 删除交互偏好 |
-| `/ai automation list` | 只列出当前任务，按下次运行时间从 `#1` 重新编号并显示本地时间 |
-| `/ai automation completed` | 单独列出已完成、取消、失败或阻塞的历史任务 |
-| `/ai automation show <当前编号>` | 查看当前任务、调度与下次执行时间 |
-| `/ai automation pause <当前编号>` | 暂停当前任务 |
-| `/ai automation resume <当前编号>` | 重新计算时间并恢复当前任务 |
-| `/ai automation cancel <当前编号>` | 永久取消当前任务并移入历史 |
-| `/ai automation run <当前编号>` | 将当前任务调度为尽快执行 |
-| `/ai automation history <当前编号>` | 查看当前任务最近执行状态与错误类别 |
+| `/ai automation list` | 只列出当前任务，显示稳定的自动化 ID、本地时间与状态 |
+| `/ai automation completed` | 单独列出已完成、取消、失败或阻塞的历史任务及自动化 ID |
+| `/ai automation show <自动化ID>` | 查看指定任务、调度与下次执行时间 |
+| `/ai automation pause <自动化ID>` | 暂停指定任务 |
+| `/ai automation resume <自动化ID>` | 重新计算时间并恢复指定任务 |
+| `/ai automation cancel <自动化ID>` | 永久取消指定任务并移入历史 |
+| `/ai automation run <自动化ID>` | 将指定任务调度为尽快执行 |
+| `/ai automation history <自动化ID>` | 查看指定任务最近执行状态与错误类别 |
 | `/ai affection show` | 查看本人的好感度、信任度、有效信任度和阶段 |
 | `/ai affection history` | 查看本人最近 10 次关系变化 |
 | `/ai affection show user <QQ号>` | 超级管理员查看指定人物 |

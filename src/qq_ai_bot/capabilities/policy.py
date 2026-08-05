@@ -10,7 +10,6 @@ from qq_ai_bot.capabilities.models import (
     CapabilityDescriptor,
     CapabilityEffect,
     CapabilityExposure,
-    CapabilityRisk,
 )
 from qq_ai_bot.planner.models import ToolMode, ToolSelection
 
@@ -55,12 +54,6 @@ class CapabilityPolicyEngine:
                 CapabilityEffect.READ_STATE,
                 CapabilityEffect.EXTERNAL_READ,
             }:
-                continue
-            if (context.contains_images or context.web_was_used) and (
-                descriptor.effect
-                in {CapabilityEffect.WRITE_STATE, CapabilityEffect.PLATFORM_MUTATE}
-                or descriptor.risk is CapabilityRisk.DESTRUCTIVE
-            ):
                 continue
             visible.append(descriptor)
         return tuple(visible)

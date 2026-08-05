@@ -656,7 +656,7 @@ async def test_failed_plugin_send_is_audited_without_fabricating_ledger_event(
 
 
 @pytest.mark.asyncio
-async def test_image_and_web_turns_keep_side_effect_isolation() -> None:
+async def test_image_and_web_context_do_not_revoke_authorized_side_effects() -> None:
     gateway = Gateway()
     context = HostPluginContext(
         plugin_id="example.plugin",
@@ -668,13 +668,13 @@ async def test_image_and_web_turns_keep_side_effect_isolation() -> None:
     )
     image = MessageAttachment(kind=AttachmentKind.IMAGE, label="image", file="file-id")
     with context.bind(invocation(user_id="90000", gateway=gateway, attachments=(image,))):
-        with pytest.raises(PluginPermissionError, match="image turns"):
-            await context.messages.send_private("90000", "blocked")
+        sent = await context.messages.send_private("90000", "allowed")
+        assert sent.ok
 
     with context.bind(invocation(user_id="90000", gateway=gateway, web_was_used=True)):
-        with pytest.raises(PluginPermissionError, match="after web access"):
-            await context.onebot.call_mutating_action("delete_msg", {"message_id": 1})
-    assert not gateway.calls
+        changed = await context.onebot.call_mutating_action("delete_msg", {"message_id": 1})
+        assert changed.ok
+    assert [action for action, _params in gateway.calls] == ["send_private_msg", "delete_msg"]
 
 
 @pytest.mark.asyncio

@@ -391,11 +391,14 @@ async def test_ordinary_natural_language_capability_question_calls_current_user_
 
 
 @pytest.mark.asyncio
-async def test_explicit_empty_planner_scopes_keep_only_direct_capability_tool(
+async def test_explicit_empty_planner_scopes_keep_authority_tool_discovery(
     database: Database,
 ) -> None:
     def responder(request: ChatRequest) -> ChatResponse:
-        assert {tool.name for tool in request.tools} == {"get_my_capabilities"}
+        assert {tool.name for tool in request.tools} == {
+            "get_my_capabilities",
+            "request_tools",
+        }
         return ChatResponse(content="可以，告诉我你想了解哪一类能力", latency_seconds=0)
 
     harness = build_harness(

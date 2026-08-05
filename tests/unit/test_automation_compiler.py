@@ -111,6 +111,38 @@ def test_agentic_task_uses_model_safe_id_and_exact_minimum_delegation() -> None:
     )
 
 
+def test_agentic_task_without_capability_list_inherits_creator_domain() -> None:
+    settings = make_settings(
+        "sqlite+aiosqlite:///:memory:",
+        automation_enabled=True,
+        automation_max_llm_calls_per_run=10,
+        automation_max_tool_calls_per_run=16,
+    )
+    registry = _registry()
+    plan = AutomationCompiler(settings=settings, registry=registry).compile(
+        TaskSpec.model_validate(
+            {
+                "name": "自由执行",
+                "goal": "先查询资料，再发送结果并创建后续提醒",
+                "trigger": {"type": "after", "seconds": 60},
+                "strategy": "agentic",
+                "delivery": {"target": "none"},
+            }
+        ),
+        _provenance(),
+        default_timezone="Asia/Shanghai",
+    )
+
+    assert "web.search" in plan.selected_capabilities
+    assert "onebot.send_private_message" in plan.selected_capabilities
+    assert "automation.create_task" in plan.selected_capabilities
+    assert "mcp.mcd.create-order" in plan.selected_capabilities
+    assert plan.script.steps[0].arguments["allowed_capabilities"] == list(
+        plan.selected_capabilities
+    )
+    assert plan.script.limits.max_messages == settings.automation_max_messages_per_run
+
+
 def test_capability_resolution_tolerates_hyphen_underscore_difference() -> None:
     registry = _registry()
     assert registry.resolve_agent_reference("mcp.mcd.create_order") == "mcp.mcd.create-order"

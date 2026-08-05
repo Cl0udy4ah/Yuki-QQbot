@@ -3,57 +3,26 @@
 from __future__ import annotations
 
 import json
-from enum import StrEnum
 from typing import Literal
 
-from pydantic import Field, model_validator
-
 from qq_ai_bot.automation.models import (
-    AutomationContext,
     AutomationLimits,
     AutomationScript,
     AutomationStep,
-    Schedule,
     StrictModel,
 )
 from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
+from qq_ai_bot.automation.task_spec import (
+    TaskDelivery as TaskDelivery,
+)
+from qq_ai_bot.automation.task_spec import (
+    TaskSpec as TaskSpec,
+)
+from qq_ai_bot.automation.task_spec import (
+    TaskStrategy as TaskStrategy,
+)
 from qq_ai_bot.automation.validator import CreationProvenance
 from qq_ai_bot.config import Settings
-
-
-class TaskStrategy(StrEnum):
-    AUTO = "auto"
-    STATIC = "static"
-    GENERATED = "generated"
-    AGENTIC = "agentic"
-
-
-class TaskDelivery(StrictModel):
-    target: Literal["auto", "self_private", "current_group", "none"] = "auto"
-    text: str | None = Field(default=None, min_length=1, max_length=12000)
-
-
-class TaskSpec(StrictModel):
-    """Small provider-neutral intent contract exposed to the conversational Agent."""
-
-    version: Literal[1] = 1
-    name: str = Field(min_length=1, max_length=128)
-    goal: str = Field(min_length=1, max_length=2500)
-    trigger: Schedule
-    timezone: str | None = Field(default=None, min_length=1, max_length=64)
-    strategy: TaskStrategy = TaskStrategy.AUTO
-    capabilities: tuple[str, ...] = Field(default=(), max_length=16)
-    constraints: tuple[str, ...] = Field(default=(), max_length=12)
-    context: AutomationContext = Field(default_factory=AutomationContext)
-    delivery: TaskDelivery = Field(default_factory=TaskDelivery)
-
-    @model_validator(mode="after")
-    def _strategy_matches_capabilities(self) -> TaskSpec:
-        if self.strategy in {TaskStrategy.STATIC, TaskStrategy.GENERATED} and self.capabilities:
-            raise ValueError(f"{self.strategy.value} 策略不能声明外部 capability")
-        if len(set(self.capabilities)) != len(self.capabilities):
-            raise ValueError("capabilities 不能重复")
-        return self
 
 
 class ExecutionPlan(StrictModel):
@@ -86,7 +55,11 @@ class AutomationCompiler:
         *,
         default_timezone: str,
     ) -> ExecutionPlan:
-        selected = self._resolve_capabilities(task.capabilities, provenance)
+        selected = self._resolve_capabilities(
+            task.capabilities,
+            provenance,
+            inherit=task.strategy is TaskStrategy.AGENTIC and not task.capabilities,
+        )
         strategy = self._resolve_strategy(task, selected)
         timezone = task.timezone or default_timezone
         delivery = self._resolve_delivery(task.delivery, provenance)
@@ -163,7 +136,9 @@ class AutomationCompiler:
                 max_steps=len(steps),
                 max_llm_calls=model_budget,
                 max_tool_calls=1 + tool_budget + delivery_calls,
-                max_messages=delivery_calls,
+                # Agentic tasks may send through a delegated plugin or OneBot
+                # capability instead of the compiler-added delivery step.
+                max_messages=self._settings.automation_max_messages_per_run,
                 timeout_seconds=self._settings.automation_max_runtime_seconds,
             )
 
@@ -200,9 +175,17 @@ class AutomationCompiler:
         self,
         references: tuple[str, ...],
         provenance: CreationProvenance,
+        *,
+        inherit: bool = False,
     ) -> tuple[str, ...]:
         result: list[str] = []
         delegatable = {item.name for item in self._registry.delegatable()}
+        if inherit:
+            return tuple(
+                item.name
+                for item in self._registry.delegatable()
+                if item.permits(provenance.permission)
+            )
         for reference in references:
             name = self._registry.resolve_agent_reference(reference)
             if name not in delegatable:
@@ -260,9 +243,9 @@ class AutomationCompiler:
             "constraints": task.constraints,
             "delivery": task.delivery.target,
             "rules": (
-                "只完成本次计划目标，不创建或修改其他自动化。"
-                "动态编号和价格必须在任务运行时查询；不要假装外部操作成功。"
-                "最终只返回适合直接发给用户的简短结果。"
+                "围绕目标自主选择已授权工具及调用顺序；目标要求后续提醒时可以创建或修改"
+                "创建者自己的自动化。动态编号和价格必须在任务运行时查询；"
+                "不要假装外部操作成功。最终只返回适合直接发给用户的简短结果。"
             ),
         }
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:4000]

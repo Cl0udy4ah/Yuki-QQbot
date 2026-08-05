@@ -234,6 +234,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._admin_retry_constraint: tuple[str, str] | None = None
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
+        self._committed_mutation_messages: list[str] = []
         self._automation_persisted = False
         self._batch: list[ToolCall] = []
         self._catalog: UnifiedToolCatalog | None = None
@@ -271,41 +272,43 @@ class _ChatAgentBackend(AgentToolBackend):
             mode=self._runtime.tool_mode,
             scopes=policy_scopes,
         )
-        visible = CapabilityPolicyEngine().visible(
-            tuple(entry.descriptor for entry in self._catalog.entries),
-            CapabilityPolicyContext(
-                authority=AuthorityContext(
-                    actor_user_id=self._runtime.actor_user_id,
-                    is_superuser=self._runtime.actor_is_superuser,
-                ),
-                origin=self._runtime.origin,
-                tool_selection=selection,
-                contains_images=bool(
-                    self._runtime.inbound.attachments or self._runtime.inbound.reply_attachments
-                ),
-                web_was_used=self._web_was_used,
+        policy = CapabilityPolicyEngine()
+        policy_context = CapabilityPolicyContext(
+            authority=AuthorityContext(
+                actor_user_id=self._runtime.actor_user_id,
+                is_superuser=self._runtime.actor_is_superuser,
             ),
+            origin=self._runtime.origin,
+            tool_selection=selection,
+            contains_images=bool(
+                self._runtime.inbound.attachments or self._runtime.inbound.reply_attachments
+            ),
+            web_was_used=self._web_was_used,
+        )
+        visible = policy.visible(
+            tuple(entry.descriptor for entry in self._catalog.entries),
+            policy_context,
         )
         visible_names = {descriptor.model_name for descriptor in visible}
-        # request_tools may recover capabilities omitted by schema budgets, but
-        # it cannot broaden the Planner-approved scope set.
+        # Planner scopes prioritize the initial schema set. They are not an
+        # authority boundary: request_tools may load any capability permitted
+        # by the real actor, origin and current tool mode.
+        authority_visible = policy.visible(
+            tuple(entry.descriptor for entry in self._catalog.entries),
+            replace(
+                policy_context,
+                tool_selection=ToolSelection(mode=self._runtime.tool_mode, scopes=()),
+            ),
+        )
+        authority_visible_names = {descriptor.model_name for descriptor in authority_visible}
         self._requestable_catalog = replace(
             self._catalog,
             entries=tuple(
                 entry
                 for entry in self._catalog.entries
-                if entry.descriptor.model_name in visible_names
+                if entry.descriptor.model_name in authority_visible_names
             ),
         )
-        if self._runtime.planner_scopes_explicit and not self._runtime.tool_groups:
-            self._requestable_catalog = replace(
-                self._requestable_catalog,
-                entries=tuple(
-                    entry
-                    for entry in self._requestable_catalog.entries
-                    if entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
-                ),
-            )
         filtered_catalog = replace(
             self._catalog,
             entries=tuple(
@@ -439,7 +442,6 @@ class _ChatAgentBackend(AgentToolBackend):
         exposed_names = {tool.name for tool in definitions}
         may_request_more = bool(
             self._runtime.tool_mode is not ToolMode.NONE
-            and not (self._runtime.planner_scopes_explicit and not self._runtime.tool_groups)
             and self._requestable_catalog is not None
             and any(
                 entry.descriptor.model_name not in exposed_names
@@ -584,15 +586,6 @@ class _ChatAgentBackend(AgentToolBackend):
                 },
                 ensure_ascii=False,
             )
-        elif mutation_identity is not None and self._web_was_used:
-            result = json.dumps(
-                {
-                    "ok": False,
-                    "error": "web_mutation_isolation",
-                    "detail": "使用外部网页内容后，本轮不允许修改长期状态。",
-                },
-                ensure_ascii=False,
-            )
         elif is_web_tool and self._web_calls_used >= config.web.max_calls_per_turn:
             result = json.dumps(
                 {
@@ -602,15 +595,6 @@ class _ChatAgentBackend(AgentToolBackend):
                         f"本轮最多执行 {config.web.max_calls_per_turn} 次联网工具，"
                         "请根据已有结果回答。"
                     ),
-                },
-                ensure_ascii=False,
-            )
-        elif ToolGroup.ONEBOT.value in effective_descriptor.scope_ids and self._web_was_used:
-            result = json.dumps(
-                {
-                    "ok": False,
-                    "error": "web_onebot_isolation",
-                    "detail": "使用外部网页内容后，本轮不允许执行 OneBot 管理操作。",
                 },
                 ensure_ascii=False,
             )
@@ -757,6 +741,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 self._admin_terminal_failure = None
                 if mutation_identity is not None and mutation_committed:
                     self._completed_admin_mutations.add(mutation_identity)
+                    self._remember_committed_mutation(decoded)
             elif (decoded.get("error") or decoded.get("error_code")) == "duplicate_mutation":
                 # A prior identical call already committed in this turn. Keep
                 # the successful result available so the model can summarize it.
@@ -800,6 +785,20 @@ class _ChatAgentBackend(AgentToolBackend):
             )
             for effect in effects
         )
+
+    def post_commit_recovery_text(self) -> str | None:
+        """Return a deterministic reply when model finalization fails after a commit."""
+
+        if not self._committed_mutation_messages:
+            return None
+        return "\n".join(self._committed_mutation_messages)
+
+    def _remember_committed_mutation(self, result: dict[str, object]) -> None:
+        message = str(result.get("public_message") or "").strip()
+        if not message:
+            message = "操作已成功完成。"
+        if message not in self._committed_mutation_messages:
+            self._committed_mutation_messages.append(message)
 
     def exhausted(self, runtime: AgentRuntime) -> str:
         if self._admin_terminal_failure is not None:
@@ -945,8 +944,8 @@ class _ChatAgentBackend(AgentToolBackend):
     def _request_runtime(self) -> ToolRuntime:
         return replace(
             self._runtime,
-            allow_generic_onebot=(self._runtime.allow_generic_onebot and not self._web_was_used),
-            allow_admin_actions=(self._runtime.allow_admin_actions and not self._web_was_used),
+            allow_generic_onebot=self._runtime.allow_generic_onebot,
+            allow_admin_actions=self._runtime.allow_admin_actions,
             native_web_fallback=self._native_web_fallback,
         )
 

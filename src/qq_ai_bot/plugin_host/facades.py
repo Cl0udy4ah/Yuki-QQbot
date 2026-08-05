@@ -586,26 +586,30 @@ class HostPluginContext:
         invocation = self._invocation(required=require_invocation)
         if invocation is None:
             return None
-        if invocation.has_visual_input and (mutation or send):
-            raise PluginPermissionError("plugin write/send is isolated from image turns")
-        if invocation.web_was_used and mutation:
-            raise PluginPermissionError("plugin mutation is isolated after web access")
         if invocation.origin is TurnOrigin.SCHEDULED_AUTOMATION:
             authority = invocation.delegated_authority
             allowed = invocation.allowed_capabilities
             if authority is None or authority.creator_user_id != invocation.actor_user_id:
                 raise PluginPermissionError("scheduled invocation has no valid delegation")
-            if permission.value not in allowed:
-                raise PluginPermissionError("permission was not delegated to this automation")
+            plugin_prefix = f"plugin.{self._plugin_id}."
+            if not any(item.startswith(plugin_prefix) for item in allowed):
+                raise PluginPermissionError("plugin action was not delegated to this automation")
         if privileged:
-            if (
-                invocation.actor_user_id not in self._superuser_ids
-                or invocation.origin is not TurnOrigin.USER_MESSAGE
-                or invocation.inbound is None
-                or invocation.inbound.sender.user_id != invocation.actor_user_id
+            direct_user_event = bool(
+                invocation.origin is TurnOrigin.USER_MESSAGE
+                and invocation.inbound is not None
+                and invocation.inbound.sender.user_id == invocation.actor_user_id
+            )
+            delegated_task = bool(
+                invocation.origin is TurnOrigin.SCHEDULED_AUTOMATION
+                and invocation.delegated_authority is not None
+                and invocation.delegated_authority.creator_user_id == invocation.actor_user_id
+            )
+            if invocation.actor_user_id not in self._superuser_ids or not (
+                direct_user_event or delegated_task
             ):
                 raise PluginPermissionError(
-                    "operation requires a real direct SUPERUSERS message event"
+                    "operation requires direct or delegated SUPERUSERS authority"
                 )
         return invocation
 
@@ -2343,11 +2347,12 @@ class _OneBotFacade:
         async def send() -> PluginResult:
             checked = self._host._require(PluginPermission.ONEBOT_SEND, send=True)
             assert checked is not None
-            if checked.inbound is None or checked.origin not in {
+            if checked.origin not in {
                 TurnOrigin.USER_MESSAGE,
                 TurnOrigin.AUTONOMOUS_GROUP,
+                TurnOrigin.SCHEDULED_AUTOMATION,
             }:
-                raise PluginPermissionError("music cards require a current real message scene")
+                raise PluginPermissionError("music cards require a bound conversation scene")
             card_provider = _validated_music_provider(provider)
             card_resource_id = _validated_music_resource_id(resource_id)
             message = [
@@ -2404,11 +2409,12 @@ class _OneBotFacade:
         async def send() -> PluginResult:
             checked = self._host._require(PluginPermission.ONEBOT_SEND, send=True)
             assert checked is not None
-            if checked.inbound is None or checked.origin not in {
+            if checked.origin not in {
                 TurnOrigin.USER_MESSAGE,
                 TurnOrigin.AUTONOMOUS_GROUP,
+                TurnOrigin.SCHEDULED_AUTOMATION,
             }:
-                raise PluginPermissionError("music cards require a current real message scene")
+                raise PluginPermissionError("music cards require a bound conversation scene")
             card_data = {
                 "type": "custom",
                 "url": normalize_public_url(url),

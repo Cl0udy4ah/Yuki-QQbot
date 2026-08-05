@@ -116,16 +116,17 @@ class AutomationToolService:
             ChatTool(
                 name="automation_list",
                 description=(
-                    "只列出当前真实发送者仍在运行或暂停的任务。返回的 number 是每次从 1 "
-                    "重新排列的用户可见编号；automation_id 仅供后续工具调用，回复用户时不要"
-                    "显示为编号。已结束任务请使用 automation_list_history。"
+                    "只列出当前真实发送者仍在运行或暂停的任务。每条任务返回并显示稳定的 "
+                    "automation_id，后续查看、修改或取消必须使用该 ID；不要生成临时编号。"
+                    "已结束任务请使用 automation_list_history。"
                 ),
                 parameters=_object_schema({}),
             ),
             ChatTool(
                 name="automation_list_history",
                 description=(
-                    "单独列出当前真实发送者已完成、取消、失败或阻塞的任务历史，不占用当前任务编号。"
+                    "单独列出当前真实发送者已完成、取消、失败或阻塞的任务历史，"
+                    "每条任务显示稳定的 automation_id。"
                 ),
                 parameters=_object_schema(
                     {"limit": {"type": "integer", "minimum": 1, "maximum": 100}}
@@ -235,17 +236,17 @@ class AutomationToolService:
                     conversation_key=runtime.conversation_key,
                     max_runs=arguments.get("max_runs"),
                 )
-                return _result(data=_record(row, plan=plan, persisted=True))
+                return _result(
+                    data=_record(row, plan=plan, persisted=True),
+                    public_message=f"自动化任务已创建（ID {row.id}）。",
+                    mutation_committed=True,
+                )
             if name == "automation_list":
                 automations = await self._service.list_current(inbound.sender.user_id)
                 return _result(
                     data={
                         "timezone": await self._service.timezone(inbound.sender.user_id),
-                        "current_tasks": [
-                            _record(row, number=index)
-                            for index, row in enumerate(automations, start=1)
-                        ],
-                        "numbering": "number 每次只按当前任务从 1 重新排列",
+                        "current_tasks": [_record(row) for row in automations],
                     }
                 )
             if name == "automation_list_history":
@@ -256,10 +257,7 @@ class AutomationToolService:
                 return _result(
                     data={
                         "timezone": await self._service.timezone(inbound.sender.user_id),
-                        "completed_history": [
-                            _record(row, history_number=index)
-                            for index, row in enumerate(automations[:maximum], start=1)
-                        ],
+                        "completed_history": [_record(row) for row in automations[:maximum]],
                     }
                 )
             if name == "time_get_current":
@@ -269,12 +267,13 @@ class AutomationToolService:
                     data={"timezone": await self._service.timezone(inbound.sender.user_id)}
                 )
             if name == "time_set_timezone":
+                timezone = await self._service.set_timezone(
+                    inbound.sender.user_id, str(arguments.get("timezone") or "")
+                )
                 return _result(
-                    data={
-                        "timezone": await self._service.set_timezone(
-                            inbound.sender.user_id, str(arguments.get("timezone") or "")
-                        )
-                    }
+                    data={"timezone": timezone},
+                    public_message=f"时区已设置为 {timezone}。",
+                    mutation_committed=True,
                 )
             if name == "automation_diagnose":
                 return _result(
@@ -298,7 +297,11 @@ class AutomationToolService:
                     inbound=inbound,
                     conversation_key=runtime.conversation_key,
                 )
-                return _result(data=_record(row, plan=plan, persisted=True))
+                return _result(
+                    data=_record(row, plan=plan, persisted=True),
+                    public_message=f"自动化任务已更新（ID {row.id}）。",
+                    mutation_committed=True,
+                )
             if name == "automation_pause":
                 changed = await self._service.pause(
                     automation_id, inbound=inbound, conversation_key=runtime.conversation_key
@@ -337,7 +340,19 @@ class AutomationToolService:
                 )
             else:
                 return _result(error="unknown_tool", detail=f"未知自动化工具：{name}")
-            return _result(data={"automation_id": automation_id, "changed": changed})
+            public_message = {
+                "automation_pause": "任务已暂停。" if changed else "任务状态没有改变。",
+                "automation_resume": "任务已恢复。" if changed else "该任务不能恢复。",
+                "automation_cancel": "任务已取消。" if changed else "任务状态没有改变。",
+                "automation_run_now": (
+                    "任务已进入待执行队列。" if changed else "该任务不能立即执行。"
+                ),
+            }[name]
+            return _result(
+                data={"automation_id": automation_id, "changed": changed},
+                public_message=public_message,
+                mutation_committed=changed,
+            )
         except (PermissionError, ValueError) as exc:
             if name == "automation_create":
                 await self._service.record_creation_failure(
@@ -368,8 +383,6 @@ def _automation_id(arguments: dict[str, Any]) -> int:
 def _record(
     row: AutomationRecord,
     *,
-    number: int | None = None,
-    history_number: int | None = None,
     plan: ExecutionPlan | None = None,
     persisted: bool = False,
 ) -> dict[str, Any]:
@@ -389,17 +402,24 @@ def _record(
         payload["warnings"] = plan.warnings
     if persisted:
         payload["confirmation"] = "persisted"
-    if number is not None:
-        payload["number"] = number
-    if history_number is not None:
-        payload["history_number"] = history_number
     return payload
 
 
-def _result(*, data: object = None, error: str | None = None, detail: str = "") -> str:
+def _result(
+    *,
+    data: object = None,
+    error: str | None = None,
+    detail: str = "",
+    public_message: str | None = None,
+    mutation_committed: bool | None = None,
+) -> str:
     payload: dict[str, object] = {"ok": error is None}
     if error is None:
         payload["data"] = data
+        if public_message is not None:
+            payload["public_message"] = public_message
+        if mutation_committed is not None:
+            payload["mutation_committed"] = mutation_committed
     else:
         payload.update({"error": error, "detail": detail})
     return json.dumps(payload, ensure_ascii=False, default=str)

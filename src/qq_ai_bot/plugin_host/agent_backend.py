@@ -87,6 +87,9 @@ class PluginAgentToolBackend:
         del runtime
         return "插件 Agent 已达到本轮工具或模型请求上限。"
 
+    def post_commit_recovery_text(self) -> str | None:
+        return None
+
     @staticmethod
     def _tool_runtime(runtime: AgentRuntime) -> ToolRuntime:
         scope_type = ScopeType.GROUP if runtime.current_group_id else ScopeType.PRIVATE

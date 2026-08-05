@@ -105,6 +105,21 @@ class AutomationRepository:
             row = await session.get(AutomationModel, automation_id)
         return _automation_record(row) if row is not None else None
 
+    async def get_by_creation_key(
+        self,
+        creator_user_id: str,
+        created_from_message_id: str,
+    ) -> AutomationRecord | None:
+        """Resolve a delegated create retry without producing another task."""
+
+        query = select(AutomationModel).where(
+            AutomationModel.creator_user_id == creator_user_id,
+            AutomationModel.created_from_message_id == created_from_message_id,
+        )
+        async with self._database.sessions() as session:
+            row = await session.scalar(query.order_by(AutomationModel.id.asc()).limit(1))
+        return _automation_record(row) if row is not None else None
+
     async def list_for_creator(
         self,
         creator_user_id: str,
@@ -133,7 +148,7 @@ class AutomationRepository:
         *,
         limit: int = 100,
     ) -> tuple[AutomationRecord, ...]:
-        """List schedulable tasks only, ordered for stable user-facing numbering."""
+        """List schedulable tasks only, ordered for stable presentation."""
 
         query = (
             select(AutomationModel)

@@ -24,7 +24,7 @@ from qq_ai_bot.persistence.repositories import (
 )
 from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
 from qq_ai_bot.web.base import WebSearchError
-from qq_ai_bot.web.models import WebSearchResponse, WebSearchSource
+from qq_ai_bot.web.models import WebMode, WebSearchResponse, WebSearchSource
 
 
 def source(
@@ -66,6 +66,7 @@ def build_tools(
     settings = make_settings(
         database.url,
         web_enabled=enabled,
+        web_mode=(WebMode.TAVILY if enabled else WebMode.DISABLED),
         tavily_api_key="test-placeholder" if enabled else "",
         web_tool_result_max_characters=result_limit,
     )

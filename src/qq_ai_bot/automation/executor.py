@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -36,15 +38,27 @@ logger = logging.getLogger(__name__)
 
 
 class AutomationExecutionError(RuntimeError):
-    def __init__(self, category: str, *, transient: bool = False, uncertain: bool = False) -> None:
+    def __init__(
+        self,
+        category: str,
+        *,
+        transient: bool = False,
+        uncertain: bool = False,
+        llm_calls: int = 0,
+        tool_calls: int = 0,
+        messages_sent: int = 0,
+    ) -> None:
         super().__init__(category)
         self.category = category
         self.transient = transient
         self.uncertain = uncertain
+        self.llm_calls = llm_calls
+        self.tool_calls = tool_calls
+        self.messages_sent = messages_sent
 
 
 class AutomationExecutor:
-    """Run one already-claimed script; it never schedules or creates another task."""
+    """Run one claimed script within its creator authority and resource quotas."""
 
     def __init__(
         self,
@@ -53,11 +67,13 @@ class AutomationExecutor:
         registry: AutomationCapabilityRegistry,
         repository: AutomationRepository,
         time_service: TimeContextService,
+        gateway_factory: Callable[[CapabilityExecutionContext], object] | None = None,
     ) -> None:
         self._settings = settings
         self._registry = registry
         self._repository = repository
         self._time = time_service
+        self._gateway_factory = gateway_factory
 
     async def execute(
         self,
@@ -108,12 +124,6 @@ class AutomationExecutor:
                     definition = self._registry.require(step.call)
                     if step.call not in allowed:
                         raise AutomationExecutionError("capability_not_delegated")
-                    if web_was_used and step.call in {
-                        "onebot.call_api",
-                        "admin.execute_action",
-                        "config.set",
-                    }:
-                        raise AutomationExecutionError("web_mutation_isolation")
                     try:
                         resolved = resolve_templates(
                             step.arguments,
@@ -139,10 +149,18 @@ class AutomationExecutor:
                         conversation_key=f"automation:{automation.id}",
                         web_was_used=web_was_used,
                     )
+                    if self._gateway_factory is not None:
+                        context = replace(
+                            context,
+                            gateway=self._gateway_factory(context),
+                        )
                     started = self._time.clock.now()
                     try:
                         result = await self._execute_capability(definition, arguments, context)
                     except AutomationExecutionError as exc:
+                        llm_calls += exc.llm_calls
+                        tool_calls += exc.tool_calls
+                        messages_sent += exc.messages_sent
                         finished = self._time.clock.now()
                         await self._repository.record_step(
                             run_id=run.id,

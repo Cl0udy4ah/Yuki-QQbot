@@ -119,7 +119,9 @@ class NetEaseMusicCardPlugin:
                     ),
                     permission=PermissionLevel.USER,
                     risk=RiskClass.SEND,
-                    allowed_origins=frozenset({TurnOrigin.USER_MESSAGE}),
+                    allowed_origins=frozenset(
+                        {TurnOrigin.USER_MESSAGE, TurnOrigin.SCHEDULED_AUTOMATION}
+                    ),
                     timeout_seconds=30,
                 ),
                 input_model=ShareMusicInput,
@@ -139,7 +141,9 @@ class NetEaseMusicCardPlugin:
                     ),
                     permission=PermissionLevel.USER,
                     risk=RiskClass.SEND,
-                    allowed_origins=frozenset({TurnOrigin.USER_MESSAGE}),
+                    allowed_origins=frozenset(
+                        {TurnOrigin.USER_MESSAGE, TurnOrigin.SCHEDULED_AUTOMATION}
+                    ),
                     timeout_seconds=45,
                 ),
                 input_model=ShareAlbumInput,

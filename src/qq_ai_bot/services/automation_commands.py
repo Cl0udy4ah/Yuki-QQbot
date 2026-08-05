@@ -43,9 +43,9 @@ class AutomationCommandHandler:
             timezone = await self._automation.timezone(message.sender.user_id)
             lines = [f"当前任务（{timezone}）："]
             lines.extend(
-                f"#{index} [{row.status.value}] {row.name}；下次："
+                f"[ID {row.id}] [{row.status.value}] {row.name}；下次："
                 f"{local_text(row.next_run_at, timezone)}"
-                for index, row in enumerate(rows, start=1)
+                for row in rows
             )
             lines.append("已结束任务：/ai automation completed")
             return "\n".join(lines)
@@ -56,23 +56,22 @@ class AutomationCommandHandler:
             if not rows:
                 return "完成历史为空。"
             timezone = await self._automation.timezone(message.sender.user_id)
-            lines = [f"完成历史（{timezone}，不占用当前任务编号）："]
+            lines = [f"完成历史（{timezone}）："]
             lines.extend(
-                f"H{index} [{row.status.value}] {row.name}；最后运行："
+                f"[ID {row.id}] [{row.status.value}] {row.name}；最后运行："
                 f"{local_text(row.last_run_at, timezone)}"
-                for index, row in enumerate(rows, start=1)
+                for row in rows
             )
             return "\n".join(lines)
         if len(parts) != 1 or not parts[0].isdigit():
-            return "格式：/ai automation show|pause|resume|cancel|run|history <当前编号>"
-        task_number = int(parts[0])
+            return "格式：/ai automation show|pause|resume|cancel|run|history <自动化ID>"
+        automation_id = int(parts[0])
         try:
-            current = await self._automation.current_by_number(message.sender.user_id, task_number)
-            automation_id = current.id
+            current = await self._automation.require_owned(automation_id, message.sender.user_id)
             if operation == "show":
                 timezone = await self._automation.timezone(message.sender.user_id)
                 return (
-                    f"当前任务 #{task_number}\n名称：{current.name}\n"
+                    f"自动化 ID：{automation_id}\n名称：{current.name}\n"
                     f"状态：{current.status.value}\n时区：{timezone}\n下次："
                     f"{local_text(current.next_run_at, timezone)}\n"
                     f"能力：{', '.join(current.required_capabilities)}"
@@ -86,7 +85,7 @@ class AutomationCommandHandler:
                     return "该任务暂无执行记录。"
                 timezone = await self._automation.timezone(message.sender.user_id)
                 return "\n".join(
-                    f"运行 #{row.id} [{row.status.value}] "
+                    f"[运行 ID {row.id}] [{row.status.value}] "
                     f"{local_text(row.scheduled_for, timezone)}"
                     + (f"；{row.error_category}" if row.error_category else "")
                     for row in history_rows

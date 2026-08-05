@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import time
 
@@ -17,11 +19,15 @@ from qq_ai_bot.automation.models import (
     AutomationScript,
     AutomationStatus,
 )
-from qq_ai_bot.automation.registry import AutomationCapabilityRegistry
+from qq_ai_bot.automation.registry import (
+    AutomationCapabilityRegistry,
+    CapabilityExecutionContext,
+)
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.validator import AutomationValidator, CreationProvenance
 from qq_ai_bot.config import Settings
-from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.time.schedules import initial_run_at
 from qq_ai_bot.time.service import TimeContextService
 
@@ -94,6 +100,88 @@ class AutomationService:
             max_runs=max_runs,
         )
         return row, plan
+
+    async def create_task_delegated(
+        self,
+        task_payload: object,
+        *,
+        context: CapabilityExecutionContext,
+        max_runs: int | None = None,
+    ) -> tuple[AutomationRecord, ExecutionPlan]:
+        """Create a follow-up task under the original creator's trusted authority."""
+
+        inbound = self._delegated_inbound("create", task_payload, context=context)
+        try:
+            task = TaskSpec.model_validate(task_payload)
+        except ValidationError as exc:
+            raise ValueError(f"任务规格格式错误：{exc.errors()[0]['msg']}") from exc
+        plan = self._compiler.compile(
+            task,
+            self._creation_provenance(inbound),
+            default_timezone=context.timezone,
+        )
+        existing = await self._repository.get_by_creation_key(
+            context.creator_user_id,
+            inbound.message_id,
+        )
+        if existing is not None:
+            return existing, plan
+        row = await self.create(
+            plan.script,
+            inbound=inbound,
+            conversation_key=context.conversation_key,
+            max_runs=max_runs,
+        )
+        return row, plan
+
+    async def update_task_delegated(
+        self,
+        automation_id: int,
+        task_payload: object,
+        *,
+        context: CapabilityExecutionContext,
+    ) -> tuple[AutomationRecord, ExecutionPlan]:
+        inbound = self._delegated_inbound(
+            "update",
+            {"automation_id": automation_id, "task": task_payload},
+            context=context,
+        )
+        return await self.update_task(
+            automation_id,
+            task_payload,
+            inbound=inbound,
+            conversation_key=context.conversation_key,
+        )
+
+    async def cancel_delegated(
+        self,
+        automation_id: int,
+        *,
+        context: CapabilityExecutionContext,
+    ) -> bool:
+        inbound = self._delegated_inbound(
+            "cancel", {"automation_id": automation_id}, context=context
+        )
+        return await self.cancel(
+            automation_id,
+            inbound=inbound,
+            conversation_key=context.conversation_key,
+        )
+
+    async def run_now_delegated(
+        self,
+        automation_id: int,
+        *,
+        context: CapabilityExecutionContext,
+    ) -> bool:
+        inbound = self._delegated_inbound(
+            "run_now", {"automation_id": automation_id}, context=context
+        )
+        return await self.run_now(
+            automation_id,
+            inbound=inbound,
+            conversation_key=context.conversation_key,
+        )
 
     async def update_task(
         self,
@@ -307,16 +395,6 @@ class AutomationService:
         self._require_enabled()
         return await self._repository.list_terminal_for_creator(creator_user_id)
 
-    async def current_by_number(self, creator_user_id: str, task_number: int) -> AutomationRecord:
-        """Resolve a transient 1-based number against the current task queue."""
-
-        if task_number <= 0:
-            raise ValueError("当前任务编号必须是正整数")
-        rows = await self.list_current(creator_user_id)
-        if task_number > len(rows):
-            raise ValueError("没有找到该当前任务编号，请先使用 /ai automation list 刷新列表")
-        return rows[task_number - 1]
-
     async def require_owned(self, automation_id: int, creator_user_id: str) -> AutomationRecord:
         self._require_enabled()
         row = await self._repository.get(automation_id)
@@ -429,6 +507,32 @@ class AutomationService:
             current_group_id=inbound.group_id,
             mentioned_user_ids=inbound.mentioned_user_ids,
             permission=permission_for(self._settings, inbound.sender.user_id),
+        )
+
+    @staticmethod
+    def _delegated_inbound(
+        operation: str,
+        payload: object,
+        *,
+        context: CapabilityExecutionContext,
+    ) -> InboundMessage:
+        """Project scheduled authority into a non-user synthetic service envelope."""
+
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+        message_id = (
+            f"auto:{context.automation_id}:{context.automation_run_id}:"
+            f"{context.step_id}:{operation}:{digest}"
+        )[:128]
+        return InboundMessage(
+            message_id=message_id,
+            event_type="scheduled_automation",
+            scope_type=(ScopeType.GROUP if context.current_group_id else ScopeType.PRIVATE),
+            sender=SenderIdentity(user_id=context.creator_user_id),
+            text=serialized[:12000],
+            bot_user_id=context.bot_user_id,
+            group_id=context.current_group_id,
+            received_at=context.actual_started_at,
         )
 
     def _actor(self, inbound: InboundMessage, conversation_key: str) -> AdminActor:

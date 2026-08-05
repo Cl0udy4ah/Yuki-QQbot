@@ -4,20 +4,31 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from sqlalchemy import func, select
 from tests.conftest import make_settings
 
 from qq_ai_bot.automation.authority import (
+    AuthorityContext,
     DelegatedAuthority,
+    PermissionLevel,
     effective_delegated_capabilities,
 )
 from qq_ai_bot.automation.executor import AutomationExecutor
 from qq_ai_bot.automation.gateway import ProactiveGatewayError
-from qq_ai_bot.automation.models import AutomationScript, AutomationStatus
+from qq_ai_bot.automation.handlers import _AutomationAgentBackend
+from qq_ai_bot.automation.models import (
+    AutomationContext,
+    AutomationScript,
+    AutomationStatus,
+    TurnOrigin,
+)
 from qq_ai_bot.automation.registry import (
     AutomationCapabilityRegistry,
+    CapabilityExecutionContext,
     CapabilityResult,
     build_capability_registry,
 )
@@ -25,10 +36,12 @@ from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.tools import AutomationToolService
 from qq_ai_bot.automation.worker import AutomationWorker
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.persistence.models import AutomationStepRunModel, AutomationVersionModel
+from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
+from qq_ai_bot.services.automation_commands import AutomationCommandHandler
 from qq_ai_bot.time.schedules import schedule_after_completion
 from qq_ai_bot.time.service import TimeContextService
 
@@ -104,6 +117,20 @@ async def test_repository_persists_versions_and_owner_scope(database) -> None:
 
     assert [item.id for item in await service.list_current("10001")] == [row.id]
     assert await service.list_completed("10001") == ()
+    commands = AutomationCommandHandler(settings=settings, automation_service=service)
+    listed = await commands.execute(
+        message=_inbound(),
+        identity=ConversationIdentity.private("10001"),
+        argument="list",
+    )
+    assert f"[ID {row.id}]" in listed
+    assert "#1" not in listed
+    shown = await commands.execute(
+        message=_inbound(),
+        identity=ConversationIdentity.private("10001"),
+        argument=f"show {row.id}",
+    )
+    assert f"自动化 ID：{row.id}" in shown
     await repository.set_status(
         row.id,
         creator_user_id="10001",
@@ -112,8 +139,13 @@ async def test_repository_persists_versions_and_owner_scope(database) -> None:
     )
     assert await service.list_current("10001") == ()
     assert [item.id for item in await service.list_completed("10001")] == [row.id]
-    with pytest.raises(ValueError, match="当前任务编号"):
-        await service.current_by_number("10001", 1)
+    completed = await commands.execute(
+        message=_inbound(),
+        identity=ConversationIdentity.private("10001"),
+        argument="completed",
+    )
+    assert f"[ID {row.id}]" in completed
+    assert "H1" not in completed
 
 
 def test_create_tool_exposes_high_level_task_spec(database) -> None:
@@ -138,6 +170,40 @@ def test_create_tool_exposes_high_level_task_spec(database) -> None:
     assert "automation_list_history" in {
         item.name for item in AutomationToolService(service).definitions()
     }
+
+
+@pytest.mark.asyncio
+async def test_delegated_create_tool_exposes_task_spec_and_validation_issues() -> None:
+    async def create_task(arguments, context):
+        return CapabilityResult(data={"automation_id": 1})
+
+    registry = build_capability_registry({"automation.create_task": create_task})
+    capability = registry.require("automation.create_task")
+    schema = capability.input_schema
+    task_schema = schema["$defs"]["TaskSpec"]  # type: ignore[index]
+    assert task_schema["required"] == ["name", "goal", "trigger"]
+    assert "oneOf" in task_schema["properties"]["trigger"]
+
+    backend = _AutomationAgentBackend(
+        registry,
+        cast(CapabilityExecutionContext, SimpleNamespace(web_was_used=False)),
+    )
+    runtime = cast(
+        AgentRuntime,
+        SimpleNamespace(allowed_capabilities=frozenset({"automation.create_task"})),
+    )
+    tool = backend.definitions(runtime, web_was_used=False)[0]
+    result = json.loads(
+        await backend.execute(
+            tool.name,
+            json.dumps({"task": {"name": "喝水提醒"}}, ensure_ascii=False),
+            runtime,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "invalid_arguments"
+    assert {issue["path"] for issue in result["issues"]} == {"task.goal", "task.trigger"}
 
 
 @pytest.mark.asyncio
@@ -187,6 +253,76 @@ async def test_create_tool_compiles_and_confirms_database_persistence(database) 
     assert result["data"]["compiled_strategy"] == "static"
     automation_id = result["data"]["automation_id"]
     assert (await service.require_owned(automation_id, "10001")).id == automation_id
+    listed = json.loads(
+        await AutomationToolService(service).execute(
+            "automation_list",
+            "{}",
+            runtime,
+        )
+    )
+    task = listed["data"]["current_tasks"][0]
+    assert task["automation_id"] == automation_id
+    assert "number" not in task
+    assert "numbering" not in listed["data"]
+
+
+@pytest.mark.asyncio
+async def test_delegated_followup_creation_is_owned_and_idempotent(database) -> None:
+    now = datetime(2026, 8, 5, 8, tzinfo=UTC)
+    settings = make_settings(database.url, automation_enabled=True)
+    repository = AutomationRepository(database)
+    service = AutomationService(
+        settings=settings,
+        repository=repository,
+        registry=build_capability_registry(),
+        time_service=TimeContextService(database, clock=FakeClock(now)),
+    )
+    granted = frozenset({"automation.create_task"})
+    delegated = DelegatedAuthority(
+        creator_user_id="10001",
+        bot_user_id="7777",
+        created_from_message_id="parent-message",
+        created_at=now.isoformat(),
+        permission_level=PermissionLevel.USER,
+        granted_capabilities=tuple(granted),
+        capability_schema_versions={name: 1 for name in granted},
+    )
+    context = CapabilityExecutionContext(
+        authority=AuthorityContext(
+            origin=TurnOrigin.SCHEDULED_AUTOMATION,
+            actor_user_id="10001",
+            actor_is_superuser=False,
+            bot_user_id="7777",
+            delegated_authority=delegated,
+            allowed_capabilities=granted,
+        ),
+        automation_id=19,
+        automation_run_id=23,
+        step_id="execute",
+        creator_user_id="10001",
+        bot_user_id="7777",
+        current_group_id=None,
+        scheduled_for=now,
+        actual_started_at=now,
+        local_time=now,
+        timezone="Asia/Shanghai",
+        automation_context=AutomationContext(scene="none"),
+        conversation_key="automation:19",
+    )
+    payload = {
+        "name": "喝水提醒",
+        "goal": "该喝水了",
+        "trigger": {"type": "after", "seconds": 300},
+        "strategy": "static",
+    }
+
+    first, _ = await service.create_task_delegated(payload, context=context)
+    repeated, _ = await service.create_task_delegated(payload, context=context)
+
+    assert first.id == repeated.id
+    assert first.creator_user_id == "10001"
+    assert len(await service.list_current("10001")) == 1
+    assert first.created_from_message_id.startswith("auto:19:23:execute:create:")
 
 
 @pytest.mark.asyncio
@@ -485,7 +621,7 @@ async def test_uncertain_send_is_never_retried(database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_web_result_cannot_be_followed_by_admin_mutation(database) -> None:
+async def test_web_result_can_be_followed_by_authorized_admin_mutation(database) -> None:
     clock = FakeClock(datetime(2026, 7, 27, tzinfo=UTC))
     config_calls = 0
 
@@ -557,9 +693,9 @@ async def test_web_result_cannot_be_followed_by_admin_mutation(database) -> None
         repository=repository,
         time_service=time_service,
     ).execute(row, run)
-    assert result.status.value == "failed"
-    assert result.error_category == "web_mutation_isolation"
-    assert config_calls == 0
+    assert result.status.value == "succeeded"
+    assert result.error_category is None
+    assert config_calls == 1
 
 
 @pytest.mark.asyncio

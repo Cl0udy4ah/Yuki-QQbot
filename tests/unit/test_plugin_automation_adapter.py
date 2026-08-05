@@ -30,10 +30,13 @@ from qq_ai_bot.plugin_host.facades import (
 from qq_ai_bot.plugin_host.manifest import PluginManifest
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import StrictModel
+from yuki_plugin_sdk.models import TurnOrigin as SdkTurnOrigin
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import (
     AutomationActionMetadata,
     AutomationActionRegistration,
+    ToolMetadata,
+    ToolRegistration,
 )
 
 PLUGIN_ID = "com.example.scheduled"
@@ -143,6 +146,48 @@ def _register_action(
 
 
 @pytest.mark.asyncio
+async def test_single_tool_registration_is_projected_into_scheduled_automation() -> None:
+    extensions = ExtensionRegistry()
+    automation = AutomationCapabilityRegistry()
+    registrar = extensions.registrar(PLUGIN_ID, (PluginPermission.TOOL_REGISTER,))
+
+    async def tool(arguments: object) -> ActionOutput:
+        assert isinstance(arguments, ActionInput)
+        return ActionOutput(text=arguments.text, group_id="20002")
+
+    registrar.register_tool(
+        ToolRegistration(
+            metadata=ToolMetadata(
+                name="shared_tool",
+                description="One implementation for user and scheduled turns",
+                allowed_origins=frozenset(
+                    {SdkTurnOrigin.USER_MESSAGE, SdkTurnOrigin.SCHEDULED_AUTOMATION}
+                ),
+            ),
+            input_model=ActionInput,
+            output_model=ActionOutput,
+            handler=tool,
+        )
+    )
+    manifest = PluginManifest(
+        id=PLUGIN_ID,
+        name="Scheduled",
+        version="1.0.0",
+        description="Scheduled action test plugin",
+        entrypoint="scheduled_plugin:Plugin",
+        plugin_api="1.0",
+        yuki_requires=">=1.6.0,<2",
+        permissions=(PluginPermission.TOOL_REGISTER,),
+    )
+    adapter = PluginAutomationAdapter(extensions=extensions, automation=automation)
+
+    assert adapter.activate(manifest) == 1
+    definition = automation.require(f"plugin.{PLUGIN_ID}.shared_tool")
+    assert TurnOrigin.SCHEDULED_AUTOMATION in definition.allowed_origins
+    assert definition.provider_plugin_id == PLUGIN_ID
+
+
+@pytest.mark.asyncio
 async def test_action_binds_trusted_scheduled_invocation_and_preserves_provenance() -> None:
     extensions = ExtensionRegistry()
     automation = AutomationCapabilityRegistry()
@@ -206,7 +251,7 @@ async def test_action_binds_trusted_scheduled_invocation_and_preserves_provenanc
 
 
 @pytest.mark.asyncio
-async def test_web_isolation_is_retained_inside_plugin_action() -> None:
+async def test_web_use_does_not_revoke_delegated_plugin_mutation() -> None:
     extensions = ExtensionRegistry()
     automation = AutomationCapabilityRegistry()
     host = HostPluginContext(
@@ -216,8 +261,10 @@ async def test_web_isolation_is_retained_inside_plugin_action() -> None:
     )
 
     async def action(_arguments: object) -> ActionOutput:
-        await host.onebot.call_mutating_action("set_group_ban", {})
-        raise AssertionError("web-isolated mutation must not run")
+        result = await host.onebot.call_mutating_action("set_group_ban", {})
+        assert result.ok is False
+        assert result.error_code == "feature.unavailable"
+        return ActionOutput(text="allowed", group_id="20002")
 
     def invocation_scope(
         _plugin_id: str,
@@ -239,8 +286,8 @@ async def test_web_isolation_is_retained_inside_plugin_action() -> None:
         web_was_used=True,
     )
 
-    with pytest.raises(PluginPermissionError, match="isolated after web access"):
-        await definition.handler({"text": "hello"}, context)
+    result = await definition.handler({"text": "hello"}, context)
+    assert result.data == {"text": "allowed", "group_id": "20002"}
 
 
 @pytest.mark.asyncio
