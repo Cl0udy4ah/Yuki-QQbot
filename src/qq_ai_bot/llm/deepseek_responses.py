@@ -20,6 +20,7 @@ from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatResponse,
     CitationOrigin,
+    FunctionCallOutput,
     ModelResponseStatus,
     NativeToolEvent,
     NativeToolStatus,
@@ -47,7 +48,9 @@ from qq_ai_bot.llm.base import (
 
 logger = logging.getLogger(__name__)
 
-_CONTINUATION_TYPES = frozenset({"reasoning", "message", "function_call", "web_search_call"})
+_CONTINUATION_TYPES = frozenset(
+    {"reasoning", "message", "function_call", "function_call_output", "web_search_call"}
+)
 
 
 class DeepSeekResponsesProvider(LLMProvider):
@@ -102,7 +105,12 @@ class DeepSeekResponsesProvider(LLMProvider):
             raise LLMUnavailableError("LLM is temporarily unavailable") from exc
 
         latency = time.perf_counter() - started
-        parsed = self._parse_response(response, request.continuation, latency=latency)
+        parsed = self._parse_response(
+            response,
+            request.continuation,
+            function_outputs=request.function_outputs,
+            latency=latency,
+        )
         completed = sum(
             event.status is NativeToolStatus.COMPLETED for event in parsed.native_tool_events
         )
@@ -241,6 +249,7 @@ class DeepSeekResponsesProvider(LLMProvider):
         response: httpx.Response,
         previous: ProviderContinuation | None,
         *,
+        function_outputs: tuple[FunctionCallOutput, ...] = (),
         latency: float,
     ) -> ChatResponse:
         try:
@@ -301,7 +310,7 @@ class DeepSeekResponsesProvider(LLMProvider):
         continuation = ProviderContinuation(
             provider="deepseek",
             protocol="responses",
-            payload=cls._merge_continuation(previous, output),
+            payload=cls._merge_continuation(previous, function_outputs, output),
         )
         usage = payload.get("usage")
         usage = usage if isinstance(usage, dict) else {}
@@ -431,11 +440,21 @@ class DeepSeekResponsesProvider(LLMProvider):
     def _merge_continuation(
         cls,
         previous: ProviderContinuation | None,
+        function_outputs: tuple[FunctionCallOutput, ...],
         output: list[Any],
     ) -> tuple[dict[str, Any], ...]:
         merged = cls._continuation_items(previous)
         seen = {cls._item_identity(item) for item in merged}
-        for item in output:
+        new_items: list[Any] = [
+            {
+                "type": "function_call_output",
+                "call_id": item.call_id,
+                "output": item.output,
+            }
+            for item in function_outputs
+        ]
+        new_items.extend(output)
+        for item in new_items:
             if not isinstance(item, dict) or item.get("type") not in _CONTINUATION_TYPES:
                 continue
             identity = cls._item_identity(item)

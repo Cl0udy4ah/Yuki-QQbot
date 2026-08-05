@@ -10,9 +10,13 @@ from qq_ai_bot.admin.audit import AdminAuditService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.automation.executor import AutomationExecutor
-from qq_ai_bot.automation.gateway import OneBotProactiveGateway
+from qq_ai_bot.automation.gateway import OneBotProactiveGateway, ProactiveGateway
 from qq_ai_bot.automation.handlers import AutomationCapabilityHandlers
-from qq_ai_bot.automation.registry import AutomationCapabilityRegistry, build_capability_registry
+from qq_ai_bot.automation.registry import (
+    AutomationCapabilityRegistry,
+    CapabilityExecutionContext,
+    build_capability_registry,
+)
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.automation.tools import AutomationToolService
@@ -98,6 +102,17 @@ class AutomationModule:
 
     def build(self) -> AutomationBundle:
         repository = AutomationRepository(self._database)
+
+        def gateway_factory(context: CapabilityExecutionContext) -> ProactiveGateway:
+            return OneBotProactiveGateway(
+                bot_user_id=context.bot_user_id,
+                creator_user_id=context.creator_user_id,
+                automation_id=context.automation_id,
+                automation_run_id=context.automation_run_id,
+                ledger=self._ledger,
+                actions=self._agent_actions,
+            )
+
         handlers = AutomationCapabilityHandlers(
             settings=self._settings,
             model_executor=self._models,
@@ -109,14 +124,7 @@ class AutomationModule:
             relationships=self._relationships,
             admin_actions=self._admin_actions,
             web_provider=self._web_provider,
-            gateway_factory=lambda context: OneBotProactiveGateway(
-                bot_user_id=context.bot_user_id,
-                creator_user_id=context.creator_user_id,
-                automation_id=context.automation_id,
-                automation_run_id=context.automation_run_id,
-                ledger=self._ledger,
-                actions=self._agent_actions,
-            ),
+            gateway_factory=gateway_factory,
             emoji_repository=self._emoji_repository,
             emoji_selector=self._emoji_selector,
             emoji_storage=self._emoji_storage,
@@ -144,12 +152,14 @@ class AutomationModule:
             time_service=self._time_service,
             audit=self._admin_audit,
         )
+        handlers.bind_automation_service(service)
         tools = AutomationToolService(service)
         executor = AutomationExecutor(
             settings=self._settings,
             registry=registry,
             repository=repository,
             time_service=self._time_service,
+            gateway_factory=gateway_factory,
         )
         worker = AutomationWorker(
             settings=self._settings,

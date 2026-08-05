@@ -27,7 +27,7 @@ from qq_ai_bot.domain.messages import (
     ToolFunction,
 )
 from qq_ai_bot.emoji.models import EmojiPlacement, EmojiReplyMode, PendingReplyEffect
-from qq_ai_bot.llm.base import LLMProvider
+from qq_ai_bot.llm.base import LLMProvider, LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.services.agent_runner import AgentRunner, AgentRuntime
 from qq_ai_bot.services.agent_tools import ToolRuntime
@@ -149,6 +149,43 @@ class NativeThenLocalProvider(LLMProvider):
         return ChatResponse(content="isolated", latency_seconds=0)
 
 
+class UnavailableAfterToolProvider(LLMProvider):
+    """Commit one tool call, then fail while asking the model for final text."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        del request
+        self.calls += 1
+        if self.calls == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="mutation-1",
+                        function=ToolFunction(name="send_voice", arguments="{}"),
+                    ),
+                ),
+            )
+        raise LLMUnavailableError("synthetic post-commit failure")
+
+
+class CommittedMutationBackend(VoiceEffectBackend):
+    committed = False
+
+    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
+        result = await super().execute(name, arguments_json, runtime)
+        self.committed = True
+        return result
+
+    def post_commit_recovery_text(self) -> str | None:
+        if not self.committed:
+            return None
+        return "任务已取消。\n后续回复生成失败，但操作已经生效。"
+
+
 class NativeIsolationBackend(VoiceEffectBackend):
     native_web_used = False
 
@@ -231,6 +268,23 @@ async def test_native_web_state_is_marked_before_same_response_local_calls() -> 
     assert result.text == "isolated"
     assert result.web_was_used
     assert backend.native_web_used
+
+
+@pytest.mark.asyncio
+async def test_committed_mutation_uses_receipt_when_final_model_request_fails() -> None:
+    provider = UnavailableAfterToolProvider()
+    backend = CommittedMutationBackend()
+
+    result = await AgentRunner(provider, ConcurrencyManager(1)).run(
+        (ChatMessage(role="user", content="取消任务"),),
+        _agent_runtime(),
+        backend,
+    )
+
+    assert result.text == "任务已取消。\n后续回复生成失败，但操作已经生效。"
+    assert result.tool_calls_used == 1
+    assert result.model_requests == 2
+    assert backend.effects == ["send_voice"]
 
 
 def test_voice_effect_cannot_complete_chat_without_text() -> None:

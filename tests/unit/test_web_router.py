@@ -45,30 +45,32 @@ def test_router_settings_accept_public_environment_name() -> None:
     assert settings.web.tavily_domains == frozenset({"github.com", "raw.githubusercontent.com"})
 
 
-def test_hybrid_router_honors_explicit_provider_without_misreading_conditional_fallback() -> None:
+def test_hybrid_router_uses_tavily_keyword_without_old_grammar_rules() -> None:
     router = WebProviderRouter()
 
-    tavily = router.select(
-        "这次请用 Tavily 搜索官方文档",
-        WebMode.NATIVE_WITH_TAVILY_FALLBACK,
+    keyword_inputs = (
+        "Tavily搜索官方文档",
+        "这次请用 Tavility 搜索官方文档",
+        "让塔维利查一下",
+        "DeepSeek 打不开就再用 Tavily",
+        "不要用 Tavily",
+    )
+    decisions = tuple(
+        router.select(message, WebMode.NATIVE_WITH_TAVILY_FALLBACK) for message in keyword_inputs
     )
     native = router.select(
         "这次只用 DeepSeek 原生搜索",
         WebMode.NATIVE_WITH_TAVILY_FALLBACK,
     )
-    conditional = router.select(
-        "DeepSeek 打不开就再用 Tavility",
-        WebMode.NATIVE_WITH_TAVILY_FALLBACK,
-    )
 
-    assert tavily is not None and tavily.provider is WebProvider.TAVILY
-    assert tavily.reason is WebRouteReason.USER_OVERRIDE
+    assert all(decision is not None for decision in decisions)
+    assert all(decision.provider is WebProvider.TAVILY for decision in decisions if decision)
+    assert all(
+        decision.reason is WebRouteReason.USER_OVERRIDE for decision in decisions if decision
+    )
     assert native is not None and native.provider is WebProvider.NATIVE
-    assert native.reason is WebRouteReason.USER_OVERRIDE
-    assert not native.fallback_allowed
-    assert conditional is not None and conditional.provider is WebProvider.NATIVE
-    assert conditional.reason is WebRouteReason.DEFAULT_NATIVE
-    assert conditional.fallback_allowed
+    assert native.reason is WebRouteReason.DEFAULT_NATIVE
+    assert native.fallback_allowed
 
 
 def test_fixed_modes_ignore_hybrid_rules() -> None:

@@ -216,6 +216,17 @@ class _Backend:
         return "exhausted"
 
 
+class _ChangingBackend(_Backend):
+    def __init__(self) -> None:
+        self.definition_calls = 0
+
+    def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
+        del runtime, web_was_used
+        self.definition_calls += 1
+        name = "demo" if self.definition_calls == 1 else "new_tool"
+        return (ChatTool(name=name, description=name, parameters={}),)
+
+
 def _runtime(
     max_requests: int = 4,
     *,
@@ -282,6 +293,30 @@ async def test_agent_runner_uses_function_outputs_without_duplicate_tool_message
 
 
 @pytest.mark.asyncio
+async def test_responses_continuation_never_removes_declared_function_tools() -> None:
+    continuation = ProviderContinuation(provider="deepseek", protocol="responses", payload=())
+    executor = _ResponsesExecutor(
+        [
+            ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(id="call-1", function=ToolFunction(name="demo", arguments="{}")),
+                ),
+                continuation=continuation,
+            ),
+            ChatResponse(content="done", latency_seconds=0, continuation=continuation),
+        ]
+    )
+    await AgentRunner(
+        cast(TaskModelExecutor, executor),
+        ConcurrencyManager(1),
+    ).run((ChatMessage(role="user", content="run"),), _runtime(), _ChangingBackend())
+
+    assert {tool.name for tool in executor.requests[1].tools} == {"demo", "new_tool"}
+
+
+@pytest.mark.asyncio
 async def test_agent_runner_allows_only_one_incomplete_recovery() -> None:
     continuation = ProviderContinuation(provider="deepseek", protocol="responses", payload=())
     executor = _ResponsesExecutor(
@@ -306,7 +341,7 @@ async def test_agent_runner_allows_only_one_incomplete_recovery() -> None:
             ConcurrencyManager(1),
         ).run((ChatMessage(role="user", content="run"),), _runtime(), _Backend())
     assert len(executor.requests) == 2
-    assert not executor.requests[1].tools
+    assert executor.requests[1].tools == executor.requests[0].tools
 
 
 class _FallbackBackend(_Backend):

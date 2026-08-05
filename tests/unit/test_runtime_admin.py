@@ -18,6 +18,7 @@ from qq_ai_bot.admin.capabilities import AdminCapabilityService
 from qq_ai_bot.admin.config_registry import ConfigRegistry
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import AdminActor, ConfigApplyMode
+from qq_ai_bot.automation.models import AutomationScript, AutomationStatus
 from qq_ai_bot.automation.registry import build_capability_registry
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
@@ -32,7 +33,7 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.llm.base import LLMEmptyResponseError
+from qq_ai_bot.llm.base import LLMEmptyResponseError, LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
 from qq_ai_bot.memory.models import MemoryFactCreate
@@ -1274,6 +1275,79 @@ async def test_failed_automation_creation_cannot_be_reported_as_success(
     assert sender.messages[0].text.startswith("操作未完成：")
     assert "创建成功" not in sender.messages[0].text
     assert await automation.list_current("9000") == ()
+
+
+@pytest.mark.asyncio
+async def test_successful_automation_cancel_survives_final_model_failure(
+    database: Database,
+) -> None:
+    settings = make_settings(database.url, automation_enabled=True)
+    automation = AutomationService(
+        settings=settings,
+        repository=AutomationRepository(database),
+        registry=build_capability_registry(),
+        time_service=TimeContextService(database),
+    )
+    message = inbound("取消我的自动化任务", message_id="cancel-after-commit")
+    task = await automation.create(
+        AutomationScript.model_validate(
+            {
+                "version": 1,
+                "name": "测试取消回执",
+                "timezone": "Asia/Shanghai",
+                "schedule": {"type": "after", "seconds": 300},
+                "context": {"scene": "none"},
+                "steps": [
+                    {
+                        "id": "deliver",
+                        "call": "onebot.send_private_message",
+                        "arguments": {"user_id": "$creator_user_id", "text": "测试"},
+                    }
+                ],
+                "limits": {
+                    "max_steps": 1,
+                    "max_llm_calls": 0,
+                    "max_tool_calls": 1,
+                    "max_messages": 1,
+                    "timeout_seconds": 30,
+                },
+            }
+        ),
+        inbound=message,
+        conversation_key="private:9000",
+    )
+    calls = 0
+
+    def responder(_request: ChatRequest) -> ChatResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="cancel-automation",
+                        function=ToolFunction(
+                            name="automation_cancel",
+                            arguments=json.dumps({"automation_id": task.id}),
+                        ),
+                    ),
+                ),
+            )
+        raise LLMUnavailableError("synthetic finalization failure")
+
+    harness = build_harness(database, settings, FakeLLMProvider(responder))
+    harness.processor._chat.set_automation_tools(AutomationToolService(automation))
+    sender = MemorySender()
+
+    result = await harness.processor.handle(message, sender)
+
+    assert result.reason == "chat"
+    assert [item.text for item in sender.messages] == ["任务已取消。"]
+    stored = await automation.require_owned(task.id, "9000")
+    assert stored.status is AutomationStatus.CANCELLED
+    assert calls == 2
 
 
 @pytest.mark.asyncio

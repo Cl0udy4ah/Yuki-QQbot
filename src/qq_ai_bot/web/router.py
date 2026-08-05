@@ -17,21 +17,7 @@ from qq_ai_bot.web.models import (
 
 _URL = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 _TRAILING_PUNCTUATION = ".,;:!?)]}，。；：！？）】》"
-_TAVILY_OVERRIDE = re.compile(
-    r"(?:请|这次|直接|只)?\s*(?:用|使用|通过|走|改用|换(?:成|用)?)"
-    r"\s*(?:tavil(?:y|ity)|塔维利)",
-    re.IGNORECASE,
-)
-_NATIVE_OVERRIDE = re.compile(
-    r"(?:请|这次|直接|只)?\s*(?:用|使用|通过|走|改用|换(?:成|用)?)"
-    r"\s*(?:deepseek\s*)?(?:原生|native)(?:联网|搜索|访问)?",
-    re.IGNORECASE,
-)
-_CONDITIONAL_TAVILY = re.compile(
-    r"(?:打不开|访问不了|失败|不行).{0,16}(?:就|再|则).{0,12}"
-    r"(?:tavil(?:y|ity)|塔维利)",
-    re.IGNORECASE,
-)
+_TAVILY_OVERRIDE = re.compile(r"tavil(?:y|ity)|塔维利", re.IGNORECASE)
 
 
 class WebProviderRouter:
@@ -205,13 +191,7 @@ class WebProviderRouter:
     def _provider_override(self, message: str) -> WebProvider | None:
         if not self._allow_provider_override:
             return None
-        if _CONDITIONAL_TAVILY.search(message):
-            return None
-        tavily = _TAVILY_OVERRIDE.search(message)
-        native = _NATIVE_OVERRIDE.search(message)
-        if bool(tavily) == bool(native):
-            return None
-        return WebProvider.TAVILY if tavily else WebProvider.NATIVE
+        return WebProvider.TAVILY if _TAVILY_OVERRIDE.search(message) else None
 
     def _matching_domain(self, host: str) -> str | None:
         return next(

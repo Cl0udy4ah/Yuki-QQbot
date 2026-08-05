@@ -11,7 +11,7 @@
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/Version-3.3.1-blue" alt="Version">
+  <img src="https://img.shields.io/badge/Version-3.4.0-blue" alt="Version">
   <img src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python Version">
   <img src="https://img.shields.io/badge/NoneBot2-OneBot%20v11-green" alt="NoneBot2">
   <img src="https://img.shields.io/badge/Deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
@@ -36,11 +36,11 @@
 
 Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agent。它通过 NapCatQQ 接入 QQ，使用 Planner、Agent、长期记忆、工具系统和插件系统完成聊天、检索、自动化与外部服务调用。
 
-> **当前版本：3.3.1**
+> **当前版本：3.4.0**
 >
-> 本版本新增精简 Web Provider 路由器：混合模式可按用户显式选择和目标域名在 DeepSeek
-> 原生联网与 Tavily 之间选择；原生访问失败、未打开指定 URL 或缺少必需来源时只进行一次
-> 有界回退。Router 只选择联网后端，不会自行授予 web 权限或强迫 Yuki 联网。
+> 本版本让 scheduled automation 与普通会话共用同一套 Agent、插件工具和真实创建者权限；
+> 自动化可自主查询、发送歌曲并创建后续任务。Planner scope 改为工具优先级提示，DeepSeek
+> Responses 多轮工具续写、稳定自动化 ID 和成功回执也完成了可靠性修复。
 
 ## ✨ 主要功能
 

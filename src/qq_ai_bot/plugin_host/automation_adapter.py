@@ -22,7 +22,7 @@ from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionReg
 from qq_ai_bot.plugin_host.facades import PluginInvocation
 from qq_ai_bot.plugin_host.manifest import PluginManifest
 from yuki_plugin_sdk.models import PermissionLevel as SdkPermissionLevel
-from yuki_plugin_sdk.registrar import AutomationActionRegistration
+from yuki_plugin_sdk.registrar import AutomationActionRegistration, ToolRegistration
 from yuki_plugin_sdk.results import PluginResult
 
 InvocationScopeFactory = Callable[
@@ -46,11 +46,26 @@ class PluginAutomationAdapter:
     def activate(self, manifest: PluginManifest) -> int:
         self.deactivate(manifest.id)
         count = 0
-        for item in self._extensions.list(
-            plugin_id=manifest.id,
-            kind=ExtensionKind.AUTOMATION_ACTION,
-        ):
-            registration = cast(AutomationActionRegistration, item.registration)
+        candidates = (
+            *self._extensions.list(
+                plugin_id=manifest.id,
+                kind=ExtensionKind.AUTOMATION_ACTION,
+            ),
+            *self._extensions.list(
+                plugin_id=manifest.id,
+                kind=ExtensionKind.TOOL,
+            ),
+        )
+        for item in candidates:
+            registration = cast(
+                AutomationActionRegistration | ToolRegistration,
+                item.registration,
+            )
+            if item.kind is ExtensionKind.TOOL and not any(
+                origin.value == TurnOrigin.SCHEDULED_AUTOMATION.value
+                for origin in registration.metadata.allowed_origins
+            ):
+                continue
             name = f"plugin.{manifest.id}.{registration.metadata.name}"
             self._automation.register(
                 AutomationCapability(
@@ -86,7 +101,7 @@ class PluginAutomationAdapter:
     def _handler(
         self,
         plugin_id: str,
-        registration: AutomationActionRegistration,
+        registration: AutomationActionRegistration | ToolRegistration,
     ) -> CapabilityHandler:
         async def execute(
             arguments: dict[str, Any],
@@ -112,7 +127,11 @@ class PluginAutomationAdapter:
             else:
                 validated = registration.output_model.model_validate(value)
                 data = validated.model_dump(mode="json")
-            return CapabilityResult(data=data)
+            messages_sent = int(
+                registration.metadata.risk.value == RiskClass.SEND.value
+                and str(data.get("status") or "").casefold() == "sent"
+            )
+            return CapabilityResult(data=data, messages_sent=messages_sent)
 
         return execute
 
@@ -145,6 +164,7 @@ def _automation_invocation(
         delegated_authority=delegated,
         allowed_capabilities=authority.allowed_capabilities,
         web_was_used=context.web_was_used,
+        gateway=cast(Any, context.gateway),
     )
 
 

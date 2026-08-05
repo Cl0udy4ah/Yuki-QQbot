@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qq_ai_bot.automation.authority import AuthorityContext, PermissionLevel
 from qq_ai_bot.automation.models import AutomationContext, RetryPolicy, RiskClass, TurnOrigin
+from qq_ai_bot.automation.task_spec import TaskSpec
 
 
 class CapabilityArguments(BaseModel):
@@ -30,7 +31,25 @@ class AgentArguments(CapabilityArguments):
     context_profile: Literal["none", "creator_private", "current_group"] = "none"
     max_tool_calls: int = Field(default=6, ge=0, le=16)
     max_model_requests: int = Field(default=10, ge=1, le=10)
-    allowed_capabilities: tuple[str, ...] = Field(default=(), max_length=16)
+    allowed_capabilities: tuple[str, ...] = Field(default=(), max_length=128)
+
+
+class AutomationCreateTaskArguments(CapabilityArguments):
+    task: TaskSpec
+    max_runs: int | None = Field(default=None, ge=1, le=10000)
+
+
+class AutomationUpdateTaskArguments(CapabilityArguments):
+    automation_id: int = Field(ge=1)
+    task: TaskSpec
+
+
+class AutomationIdArguments(CapabilityArguments):
+    automation_id: int = Field(ge=1)
+
+
+class AutomationListArguments(CapabilityArguments):
+    include_completed: bool = False
 
 
 class SendPrivateArguments(CapabilityArguments):
@@ -154,6 +173,7 @@ class CapabilityExecutionContext:
     automation_context: AutomationContext
     conversation_key: str
     web_was_used: bool = False
+    gateway: object | None = None
 
 
 CapabilityHandler = Callable[
@@ -275,7 +295,10 @@ def _loose_capability_key(value: str) -> str:
 
 
 def _is_agent_delegatable(item: AutomationCapability) -> bool:
-    return not item.name.startswith("yuki.") and item.risk_class is not RiskClass.SEND
+    # yuki.agent/yuki.generate would recursively start another model loop. All
+    # concrete READ/SEND/MUTATE capabilities remain delegatable; identity,
+    # ownership and per-run quotas are enforced by their handlers/executor.
+    return not item.name.startswith("yuki.")
 
 
 def build_capability_registry(
@@ -430,6 +453,46 @@ def build_capability_registry(
             PermissionLevel.USER,
             RiskClass.READ,
             RetryPolicy.TRANSIENT_ONCE,
+        ),
+        (
+            "automation.create_task",
+            "为当前任务创建者新建后续自动化；task 使用与用户会话相同的 TaskSpec。",
+            AutomationCreateTaskArguments,
+            PermissionLevel.USER,
+            RiskClass.MUTATE,
+            RetryPolicy.NONE,
+        ),
+        (
+            "automation.update_task",
+            "更新当前创建者拥有的自动化任务。",
+            AutomationUpdateTaskArguments,
+            PermissionLevel.USER,
+            RiskClass.MUTATE,
+            RetryPolicy.NONE,
+        ),
+        (
+            "automation.cancel_task",
+            "取消当前创建者拥有的自动化任务。",
+            AutomationIdArguments,
+            PermissionLevel.USER,
+            RiskClass.MUTATE,
+            RetryPolicy.NONE,
+        ),
+        (
+            "automation.run_task_now",
+            "立即调度当前创建者拥有的自动化任务。",
+            AutomationIdArguments,
+            PermissionLevel.USER,
+            RiskClass.MUTATE,
+            RetryPolicy.NONE,
+        ),
+        (
+            "automation.list_tasks",
+            "列出当前创建者自己的自动化任务和稳定 ID。",
+            AutomationListArguments,
+            PermissionLevel.USER,
+            RiskClass.READ,
+            RetryPolicy.NONE,
         ),
     )
     registry = AutomationCapabilityRegistry()
