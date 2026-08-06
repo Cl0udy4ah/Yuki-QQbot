@@ -75,101 +75,70 @@ Yuki 是一个纯用 Codex vibe coding 开发、面向个人部署的 QQ AI Agen
 
 ## 🏗️ 架构概览
 
-实线表示当前轮同步路径，虚线表示持久化、后台 Worker 或下一轮回流。模型只能通过经过授权的
-工具和服务访问外部能力，不能直接读写数据库或调用 OneBot。
+主路径从 QQ 入站开始，经 Planner、上下文、主 Agent 和统一工具内核完成回复；SQLite 账本、
+后台 Worker、自动化与插件形成持久回流。模型只能通过授权后的工具和服务访问外部能力，不能
+直接读写数据库或调用 OneBot。
 
-```mermaid
-flowchart TD
-    subgraph INBOUND["1. QQ 入站与可信事实"]
-        USER["QQ群 / 私聊用户"] --> NAPCAT["NapCatQQ"]
-        NAPCAT --> ONEBOT["OneBot v11 反向 WebSocket"]
-        ONEBOT --> NONEBOT["NoneBot2 消息入口"]
-        NONEBOT --> NORMALIZER["消息标准化<br/>正文、回复、@、图片、群名片、QQ"]
-        NORMALIZER --> GUARD["准入与治理<br/>群/私聊策略、去重、限流、权限"]
-        GUARD --> LEDGER[("SQLite chat_events<br/>原始消息、身份快照、回复关系")]
-        NORMALIZER -.-> PEOPLE[("人物 / 群 / 成员身份目录")]
-    end
+<p align="center">
+  <img src="img/yuki-architecture-overview.png" alt="Yuki-QQbot 端到端架构总览" width="100%">
+</p>
 
-    GUARD --> ROUTER{"消息路由"}
+### 1. QQ 入站与消息路由
 
-    subgraph DIRECT["2A. 确定性入口"]
-        ROUTER -->|"/ai 管理命令"| COMMANDS["Command Service"]
-        ROUTER -->|"已绑定插件命令"| PLUGIN_COMMAND["Plugin Host 命令"]
-        COMMANDS --> OUTPUT
-        PLUGIN_COMMAND --> OUTPUT
-    end
+NapCatQQ 通过 OneBot v11 把事件交给 NoneBot2。标准化层保留正文、回复、@、媒体、QQ、昵称
+与群名片，准入层负责群/私聊策略、去重、限流和可信权限，再写入事件账本并进入消息路由。
 
-    subgraph PLAN["2B. 普通会话规划"]
-        ROUTER -->|"聊天 / 图片 / 回复"| VISION{"存在视觉输入？"}
-        VISION -->|"是"| VISION_SERVICE["Vision Service<br/>图片、动图、表情理解与缓存"]
-        VISION -->|"否"| PLANNER_CONTEXT
-        VISION_SERVICE --> PLANNER_CONTEXT["Planner Context<br/>历史 messages 不含当前消息<br/>current_message 独占本轮输入"]
-        LEDGER --> PLANNER_CONTEXT
-        TOOL_CATALOG["能力目录<br/>Core、Admin、Automation、Plugin、MCP、Web"] --> PLANNER_CONTEXT
-        PLANNER_CONTEXT --> NECESSITY["回复必要性与会话节奏"]
-        NECESSITY --> PLANNER["Planner<br/>reply / wait / silent、工具域、记忆深度、表情、语音"]
-        PLANNER -->|"silent / wait"| END["本轮静默或等待新消息"]
-    end
+<p align="center">
+  <img src="img/yuki-architecture-inbound-routing.png" alt="QQ 入站、标准化、准入与消息路由" width="100%">
+</p>
 
-    subgraph CONTEXT["3. 上下文与长期记忆"]
-        LEDGER --> HISTORY["短期历史<br/>逐条发送者、QQ、消息 ID、回复目标"]
-        PEOPLE --> SCENE["当前人物、群、关系与时区"]
-        MEMORY[("Memory V2<br/>person / person_group / group / self<br/>事实、证据、状态与版本链")]
-        MEMORY --> RETRIEVAL["作用域硬过滤<br/>FTS / 可选 Embedding / RRF"]
-        HISTORY --> ASSEMBLER["Context Assembler<br/>统一字符预算"]
-        SCENE --> ASSEMBLER
-        RETRIEVAL --> ASSEMBLER
-        VISION_SERVICE --> ASSEMBLER
-        PLUGIN_PROMPT["插件 Prompt Fragment"] --> ASSEMBLER
-        PLANNER -->|"reply plan"| COMPILER["Prompt Compiler<br/>人格、契约、运行态、计划与历史"]
-        ASSEMBLER --> COMPILER
-    end
+### 2. Planner 与确定性入口
 
-    subgraph AGENT["4. 主 Agent 与统一工具内核"]
-        COMPILER --> MODEL["Model Runtime<br/>Chat Completions / Responses API"]
-        MODEL <--> RUNNER["AgentRunner<br/>有界多轮工具调用"]
-        RUNNER <--> KERNEL["Tool Kernel<br/>Origin、创建者、群、权限与预算"]
-        KERNEL --> CORE["Core<br/>历史查询、Memory Change、自我记忆"]
-        KERNEL --> ADMIN["Admin / Runtime Config"]
-        KERNEL --> AUTO_TOOL["Automation Tool"]
-        KERNEL --> PLUGIN_TOOL["Plugin Tool / Facade"]
-        KERNEL --> MCP["MCP Client<br/>stdio / Streamable HTTP"]
-        KERNEL --> WEB["Web Router<br/>DeepSeek Native / Tavily"]
-        CORE --> MUTATION["统一 Memory Mutation Service"]
-        MUTATION --> MEMORY
-        MODEL --> RESPONSE["最终文本与工具结果"]
-    end
+管理命令和绑定插件命令走确定性入口；普通聊天先处理可选视觉输入，再由 Planner Context、
+回复必要性判断和 Planner 决定回复、等待、静默、工具范围、记忆深度以及媒体效果。
 
-    subgraph OUTPUT_FLOW["5. 输出与真实投递回执"]
-        RESPONSE --> CLEANER["输出清理器<br/>移除内部身份头与模型标记"]
-        CLEANER --> OUTPUT["Reply Sequence<br/>分句、引用与长度边界"]
-        PLANNER --> EFFECTS["回复效果计划"]
-        EFFECTS --> EMOJI["表情选择与媒体制品"]
-        EFFECTS --> SPEECH["Genie-TTS 语音"]
-        EMOJI --> OUTPUT
-        SPEECH --> OUTPUT
-        OUTPUT --> SENDER["OneBot Sender"]
-        SENDER --> NAPCAT_OUT["NapCatQQ"]
-        NAPCAT_OUT --> RECEIVED["QQ群 / 私聊收到回复"]
-        SENDER -.-> RECEIPT[("投递回执<br/>chat_events、Planner / Model / Tool 审计")]
-    end
+<p align="center">
+  <img src="img/yuki-architecture-planner-flow.png" alt="Planner 决策与确定性命令流程" width="100%">
+</p>
 
-    subgraph BACKGROUND["6. 持久后台循环"]
-        LEDGER -.-> MEMORY_JOB["Memory Worker<br/>候选提取、反思与质量治理"]
-        MEMORY_JOB -.-> MUTATION
-        LEDGER -.-> REL_JOB["Relationship Worker"]
-        REL_JOB -.-> PEOPLE
-        AUTO_TOOL --> AUTOMATIONS[("Automation Repository<br/>任务、版本与运行记录")]
-        AUTOMATIONS -.-> SCHEDULER["Scheduler / Automation Worker"]
-        SCHEDULER -.-> SCHEDULED["Scheduled Automation Turn<br/>真实创建者、Origin 与权限"]
-        SCHEDULED -.-> PLANNER_CONTEXT
-        PLUGIN_TOOL --> PLUGIN_HOST["Plugin Host<br/>权限、配置、私有存储与生命周期"]
-        PLUGIN_HOST -.-> PLUGIN_BG["后台 Worker / 外部事件 / Planner Signal"]
-        PLUGIN_BG -.-> PLANNER_CONTEXT
-        PLUGIN_BG -.-> OUTBOX["Notification Outbox<br/>文本、Push / Release 卡片"]
-        OUTBOX -.-> OUTPUT
-    end
-```
+### 3. 上下文与 Memory V2
+
+短期历史使用 `chat_events` 中的发送者身份快照；人物、群、关系和场景与长期记忆共同进入
+Context Assembler。Memory V2 先按 `person`、`person_group`、`group`、`self` 硬过滤，再执行
+FTS、可选 Embedding 与 RRF 融合，所有更改统一经过 Memory Mutation Service。
+
+<p align="center">
+  <img src="img/yuki-architecture-context-memory.png" alt="上下文装配、Memory V2 检索与统一变更" width="100%">
+</p>
+
+### 4. 主 Agent 与统一工具内核
+
+Prompt Compiler 把稳定人格、历史、动态上下文和当前消息交给 Model Runtime。AgentRunner
+执行有界多轮工具调用；Tool Kernel 依据 Origin、创建者、当前群、权限和预算统一治理 Core、
+Admin、Automation、Plugin、MCP 与 Web 能力。
+
+<p align="center">
+  <img src="img/yuki-architecture-agent-tools.png" alt="主 Agent、Model Runtime 与统一 Tool Kernel" width="100%">
+</p>
+
+### 5. 输出、媒体效果与投递回执
+
+最终文本先经过输出清理器和 Reply Sequence；Planner 的表情与 Genie-TTS 效果在同一回复序列
+合并。只有 OneBot Sender 获得 NapCat 真实回执后，投递结果才会写入事件账本和审计链。
+
+<p align="center">
+  <img src="img/yuki-architecture-output-delivery.png" alt="输出清理、媒体效果、OneBot 投递与回执" width="100%">
+</p>
+
+### 6. 后台循环、自动化与插件
+
+Memory Worker 和 Relationship Worker 消费事件账本；Scheduler 恢复带真实创建者与权限的
+Scheduled Turn；Plugin Host 负责生命周期、后台 Worker、外部事件、Planner Signal 和持久
+Notification Outbox，它们都回到同一 Planner、Agent 与回复链路。
+
+<p align="center">
+  <img src="img/yuki-architecture-background-extensions.png" alt="记忆关系 Worker、自动化调度与插件后台扩展" width="100%">
+</p>
 
 ---
 
