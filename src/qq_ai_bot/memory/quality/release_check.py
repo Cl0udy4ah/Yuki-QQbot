@@ -42,7 +42,7 @@ class MemoryReleaseCheck:
         items.append(
             self._item(
                 "version",
-                __version__ == "3.4.3",
+                __version__ == "3.4.4",
                 f"project version is {__version__}",
             )
         )
