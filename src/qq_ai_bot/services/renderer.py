@@ -16,7 +16,7 @@ _INTERNAL_HISTORY_MARKER = re.compile(
 )
 _EVENT_IDENTITY_MARKER = re.compile(
     r"\[发送者:[^\]\r\n]{1,128}\|QQ:[^|\]\r\n]{1,64}"
-    r"\|消息:[^|\]\r\n]{1,128}(?:\|时间:[^|\]\r\n]{1,128})?"
+    r"(?:\|消息:[^|\]\r\n]{1,128})?(?:\|时间:[^|\]\r\n]{1,128})?"
     r"(?:\|回复:[^\]\r\n]{1,256})?\]\s*"
 )
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")
