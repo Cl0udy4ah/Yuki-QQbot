@@ -421,6 +421,56 @@ def test_prompt_compiler_keeps_stable_prefix_and_required_turn_context() -> None
     assert [item.id for item in first.selected] == ["core", "current"]
 
 
+def test_prompt_compiler_places_dynamic_context_after_history_and_before_current() -> None:
+    compiler = PromptCompiler()
+    compiled = compiler.compile(
+        PromptProgram(
+            contributions=(
+                PromptContribution(
+                    id="core",
+                    channel=PromptChannel.PERSONA,
+                    trust=PromptTrust.CORE,
+                    priority=100,
+                    stability=PromptStability.STATIC,
+                    content="stable",
+                    required=True,
+                ),
+                PromptContribution(
+                    id="runtime.time",
+                    channel=PromptChannel.RUNTIME,
+                    trust=PromptTrust.TRUSTED,
+                    priority=100,
+                    payload={"local": "dynamic"},
+                    required=True,
+                ),
+            )
+        ),
+        history=(
+            ChatMessage(role="user", content="past user"),
+            ChatMessage(role="assistant", content="past assistant"),
+        ),
+        current_message=ChatMessage(role="user", content="current user"),
+    )
+
+    assert [message.role for message in compiled.messages] == [
+        "system",
+        "user",
+        "assistant",
+        "system",
+        "user",
+    ]
+    assert [message.content for message in compiled.messages] == [
+        "stable",
+        "past user",
+        "past assistant",
+        compiled.messages[3].content,
+        "current user",
+    ]
+    assert '"id":"runtime.time"' in (compiled.messages[3].content or "")
+    assert compiled.metrics.history_characters == len("past userpast assistant")
+    assert compiled.metrics.current_message_characters == len("current user")
+
+
 def _descriptor(name: str, effect: CapabilityEffect) -> CapabilityDescriptor:
     return CapabilityDescriptor(
         canonical_name=f"test.{name}",

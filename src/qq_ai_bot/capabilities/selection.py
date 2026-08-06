@@ -115,9 +115,10 @@ class FlashToolReranker:
     ) -> tuple[UnifiedToolCatalogEntry, ...]:
         if not candidates:
             return ()
+        ordered_candidates = tuple(
+            sorted(candidates, key=lambda item: item.descriptor.canonical_name)
+        )
         payload = {
-            "user_request": user_request,
-            "planner_intent": planner_intent,
             "candidates": [
                 {
                     "canonical_name": item.descriptor.canonical_name,
@@ -126,8 +127,10 @@ class FlashToolReranker:
                     "tags": list(item.tags),
                     "provider_id": item.provider_id,
                 }
-                for item in candidates
+                for item in ordered_candidates
             ],
+            "user_request": user_request,
+            "planner_intent": planner_intent,
         }
         try:
             selected = await self._structured.run(

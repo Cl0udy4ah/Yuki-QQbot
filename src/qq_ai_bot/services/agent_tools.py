@@ -806,12 +806,8 @@ class AgentToolService:
             ),
             reply_to_message_id=self._reply_id(segments),
             occurred_at=occurred_at,
-            sender_nickname=(
-                sender_nickname if isinstance(sender_nickname, str) else ""
-            ),
-            sender_group_card=(
-                sender_group_card if isinstance(sender_group_card, str) else ""
-            ),
+            sender_nickname=(sender_nickname if isinstance(sender_nickname, str) else ""),
+            sender_group_card=(sender_group_card if isinstance(sender_group_card, str) else ""),
             sender_is_bot=sender_id == inbound.bot_user_id,
         )
         return created

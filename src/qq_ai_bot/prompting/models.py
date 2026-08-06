@@ -70,6 +70,7 @@ class PromptMetrics(BaseModel):
     static_characters: int
     dynamic_characters: int
     history_characters: int
+    current_message_characters: int
     total_characters: int
     estimated_tokens: int
     contribution_count: int

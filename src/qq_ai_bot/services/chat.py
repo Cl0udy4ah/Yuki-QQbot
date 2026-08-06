@@ -463,6 +463,7 @@ class _ChatAgentBackend(AgentToolBackend):
             definitions = tuple(
                 tool for tool in definitions if tool.name == self._admin_retry_constraint[0]
             )
+        definitions = tuple(sorted(definitions, key=lambda tool: tool.name))
         self._log_tool_exposure(
             definitions,
             selected_scopes=selected_scopes,

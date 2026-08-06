@@ -37,6 +37,22 @@ from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.time.models import TimeContext
 
 
+def test_merge_function_tools_is_stable_by_tool_name() -> None:
+    previous = (
+        ChatTool(name="zeta", description="z", parameters={"type": "object"}),
+        ChatTool(name="beta", description="old", parameters={"type": "object"}),
+    )
+    current = (
+        ChatTool(name="alpha", description="a", parameters={"type": "object"}),
+        ChatTool(name="beta", description="new", parameters={"type": "object"}),
+    )
+
+    merged = AgentRunner._merge_function_tools(previous, current)
+
+    assert [item.name for item in merged] == ["alpha", "beta", "zeta"]
+    assert merged[1].description == "new"
+
+
 class EmptyAfterToolProvider(LLMProvider):
     """Return a tool call, an empty final answer, then a usable retry."""
 

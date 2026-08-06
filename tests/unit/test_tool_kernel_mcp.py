@@ -233,6 +233,10 @@ async def test_catalog_selection_schema_budget_and_binding_are_provider_neutral(
     ]
     flash_payload = flash.requests[0].messages[-1].content or ""
     assert "input_schema" not in flash_payload and '"properties"' not in flash_payload
+    parsed_flash_payload = json.loads(flash_payload)
+    assert list(parsed_flash_payload) == ["candidates", "user_request", "planner_intent"]
+    candidate_names = [item["canonical_name"] for item in parsed_flash_payload["candidates"]]
+    assert candidate_names == sorted(candidate_names)
 
     original = catalog.entries[0].descriptor
     collision_registry = ToolProviderRegistry()

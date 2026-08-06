@@ -200,6 +200,7 @@ class PromptComposer:
         compiled = self._compiler.compile(
             PromptProgram(contributions=tuple(contributions)),
             history=context.history_messages,
+            current_message=context.current_message,
             dynamic_character_budget=(
                 self._settings.max_context_characters + runtime.plugins.max_total_prompt_characters
             ),
@@ -286,6 +287,7 @@ class PromptComposer:
         compiled = self._compiler.compile(
             PromptProgram(contributions=tuple(contributions)),
             history=context.history_messages,
+            current_message=context.current_message,
             dynamic_character_budget=(
                 self._settings.max_context_characters + runtime.plugins.max_total_prompt_characters
             ),

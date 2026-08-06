@@ -283,10 +283,7 @@ def test_model_history_omits_transport_annotations_and_media_only_events() -> No
         contaminated_text,
         id=4,
         platform_message_id="leaked-identity",
-        content=(
-            "[发送者:Yuki|QQ:8000|消息:old-output|时间:2026-08-05T15:39:05.884399] "
-            "看到了。"
-        ),
+        content=("[发送者:Yuki|QQ:8000|消息:old-output|时间:2026-08-05T15:39:05.884399] 看到了。"),
     )
 
     assert ContextAssembler._history_event_content(image, "current", "当前消息") == ""

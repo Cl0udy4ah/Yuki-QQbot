@@ -325,12 +325,17 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
         else (
             ChatMessage(role="user", content="这是脱敏的历史消息。"),
             ChatMessage(role="assistant", content="这是脱敏的历史回复。"),
-            ChatMessage(role="user", content="请回应当前合成场景。"),
         )
+    )
+    current_message = (
+        None
+        if scenario == "autonomous-group"
+        else ChatMessage(role="user", content="请回应当前合成场景。")
     )
     compiled = PromptCompiler().compile(
         PromptProgram(contributions=tuple(contributions)),
         history=history,
+        current_message=current_message,
     )
     tools, groups = _scenario_tools(scenario)
     tool_metrics = measure_tool_schemas(tools, groups=groups)
@@ -340,6 +345,7 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
         "static_prefix_characters": metrics.static_characters,
         "dynamic_envelope_characters": metrics.dynamic_characters,
         "history_characters": metrics.history_characters,
+        "current_message_characters": metrics.current_message_characters,
         "tool_schema_characters": tool_metrics.schema_characters,
         "estimated_tokens": metrics.estimated_tokens + tool_metrics.estimated_tokens,
         "contribution_ids": [item.id for item in compiled.selected],
@@ -422,6 +428,7 @@ def _prompt_comparison(settings: Settings) -> dict[str, object]:
             cast(int, current["static_prefix_characters"])
             + cast(int, current["dynamic_envelope_characters"])
             + cast(int, current["history_characters"])
+            + cast(int, current["current_message_characters"])
             + cast(int, current["tool_schema_characters"])
         )
         old = baseline[scenario]

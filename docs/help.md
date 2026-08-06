@@ -173,7 +173,8 @@ Memory V2 质量、合成大库性能基准与生产审计命令见
 `MCP_TOOL_SELECTION_MODE=hybrid` 会先做本地目录粗选，再由 `TOOL_SELECTION` 的 Flash
 档案对紧凑候选精排；Flash 不会看到工具 Schema。大量工具部署可设置
 `TOOLING_SELECTED_TOOL_LIMIT`、`TOOLING_SCHEMA_TOKEN_BUDGET`、
-`MCP_SELECTED_TOOL_LIMIT` 与 `MCP_SCHEMA_TOKEN_BUDGET`。留空表示不增加对应限制。
+`MCP_SELECTED_TOOL_LIMIT` 与 `MCP_SCHEMA_TOKEN_BUDGET`。默认采用宽松的首批预算，
+遗漏能力仍可通过 `request_tools` 按需加载；显式留空表示不增加对应限制。
 
 多步骤工具链可在 Server 的 `yuki.toolBundles` 中声明为通用 Bundle：
 
@@ -336,7 +337,7 @@ LLM_BASE_URL=https://api.deepseek.com
 LLM_API_KEY=你的DeepSeek密钥
 LLM_MODEL=deepseek-v4-flash
 LLM_THINKING_ENABLED=true
-LLM_REASONING_EFFORT=max
+LLM_REASONING_EFFORT=high
 ```
 
 机器人账号不填在 `.env`。它由 NapCat WebUI 中实际扫码登录的 QQ 决定。
@@ -376,7 +377,7 @@ MODEL_PROFILES_FILE=config/model_profiles.toml
 LLM_BASE_URL=https://api.deepseek.com
 LLM_API_KEY=你的Pro密钥
 LLM_MODEL=你的主聊天模型名
-LLM_REASONING_EFFORT=max
+LLM_REASONING_EFFORT=high
 LLM_FLASH_BASE_URL=https://api.deepseek.com
 LLM_FLASH_API_KEY=你的Flash密钥
 LLM_FLASH_MODEL=你的Flash模型名
@@ -1234,6 +1235,11 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `RECENT_HISTORY_TOOL_LIMIT` | `20` |
 | `LOCAL_CONTEXT_EVENT_LIMIT` | `30` |
 | `MAX_CONTEXT_CHARACTERS` | `12000` |
+| `HISTORY_WINDOW_LOW_WATERMARK_RATIO` | `0.67` |
+| `TOOLING_SELECTED_TOOL_LIMIT` | `32` |
+| `TOOLING_SCHEMA_TOKEN_BUDGET` | `12000` |
+| `MCP_SELECTED_TOOL_LIMIT` | `16` |
+| `MCP_SCHEMA_TOKEN_BUDGET` | `8000` |
 | `MEMORY_MAX_REFERENCED_TARGETS` | `5` |
 | `PERSON_MEMORY_MAX_ENTRIES` | `100` |
 | `GROUP_MEMORY_MAX_ENTRIES` | `100` |
@@ -1268,7 +1274,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `DAILY_CHAT_MESSAGE_DELAY_MAX_SECONDS` | `2` |
 | `LLM_MODEL` | `deepseek-v4-flash` |
 | `LLM_THINKING_ENABLED` | `true` |
-| `LLM_REASONING_EFFORT` | `max`（DeepSeek V4 支持 `high` / `max`） |
+| `LLM_REASONING_EFFORT` | `high`（默认；DeepSeek V4 支持 `high` / `max`） |
 | `LLM_TIMEOUT_SECONDS` | `120` |
 | `LLM_MAX_RETRIES` | `2` |
 | `LLM_MAX_OUTPUT_TOKENS` | `8192` |

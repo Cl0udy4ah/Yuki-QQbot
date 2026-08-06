@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.config import Settings
-from qq_ai_bot.domain.conversations import ConversationIdentity
+from qq_ai_bot.domain.conversations import ConversationIdentity, ScopeType
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     InboundMessage,
@@ -43,6 +45,7 @@ _LEGACY_HISTORY_PREFIX = re.compile(
     r"(?:[01]\d|2[0-3]):[0-5]\d(?: QQ [1-9]\d{4,19})?\]\s*"
 )
 _MEDIA_DESCRIPTION = re.compile(r"\[(?:表情|语音)：[\s\S]*\]")
+_HISTORY_WINDOW_STATE_LIMIT = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +55,8 @@ class ContextMetrics:
     metadata_characters: int
     history_characters: int
     history_messages: int
+    current_message_characters: int
+    history_window_rolled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,11 +65,31 @@ class AssembledContext:
 
     metadata_payload: dict[str, Any]
     history_messages: tuple[ChatMessage, ...]
+    current_message: ChatMessage
     recent_delivery: tuple[dict[str, object], ...]
     current_time: TimeContext
     current_relationship: RelationshipSnapshot | None
     metrics: ContextMetrics
     external_events: tuple[dict[str, object], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundedMessages:
+    """A bounded history window plus the separately preserved current input."""
+
+    history_messages: tuple[ChatMessage, ...]
+    current_message: ChatMessage
+    history_anchor_event_id: int | None
+    history_window_rolled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _HistoryWindowSelection:
+    """One stable history epoch selected between configurable watermarks."""
+
+    messages: tuple[ChatMessage, ...]
+    anchor_event_id: int | None
+    rolled: bool
 
 
 class ContextAssembler:
@@ -86,6 +111,7 @@ class ContextAssembler:
         self._memory_context = memory_context
         self._relationships = relationships
         self._time = time_service
+        self._history_window_anchors: OrderedDict[str, int] = OrderedDict()
 
     async def assemble(
         self,
@@ -102,6 +128,7 @@ class ContextAssembler:
         """Build one bounded snapshot without persisting model-only metadata."""
 
         reset = await self._ledger.context_reset(identity)
+        history_window_key = self._history_window_key(identity, reset)
         recent = await self._ledger.list_recent(
             scope_type=inbound.scope_type,
             user_id=inbound.sender.user_id,
@@ -235,28 +262,42 @@ class ContextAssembler:
             default=str,
         )
         history_budget = max(0, total_budget - len(metadata_json))
-        history_messages = self._bounded_history(
+        bounded_messages = self._bounded_history(
             recent,
             inbound=inbound,
             content=content,
             character_budget=history_budget,
+            event_limit=runtime.context.local_event_limit,
+            low_watermark_ratio=self._settings.history_window_low_watermark_ratio,
+            anchor_event_id=self._history_window_anchor(history_window_key),
         )
+        self._remember_history_window_anchor(
+            history_window_key,
+            bounded_messages.history_anchor_event_id,
+        )
+        history_messages = bounded_messages.history_messages
+        current_message = bounded_messages.current_message
         history_characters = sum(len(message.content or "") for message in history_messages)
         metrics = ContextMetrics(
             metadata_characters=len(metadata_json),
             history_characters=history_characters,
             history_messages=len(history_messages),
+            current_message_characters=len(current_message.content or ""),
+            history_window_rolled=bounded_messages.history_window_rolled,
         )
         logger.debug(
             "context_assembled metadata_characters=%d history_characters=%d "
-            "history_messages=%d",
+            "history_messages=%d current_message_characters=%d history_window_rolled=%s",
             metrics.metadata_characters,
             metrics.history_characters,
             metrics.history_messages,
+            metrics.current_message_characters,
+            metrics.history_window_rolled,
         )
         return AssembledContext(
             metadata_payload=metadata_payload,
             history_messages=history_messages,
+            current_message=current_message,
             recent_delivery=self._recent_delivery(recent),
             current_time=current_time,
             current_relationship=current_relationship,
@@ -290,6 +331,12 @@ class ContextAssembler:
             group_id=event.group_id,
             limit=runtime.context.local_event_limit,
         )
+        history_identity = (
+            ConversationIdentity.group(event.group_id, authorization_user_id)
+            if event.scope_type is ScopeType.GROUP and event.group_id is not None
+            else ConversationIdentity.private(event.private_peer_user_id or authorization_user_id)
+        )
+        history_window_key = self._history_window_key(history_identity, None)
         retrieval = await self._memory_context.retrieve_for_turn(
             inbound=inbound,
             content=event.content,
@@ -335,15 +382,25 @@ class ContextAssembler:
             ),
         )
         await self._memory_context.mark_used(retrieval, selected_fact_ids)
-        history = self._bounded_external_history(
+        bounded_messages = self._bounded_external_history(
             recent,
             current_event=event,
             character_budget=self._settings.max_context_characters,
+            event_limit=runtime.context.local_event_limit,
+            low_watermark_ratio=self._settings.history_window_low_watermark_ratio,
+            anchor_event_id=self._history_window_anchor(history_window_key),
         )
+        self._remember_history_window_anchor(
+            history_window_key,
+            bounded_messages.history_anchor_event_id,
+        )
+        history = bounded_messages.history_messages
+        current_message = bounded_messages.current_message
         current_time = await self._time.current(authorization_user_id)
         return AssembledContext(
             metadata_payload=metadata_payload,
             history_messages=history,
+            current_message=current_message,
             recent_delivery=self._recent_delivery(recent),
             current_time=current_time,
             current_relationship=None,
@@ -353,6 +410,8 @@ class ContextAssembler:
                 ),
                 history_characters=sum(len(item.content or "") for item in history),
                 history_messages=len(history),
+                current_message_characters=len(current_message.content or ""),
+                history_window_rolled=bounded_messages.history_window_rolled,
             ),
             external_events=external_events,
         )
@@ -702,6 +761,32 @@ class ContextAssembler:
             )
         return tuple(items)
 
+    @staticmethod
+    def _history_window_key(
+        identity: ConversationIdentity,
+        reset: datetime | None,
+    ) -> str:
+        reset_marker = reset.isoformat() if reset is not None else "none"
+        return f"{identity.key}|reset:{reset_marker}"
+
+    def _history_window_anchor(self, key: str) -> int | None:
+        anchor = self._history_window_anchors.get(key)
+        if anchor is not None:
+            self._history_window_anchors.move_to_end(key)
+        return anchor
+
+    def _remember_history_window_anchor(self, key: str, anchor: int | None) -> None:
+        if anchor is None:
+            self._history_window_anchors.pop(key, None)
+            return
+        existing = self._history_window_anchors.get(key)
+        # Concurrent turns may finish out of order. Event IDs are monotonic, so
+        # never let an older turn move a conversation's cache anchor backwards.
+        self._history_window_anchors[key] = max(existing or anchor, anchor)
+        self._history_window_anchors.move_to_end(key)
+        while len(self._history_window_anchors) > _HISTORY_WINDOW_STATE_LIMIT:
+            self._history_window_anchors.popitem(last=False)
+
     @classmethod
     def _bounded_history(
         cls,
@@ -710,7 +795,10 @@ class ContextAssembler:
         inbound: InboundMessage,
         content: str,
         character_budget: int,
-    ) -> tuple[ChatMessage, ...]:
+        event_limit: int,
+        low_watermark_ratio: float,
+        anchor_event_id: int | None,
+    ) -> _BoundedMessages:
         events_by_message_id = {
             row.platform_message_id: row for row in recent if row.platform_message_id
         }
@@ -731,9 +819,8 @@ class ContextAssembler:
                 else cls._current_inbound_content(inbound, content)
             ),
         )
-        used = len(current_message.content or "")
-        selected: list[ChatMessage] = []
-        for row in reversed(recent):
+        rendered: list[tuple[int, ChatMessage]] = []
+        for row in recent:
             if row.platform_message_id == inbound.message_id:
                 continue
             rendered_content = cls._history_message_content(
@@ -752,14 +839,80 @@ class ContextAssembler:
                 ),
                 content=rendered_content,
             )
-            size = len(message.content or "")
-            if used + size > character_budget:
-                continue
-            selected.append(message)
-            used += size
-        selected.reverse()
-        selected.append(current_message)
-        return tuple(selected)
+            rendered.append((row.id, message))
+        selection = cls._select_history_window(
+            tuple(rendered),
+            anchor_event_id=anchor_event_id,
+            high_event_limit=max(0, event_limit - 1),
+            high_character_limit=max(0, character_budget - len(current_message.content or "")),
+            low_watermark_ratio=low_watermark_ratio,
+            fallback_anchor_event_id=current_row.id if current_row is not None else None,
+        )
+        return _BoundedMessages(
+            history_messages=selection.messages,
+            current_message=current_message,
+            history_anchor_event_id=selection.anchor_event_id,
+            history_window_rolled=selection.rolled,
+        )
+
+    @staticmethod
+    def _select_history_window(
+        rendered: tuple[tuple[int, ChatMessage], ...],
+        *,
+        anchor_event_id: int | None,
+        high_event_limit: int,
+        high_character_limit: int,
+        low_watermark_ratio: float,
+        fallback_anchor_event_id: int | None,
+    ) -> _HistoryWindowSelection:
+        """Keep one prefix stable until a high watermark forces a block roll."""
+
+        anchor_index = next(
+            (index for index, item in enumerate(rendered) if item[0] == anchor_event_id),
+            None,
+        )
+        anchor_found = anchor_index is not None
+        candidate = rendered[anchor_index:] if anchor_index is not None else rendered
+        candidate_characters = sum(len(item.content or "") for _, item in candidate)
+        must_roll = (
+            not anchor_found
+            or len(candidate) > high_event_limit
+            or candidate_characters > high_character_limit
+        )
+        if not must_roll:
+            return _HistoryWindowSelection(
+                messages=tuple(item for _, item in candidate),
+                anchor_event_id=(candidate[0][0] if candidate else fallback_anchor_event_id),
+                rolled=False,
+            )
+
+        if high_event_limit <= 0 or high_character_limit <= 0:
+            return _HistoryWindowSelection(
+                messages=(),
+                anchor_event_id=fallback_anchor_event_id,
+                rolled=anchor_event_id is not None,
+            )
+
+        low_event_limit = max(1, int(high_event_limit * low_watermark_ratio))
+        low_character_limit = max(1, int(high_character_limit * low_watermark_ratio))
+        selected_reversed: list[tuple[int, ChatMessage]] = []
+        selected_characters = 0
+        for item in reversed(candidate):
+            size = len(item[1].content or "")
+            if len(selected_reversed) >= low_event_limit:
+                break
+            if not selected_reversed and size > high_character_limit:
+                break
+            if selected_reversed and selected_characters + size > low_character_limit:
+                break
+            selected_reversed.append(item)
+            selected_characters += size
+        selected = tuple(reversed(selected_reversed))
+        return _HistoryWindowSelection(
+            messages=tuple(item for _, item in selected),
+            anchor_event_id=(selected[0][0] if selected else fallback_anchor_event_id),
+            rolled=anchor_event_id is not None,
+        )
 
     @classmethod
     def _history_message_content(
@@ -889,7 +1042,10 @@ class ContextAssembler:
         *,
         current_event: EventRecord,
         character_budget: int,
-    ) -> tuple[ChatMessage, ...]:
+        event_limit: int,
+        low_watermark_ratio: float,
+        anchor_event_id: int | None,
+    ) -> _BoundedMessages:
         events_by_message_id = {
             row.platform_message_id: row for row in recent if row.platform_message_id
         }
@@ -899,9 +1055,8 @@ class ContextAssembler:
             current_content=current_event.content,
             events_by_message_id=events_by_message_id,
         )
-        used = len(trigger)
-        selected: list[ChatMessage] = []
-        for row in reversed(recent):
+        rendered: list[tuple[int, ChatMessage]] = []
+        for row in recent:
             if row.id == current_event.id:
                 continue
             content = cls._history_message_content(
@@ -920,13 +1075,21 @@ class ContextAssembler:
                 ),
                 content=content,
             )
-            if used + len(content) > character_budget:
-                continue
-            selected.append(message)
-            used += len(content)
-        selected.reverse()
-        selected.append(ChatMessage(role="system", content=trigger))
-        return tuple(selected)
+            rendered.append((row.id, message))
+        selection = cls._select_history_window(
+            tuple(rendered),
+            anchor_event_id=anchor_event_id,
+            high_event_limit=max(0, event_limit - 1),
+            high_character_limit=max(0, character_budget - len(trigger)),
+            low_watermark_ratio=low_watermark_ratio,
+            fallback_anchor_event_id=current_event.id,
+        )
+        return _BoundedMessages(
+            history_messages=selection.messages,
+            current_message=ChatMessage(role="system", content=trigger),
+            history_anchor_event_id=selection.anchor_event_id,
+            history_window_rolled=selection.rolled,
+        )
 
     @staticmethod
     def _history_event_content(

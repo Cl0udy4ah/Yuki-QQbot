@@ -143,6 +143,11 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.planner_reply_necessity_threshold == 0
     assert settings.planner_max_pending_messages == 8
     assert settings.reply_plan_hard_max_messages == 10
+    assert settings.history_window_low_watermark_ratio == 0.67
+    assert settings.tooling_selected_tool_limit == 32
+    assert settings.tooling_schema_token_budget == 12000
+    assert settings.mcp_selected_tool_limit == 16
+    assert settings.mcp_schema_token_budget == 8000
     assert settings.emoji_selector_candidate_count == 3
     assert settings.emoji_selector_score_gap == 0.75
     assert settings.emoji_selector_timeout_seconds == 2

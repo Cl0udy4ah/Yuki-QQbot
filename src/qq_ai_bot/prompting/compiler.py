@@ -24,6 +24,7 @@ class PromptCompiler:
         program: PromptProgram,
         *,
         history: tuple[ChatMessage, ...] = (),
+        current_message: ChatMessage | None = None,
         dynamic_character_budget: int | None = None,
     ) -> CompiledPrompt:
         by_id: dict[str, PromptContribution] = {}
@@ -49,12 +50,17 @@ class PromptCompiler:
         messages: list[ChatMessage] = []
         if stable_text:
             messages.append(ChatMessage(role="system", content=stable_text))
+        messages.extend(history)
         if dynamic_text:
             messages.append(ChatMessage(role="system", content=dynamic_text))
-        messages.extend(history)
+        if current_message is not None:
+            messages.append(current_message)
         stable_hash = hashlib.sha256(stable_text.encode("utf-8")).hexdigest()
         history_characters = sum(len(item.content or "") for item in history)
-        total_characters = len(stable_text) + len(dynamic_text) + history_characters
+        current_message_characters = len(current_message.content or "") if current_message else 0
+        total_characters = (
+            len(stable_text) + len(dynamic_text) + history_characters + current_message_characters
+        )
         return CompiledPrompt(
             messages=tuple(messages),
             selected=static + selected_dynamic,
@@ -62,6 +68,7 @@ class PromptCompiler:
                 static_characters=len(stable_text),
                 dynamic_characters=len(dynamic_text),
                 history_characters=history_characters,
+                current_message_characters=current_message_characters,
                 total_characters=total_characters,
                 estimated_tokens=math.ceil(total_characters / 4),
                 contribution_count=len(static) + len(selected_dynamic),

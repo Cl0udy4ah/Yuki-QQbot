@@ -34,8 +34,16 @@ def tooling_mcp_config_specs() -> tuple[ConfigSpec, ...]:
                 scopes=_G,
             )
             for name, display, description in (
-                ("selected_tool_limit", "工具选择数量预算", "为空时不额外限制选中的完整工具数量。"),
-                ("schema_token_budget", "工具 Schema 预算", "为空时不额外限制完整 JSON Schema。"),
+                (
+                    "selected_tool_limit",
+                    "工具选择数量预算",
+                    "首批工具的宽松数量预算；为空时不额外限制，遗漏工具仍可按需加载。",
+                ),
+                (
+                    "schema_token_budget",
+                    "工具 Schema 预算",
+                    "首批完整 JSON Schema 的宽松 Token 预算；为空时不额外限制。",
+                ),
                 ("result_token_budget", "工具结果 Token 预算", "为空时不额外限制统一工具结果。"),
                 ("result_item_limit", "工具结果条目预算", "为空时不额外限制结构化结果条目。"),
             )
@@ -135,14 +143,14 @@ def tooling_mcp_config_specs() -> tuple[ConfigSpec, ...]:
                 (
                     "selected_tool_limit",
                     "MCP 工具数量预算",
-                    "为空时不额外限制 MCP 工具数量。",
+                    "首批 MCP 工具的宽松数量预算；为空时不额外限制。",
                     "integer",
                     1,
                 ),
                 (
                     "schema_token_budget",
                     "MCP Schema 预算",
-                    "为空时不额外限制 MCP Schema。",
+                    "首批 MCP Schema 的宽松 Token 预算；为空时不额外限制。",
                     "integer",
                     1,
                 ),

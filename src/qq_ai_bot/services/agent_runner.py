@@ -561,7 +561,7 @@ class AgentRunner:
     ) -> tuple[ChatTool, ...]:
         merged = {item.name: item for item in previous}
         merged.update({item.name: item for item in current})
-        return tuple(merged.values())
+        return tuple(sorted(merged.values(), key=lambda item: item.name))
 
     @staticmethod
     def _merge_native_tools(

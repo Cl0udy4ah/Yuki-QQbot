@@ -94,6 +94,7 @@ class ConversationSettings(DomainSettings):
     processed_event_cleanup_seconds: int = Field(gt=0)
     max_context_characters: int = Field(gt=0)
     context_metadata_budget_ratio: float = Field(gt=0, lt=1)
+    history_window_low_watermark_ratio: float = Field(gt=0, lt=1)
     per_user_requests_per_minute: int = Field(gt=0)
     per_group_requests_per_minute: int = Field(gt=0)
     max_input_characters: int = Field(gt=0)

@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     processed_event_cleanup_seconds: int = 3600
     max_context_characters: int = 12000
     context_metadata_budget_ratio: float = Field(default=0.55, gt=0, lt=1)
+    history_window_low_watermark_ratio: float = Field(default=0.67, gt=0, lt=1)
 
     global_llm_concurrency: int = 4
     per_user_requests_per_minute: int = 10
@@ -183,10 +184,11 @@ class Settings(BaseSettings):
     agent_max_model_requests: int = 12
     agent_tool_result_max_characters: int = 32000
 
-    # Unified Tool Kernel budgets. None deliberately means no additional cap.
+    # Generous initial Tool Kernel budgets keep schemas bounded without reducing authority;
+    # request_tools can still load additional actor-authorized capabilities on demand.
     tooling_max_parallel_calls: int = 8
-    tooling_selected_tool_limit: int | None = None
-    tooling_schema_token_budget: int | None = None
+    tooling_selected_tool_limit: int | None = 32
+    tooling_schema_token_budget: int | None = 12000
     tooling_result_token_budget: int | None = None
     tooling_result_item_limit: int | None = None
     tooling_result_artifact_enabled: bool = True
@@ -201,8 +203,8 @@ class Settings(BaseSettings):
     mcp_metadata_cache_ttl_seconds: int = 3600
     mcp_connect_timeout_seconds: float = 15.0
     mcp_request_timeout_seconds: float = 60.0
-    mcp_selected_tool_limit: int | None = None
-    mcp_schema_token_budget: int | None = None
+    mcp_selected_tool_limit: int | None = 16
+    mcp_schema_token_budget: int | None = 8000
     mcp_result_token_budget: int | None = None
     mcp_result_item_limit: int | None = None
     mcp_max_parallel_calls: int = 8
