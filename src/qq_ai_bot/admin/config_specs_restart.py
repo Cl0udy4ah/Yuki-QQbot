@@ -399,6 +399,19 @@ def restart_config_specs() -> tuple[ConfigSpec, ...]:
             )
         ),
         _spec(
+            "memory.self_reflection_enabled",
+            "Yuki 自省开关",
+            "重启后按每日三个固定时段运行有界 SELF 反思；首次启用不会回看历史聊天。",
+            aliases=("自省开关",),
+            value_type="boolean",
+            scopes=_G,
+            mode=ConfigApplyMode.RESTART_REQUIRED,
+            env_alias="MEMORY_SELF_REFLECTION_ENABLED",
+            getter=_field("memory_self_reflection_enabled"),
+            settings_fields=("memory_self_reflection_enabled",),
+            category="memory",
+        ),
+        _spec(
             "memory.rebuild_enabled",
             "历史记忆重建开关",
             "重启后允许超级管理员规划和推进历史账本重建；不会自动创建或恢复任务。",

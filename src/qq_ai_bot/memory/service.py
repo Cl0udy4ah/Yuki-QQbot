@@ -1025,7 +1025,7 @@ class MemoryFactService:
         fact_id: int,
         *,
         actor_user_id: str,
-        source_event_id: int,
+        source_event_id: int | None,
         session: AsyncSession,
     ) -> None:
         """Let the real subject settle a bounded third-party contradiction."""

@@ -632,7 +632,11 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 | `memory_embedding_profiles` | `0022` 新增的非密钥模型/维度/模板指纹，配置变化时隔离旧向量 |
 | `memory_embeddings` | 当前事实与 profile 对应的 little-endian float32 向量派生数据 |
 | `memory_embedding_jobs` | 事实提交后异步生成、重试或重建向量的持久任务 |
-| `memory_evidence` | 事实对应的真实聊天事件、真实发送者、证据关系、置信度与 authority |
+| `memory_evidence` | 事实对应的真实聊天事件或有界工具回执、真实发送者、证据关系、置信度与 authority |
+| `memory_claim_candidates` | 默认保留 7 天且不参与 Prompt/检索的低置信候选；普通候选需两条独立证据才可晋升 |
+| `memory_tool_receipts` | 为 SELF 自省保存的脱敏、裁剪、带过期时间的可信工具回执 |
+| `memory_self_reflection_states` | 按群聊或私聊严格隔离的自省游标和无正文累计量 |
+| `memory_self_reflection_runs` | 每个调度槽的幂等、自省调用与提交统计，不保存聊天正文 |
 | `memory_fact_relations` | `0023` 新增的 supports/contradicts/refines/equivalent 有界事实关系 |
 | `memory_fact_state_events` | `0023` 新增的 created/confirmed/superseded/invalidated 等状态审计 |
 | `memory_jobs` | 每个真实入站非 Bot 事件一个、最多重试 3 次的持久提取任务 |
@@ -706,7 +710,7 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
 - 只有当前真实事件明确 `@` 或回复的群成员，才以独立块加载该人的相关长期事实；
 - 被提及者和最近发言者中最多 5 人仍可提供当前群身份元数据，但最近发言者不会自动成为
   长期记忆检索目标；
-- 当前私聊或当前群最近 30 条本地事件；
+- 当前私聊或当前群在 `12000` 字符总预算内的连续滑动历史；
 - 只有模型主动调用搜索工具时，才加入更早历史。
 
 相关记忆检索不会调用 LLM。Planner 会为本轮选择 `none / lexical / hybrid / overview` 检索深度：
@@ -742,6 +746,24 @@ QQ、群、fact ID、status、authority 或数据库动作。完全相同、无�
   和用户在 Prompt 中自报的身份都不参与事实可信度。
 - 本地维护 Worker 只处理到期或低重要度、低 confidence 且长期未确认的自动事实。它不扫描
   `chat_events`，不调用 LLM/Embedding，不物理删除记录，也不自动修改 explicit 事实。
+
+### 写入质量、候选区与 Yuki 自省
+
+自动提取在模型输出之后还会经过确定性的主体归属和长期价值策略。只有第一人称或安全省略主语
+可以归发送者；第二人称、Yuki 主语、mention 接收者不会回退成发送者。普通姓名只在当前群昵称、
+群名片或可信别名唯一精确匹配时解析。临时状态、角色扮演、工具或游戏生成结果默认不写长期记忆。
+低置信普通候选只有在 7 天内获得两条不同真实事件的同目标、同 key、同内容证据后才重新验证；
+关于 Yuki 的陈述只进入 self candidate，不会由普通 Memory Worker 直接写入 SELF。
+
+Yuki 自省默认开启，固定在 `Asia/Shanghai` 的 `04:00、12:00、20:00` 检查新会话，每个时段
+最多 3 个隔离会话、每天最多 9 次模型调用。首次启用只建立最新事件游标，不回看旧聊天；高价值
+信号只提高下一调度批次优先级，不触发即时昂贵调用。输入最多 20 条事件、8000 字符，必须包含
+已确认投递的 Yuki 回复或可信工具结果。模型只能引用后端生成的 event/tool/fact/candidate 别名，
+最终新增、纠正、合并、争议或失效仍统一经过 `MemoryMutationService`、版本链和 receipt。
+
+迁移前事实保持 `legacy_unreviewed` 且正常可检索；新事实是当前验证版本的 `verified`。只有
+`quarantined` 默认不进入 Prompt、普通检索和 Embedding。内部提供单事实和单实体的 dry-run 优先
+审计服务，用户记忆与 SELF 使用分离契约；本次不提供聊天审计工具、全库扫描或自动历史改写。
 
 确定性审计命令：
 
@@ -1237,7 +1259,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `OBSERVE_ENABLED_GROUPS` | `true` |
 | `RECENT_HISTORY_TOOL_LIMIT` | `20` |
 | `LOCAL_CONTEXT_EVENT_LIMIT` | `1000` |
-| `MAX_CONTEXT_CHARACTERS` | `48000` |
+| `MAX_CONTEXT_CHARACTERS` | `12000`（字符，不是 token） |
 | `HISTORY_WINDOW_LOW_WATERMARK_RATIO` | `0.67` |
 | `TOOLING_SELECTED_TOOL_LIMIT` | `32` |
 | `TOOLING_SCHEMA_TOKEN_BUDGET` | `12000` |
@@ -1255,6 +1277,17 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `MEMORY_BATCH_MAX_WAIT_SECONDS` | `300` |
 | `MEMORY_BATCH_MAX_OUTPUT_TOKENS` | `4096` |
 | `MEMORY_RETRIEVAL_ENABLED` | `true` |
+| `SELF_MEMORY_ENABLED` | `true` |
+| `MEMORY_SELF_REFLECTION_ENABLED` | `true` |
+| `MEMORY_SELF_REFLECTION_SCHEDULE_HOURS` | `4,12,20` |
+| `MEMORY_SELF_REFLECTION_TIMEZONE` | `Asia/Shanghai` |
+| `MEMORY_SELF_REFLECTION_MAX_SESSIONS_PER_RUN` | `3` |
+| `MEMORY_SELF_REFLECTION_MAX_DAILY_CALLS` | `9` |
+| `MEMORY_SELF_REFLECTION_EVENT_THRESHOLD` | `12` |
+| `MEMORY_SELF_REFLECTION_CHARACTER_THRESHOLD` | `6000` |
+| `MEMORY_SELF_REFLECTION_MAX_WAIT_SECONDS` | `28800` |
+| `MEMORY_SELF_REFLECTION_MAX_EVENTS` | `20` |
+| `MEMORY_SELF_REFLECTION_MAX_CHARACTERS` | `8000` |
 | `MEMORY_LEXICAL_CANDIDATE_LIMIT` | `50` |
 | `MEMORY_CONTEXT_LIMIT_PER_ENTITY` | `8` |
 | `MEMORY_OVERVIEW_LIMIT_PER_ENTITY` | `20` |
@@ -1284,9 +1317,9 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `LLM_TIMEOUT_SECONDS` | `120` |
 | `LLM_MAX_RETRIES` | `2` |
 | `LLM_MAX_OUTPUT_TOKENS` | `8192` |
-| `AGENT_MAX_TOOL_CALLS` | `12`（硬上限 `16`） |
-| `AGENT_MAX_MODEL_REQUESTS` | `12` |
-| `AGENT_TOOL_RESULT_MAX_CHARACTERS` | `32000` |
+| `AGENT_MAX_TOOL_CALLS` | `8` |
+| `AGENT_MAX_MODEL_REQUESTS` | `6` |
+| `AGENT_TOOL_RESULT_MAX_CHARACTERS` | `8000` |
 | `PLANNER_DIRECT_ENABLED` | `true` |
 | `PLANNER_GROUP_ENABLED` | `true` |
 | `PLANNER_GROUP_DEBOUNCE_SECONDS` | `3` |

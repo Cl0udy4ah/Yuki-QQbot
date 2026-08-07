@@ -103,6 +103,7 @@ class MemoryEmbeddingJobRepository:
                     await session.scalars(
                         select(MemoryFactModel).where(
                             MemoryFactModel.status == "active",
+                            MemoryFactModel.review_state != "quarantined",
                             or_(
                                 MemoryFactModel.valid_until.is_(None),
                                 MemoryFactModel.valid_until > datetime.now(UTC),
@@ -169,6 +170,7 @@ class MemoryEmbeddingJobRepository:
                         select(MemoryFactModel).where(
                             MemoryFactModel.id.in_(ids),
                             MemoryFactModel.status == "active",
+                            MemoryFactModel.review_state != "quarantined",
                             or_(
                                 MemoryFactModel.valid_until.is_(None),
                                 MemoryFactModel.valid_until > datetime.now(UTC),

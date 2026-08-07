@@ -69,6 +69,7 @@ _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
     ModelTask.CHAT_AGENT: frozenset({ModelCapability.TOOLS}),
     ModelTask.PLANNER: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.MEMORY_EXTRACTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
+    ModelTask.MEMORY_SELF_REFLECTION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.MEMORY_CONSOLIDATION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.RELATIONSHIP_EVALUATION: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
     ModelTask.EMOJI_REPLACEMENT: frozenset({ModelCapability.STRUCTURED_OUTPUT}),
@@ -150,6 +151,16 @@ def load_model_profile_catalog(
         ):
             logger.warning("model_route_compatibility task=tool_selection source=planner")
             raw_routes[ModelTask.TOOL_SELECTION.value] = raw_routes[ModelTask.PLANNER.value]
+        if (
+            ModelTask.MEMORY_SELF_REFLECTION.value not in raw_routes
+            and ModelTask.MEMORY_EXTRACTION.value in raw_routes
+        ):
+            logger.warning(
+                "model_route_compatibility task=memory_self_reflection source=memory_extraction"
+            )
+            raw_routes[ModelTask.MEMORY_SELF_REFLECTION.value] = raw_routes[
+                ModelTask.MEMORY_EXTRACTION.value
+            ]
         if (
             ModelTask.MEMORY_CONSOLIDATION.value not in raw_routes
             and ModelTask.MEMORY_EXTRACTION.value in raw_routes

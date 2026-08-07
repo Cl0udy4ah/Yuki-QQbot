@@ -142,6 +142,21 @@ logger = logging.getLogger(__name__)
 _INHERITED_RELATED_TOOL_LIMIT = 6
 _INHERITED_CANDIDATE_POOL_LIMIT = 24
 
+_BUILTIN_SCOPE_DESCRIPTIONS = {
+    "memory": (
+        "搜索近期或永久聊天历史；读取人物、群和 Yuki 自我长期记忆；"
+        "创建、纠正、撤销、恢复和管理长期记忆"
+    ),
+    "web": "联网搜索公开信息，并读取网页、链接和在线资料",
+    "automation": "创建、查询、修改和删除提醒、定时任务与周期任务",
+    "onebot": "执行 QQ 平台、群聊、好友和消息相关操作",
+    "config": "读取和修改 Yuki 的运行配置",
+    "admin": "超级管理员诊断和管理操作",
+    "capability": "查询当前真实用户拥有的权限和可操作能力",
+    "speech": "处理已经由 Planner 授权的语音回复",
+    "plugin": "调用当前已批准并运行的本地插件能力",
+}
+
 _ADMIN_RETRYABLE_ERRORS = frozenset(
     {
         "invalid_json",
@@ -228,6 +243,9 @@ class ToolInvocationRecorder(Protocol):
         result_size: int,
         artifact_created: bool,
         error_category: str | None,
+        trigger_message_id: str,
+        bot_user_id: str,
+        result_excerpt: str,
     ) -> None: ...
 
 
@@ -252,6 +270,9 @@ class _ChatAgentBackend(AgentToolBackend):
         self._provider_registry: ToolProviderRegistry | None = None
         self._requested_tool_names: set[str] = set()
         self._callable_tool_names: set[str] = set()
+        self._tool_turn_recorded = False
+        self._request_tools_called = False
+        self._first_real_tool_recorded = False
         self._native_web_fallback = runtime.native_web_fallback
 
     def enable_native_web_fallback(self) -> None:
@@ -319,6 +340,11 @@ class _ChatAgentBackend(AgentToolBackend):
                 if entry.descriptor.model_name in authority_visible_names
             ),
         )
+        if not self._tool_turn_recorded and self._requestable_catalog.entries:
+            self._service._tool_metrics.record_tool_enabled_turn(
+                planner_scope_explicit=self._runtime.planner_scopes_explicit
+            )
+            self._tool_turn_recorded = True
         filtered_catalog = replace(
             self._catalog,
             entries=tuple(
@@ -594,6 +620,18 @@ class _ChatAgentBackend(AgentToolBackend):
         descriptor = entry.descriptor if entry is not None else None
         if descriptor is None or descriptor.binding is None:
             return json.dumps({"ok": False, "error": "unknown_capability"})
+        if not self._first_real_tool_recorded:
+            first_round_hit = not self._request_tools_called
+            self._service._tool_metrics.record_first_round_tool_hit(hit=first_round_hit)
+            logger.info(
+                "agent_first_round_tool_hit conversation_hash=%s hit=%s "
+                "planner_scope_explicit=%s tool=%s",
+                identifier_hash(self._runtime.conversation_key) or "missing",
+                first_round_hit,
+                self._runtime.planner_scopes_explicit,
+                descriptor.model_name,
+            )
+            self._first_real_tool_recorded = True
         effective_descriptor = self._effective_descriptor(call, descriptor)
         is_web_tool = ToolGroup.WEB.value in effective_descriptor.scope_ids
         config = self._runtime.runtime_config
@@ -742,6 +780,9 @@ class _ChatAgentBackend(AgentToolBackend):
                         result_size=len(result.encode("utf-8")),
                         artifact_created=budgeted.artifact_id is not None,
                         error_category=outcome.error_code,
+                        trigger_message_id=execution_runtime.trigger_message_id,
+                        bot_user_id=execution_runtime.inbound.bot_user_id,
+                        result_excerpt=result,
                     )
             if contains_internal_capability_payload(result):
                 self._capability_was_used = True
@@ -867,6 +908,8 @@ class _ChatAgentBackend(AgentToolBackend):
         return bool(entry is not None and entry.descriptor.parallel_safe)
 
     def _request_tools(self, arguments_json: str) -> str:
+        self._request_tools_called = True
+        self._service._tool_metrics.record_request_tools()
         try:
             arguments = json.loads(arguments_json)
         except json.JSONDecodeError:
@@ -894,6 +937,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 ensure_ascii=False,
             )
         if self._requestable_catalog is None:
+            self._service._tool_metrics.record_request_tools_zero_result()
             return json.dumps(
                 {"ok": False, "error": "capability_catalog_unavailable"},
                 ensure_ascii=False,
@@ -905,6 +949,11 @@ class _ChatAgentBackend(AgentToolBackend):
             excluded_names=frozenset(self._callable_tool_names),
         )
         if not matches:
+            self._service._tool_metrics.record_request_tools_zero_result()
+            logger.info(
+                "agent_request_tools_result conversation_hash=%s loaded_count=0",
+                identifier_hash(self._runtime.conversation_key) or "missing",
+            )
             return json.dumps(
                 {
                     "ok": False,
@@ -914,6 +963,11 @@ class _ChatAgentBackend(AgentToolBackend):
                 ensure_ascii=False,
             )
         loaded_names = {match.entry.descriptor.model_name for match in matches}
+        logger.info(
+            "agent_request_tools_result conversation_hash=%s loaded_count=%d",
+            identifier_hash(self._runtime.conversation_key) or "missing",
+            len(loaded_names),
+        )
         loaded_scopes = {scope for match in matches for scope in match.entry.descriptor.scope_ids}
         self._requested_tool_names.update(loaded_names)
         selected = self._runtime.selected_tool_names
@@ -1102,7 +1156,10 @@ class ChatService:
                 scope_id=scope,
                 parent=scope.rpartition(".")[0] or None,
                 display_name=scope,
-                description=f"Yuki 内置 {scope} 能力",
+                description=_BUILTIN_SCOPE_DESCRIPTIONS.get(
+                    scope,
+                    f"Yuki 内置 {scope} 能力",
+                ),
                 tool_count=0,
                 provider_ids=("core",),
                 tags=(scope,),
@@ -2100,9 +2157,7 @@ class ChatService:
         # inherited set may prioritize a scope during local relevance ranking.
         planner_groups = runtime.planner_tool_groups or frozenset()
         inherited_priority_scopes = tuple(
-            scope
-            for scope in sorted(runtime.tool_groups - planner_groups)
-            if scope in known_scopes
+            scope for scope in sorted(runtime.tool_groups - planner_groups) if scope in known_scopes
         )
         if (
             any(scope.startswith("mcp.") for scope in inherited_priority_scopes)
@@ -2199,10 +2254,7 @@ class ChatService:
             if referenced_people or contains_qq or "记忆" in lookup_text:
                 required_names.add("get_person_memories")
             planner_groups = runtime.planner_tool_groups or frozenset()
-            if (
-                not runtime.planner_scopes_explicit
-                and ToolGroup.MEMORY.value not in planner_groups
-            ):
+            if not runtime.planner_scopes_explicit and ToolGroup.MEMORY.value not in planner_groups:
                 required_names.add("memory_change")
 
         selected_names = {item.descriptor.model_name for item in selected}

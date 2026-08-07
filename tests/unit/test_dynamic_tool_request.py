@@ -146,6 +146,64 @@ def test_request_matcher_prefers_song_capability_and_has_no_arbitrary_fallback()
     assert match_requestable_tools(catalog, query="完全无关的量子天气", limit=2) == ()
 
 
+def test_core_search_tags_recall_tools_from_natural_chinese_phrases() -> None:
+    async def execute(name: str, _arguments: str, _runtime: object) -> object:
+        return {"ok": True, "data": name}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _runtime: tuple(
+                _tool(name, "核心能力")
+                for name in (
+                    "get_recent_chat_history",
+                    "search_chat_history",
+                    "get_person_memories",
+                    "memory_change",
+                    "web_search",
+                    "read_webpage",
+                )
+            ),
+            execute=execute,
+        )
+    )
+    catalog = registry.catalog(object())
+    cases = {
+        "刚刚说了什么": "get_recent_chat_history",
+        "他以前提过吗": "search_chat_history",
+        "你记得我的爱好吗": "get_person_memories",
+        "请记住我不喝咖啡": "memory_change",
+        "搜一下最新新闻": "web_search",
+        "看看这个网页": "read_webpage",
+    }
+
+    for query, expected in cases.items():
+        matches = match_requestable_tools(catalog, query=query, limit=1)
+        assert matches
+        assert matches[0].entry.descriptor.model_name == expected
+
+
+def test_builtin_planner_scope_descriptions_explain_actual_capabilities() -> None:
+    service = object.__new__(ChatService)
+    service._plugin_tools = None
+    service._external_tool_providers = []
+
+    scopes = {
+        item.scope_id: item.description
+        for item in service.planner_tool_scopes(
+            ("memory", "web", "automation", "onebot", "capability")
+        )
+    }
+
+    assert "搜索近期或永久聊天历史" in scopes["memory"]
+    assert "读取网页" in scopes["web"]
+    assert "周期任务" in scopes["automation"]
+    assert "QQ 平台" in scopes["onebot"]
+    assert "真实用户" in scopes["capability"]
+
+
 def test_tool_exposure_log_records_scopes_and_final_tool_names(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -222,10 +280,10 @@ async def test_inherited_scope_preloads_only_positive_relevance_up_to_six_tools(
         InProcessToolProvider(
             provider_id="plugin",
             source=CapabilityTrustSource.PLUGIN,
-            definitions=lambda _runtime: tuple(
-                _tool(f"music_{index}", "music lookup and sharing") for index in range(8)
-            )
-            + tuple(_tool(f"weather_{index}", "weather forecast") for index in range(4)),
+            definitions=lambda _runtime: (
+                tuple(_tool(f"music_{index}", "music lookup and sharing") for index in range(8))
+                + tuple(_tool(f"weather_{index}", "weather forecast") for index in range(4))
+            ),
             execute=execute,
         )
     )
@@ -341,11 +399,14 @@ def test_deterministic_memory_scope_keeps_mutation_tool_in_compact_initial_set()
 @pytest.mark.asyncio
 async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> None:
     calls: list[str] = []
-    backend = _ChatAgentBackend(_Service(_registry(calls)), _runtime())  # type: ignore[arg-type]
+    service = _Service(_registry(calls))
+    backend = _ChatAgentBackend(service, _runtime())  # type: ignore[arg-type]
     agent_runtime = SimpleNamespace()
 
     first = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
     assert first == {"album_share", REQUEST_TOOLS_NAME}
+    assert service._tool_metrics.tool_enabled_turns == 1
+    assert service._tool_metrics.planner_scope_turns[True] == 1
 
     hidden_call = ToolCall(
         id="hidden",
@@ -376,9 +437,12 @@ async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> N
     )
     assert requested["ok"] is True
     assert requested["data"]["loaded_tools"][0]["name"] == "song_share"
+    assert service._tool_metrics.request_tools_calls == 1
+    assert service._tool_metrics.request_tools_zero_results == 0
 
     second = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
     assert second == {"album_share", "song_share", REQUEST_TOOLS_NAME}
+    assert service._tool_metrics.tool_enabled_turns == 1
 
     song_call = ToolCall(id="song", function=ToolFunction(name="song_share", arguments="{}"))
     backend.begin_batch((song_call,), agent_runtime)
@@ -387,6 +451,30 @@ async def test_agent_can_request_and_then_call_an_omitted_authorized_tool() -> N
     )
     assert outcome["ok"] is True
     assert calls == ["song_share"]
+    assert service._tool_metrics.first_round_tool_hits[False] == 1
+
+
+@pytest.mark.asyncio
+async def test_first_real_tool_call_records_initial_schema_hit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="qq_ai_bot.services.chat")
+    calls: list[str] = []
+    service = _Service(_registry(calls))
+    backend = _ChatAgentBackend(service, _runtime())  # type: ignore[arg-type]
+    agent_runtime = SimpleNamespace()
+    backend.definitions(agent_runtime, web_was_used=False)
+    call = ToolCall(id="album", function=ToolFunction(name="album_share", arguments="{}"))
+
+    backend.begin_batch((call,), agent_runtime)
+    outcome = json.loads(
+        await backend.execute("album_share", "{}", agent_runtime)  # type: ignore[arg-type]
+    )
+
+    assert outcome["ok"] is True
+    assert service._tool_metrics.first_round_tool_hits[True] == 1
+    assert "agent_first_round_tool_hit" in caplog.text
+    assert "hit=True" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -459,7 +459,11 @@ class MemoryRebuildService:
                     claim = raw_claim
                     if claim.source_type is not MemorySourceType.EXPLICIT:
                         claim = claim.model_copy(update={"source_type": MemorySourceType.REBUILD})
-                    validated = self.processor.validate(claim, event)
+                    validated = self.processor.validate(
+                        claim,
+                        event,
+                        subject_context=extracted.subject_context,
+                    )
                     if validated is None:
                         continue
                     claim_json = canonical_json(claim)
@@ -561,7 +565,12 @@ class MemoryRebuildService:
                 processed += 1
                 continue
             claim = MemoryClaim.model_validate_json(proposal.claim_json)
-            validated = self.processor.validate(claim, event)
+            subject_context = await self.extractor.subject_context(event)
+            validated = self.processor.validate(
+                claim,
+                event,
+                subject_context=subject_context,
+            )
             if (
                 validated is None
                 or validated.fact.subject_user_id != proposal.subject_user_id

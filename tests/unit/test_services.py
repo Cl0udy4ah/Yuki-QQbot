@@ -150,9 +150,7 @@ def test_model_output_removes_shortened_event_identity_envelopes() -> None:
         "前缀 [发送者:远野|QQ:2186567848|时间:2026-08-06T15:00:00] 第二句。"
     )
 
-    assert clean_model_output(text, max_characters=200) == (
-        "安全组只放行常用 IP。\n前缀 第二句。"
-    )
+    assert clean_model_output(text, max_characters=200) == ("安全组只放行常用 IP。\n前缀 第二句。")
 
 
 @pytest.mark.asyncio

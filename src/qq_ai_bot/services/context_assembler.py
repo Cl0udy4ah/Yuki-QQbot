@@ -374,10 +374,16 @@ class ContextAssembler:
             ),
         )
         await self._memory_context.mark_used(retrieval, selected_fact_ids)
+        metadata_characters = len(
+            json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
+        )
         bounded_messages = self._bounded_external_history(
             recent,
             current_event=event,
-            character_budget=self._settings.max_context_characters,
+            character_budget=max(
+                0,
+                self._settings.max_context_characters - metadata_characters,
+            ),
             event_limit=runtime.context.local_event_limit,
             low_watermark_ratio=self._settings.history_window_low_watermark_ratio,
             anchor_event_id=self._history_window_anchor(history_window_key),
@@ -397,9 +403,7 @@ class ContextAssembler:
             current_time=current_time,
             current_relationship=None,
             metrics=ContextMetrics(
-                metadata_characters=len(
-                    json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
-                ),
+                metadata_characters=metadata_characters,
                 history_characters=sum(len(item.content or "") for item in history),
                 history_messages=len(history),
                 current_message_characters=len(current_message.content or ""),

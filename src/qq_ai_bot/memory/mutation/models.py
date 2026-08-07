@@ -8,7 +8,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from qq_ai_bot.memory.enums import MemoryKind, MemoryScopeType, MemoryStatus
+from qq_ai_bot.memory.enums import MemoryKind, MemoryReviewState, MemoryScopeType, MemoryStatus
 from qq_ai_bot.persistence.repository_records import EventRecord
 
 
@@ -104,6 +104,7 @@ class MemoryMutationRequest(_MutationModel):
     expected_fact_state: MemoryStatus | None = None
     valid_from: str | None = Field(default=None, max_length=64)
     valid_until: str | None = Field(default=None, max_length=64)
+    review_state: MemoryReviewState | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +120,7 @@ class MemoryMutationContext:
     decision_actor_id: str | None
     executed_by_bot_user_id: str
     actor_is_superuser: bool = False
+    evidence_tool_receipt_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

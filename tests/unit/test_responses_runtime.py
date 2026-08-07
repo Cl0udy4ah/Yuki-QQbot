@@ -227,6 +227,15 @@ class _ChangingBackend(_Backend):
         return (ChatTool(name=name, description=name, parameters={}),)
 
 
+class _CountingBackend(_Backend):
+    def __init__(self) -> None:
+        self.executions = 0
+
+    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
+        self.executions += 1
+        return await super().execute(name, arguments_json, runtime)
+
+
 def _runtime(
     max_requests: int = 4,
     *,
@@ -314,6 +323,43 @@ async def test_responses_continuation_never_removes_declared_function_tools() ->
     ).run((ChatMessage(role="user", content="run"),), _runtime(), _ChangingBackend())
 
     assert {tool.name for tool in executor.requests[1].tools} == {"demo", "new_tool"}
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_stops_identical_no_progress_tool_batches_early() -> None:
+    continuation = ProviderContinuation(provider="deepseek", protocol="responses", payload=())
+    repeated = [
+        ChatResponse(
+            content="",
+            latency_seconds=0,
+            tool_calls=(
+                ToolCall(
+                    id=f"same-{index}",
+                    function=ToolFunction(name="demo", arguments='{"query":"same"}'),
+                ),
+            ),
+            continuation=continuation,
+        )
+        for index in range(3)
+    ]
+    executor = _ResponsesExecutor(
+        [*repeated, ChatResponse(content="根据已有结果回答", latency_seconds=0)]
+    )
+    backend = _CountingBackend()
+
+    result = await AgentRunner(
+        cast(TaskModelExecutor, executor),
+        ConcurrencyManager(1),
+    ).run(
+        (ChatMessage(role="user", content="run"),),
+        _runtime(max_requests=10),
+        backend,
+    )
+
+    assert result.text == "根据已有结果回答"
+    assert result.model_requests == 4
+    assert result.tool_calls_used == 3
+    assert backend.executions == 3
 
 
 @pytest.mark.asyncio

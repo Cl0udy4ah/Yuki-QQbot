@@ -16,13 +16,17 @@ from tests.conftest import MemorySender, build_harness, make_settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatRequest, ChatResponse, InboundMessage, SenderIdentity
 from qq_ai_bot.llm.base import LLMProvider
+from qq_ai_bot.memory.claim_candidates import MemoryClaimCandidateRepository
 from qq_ai_bot.memory.enums import (
     MemoryEvidenceRelation,
     MemoryKind,
     MemoryRebuildJobOutcome,
+    MemoryRetention,
     MemoryScopeType,
+    MemorySourceStyle,
     MemorySourceType,
     MemoryStatus,
+    MemorySubjectBasis,
 )
 from qq_ai_bot.memory.extraction import (
     BatchMemoryClaim,
@@ -272,6 +276,77 @@ def test_interaction_preferences_are_not_stored_as_person_facts() -> None:
     )
     assert validated is not None
     assert validated.fact.kind is MemoryKind.PREFERENCE
+
+
+@pytest.mark.parametrize(
+    ("text", "basis", "expected_reason"),
+    [
+        ("你今天花了 5.36", MemorySubjectBasis.ADDRESSED_SECOND_PERSON, "second_person"),
+        ("Yuki 是 CI runner", MemorySubjectBasis.ABOUT_YUKI, "self_candidate"),
+    ],
+)
+def test_quality_policy_never_falls_second_person_or_yuki_back_to_speaker(
+    text: str,
+    basis: MemorySubjectBasis,
+    expected_reason: str,
+) -> None:
+    event = replace(_event(), content=text)
+    result = MemoryClaimValidator().validate_claim_result(
+        _claim(
+            content=text,
+            evidence_quote=text,
+            subject_basis=basis,
+        ),
+        event,
+    )
+
+    assert not result.ok
+    assert expected_reason in result.reason_code
+
+
+@pytest.mark.parametrize(
+    ("text", "retention", "style", "reason"),
+    [
+        ("我去跑步了", MemoryRetention.TRANSIENT, MemorySourceStyle.NATURAL_STATEMENT, "transient"),
+        ("请你这轮扮演猫娘", MemoryRetention.DURABLE, MemorySourceStyle.ROLEPLAY, "roleplay"),
+        ("获得 36 XP", MemoryRetention.DURABLE, MemorySourceStyle.GENERATED_RESULT, "generated"),
+    ],
+)
+def test_quality_policy_filters_temporary_and_generated_activity(
+    text: str,
+    retention: MemoryRetention,
+    style: MemorySourceStyle,
+    reason: str,
+) -> None:
+    event = replace(_event(), content=text)
+    result = MemoryClaimValidator().validate_claim_result(
+        _claim(
+            content=text,
+            evidence_quote=text,
+            retention=retention,
+            source_style=style,
+        ),
+        event,
+    )
+
+    assert not result.ok
+    assert reason in result.reason_code
+
+
+def test_explicit_request_can_override_retention_but_not_attribution() -> None:
+    event = replace(_event(), content="请记住我今天第一次钓到鱼")
+    result = MemoryClaimValidator().validate_claim_result(
+        _claim(
+            kind="episode",
+            content="今天第一次钓到鱼",
+            evidence_quote="请记住我今天第一次钓到鱼",
+            retention=MemoryRetention.TRANSIENT,
+            source_style=MemorySourceStyle.INSTRUCTION,
+        ),
+        event,
+    )
+
+    assert result.ok
 
 
 async def _append_event(
@@ -1024,3 +1099,62 @@ async def test_context_limits_mentioned_member_facts_to_current_group_block(
     }
     assert blocks["current_person"]["facts"] == []
     assert "另一个群的秘密" not in envelope
+
+
+@pytest.mark.asyncio
+async def test_memory_candidate_requires_independent_evidence_and_expires_in_seven_days(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    candidates = MemoryClaimCandidateRepository(database)
+    first, _ = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="candidate-one",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="1001",
+        direction="inbound",
+        content="我喜欢浅烘咖啡",
+        private_peer_user_id="1001",
+    )
+    second, _ = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="candidate-two",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="1001",
+        direction="inbound",
+        content="我喜欢浅烘咖啡",
+        private_peer_user_id="1001",
+    )
+    claim = _claim(
+        memory_key="preference:coffee-roast",
+        category="preference",
+        content="喜欢浅烘咖啡",
+        evidence_quote="我喜欢浅烘咖啡",
+        confidence=0.5,
+    )
+
+    once = await candidates.stage(
+        claim,
+        first,
+        candidate_type="memory",
+        subject_context=None,
+    )
+    duplicate = await candidates.stage(
+        claim,
+        first,
+        candidate_type="memory",
+        subject_context=None,
+    )
+    twice = await candidates.stage(
+        claim,
+        second,
+        candidate_type="memory",
+        subject_context=None,
+    )
+
+    assert once.evidence_count == duplicate.evidence_count == 1
+    assert not once.ready_for_promotion
+    assert twice.evidence_count == 2
+    assert twice.ready_for_promotion
+    remaining = twice.expires_at - datetime.now(UTC)
+    assert timedelta(days=6, hours=23) < remaining <= timedelta(days=7)

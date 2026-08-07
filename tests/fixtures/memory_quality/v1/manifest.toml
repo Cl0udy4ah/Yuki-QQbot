@@ -1,6 +1,6 @@
 schema_version = "1"
 suite_version = "memory-v2-quality-v1"
-dataset_hash = "6d2711f8d3882fefcbca82a39a073fd5f8e3c22cd26ffb36f89353170b0a3f15"
+dataset_hash = "c3c6e108d22c4671f8d13a0fa76b6e4087ae092741887b754e18449280dce11d"
 fake_model_id = "memory-quality-fake-model-v1"
 fake_embedding_id = "fake-embedding/local-test/v1"
 case_files = [

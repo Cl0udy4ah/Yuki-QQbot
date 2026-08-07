@@ -372,8 +372,8 @@ class PlannerToolOutput(_StrictPlannerModel):
     )
     scopes: tuple[str, ...] = Field(
         description=(
-            "从 available_tool_scopes 选择本轮完成请求所需的最小 scope 集合；"
-            "用户明确要求搜索、读取记忆、自动化或外部操作时不得留空。"
+            "从 capabilities.tool_scopes 中选择完成当前请求所需的最小 scope 集合；"
+            "明确需要工具时不得遗漏所需 scope。"
         )
     )
 

@@ -261,11 +261,13 @@ class ApplicationContainer:
         self.chat = conversation.chat
         self.chat.register_tool_provider(self.mcp_tools)
         self.memory_mutations = conversation.memory_mutations
+        self.memory_auditor = conversation.memory_auditor
         self.memory_worker = conversation.memory_worker
         self.memory_rebuild_service = conversation.memory_rebuild_service
         self.memory_rebuild_worker = conversation.memory_rebuild_worker
         self.memory_maintenance_worker = conversation.memory_maintenance_worker
         self.memory_reflection_worker = conversation.memory_reflection_worker
+        self.memory_self_reflection_worker = conversation.memory_self_reflection_worker
         self.relationship_worker = conversation.relationship_worker
         admin = AdminModule(
             settings=settings,

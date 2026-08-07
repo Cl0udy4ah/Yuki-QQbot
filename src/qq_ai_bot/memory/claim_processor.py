@@ -28,6 +28,7 @@ from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import CandidateRelation, MemoryCandidate, MemoryResolutionPlan
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.subjects import SubjectResolutionContext
 from qq_ai_bot.memory.validation import (
     MemoryClaimValidationResult,
     MemoryClaimValidator,
@@ -159,15 +160,31 @@ class MemoryClaimProcessor:
         self._runtime_config = runtime_config
         self.metrics = metrics or MemoryLifecycleMetrics()
 
-    def validate(self, claim: MemoryClaim, event: EventRecord) -> ValidatedMemoryClaim | None:
-        return self._validator.validate_claim(claim, event)
+    def validate(
+        self,
+        claim: MemoryClaim,
+        event: EventRecord,
+        *,
+        subject_context: SubjectResolutionContext | None = None,
+    ) -> ValidatedMemoryClaim | None:
+        return self._validator.validate_claim(
+            claim,
+            event,
+            subject_context=subject_context,
+        )
 
     def validate_result(
         self,
         claim: MemoryClaim,
         event: EventRecord,
+        *,
+        subject_context: SubjectResolutionContext | None = None,
     ) -> MemoryClaimValidationResult:
-        return self._validator.validate_claim_result(claim, event)
+        return self._validator.validate_claim_result(
+            claim,
+            event,
+            subject_context=subject_context,
+        )
 
     async def process(
         self,
@@ -207,6 +224,9 @@ class MemoryClaimProcessor:
                 evidence=validated.evidence,
                 subject_is_speaker=validated.subject_is_speaker,
                 occurred_at=validated.occurred_at,
+                subject_basis=validated.subject_basis,
+                retention=validated.retention,
+                source_style=validated.source_style,
             )
             return ResolvedMemoryClaim(
                 claim=historical,

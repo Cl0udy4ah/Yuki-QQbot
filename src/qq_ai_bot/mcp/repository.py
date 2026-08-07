@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,16 +15,68 @@ from sqlalchemy import delete, select
 from qq_ai_bot.mcp.models import MCPServerConfig, MCPToolMetadata
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
+    ChatEventModel,
     MCPServerStateModel,
     MCPToolCacheModel,
+    MemoryToolReceiptModel,
     ToolArtifactModel,
     ToolInvocationModel,
 )
 
+_SENSITIVE_RESULT = re.compile(
+    r"""(?ix)(["']?(?:api[_-]?key|authorization|password|secret|access[_-]?token|"""
+    r"""refresh[_-]?token|token)["']?)\s*[:=]\s*["']?([^\s,;"']+)"""
+)
+_SENSITIVE_KEYS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "authorization",
+        "password",
+        "secret",
+        "token",
+        "access_token",
+        "refresh_token",
+    }
+)
+
+
+def _redact_reflection_result(value: str) -> str:
+    """Redact structured secrets before a bounded tool result can become evidence."""
+
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return _SENSITIVE_RESULT.sub(r"\1=[redacted]", value)
+
+    def redact(item: object) -> object:
+        if isinstance(item, dict):
+            return {
+                str(key): (
+                    "[redacted]"
+                    if str(key).casefold().replace("-", "_") in _SENSITIVE_KEYS
+                    else redact(child)
+                )
+                for key, child in item.items()
+            }
+        if isinstance(item, list):
+            return [redact(child) for child in item]
+        return item
+
+    return json.dumps(redact(decoded), ensure_ascii=False, separators=(",", ":"))
+
 
 class MCPRepository:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self,
+        database: Database,
+        *,
+        reflection_excerpt_characters: int = 2000,
+        reflection_retention_days: int = 7,
+    ) -> None:
         self._database = database
+        self._reflection_excerpt_characters = max(1, min(reflection_excerpt_characters, 8000))
+        self._reflection_retention_days = max(1, min(reflection_retention_days, 30))
 
     async def state(self, server_id: str) -> MCPServerStateModel | None:
         async with self._database.sessions() as session:
@@ -144,8 +197,12 @@ class MCPRepository:
         result_size: int,
         artifact_created: bool,
         error_category: str | None,
+        trigger_message_id: str = "",
+        bot_user_id: str = "",
+        result_excerpt: str = "",
     ) -> None:
-        async with self._database.sessions() as session:
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
             session.add(
                 ToolInvocationModel(
                     conversation_key_hash=hashlib.sha256(
@@ -158,10 +215,41 @@ class MCPRepository:
                     result_size=max(0, result_size),
                     artifact_created=artifact_created,
                     error_category=error_category[:128] if error_category else None,
-                    created_at=datetime.now(UTC),
+                    created_at=now,
                 )
             )
-            await session.commit()
+            event = None
+            if trigger_message_id and bot_user_id:
+                event = await session.scalar(
+                    select(ChatEventModel).where(
+                        ChatEventModel.bot_user_id == bot_user_id,
+                        ChatEventModel.platform_message_id == trigger_message_id,
+                    )
+                )
+            if event is not None:
+                conversation_key = (
+                    f"group:{event.group_id}"
+                    if event.group_id
+                    else f"private:{event.private_peer_user_id or event.sender_user_id}"
+                )
+                redacted = _redact_reflection_result(result_excerpt.strip())
+                session.add(
+                    MemoryToolReceiptModel(
+                        conversation_key_hash=hashlib.sha256(
+                            conversation_key.encode("utf-8")
+                        ).hexdigest(),
+                        trigger_event_id=event.id,
+                        bot_user_id=event.bot_user_id,
+                        provider_id=provider_id[:128],
+                        tool_name=tool_name[:255],
+                        success=success,
+                        result_excerpt=redacted[: self._reflection_excerpt_characters],
+                        result_characters=len(redacted),
+                        error_category=error_category[:128] if error_category else None,
+                        created_at=now,
+                        expires_at=now + timedelta(days=self._reflection_retention_days),
+                    )
+                )
 
     @staticmethod
     def _metadata(row: MCPToolCacheModel) -> MCPToolMetadata:

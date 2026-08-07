@@ -137,6 +137,9 @@ class AgentRunner:
         incomplete_recovery_used = False
         continuation_tools: tuple[ChatTool, ...] = ()
         continuation_native_tools: tuple[NativeToolDefinition, ...] = ()
+        previous_batch_fingerprint: tuple[tuple[str, str, str], ...] | None = None
+        repeated_batch_count = 0
+        no_progress_recovery = False
         web_route = runtime.web_route
         tavily_fallback = bool(
             runtime.force_tavily_fallback
@@ -195,6 +198,9 @@ class AgentRunner:
                     continuation_native_tools, native_definitions
                 )
             if incomplete_recovery_used and continuation is None:
+                definitions = ()
+                native_definitions = ()
+            if no_progress_recovery and continuation is None:
                 definitions = ()
                 native_definitions = ()
             try:
@@ -468,6 +474,22 @@ class AgentRunner:
                     response_status=response_status,
                     web_route=web_route,
                 )
+            if no_progress_recovery:
+                logger.warning(
+                    "agent_tool_no_progress_stopped tool_calls_used=%d model_requests=%d",
+                    calls_used,
+                    request_index + 1,
+                )
+                return AgentRunResult(
+                    text=("检测到模型反复调用相同工具且结果没有变化，已停止本轮工具循环。"),
+                    tool_calls_used=calls_used,
+                    model_requests=request_index + 1,
+                    web_was_used=web_was_used,
+                    native_tool_events=tuple(native_events),
+                    citations=tuple(citations),
+                    response_status=response_status,
+                    web_route=web_route,
+                )
             responses_path = response.continuation is not None
             if not responses_path:
                 messages.append(
@@ -512,6 +534,32 @@ class AgentRunner:
                     )
                 else:
                     messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
+            fingerprint = tuple(
+                (call.function.name, call.function.arguments, result)
+                for call, result, _was_executed in batch
+            )
+            if fingerprint and fingerprint == previous_batch_fingerprint:
+                repeated_batch_count += 1
+            else:
+                repeated_batch_count = 0
+            previous_batch_fingerprint = fingerprint
+            if repeated_batch_count >= 2:
+                no_progress_recovery = True
+                logger.warning(
+                    "agent_tool_no_progress_detected repeated_batches=%d tool_calls_used=%d",
+                    repeated_batch_count,
+                    calls_used,
+                )
+                if continuation is None:
+                    messages.append(
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "相同工具调用已经连续返回相同结果。停止调用工具，"
+                                "只根据已有结果给出简短、真实的最终答复。"
+                            ),
+                        )
+                    )
             if tools is not None:
                 effect_probe = getattr(tools, "did_use_web", None)
                 if callable(effect_probe) and effect_probe():
@@ -570,7 +618,7 @@ class AgentRunner:
     ) -> tuple[NativeToolDefinition, ...]:
         merged = {item.type: item for item in previous}
         merged.update({item.type: item for item in current})
-        return tuple(merged.values())
+        return tuple(sorted(merged.values(), key=lambda item: item.type))
 
     @staticmethod
     def _recover_committed_mutation(

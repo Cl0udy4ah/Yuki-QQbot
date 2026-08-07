@@ -82,6 +82,7 @@ class MemoryEmbeddingRepository:
         conditions: list[Any] = [
             MemoryEmbeddingModel.profile_id == profile_id,
             MemoryFactModel.status == "active",
+            MemoryFactModel.review_state != "quarantined",
             MemoryFactModel.scope_type == target.scope_type.value,
             or_(
                 MemoryFactModel.valid_until.is_(None),
@@ -174,6 +175,7 @@ class MemoryEmbeddingRepository:
                     .select_from(MemoryFactModel)
                     .where(
                         MemoryFactModel.status == "active",
+                        MemoryFactModel.review_state != "quarantined",
                         or_(
                             MemoryFactModel.valid_until.is_(None),
                             MemoryFactModel.valid_until > datetime.now(UTC),
@@ -192,6 +194,7 @@ class MemoryEmbeddingRepository:
         now = datetime.now(UTC)
         active = [
             MemoryFactModel.status == "active",
+            MemoryFactModel.review_state != "quarantined",
             or_(MemoryFactModel.valid_until.is_(None), MemoryFactModel.valid_until > now),
         ]
         async with self._database.sessions() as session:
