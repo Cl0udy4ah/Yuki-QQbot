@@ -387,11 +387,11 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "context.local_event_limit",
             "近期本地事件数量",
-            "每轮装配当前场景最近聊天事件的上限。",
+            "主 Agent 每轮扫描当前场景最近聊天事件的安全上限；实际窗口仍由字符预算控制。",
             aliases=("上下文消息数量", "近期聊天条数"),
             value_type="integer",
             minimum=1,
-            maximum=100,
+            maximum=20_000,
             scopes=_GGU,
             env_alias="LOCAL_CONTEXT_EVENT_LIMIT",
             getter=_field("local_context_event_limit"),

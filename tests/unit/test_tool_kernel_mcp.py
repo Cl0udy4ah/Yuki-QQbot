@@ -90,6 +90,30 @@ def test_schema_token_estimate_includes_function_envelope() -> None:
     assert estimate_chat_tool_tokens(short) > len(json.dumps(short.parameters)) // 4
 
 
+def test_candidate_selector_does_not_fill_limit_with_zero_relevance_tools() -> None:
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _context: (
+                _tool("music_search", "find a song"),
+                _tool("weather_search", "find a forecast"),
+            ),
+            execute=lambda *_args: None,  # type: ignore[arg-type]
+        )
+    )
+
+    selected = ToolCandidateSelector().select(
+        registry.catalog(object()),
+        user_request="unrelated quantum request",
+        limit=8,
+        minimum_score=1,
+    )
+
+    assert selected.entries == ()
+
+
 def test_conditional_mutation_result_preserves_explicit_commit_state() -> None:
     lookup_only = normalize_legacy_result(
         {"ok": True, "data": {"status": "selection_required"}, "mutation_committed": False},

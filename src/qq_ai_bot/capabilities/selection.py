@@ -54,9 +54,12 @@ class ToolCandidateSelector:
         user_request: str = "",
         planner_intent: str = "",
         limit: int | None = None,
+        minimum_score: int | None = None,
     ) -> ToolCandidateResult:
         if limit is not None and limit <= 0:
             raise ValueError("tool candidate limit must be positive or null")
+        if minimum_score is not None and minimum_score < 0:
+            raise ValueError("minimum tool candidate score must not be negative")
         known = {scope.scope_id for scope in catalog.scopes}
         unknown = sorted(set(scopes) - known)
         if unknown:
@@ -73,6 +76,8 @@ class ToolCandidateSelector:
             score = sum(_term_score(term, entry) for term in terms)
             if any(scope in entry.scope_ids for scope in scopes):
                 score += 20
+            if minimum_score is not None and score < minimum_score:
+                continue
             ranked.append((score, entry))
         ranked.sort(key=lambda item: (-item[0], item[1].descriptor.model_name))
         if limit is not None:

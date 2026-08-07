@@ -91,6 +91,22 @@ class _Service:
         return decoded
 
 
+class _CandidateChatService(ChatService):
+    def __init__(self, registry: ToolProviderRegistry) -> None:
+        self.registry = registry
+        self._tool_artifacts = None
+        self._tool_selector = ToolCandidateSelector()
+
+    def _build_tool_registry(
+        self,
+        _runtime: ToolRuntime,
+        *,
+        web_was_used: bool,
+    ) -> ToolProviderRegistry:
+        del web_was_used
+        return self.registry
+
+
 def _runtime() -> ToolRuntime:
     inbound = InboundMessage(
         message_id="m1",
@@ -163,6 +179,99 @@ def test_tool_exposure_log_distinguishes_inherited_scopes(
     assert "planner_scope_source=inherited" in caplog.text
     assert "planner_scopes=backend_authorized" in caplog.text
     assert "effective_scopes=backend_authorized" in caplog.text
+    assert "memory_scope_added=False" in caplog.text
+
+
+def test_tool_exposure_log_identifies_deterministic_memory_scope_addition(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="qq_ai_bot.services.chat")
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _runtime: (
+                _tool("get_my_capabilities", "list available capabilities"),
+                _tool("memory_change", "change durable memory"),
+            ),
+            execute=lambda *_args: None,  # type: ignore[arg-type]
+        )
+    )
+    runtime = replace(
+        _runtime(),
+        tool_groups=frozenset({"memory"}),
+        planner_scopes_explicit=False,
+        planner_tool_groups=frozenset(),
+        selected_tool_names=frozenset({"memory_change"}),
+    )
+    backend = _ChatAgentBackend(_Service(registry), runtime)  # type: ignore[arg-type]
+
+    backend.definitions(SimpleNamespace(), web_was_used=False)
+
+    assert "memory_scope_added=True" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_inherited_scope_preloads_only_positive_relevance_up_to_six_tools() -> None:
+    async def execute(name: str, _arguments: str, _runtime: object) -> object:
+        return {"ok": True, "data": name}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="plugin",
+            source=CapabilityTrustSource.PLUGIN,
+            definitions=lambda _runtime: tuple(
+                _tool(f"music_{index}", "music lookup and sharing") for index in range(8)
+            )
+            + tuple(_tool(f"weather_{index}", "weather forecast") for index in range(4)),
+            execute=execute,
+        )
+    )
+    runtime = replace(
+        _runtime(),
+        runtime_config=SimpleNamespace(
+            tooling=SimpleNamespace(
+                selected_tool_limit=32,
+                schema_token_budget=12_000,
+                result_artifact_retention_seconds=86_400,
+            ),
+            mcp=None,
+            agent=SimpleNamespace(tool_result_max_characters=32_000),
+            web=SimpleNamespace(max_calls_per_turn=3),
+        ),
+        tool_groups=frozenset(),
+        planner_scopes_explicit=False,
+        planner_tool_groups=frozenset(),
+        selection_query="music",
+        planner_intent="share music",
+        selected_tool_names=None,
+    )
+
+    prepared = await _CandidateChatService(registry)._prepare_tool_candidates(runtime)
+
+    assert prepared.selected_tool_names is not None
+    assert len(prepared.selected_tool_names) == 6
+    assert all(name.startswith("music_") for name in prepared.selected_tool_names)
+
+
+def test_explicit_scope_exposes_complete_package_despite_inherited_count_limit() -> None:
+    runtime = replace(
+        _runtime(),
+        runtime_config=SimpleNamespace(
+            tooling=SimpleNamespace(selected_tool_limit=1, schema_token_budget=None),
+            mcp=None,
+            agent=SimpleNamespace(tool_result_max_characters=32_000),
+            web=SimpleNamespace(max_calls_per_turn=3),
+        ),
+        selected_tool_names=None,
+    )
+    backend = _ChatAgentBackend(_Service(_registry([])), runtime)  # type: ignore[arg-type]
+
+    exposed = {tool.name for tool in backend.definitions(SimpleNamespace(), web_was_used=False)}
+
+    assert exposed == {"album_share", "song_share", REQUEST_TOOLS_NAME}
 
 
 def test_person_memory_lookup_survives_flash_reranker_omission() -> None:
@@ -200,6 +309,33 @@ def test_person_memory_lookup_survives_flash_reranker_omission() -> None:
         "get_group_memories",
         "get_person_memories",
     }
+
+
+def test_deterministic_memory_scope_keeps_mutation_tool_in_compact_initial_set() -> None:
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _runtime: (
+                _tool("get_person_memories", "read durable memory"),
+                _tool("memory_change", "change durable memory"),
+            ),
+            execute=lambda *_args: None,  # type: ignore[arg-type]
+        )
+    )
+    catalog = registry.catalog(object())
+    runtime = replace(
+        _runtime(),
+        tool_groups=frozenset({"memory"}),
+        planner_scopes_explicit=False,
+        planner_tool_groups=frozenset(),
+        selection_query="remember this as durable memory",
+    )
+
+    retained = ChatService._retain_turn_required_tools([], catalog.entries, runtime)
+
+    assert {item.descriptor.model_name for item in retained} == {"memory_change"}
 
 
 @pytest.mark.asyncio

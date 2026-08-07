@@ -135,6 +135,13 @@ from yuki_plugin_sdk.events import EventName
 
 logger = logging.getLogger(__name__)
 
+# Inherited Planner scope is a discovery mode, not permission to fill the
+# schema budget. Six related tools plus the two stable discovery tools
+# (get_my_capabilities and request_tools) keep the initial set compact while
+# preserving access to the complete actor-authorized catalog.
+_INHERITED_RELATED_TOOL_LIMIT = 6
+_INHERITED_CANDIDATE_POOL_LIMIT = 24
+
 _ADMIN_RETRYABLE_ERRORS = frozenset(
     {
         "invalid_json",
@@ -401,7 +408,11 @@ class _ChatAgentBackend(AgentToolBackend):
             )
             if mcp_entries:
                 mcp_budgeted = ToolSchemaBudgeter(
-                    selected_tool_limit=mcp.selected_tool_limit,
+                    selected_tool_limit=(
+                        None
+                        if self._runtime.planner_scopes_explicit and selected_scopes
+                        else mcp.selected_tool_limit
+                    ),
                     schema_token_budget=mcp.schema_token_budget,
                 ).select(
                     replace(filtered_catalog, entries=mcp_entries),
@@ -434,7 +445,11 @@ class _ChatAgentBackend(AgentToolBackend):
             )
             return ()
         budgeted = ToolSchemaBudgeter(
-            selected_tool_limit=tooling.selected_tool_limit if tooling is not None else None,
+            selected_tool_limit=(
+                None
+                if self._runtime.planner_scopes_explicit and selected_scopes
+                else (tooling.selected_tool_limit if tooling is not None else None)
+            ),
             schema_token_budget=tooling.schema_token_budget if tooling is not None else None,
         ).select(
             filtered_catalog,
@@ -497,6 +512,10 @@ class _ChatAgentBackend(AgentToolBackend):
             and ToolGroup.AUTOMATION.value in self._runtime.tool_groups
             and ToolGroup.AUTOMATION.value not in planner_tool_groups
         )
+        memory_scope_added = bool(
+            ToolGroup.MEMORY.value in self._runtime.tool_groups
+            and ToolGroup.MEMORY.value not in planner_tool_groups
+        )
         effective_scopes = ",".join(selected_scopes) or (
             "none" if self._runtime.planner_scopes_explicit else "backend_authorized"
         )
@@ -504,6 +523,7 @@ class _ChatAgentBackend(AgentToolBackend):
         logger.info(
             "agent_tools_exposed conversation_hash=%s origin=%s tool_mode=%s "
             "planner_scope_source=%s planner_scopes=%s automation_scope_added=%s "
+            "memory_scope_added=%s "
             "effective_scopes=%s "
             "tools=%s exposed_count=%d requestable_count=%d reason=%s",
             identifier_hash(self._runtime.conversation_key) or "missing",
@@ -512,6 +532,7 @@ class _ChatAgentBackend(AgentToolBackend):
             planner_scope_source,
             planner_scopes,
             automation_scope_added,
+            memory_scope_added,
             effective_scopes,
             exposed_tools,
             len(definitions),
@@ -2067,32 +2088,56 @@ class ChatService:
                 await prepare(scopes, runtime)
         catalog = registry.catalog(runtime)
         known_scopes = {scope.scope_id for scope in catalog.scopes}
-        candidate_scopes = tuple(scope for scope in scopes if scope in known_scopes)
+
+        # An explicit Planner scope is a complete, intentional capability
+        # package. The backend applies the schema-token safety budget, but the
+        # compact inherited limit must not truncate this package.
+        if runtime.planner_scopes_explicit:
+            return runtime
+
+        # Inherited scopes express backend authority, not a request to expose
+        # the whole catalog. Only deterministic additions beyond the Planner's
+        # inherited set may prioritize a scope during local relevance ranking.
+        planner_groups = runtime.planner_tool_groups or frozenset()
+        inherited_priority_scopes = tuple(
+            scope
+            for scope in sorted(runtime.tool_groups - planner_groups)
+            if scope in known_scopes
+        )
         if (
-            any(scope.startswith("mcp.") for scope in scopes)
+            any(scope.startswith("mcp.") for scope in inherited_priority_scopes)
             and "mcp" in known_scopes
-            and "mcp" not in candidate_scopes
+            and "mcp" not in inherited_priority_scopes
         ):
-            candidate_scopes = (*candidate_scopes, "mcp")
+            inherited_priority_scopes = (*inherited_priority_scopes, "mcp")
+
         mcp = config.mcp
-        mode = mcp.tool_selection_mode if mcp is not None else "all"
+        mode = mcp.tool_selection_mode if mcp is not None else "catalog"
         has_mcp_tools = any(
             item.descriptor.trust_source is CapabilityTrustSource.MCP for item in catalog.entries
         )
-        if mcp is None or not mcp.enabled or not has_mcp_tools or mode in {"all", "gateway"}:
-            return runtime
         tooling = config.tooling
         global_limit = tooling.selected_tool_limit if tooling is not None else None
+        initial_limit = min(
+            _INHERITED_RELATED_TOOL_LIMIT,
+            global_limit if global_limit is not None else _INHERITED_RELATED_TOOL_LIMIT,
+        )
         candidates = list(
             self._tool_selector.select(
                 catalog,
-                scopes=candidate_scopes,
+                scopes=inherited_priority_scopes,
                 user_request=runtime.selection_query,
                 planner_intent=runtime.planner_intent,
-                limit=None,
+                limit=_INHERITED_CANDIDATE_POOL_LIMIT,
+                minimum_score=1,
             ).entries
         )
-        if mcp.selected_tool_limit is not None:
+        if (
+            mcp is not None
+            and mcp.enabled
+            and has_mcp_tools
+            and mcp.selected_tool_limit is not None
+        ):
             mcp_used = 0
             limited = []
             for candidate in candidates:
@@ -2104,23 +2149,23 @@ class ChatService:
             candidates = self._retain_required_tools(
                 limited,
                 catalog.entries,
-                candidate_scopes,
+                inherited_priority_scopes,
             )
-        if global_limit is not None:
-            candidates = self._retain_required_tools(
-                candidates[:global_limit],
-                catalog.entries,
-                candidate_scopes,
-            )
-        if mode == "hybrid" and candidates:
+        if mode == "hybrid" and has_mcp_tools and len(candidates) > initial_limit:
             candidates = list(
                 await self._tool_reranker.rerank(
                     tuple(candidates),
                     user_request=runtime.selection_query,
                     planner_intent=runtime.planner_intent,
-                    limit=global_limit,
-                    required_scope_ids=candidate_scopes,
+                    limit=initial_limit,
+                    required_scope_ids=inherited_priority_scopes,
                 )
+            )
+        else:
+            candidates = self._retain_required_tools(
+                candidates[:initial_limit],
+                catalog.entries,
+                inherited_priority_scopes,
             )
         candidates = self._retain_turn_required_tools(
             candidates,
@@ -2153,6 +2198,12 @@ class ChatService:
             contains_qq = re.search(r"(?<!\d)[1-9]\d{4,19}(?!\d)", lookup_text) is not None
             if referenced_people or contains_qq or "记忆" in lookup_text:
                 required_names.add("get_person_memories")
+            planner_groups = runtime.planner_tool_groups or frozenset()
+            if (
+                not runtime.planner_scopes_explicit
+                and ToolGroup.MEMORY.value not in planner_groups
+            ):
+                required_names.add("memory_change")
 
         selected_names = {item.descriptor.model_name for item in selected}
         retained = list(selected)

@@ -84,7 +84,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/qq_ai_bot.db"
     processed_event_ttl_seconds: int = 86400
     processed_event_cleanup_seconds: int = 3600
-    max_context_characters: int = 12000
+    # PromptCompiler uses the repository-wide characters / 4 token estimate.
+    # 512,000 characters therefore gives the main Agent a 128K-token dynamic window.
+    max_context_characters: int = 512_000
     context_metadata_budget_ratio: float = Field(default=0.55, gt=0, lt=1)
     history_window_low_watermark_ratio: float = Field(default=0.67, gt=0, lt=1)
 
@@ -103,7 +105,9 @@ class Settings(BaseSettings):
 
     observe_enabled_groups: bool = True
     recent_history_tool_limit: int = 20
-    local_context_event_limit: int = 30
+    # This is a safety ceiling, not the normal window size. The character budget
+    # remains the primary bound and rolls history in stable low/high-watermark blocks.
+    local_context_event_limit: int = 20_000
     person_memory_max_entries: int = 100
     person_group_memory_max_entries: int = 50
     preference_max_entries: int = 30

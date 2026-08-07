@@ -107,7 +107,7 @@ class ConversationSettings(DomainSettings):
     daily_chat_message_delay_max_seconds: float = Field(ge=0)
     observe_enabled_groups: bool
     recent_history_tool_limit: int = Field(gt=0)
-    local_context_event_limit: int = Field(gt=0)
+    local_context_event_limit: int = Field(gt=0, le=20_000)
     agent_max_tool_calls: int = Field(gt=0)
     agent_max_model_requests: int = Field(gt=0)
     agent_tool_result_max_characters: int = Field(gt=0)

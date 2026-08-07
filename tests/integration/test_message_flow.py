@@ -290,7 +290,8 @@ async def test_automation_hint_adds_scope_without_replacing_planner_web_scope(
     assert await repository.list_for_creator("1001") == ()
     assert sender.messages[0].text == "已根据当前网页总结三项功能。"
     assert (
-        "planner_scopes=web automation_scope_added=True effective_scopes=automation,web"
+        "planner_scopes=web automation_scope_added=True memory_scope_added=False "
+        "effective_scopes=automation,web"
     ) in caplog.text
 
 
