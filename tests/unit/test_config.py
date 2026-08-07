@@ -143,8 +143,8 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.planner_reply_necessity_threshold == 0
     assert settings.planner_max_pending_messages == 8
     assert settings.reply_plan_hard_max_messages == 10
-    assert settings.max_context_characters == 512_000
-    assert settings.local_context_event_limit == 20_000
+    assert settings.max_context_characters == 48_000
+    assert settings.local_context_event_limit == 1_000
     assert settings.history_window_low_watermark_ratio == 0.67
     assert settings.tooling_selected_tool_limit == 32
     assert settings.tooling_schema_token_budget == 12000
