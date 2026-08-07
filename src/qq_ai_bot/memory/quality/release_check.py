@@ -42,12 +42,12 @@ class MemoryReleaseCheck:
         items.append(
             self._item(
                 "version",
-                __version__ == "3.4.4",
+                __version__ == "3.4.5",
                 f"project version is {__version__}",
             )
         )
         head = self._alembic_head()
-        items.append(self._item("alembic_head", head == "0029", f"Alembic head is {head}"))
+        items.append(self._item("alembic_head", head == "0030", f"Alembic head is {head}"))
         try:
             suite = load_quality_suite(self._root / "tests/fixtures/memory_quality/v1")
             items.append(
@@ -184,7 +184,7 @@ class MemoryReleaseCheck:
         return heads[0] if len(heads) == 1 else ",".join(sorted(heads))
 
     def _migration_contract_item(self) -> ReleaseCheckItem:
-        versions = {path.name for path in (self._root / "migrations/versions").glob("002*.py")}
+        versions = {path.name for path in (self._root / "migrations/versions").glob("00*.py")}
         required = {
             "0020_memory_v2_cutover.py",
             "0021_memory_facts_fts.py",
@@ -196,12 +196,13 @@ class MemoryReleaseCheck:
             "0027_yuki_self_memory.py",
             "0028_plugin_external_notifications.py",
             "0029_chat_event_sender_identity.py",
+            "0030_memory_quality_candidates.py",
         }
         missing = sorted(required - versions)
         return self._item(
             "migration_contract",
-            not missing and self._alembic_head() == "0029",
-            "fresh/upgrade matrix is current through 0029"
+            not missing and self._alembic_head() == "0030",
+            "fresh/upgrade matrix is current through 0030"
             if not missing
             else f"missing migration files: {','.join(missing)}",
         )
@@ -235,7 +236,7 @@ class MemoryReleaseCheck:
             integrity = str(await session.scalar(text("PRAGMA integrity_check")))
             foreign_keys = tuple((await session.execute(text("PRAGMA foreign_key_check"))).all())
             revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
-        return integrity == "ok" and not foreign_keys and str(revision) == "0029"
+        return integrity == "ok" and not foreign_keys and str(revision) == "0030"
 
     @staticmethod
     def _item(code: str, passed: bool, detail: str) -> ReleaseCheckItem:

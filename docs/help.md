@@ -1,5 +1,9 @@
 # Yuki-QQbot
 
+> **3.4.5 记忆质量与自主反思测试版：**自动记忆增加确定性归属、长期价值策略和隔离候选区；
+> Yuki 自省默认每日三轮运行；Planner 首轮工具路由改用明确 scope、规范化 intent 与中文搜索标签。
+> Alembic head 为 `0030`。
+
 > **3.4.4 Prompt 缓存与输出清理：**历史位于动态上下文之前并使用高低水位分块滚动；首批
 > 工具和 Schema 采用宽松预算且按名称稳定排序；输出清理器兼容省略消息 ID 的身份头。
 
@@ -100,7 +104,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.4.4 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
+Yuki-QQbot 3.4.5 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
