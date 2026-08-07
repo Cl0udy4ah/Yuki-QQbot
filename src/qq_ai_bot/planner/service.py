@@ -223,7 +223,7 @@ class PlannerService:
             PlannerReasonCode.PLANNER_PROVIDER_ERROR_FALLBACK,
         }
         requested_multi = not fallback_reason and any(
-            token in planner_input.current_message.text for token in _MULTI_MESSAGE_REQUESTS
+            token in planner_input.current_text for token in _MULTI_MESSAGE_REQUESTS
         )
         delivery_mode = DeliveryMode.NATURAL_MULTI if requested_multi else plan.delivery_mode
         desired_messages = (
@@ -269,7 +269,7 @@ class PlannerService:
             if emoji_plan.placement is EmojiPlacement.ONLY:
                 emoji_updates["mode"] = EmojiReplyMode.EMOJI_ONLY
             if not emoji_plan.goal:
-                emoji_updates["goal"] = planner_input.current_message.text[:300]
+                emoji_updates["goal"] = planner_input.current_text[:300]
             if emoji_updates:
                 emoji_plan = emoji_plan.model_copy(update=emoji_updates)
         elif not planner_input.emoji.spontaneous_allowed:
@@ -392,7 +392,7 @@ class PlannerService:
                 decision=PlannerDecision.SILENT,
                 wait_seconds=0.0,
             )
-        text = planner_input.current_message.text
+        text = planner_input.current_text
         looks_like_request = any(
             token in text
             for token in ("?", "？", "请", "帮我", "怎么", "为什么", "能不能", "改成", "设置")

@@ -21,7 +21,31 @@ from qq_ai_bot.memory.temporal import MemoryTemporalResolver
 from qq_ai_bot.persistence.repository_records import EventRecord
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
-_EXPLICIT_MARKERS = ("记住", "记得", "别忘", "请保存", "加入记忆")
+_EXPLICIT_MEMORY_PATTERNS = (
+    re.compile(r"(?:记住|别忘|请保存|加入记忆)"),
+    re.compile(r"^(?:请|要|一定要|以后)?记得(?!.*[吗么？?])"),
+)
+_MEMORY_OBJECT = (
+    r"(?:这条|那条|某条|我的|你的|Yuki的|yuki的|长期)?记忆"
+    r"(?!功能|模块|系统|代码|接口|工具|数据库|数据表|实现|逻辑|设计|架构)"
+)
+_MEMORY_MUTATION_PATTERNS = (
+    re.compile(r"(?:记住|别忘|请保存|加入记忆)"),
+    re.compile(r"^(?:请|要|一定要|以后)?记得(?!.*[吗么？?])"),
+    re.compile(
+        r"(?:删除|删掉|移除|清除|忘掉|忘记|撤销|恢复|还原|纠正|更正|修正|修改|更新|"
+        rf"合并|调整|改归属).{{0,16}}{_MEMORY_OBJECT}"
+    ),
+    re.compile(
+        rf"{_MEMORY_OBJECT}.{{0,16}}(?:删除|删掉|移除|清除|忘掉|忘记|撤销|恢复|"
+        r"还原|纠正|更正|修正|修改|更新|合并|调整|改归属)"
+    ),
+    re.compile(r"(?:你|Yuki|yuki)?记错了"),
+    re.compile(
+        r"\b(?:remember|forget|correct|update|delete|remove|restore)\b.{0,24}\bmemor(?:y|ies)\b",
+        re.IGNORECASE,
+    ),
+)
 _MEMORY_COMMAND_PREFIX = re.compile(r"^(?:请)?(?:记住|记得|别忘|保存|加入记忆)\s*")
 _INTERACTION_MARKERS = (
     "回复",
@@ -97,6 +121,26 @@ class ValidatedMemoryClaim:
     occurred_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class MemoryClaimValidationResult:
+    """A content-free explanation of one claim validation decision."""
+
+    claim: ValidatedMemoryClaim | None
+    reason_code: str
+
+    @property
+    def ok(self) -> bool:
+        return self.claim is not None
+
+
+class _MemoryClaimRejected(ValueError):
+    """Internal control flow carrying a stable, content-free reason code."""
+
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
 def normalize_memory_text(value: str, *, maximum: int) -> str:
     """Flatten untrusted model/user text before persistence and prompt use."""
 
@@ -106,7 +150,19 @@ def normalize_memory_text(value: str, *, maximum: int) -> str:
 def event_requests_explicit_memory(value: str) -> bool:
     """Return whether the trusted event explicitly asks Yuki to retain a memory."""
 
-    return any(marker in value for marker in _EXPLICIT_MARKERS)
+    normalized = " ".join(value.split())
+    return bool(
+        normalized and any(pattern.search(normalized) for pattern in _EXPLICIT_MEMORY_PATTERNS)
+    )
+
+
+def event_requests_memory_mutation(value: str) -> bool:
+    """Conservatively detect an explicit request to change durable memory."""
+
+    normalized = " ".join(value.split())
+    return bool(
+        normalized and any(pattern.search(normalized) for pattern in _MEMORY_MUTATION_PATTERNS)
+    )
 
 
 class MemoryClaimValidator:
@@ -138,29 +194,52 @@ class MemoryClaimValidator:
         claim: MemoryClaim,
         event: EventRecord,
     ) -> ValidatedMemoryClaim | None:
+        return self.validate_claim_result(claim, event).claim
+
+    def validate_claim_result(
+        self,
+        claim: MemoryClaim,
+        event: EventRecord,
+    ) -> MemoryClaimValidationResult:
+        """Validate one claim while preserving why a rejected claim was dropped."""
+
+        try:
+            validated = self._validate_claim(claim, event)
+        except _MemoryClaimRejected as exc:
+            return MemoryClaimValidationResult(None, exc.reason_code)
+        return MemoryClaimValidationResult(validated, "validated")
+
+    def _validate_claim(
+        self,
+        claim: MemoryClaim,
+        event: EventRecord,
+    ) -> ValidatedMemoryClaim:
         if not event.content.strip():
-            return None
+            raise _MemoryClaimRejected("empty_event")
         raw_quote = claim.evidence_quote.strip()
         if not raw_quote or raw_quote not in event.content:
-            return None
+            raise _MemoryClaimRejected("evidence_quote_not_in_event")
         quote = normalize_memory_text(raw_quote, maximum=500)
         source = normalize_memory_text(event.content, maximum=4000)
         if not quote or quote not in source:
-            return None
+            raise _MemoryClaimRejected("normalized_evidence_not_in_event")
         resolved = self._resolver.resolve(
             event,
             subject_ref=claim.subject_ref,
             scope_type=claim.scope_type,
         )
         if resolved is None:
-            return None
+            raise _MemoryClaimRejected("subject_unresolved")
         key = normalize_memory_text(claim.memory_key, maximum=128)
         category = normalize_memory_text(claim.category, maximum=64)
         content = normalize_memory_text(claim.content, maximum=4000)
         if not key or not category or not content:
-            return None
-        if not self._semantically_anchored(content, quote):
-            return None
+            raise _MemoryClaimRejected("incomplete_claim_fields")
+        if not event_requests_explicit_memory(event.content) and not self._semantically_anchored(
+            content,
+            quote,
+        ):
+            raise _MemoryClaimRejected("semantic_not_anchored")
         kind = claim.kind
         lowered = f"{key} {category} {content} {quote}".casefold()
         if any(marker in lowered for marker in _INTERACTION_MARKERS):
@@ -168,9 +247,9 @@ class MemoryClaimValidator:
         subject_is_speaker = resolved.subject_user_id == event.sender_user_id
         is_third_party = bool(resolved.subject_user_id) and not subject_is_speaker
         if subject_is_speaker and self._appears_to_describe_named_other(quote):
-            return None
+            raise _MemoryClaimRejected("named_other_attributed_to_speaker")
         if is_third_party and resolved.scope_type is not MemoryScopeType.PERSON_GROUP:
-            return None
+            raise _MemoryClaimRejected("third_party_scope_not_person_group")
         source_type = claim.source_type
         if source_type is MemorySourceType.EXPLICIT and not event_requests_explicit_memory(
             event.content
@@ -194,7 +273,7 @@ class MemoryClaimValidator:
                 timezone_name=self._timezone_name,
             )
         except ValueError:
-            return None
+            raise _MemoryClaimRejected("invalid_temporal_value") from None
         fact = MemoryFactCreate(
             scope_type=resolved.scope_type,
             subject_user_id=resolved.subject_user_id,
@@ -267,10 +346,6 @@ class MemoryClaimValidator:
         if claim_text in evidence_text or evidence_text in claim_text:
             return True
         is_cjk = any("\u4e00" <= char <= "\u9fff" for char in evidence_text)
-        if is_cjk:
-            cjk_claim = "".join(char for char in claim_text if "\u4e00" <= char <= "\u9fff")
-            if len(cjk_claim) >= 2 and cjk_claim[-2:] not in evidence_text:
-                return False
         width = 2 if is_cjk else 3
         if len(claim_text) < width or len(evidence_text) < width:
             return False
@@ -281,7 +356,11 @@ class MemoryClaimValidator:
             evidence_text[index : index + width] for index in range(len(evidence_text) - width + 1)
         }
         overlap = len(claim_grams & evidence_grams)
-        required_overlap = 1 if is_cjk else 2
+        if is_cjk:
+            cjk_claim = "".join(char for char in claim_text if "\u4e00" <= char <= "\u9fff")
+            if len(cjk_claim) >= 2 and cjk_claim[-2:] in evidence_text:
+                return True
+        required_overlap = 2
         return overlap >= required_overlap and overlap / min(
             len(claim_grams), len(evidence_grams)
         ) >= (0.2 if is_cjk else 0.3)

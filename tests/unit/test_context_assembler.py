@@ -11,6 +11,7 @@ from tests.conftest import MemorySender, build_harness, make_settings
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, SenderIdentity
+from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.memory.enums import MemoryScopeType, MemorySourceType
 from qq_ai_bot.memory.models import MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
@@ -219,11 +220,7 @@ async def test_chat_event_preserves_sender_identity_snapshot_for_prompt(
     assert persisted is not None
     assert persisted.sender_nickname == "平台昵称"
     assert persisted.sender_group_card == "发言时群名片"
-    rendered = ContextAssembler._history_message_content(
-        persisted,
-        current_message_id="",
-        current_content="",
-    )
+    rendered = ChatEventPromptRenderer((persisted,)).render_event(persisted)
     assert rendered == "[发送者:发言时群名片|QQ:1001|消息:identity-snapshot] 这是我说的话"
 
 
@@ -274,6 +271,7 @@ def test_history_prompt_keeps_speakers_and_reply_target_self_contained() -> None
             group_id="2001",
             reply_to_message_id="yuki-message",
             reply_sender_user_id="9999",
+            mentioned_user_ids=("1002", "9999"),
         ),
     )
     inbound = InboundMessage(
@@ -286,6 +284,7 @@ def test_history_prompt_keeps_speakers_and_reply_target_self_contained() -> None
         bot_user_id="9999",
         reply_to_message_id="yuki-message",
         reply_sender_user_id="9999",
+        mentioned_user_ids=("1002", "9999"),
     )
 
     bounded = ContextAssembler._bounded_history(
@@ -303,7 +302,9 @@ def test_history_prompt_keeps_speakers_and_reply_target_self_contained() -> None
     assert history[0].content == "[发送者:池宇健|QQ:1002|消息:member-message] 这个项目完结"
     assert history[1].content == "[发送者:Yuki|QQ:9999|消息:yuki-message] 说好的完结呢"
     assert "[发送者:远野|QQ:1001|消息:current-message|" in (bounded.current_message.content or "")
-    assert "|回复:Yuki/消息:yuki-message] 完结的不是我啊" in (bounded.current_message.content or "")
+    assert ("|回复:Yuki/消息:yuki-message|提及:池宇健/QQ:1002,Yuki/QQ:9999] 完结的不是我啊") in (
+        bounded.current_message.content or ""
+    )
 
 
 def test_history_window_rolls_in_blocks_between_high_and_low_watermarks() -> None:

@@ -329,7 +329,8 @@ class MemoryQualityRunner:
                 initial_state=initial_state,
             )
         else:
-            await worker.process_once()
+            while await worker.process_once():
+                pass
         pipeline_latency_ms = (time.perf_counter() - pipeline_started) * 1000
 
         rows = await self._all_facts(database, repository)
@@ -544,7 +545,8 @@ class MemoryQualityRunner:
                 "llm_provider": "fake",
                 "llm_model": "memory-quality-fake-model",
                 "model_profiles_file": Path("__memory_quality_no_profiles__.toml"),
-                "memory_batch_max_events": 100,
+                "memory_batch_max_events": 12,
+                "memory_batch_max_wait_seconds": 0,
                 "memory_consolidation_enabled": consolidation_enabled,
                 "memory_rebuild_enabled": True,
                 "global_llm_concurrency": 1,

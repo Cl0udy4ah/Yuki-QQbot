@@ -108,8 +108,11 @@ class Settings(BaseSettings):
     person_group_memory_max_entries: int = 50
     preference_max_entries: int = 30
     memory_batch_seconds: float = 30.0
-    memory_batch_trigger_count: int = 10
-    memory_batch_max_events: int = 20
+    memory_batch_trigger_count: int = Field(default=12, gt=0)
+    memory_batch_max_events: int = Field(default=12, gt=0)
+    memory_batch_max_characters: int = Field(default=8000, gt=0)
+    memory_batch_max_wait_seconds: float = Field(default=300.0, ge=0)
+    memory_batch_max_output_tokens: int = Field(default=4096, gt=0)
     memory_retrieval_enabled: bool = True
     self_memory_enabled: bool = False
     memory_max_referenced_targets: int = 5

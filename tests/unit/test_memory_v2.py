@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from tests.conftest import MemorySender, build_harness, make_settings
 
@@ -18,18 +19,27 @@ from qq_ai_bot.llm.base import LLMProvider
 from qq_ai_bot.memory.enums import (
     MemoryEvidenceRelation,
     MemoryKind,
+    MemoryRebuildJobOutcome,
     MemoryScopeType,
     MemorySourceType,
     MemoryStatus,
 )
-from qq_ai_bot.memory.extraction import MemoryClaim
+from qq_ai_bot.memory.extraction import (
+    BatchMemoryClaim,
+    BatchMemoryExtractionOutput,
+    MemoryClaim,
+)
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import SubjectResolver
-from qq_ai_bot.memory.validation import MemoryClaimValidator
+from qq_ai_bot.memory.validation import (
+    MemoryClaimValidator,
+    event_requests_memory_mutation,
+)
 from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.models import MemoryJobModel
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.concurrency import ConcurrencyManager
@@ -80,6 +90,29 @@ def test_extraction_schema_rejects_model_selected_identity_fields() -> None:
         MemoryClaim.model_validate({**_claim().model_dump(), "user_id": "2002"})
     with pytest.raises(ValidationError):
         MemoryClaim.model_validate({**_claim().model_dump(), "source_event_id": 999})
+
+
+def test_batch_extraction_supports_multiple_claims_per_event() -> None:
+    output = BatchMemoryExtractionOutput(
+        claims=(
+            BatchMemoryClaim(source_event_id=42, claim=_claim()),
+            BatchMemoryClaim(
+                source_event_id=42,
+                claim=_claim(
+                    memory_key="pet:cat",
+                    category="pet",
+                    content="开始养猫",
+                    evidence_quote="最近开始养猫",
+                ),
+            ),
+        )
+    )
+
+    assert [item.source_event_id for item in output.claims] == [42, 42]
+    assert [item.claim.memory_key for item in output.claims] == [
+        "education:plan",
+        "pet:cat",
+    ]
 
 
 def test_subject_resolver_only_allows_primary_speaker_and_current_group() -> None:
@@ -144,6 +177,41 @@ def test_validator_rejects_context_only_or_semantically_different_claims() -> No
         )
         is None
     )
+
+
+def test_validator_allows_grounded_chinese_paraphrase_without_suffix_match() -> None:
+    event = replace(_event(), content="我最近开始喜欢喝美式")
+    result = MemoryClaimValidator().validate_claim_result(
+        _claim(
+            content="用户喜欢美式咖啡",
+            evidence_quote="我最近开始喜欢喝美式",
+        ),
+        event,
+    )
+
+    assert result.ok
+    assert result.claim is not None
+    assert result.claim.fact.content == "用户喜欢美式咖啡"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "请记住我喜欢咖啡",
+        "删除这条长期记忆",
+        "把这条记忆纠正一下",
+        "Yuki 你记错了",
+        "please update this memory",
+    ],
+)
+def test_explicit_memory_mutation_intent_is_detected(text: str) -> None:
+    assert event_requests_memory_mutation(text)
+
+
+def test_memory_discussion_is_not_treated_as_mutation_intent() -> None:
+    assert not event_requests_memory_mutation("记忆模块的架构应该怎么设计")
+    assert not event_requests_memory_mutation("按修改路径修复记忆模块的错误")
+    assert not event_requests_memory_mutation("你还记得我们第一次测试吗？")
 
 
 @pytest.mark.parametrize(
@@ -354,60 +422,181 @@ async def test_jobs_accept_only_real_inbound_non_bot_events(database: Database) 
     assert not await jobs.enqueue(blank.id, "private:1001")
 
 
-class _PerEventProvider(LLMProvider):
+@pytest.mark.asyncio
+async def test_group_messages_from_different_senders_share_memory_batch_key(
+    database: Database,
+) -> None:
+    harness = build_harness(database, make_settings(database.url))
+    await harness.groups.set_enabled("2001", True)
+    for index, user_id in enumerate(("1001", "1002"), start=1):
+        await harness.processor.handle(
+            InboundMessage(
+                message_id=f"shared-memory-batch-{index}",
+                event_type="message:group:normal",
+                scope_type=ScopeType.GROUP,
+                sender=SenderIdentity(user_id=user_id, nickname=f"成员{index}"),
+                text=f"第 {index} 位成员的消息",
+                group_id="2001",
+                mentions_bot=True,
+                bot_user_id="8000",
+            ),
+            MemorySender(),
+        )
+    async with database.sessions() as session:
+        rows = (await session.scalars(select(MemoryJobModel).order_by(MemoryJobModel.id))).all()
+
+    assert [row.conversation_key for row in rows] == ["group:2001", "group:2001"]
+
+
+@pytest.mark.asyncio
+async def test_ready_batch_waits_for_twelve_events_and_never_mixes_conversations(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    jobs = MemoryJobRepository(database)
+    for index in range(11):
+        event = await _append_event(
+            ledger,
+            message_id=f"batch-count-{index}",
+            content=f"消息 {index}",
+            group_id="2001",
+        )
+        assert await jobs.enqueue(event.id, "group:2001")
+    other = await _append_event(
+        ledger,
+        message_id="batch-other-conversation",
+        content="另一个群的消息",
+        group_id="2002",
+    )
+    assert await jobs.enqueue(other.id, "group:2002")
+
+    assert not await jobs.claim_ready_batch(
+        limit=12,
+        trigger_count=12,
+        max_characters=8000,
+        max_wait_seconds=300,
+    )
+
+    twelfth = await _append_event(
+        ledger,
+        message_id="batch-count-11",
+        content="消息 11",
+        group_id="2001",
+    )
+    assert await jobs.enqueue(twelfth.id, "group:2001")
+    claimed = await jobs.claim_ready_batch(
+        limit=12,
+        trigger_count=12,
+        max_characters=8000,
+        max_wait_seconds=300,
+    )
+
+    assert len(claimed) == 12
+    assert {job.conversation_key for job in claimed} == {"group:2001"}
+
+
+@pytest.mark.asyncio
+async def test_ready_batch_triggers_on_characters_or_oldest_wait(database: Database) -> None:
+    ledger = EventLedgerRepository(database)
+    jobs = MemoryJobRepository(database)
+    for index in range(2):
+        event = await _append_event(
+            ledger,
+            message_id=f"batch-characters-{index}",
+            content=str(index) * 4000,
+            group_id="2001",
+        )
+        assert await jobs.enqueue(event.id, "group:2001")
+    characters = await jobs.claim_ready_batch(
+        limit=12,
+        trigger_count=12,
+        max_characters=8000,
+        max_wait_seconds=300,
+    )
+    assert len(characters) == 2
+    for job in characters:
+        await jobs.complete(job.id, outcome=MemoryRebuildJobOutcome.NO_CLAIMS)
+
+    waiting = await _append_event(
+        ledger,
+        message_id="batch-oldest-wait",
+        content="等待超时后处理",
+        group_id="2002",
+    )
+    assert await jobs.enqueue(waiting.id, "group:2002")
+    aged = await jobs.claim_ready_batch(
+        limit=12,
+        trigger_count=12,
+        max_characters=8000,
+        max_wait_seconds=300,
+        now=datetime.now(UTC) + timedelta(seconds=301),
+    )
+    assert [job.event_id for job in aged] == [waiting.id]
+
+
+class _BatchProvider(LLMProvider):
     def __init__(self) -> None:
         self.inputs: list[dict[str, object]] = []
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         payload = json.loads(request.messages[-1].content or "{}")
         self.inputs.append(payload)
-        content = str(payload["primary_event"]["content"])
-        return ChatResponse(
-            content=json.dumps(
+        claims = []
+        for event in payload["events"]:
+            content = str(event["content"])
+            claims.append(
                 {
-                    "claims": [
-                        {
-                            "subject_ref": "speaker",
-                            "scope_type": "person",
-                            "kind": "fact",
-                            "memory_key": "primary-event",
-                            "category": "test",
-                            "content": content,
-                            "evidence_quote": content,
-                            "importance": 3,
-                            "confidence": 0.9,
-                            "source_type": "automatic",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
-            ),
+                    "source_event_id": event["source_event_id"],
+                    "claim": {
+                        "subject_ref": "speaker",
+                        "scope_type": "person",
+                        "kind": "fact",
+                        "memory_key": "primary-event",
+                        "category": "test",
+                        "content": content,
+                        "evidence_quote": content,
+                        "importance": 3,
+                        "confidence": 0.9,
+                        "source_type": "automatic",
+                    },
+                }
+            )
+        return ChatResponse(
+            content=json.dumps({"claims": claims}, ensure_ascii=False),
             latency_seconds=0,
         )
 
 
 @pytest.mark.asyncio
-async def test_worker_extracts_and_commits_each_event_independently(database: Database) -> None:
+async def test_worker_extracts_one_conversation_batch_in_one_model_call(
+    database: Database,
+) -> None:
     ledger = EventLedgerRepository(database)
     first = await _append_event(
         ledger,
         message_id="worker-1",
         user_id="1001",
         content="第一个人的事实",
+        group_id="2001",
     )
     second = await _append_event(
         ledger,
         message_id="worker-2",
         user_id="1002",
         content="第二个人的事实",
+        group_id="2001",
     )
     jobs = MemoryJobRepository(database)
-    assert await jobs.enqueue(first.id, "private:1001")
-    assert await jobs.enqueue(second.id, "private:1002")
+    assert await jobs.enqueue(first.id, "group:2001")
+    assert await jobs.enqueue(second.id, "group:2001")
     facts = MemoryFactService(MemoryFactRepository(database))
-    provider = _PerEventProvider()
+    provider = _BatchProvider()
     worker = MemoryWorker(
-        settings=make_settings(database.url, memory_batch_max_events=20),
+        settings=make_settings(
+            database.url,
+            memory_batch_trigger_count=2,
+            memory_batch_max_events=12,
+        ),
         jobs=jobs,
         facts=facts,
         ledger=ledger,
@@ -416,10 +605,11 @@ async def test_worker_extracts_and_commits_each_event_independently(database: Da
     )
 
     assert await worker.process_once() == 2
-    assert len(provider.inputs) == 2
+    assert len(provider.inputs) == 1
+    assert len(provider.inputs[0]["events"]) == 2
     assert [row.content for row in await facts.list_person("1001")] == ["第一个人的事实"]
     assert [row.content for row in await facts.list_person("1002")] == ["第二个人的事实"]
-    assert all(len(item["available_subjects"]) == 1 for item in provider.inputs)
+    assert all(len(item["available_subjects"]) >= 2 for item in provider.inputs[0]["events"])
 
 
 class _CancelledProvider(LLMProvider):
@@ -434,7 +624,7 @@ async def test_worker_propagates_cancellation(database: Database) -> None:
     jobs = MemoryJobRepository(database)
     assert await jobs.enqueue(event.id, "private:1001")
     worker = MemoryWorker(
-        settings=make_settings(database.url),
+        settings=make_settings(database.url, memory_batch_max_wait_seconds=0),
         jobs=jobs,
         facts=MemoryFactService(MemoryFactRepository(database)),
         ledger=ledger,
@@ -443,6 +633,275 @@ async def test_worker_propagates_cancellation(database: Database) -> None:
     )
     with pytest.raises(asyncio.CancelledError):
         await worker.process_once()
+
+
+class _RejectedClaimProvider(LLMProvider):
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        payload = json.loads(request.messages[-1].content or "{}")
+        return ChatResponse(
+            content=json.dumps(
+                {
+                    "claims": [
+                        {
+                            "source_event_id": payload["events"][0]["source_event_id"],
+                            "claim": {
+                                "subject_ref": "speaker",
+                                "scope_type": "person",
+                                "kind": "fact",
+                                "memory_key": "rejected",
+                                "category": "test",
+                                "content": "没有证据的内容",
+                                "evidence_quote": "原消息中不存在的证据",
+                                "importance": 3,
+                                "confidence": 0.9,
+                                "source_type": "automatic",
+                            },
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            latency_seconds=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_worker_records_all_rejected_instead_of_no_claims(database: Database) -> None:
+    ledger = EventLedgerRepository(database)
+    event = await _append_event(ledger, message_id="worker-all-rejected")
+    jobs = MemoryJobRepository(database)
+    assert await jobs.enqueue(event.id, "private:1001")
+    worker = MemoryWorker(
+        settings=make_settings(database.url, memory_batch_max_wait_seconds=0),
+        jobs=jobs,
+        facts=MemoryFactService(MemoryFactRepository(database)),
+        ledger=ledger,
+        provider=_RejectedClaimProvider(),
+        concurrency=ConcurrencyManager(1),
+    )
+
+    assert await worker.process_once() == 1
+    async with database.sessions() as session:
+        row = await session.scalar(
+            select(MemoryJobModel).where(MemoryJobModel.event_id == event.id)
+        )
+    assert row is not None
+    assert row.outcome == MemoryRebuildJobOutcome.ALL_REJECTED.value
+    assert row.error_category == "all_rejected:evidence_quote_not_in_event"
+
+
+class _UnknownSourceEventProvider(LLMProvider):
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        del request
+        return ChatResponse(
+            content=json.dumps(
+                {
+                    "claims": [
+                        {
+                            "source_event_id": 999_999,
+                            "claim": _claim().model_dump(mode="json"),
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            latency_seconds=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_unknown_batch_event_without_failing_batch(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    event = await _append_event(ledger, message_id="worker-unknown-batch-event")
+    jobs = MemoryJobRepository(database)
+    assert await jobs.enqueue(event.id, "private:1001")
+    facts = MemoryFactService(MemoryFactRepository(database))
+    worker = MemoryWorker(
+        settings=make_settings(database.url, memory_batch_max_wait_seconds=0),
+        jobs=jobs,
+        facts=facts,
+        ledger=ledger,
+        provider=_UnknownSourceEventProvider(),
+        concurrency=ConcurrencyManager(1),
+    )
+
+    assert await worker.process_once() == 1
+    assert not await facts.list_person("1001")
+    async with database.sessions() as session:
+        row = await session.scalar(
+            select(MemoryJobModel).where(MemoryJobModel.event_id == event.id)
+        )
+    assert row is not None
+    assert row.outcome == MemoryRebuildJobOutcome.NO_CLAIMS.value
+
+
+class _UnexpectedThenValidProvider(_BatchProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.calls += 1
+        if self.calls == 1:
+            raise KeyError("unexpected provider failure")
+        return await super().complete(request)
+
+
+@pytest.mark.asyncio
+async def test_worker_requeues_every_job_when_shared_batch_extraction_fails(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    first = await _append_event(
+        ledger,
+        message_id="worker-batch-failure-1",
+        user_id="1001",
+        group_id="2001",
+    )
+    second = await _append_event(
+        ledger,
+        message_id="worker-batch-failure-2",
+        user_id="1002",
+        group_id="2001",
+    )
+    jobs = MemoryJobRepository(database)
+    assert await jobs.enqueue(first.id, "group:2001")
+    assert await jobs.enqueue(second.id, "group:2001")
+    worker = MemoryWorker(
+        settings=make_settings(
+            database.url,
+            memory_batch_trigger_count=2,
+            memory_batch_max_wait_seconds=300,
+        ),
+        jobs=jobs,
+        facts=MemoryFactService(MemoryFactRepository(database)),
+        ledger=ledger,
+        provider=_UnexpectedThenValidProvider(),
+        concurrency=ConcurrencyManager(1),
+    )
+
+    assert await worker.process_once() == 0
+    async with database.sessions() as session:
+        rows = (
+            await session.scalars(
+                select(MemoryJobModel)
+                .where(MemoryJobModel.event_id.in_((first.id, second.id)))
+                .order_by(MemoryJobModel.event_id)
+            )
+        ).all()
+    assert [row.status for row in rows] == ["pending", "pending"]
+    assert [row.attempts for row in rows] == [1, 1]
+    assert [row.error_category for row in rows] == ["KeyError", "KeyError"]
+
+
+@pytest.mark.asyncio
+async def test_worker_isolates_unexpected_job_failure(database: Database) -> None:
+    ledger = EventLedgerRepository(database)
+    first = await _append_event(ledger, message_id="worker-unexpected-1", user_id="1001")
+    second = await _append_event(ledger, message_id="worker-unexpected-2", user_id="1002")
+    jobs = MemoryJobRepository(database)
+    assert await jobs.enqueue(first.id, "private:1001")
+    assert await jobs.enqueue(second.id, "private:1002")
+    facts = MemoryFactService(MemoryFactRepository(database))
+    worker = MemoryWorker(
+        settings=make_settings(
+            database.url,
+            memory_batch_max_events=12,
+            memory_batch_max_wait_seconds=0,
+        ),
+        jobs=jobs,
+        facts=facts,
+        ledger=ledger,
+        provider=_UnexpectedThenValidProvider(),
+        concurrency=ConcurrencyManager(1),
+    )
+
+    assert await worker.process_once() == 0
+    assert await worker.process_once() == 1
+    async with database.sessions() as session:
+        rows = (
+            await session.scalars(
+                select(MemoryJobModel)
+                .where(MemoryJobModel.event_id.in_((first.id, second.id)))
+                .order_by(MemoryJobModel.event_id)
+            )
+        ).all()
+    assert rows[0].status == "pending"
+    assert rows[0].attempts == 1
+    assert rows[0].error_category == "KeyError"
+    assert rows[1].status == "done"
+    assert [row.content for row in await facts.list_person("1002")] == ["我准备考研"]
+
+
+@pytest.mark.asyncio
+async def test_worker_isolates_job_completion_failure(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    first = await _append_event(
+        ledger,
+        message_id="worker-complete-1",
+        user_id="1001",
+        group_id="2001",
+    )
+    second = await _append_event(
+        ledger,
+        message_id="worker-complete-2",
+        user_id="1002",
+        group_id="2001",
+    )
+    jobs = MemoryJobRepository(database)
+    assert await jobs.enqueue(first.id, "group:2001")
+    assert await jobs.enqueue(second.id, "group:2001")
+    original_complete = jobs.complete
+    calls = 0
+
+    async def fail_first_completion(
+        job_id: int,
+        *,
+        outcome: MemoryRebuildJobOutcome = MemoryRebuildJobOutcome.CLAIMS_APPLIED,
+        result_category: str | None = None,
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise KeyError("completion failure")
+        await original_complete(
+            job_id,
+            outcome=outcome,
+            result_category=result_category,
+        )
+
+    monkeypatch.setattr(jobs, "complete", fail_first_completion)
+    worker = MemoryWorker(
+        settings=make_settings(
+            database.url,
+            memory_batch_max_events=12,
+            memory_batch_max_wait_seconds=0,
+        ),
+        jobs=jobs,
+        facts=MemoryFactService(MemoryFactRepository(database)),
+        ledger=ledger,
+        provider=_BatchProvider(),
+        concurrency=ConcurrencyManager(1),
+    )
+
+    assert await worker.process_once() == 1
+    async with database.sessions() as session:
+        rows = (
+            await session.scalars(
+                select(MemoryJobModel)
+                .where(MemoryJobModel.event_id.in_((first.id, second.id)))
+                .order_by(MemoryJobModel.event_id)
+            )
+        ).all()
+    assert rows[0].status == "pending"
+    assert rows[0].attempts == 1
+    assert rows[0].error_category == "KeyError"
+    assert rows[1].status == "done"
 
 
 @pytest.mark.asyncio

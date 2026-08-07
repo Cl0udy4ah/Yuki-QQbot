@@ -28,7 +28,11 @@ from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import CandidateRelation, MemoryCandidate, MemoryResolutionPlan
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.memory.validation import MemoryClaimValidator, ValidatedMemoryClaim
+from qq_ai_bot.memory.validation import (
+    MemoryClaimValidationResult,
+    MemoryClaimValidator,
+    ValidatedMemoryClaim,
+)
 from qq_ai_bot.model_runtime.structured import StructuredTaskError
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -52,6 +56,25 @@ class MemoryClaimProcessResult:
     input_tokens: int | None = None
     output_tokens: int | None = None
     latency_seconds: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedMemoryClaim:
+    """A fully decided claim that can be persisted without calling a model."""
+
+    claim: ValidatedMemoryClaim
+    candidates: tuple[MemoryCandidate, ...]
+    plan: MemoryResolutionPlan
+    limit: int | None
+    action: MemoryResolutionAction
+    reason_code: str
+    model_requests: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    latency_seconds: float = 0.0
+
+
+MemoryClaimResolution = ResolvedMemoryClaim | MemoryClaimProcessResult
 
 
 class MemoryHistoricalResolutionGuard:
@@ -139,6 +162,13 @@ class MemoryClaimProcessor:
     def validate(self, claim: MemoryClaim, event: EventRecord) -> ValidatedMemoryClaim | None:
         return self._validator.validate_claim(claim, event)
 
+    def validate_result(
+        self,
+        claim: MemoryClaim,
+        event: EventRecord,
+    ) -> MemoryClaimValidationResult:
+        return self._validator.validate_claim_result(claim, event)
+
     async def process(
         self,
         claim: MemoryClaim | ValidatedMemoryClaim,
@@ -146,6 +176,16 @@ class MemoryClaimProcessor:
         *,
         session: AsyncSession | None = None,
     ) -> MemoryClaimProcessResult:
+        resolution = await self.resolve(claim, context)
+        return await self.apply_resolution(resolution, session=session)
+
+    async def resolve(
+        self,
+        claim: MemoryClaim | ValidatedMemoryClaim,
+        context: MemoryProcessingContext,
+    ) -> MemoryClaimResolution:
+        """Validate and decide a claim without opening a write transaction."""
+
         validated = (
             claim
             if isinstance(claim, ValidatedMemoryClaim)
@@ -168,8 +208,8 @@ class MemoryClaimProcessor:
                 subject_is_speaker=validated.subject_is_speaker,
                 occurred_at=validated.occurred_at,
             )
-            fact = await self._facts.apply_claim(
-                historical,
+            return ResolvedMemoryClaim(
+                claim=historical,
                 candidates=(),
                 plan=MemoryResolutionPlan(
                     action=MemoryResolutionAction.CREATE,
@@ -180,12 +220,8 @@ class MemoryClaimProcessor:
                     create_new_fact=True,
                 ),
                 limit=None,
-                session=session,
-            )
-            return MemoryClaimProcessResult(
-                fact.id if fact is not None else None,
-                MemoryResolutionAction.INVALIDATE,
-                "historical_expired",
+                action=MemoryResolutionAction.INVALIDATE,
+                reason_code="historical_expired",
             )
         runtime = (
             await self._runtime_config.snapshot(
@@ -269,21 +305,44 @@ class MemoryClaimProcessor:
                     MemoryResolutionAction.NOOP,
                     "rebuild_capacity_preserved",
                 )
-        fact = await self._facts.apply_claim(
-            validated,
+        return ResolvedMemoryClaim(
+            claim=validated,
             candidates=candidates,
             plan=plan,
             limit=None if context.preserve_capacity else limit,
-            session=session,
-        )
-        return MemoryClaimProcessResult(
-            fact.id if fact is not None else None,
-            plan.action,
-            plan.reason_code,
+            action=plan.action,
+            reason_code=plan.reason_code,
             model_requests=model_requests,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             latency_seconds=latency_seconds,
+        )
+
+    async def apply_resolution(
+        self,
+        resolution: MemoryClaimResolution,
+        *,
+        session: AsyncSession | None = None,
+    ) -> MemoryClaimProcessResult:
+        """Persist a previously decided claim without performing model I/O."""
+
+        if isinstance(resolution, MemoryClaimProcessResult):
+            return resolution
+        fact = await self._facts.apply_claim(
+            resolution.claim,
+            candidates=resolution.candidates,
+            plan=resolution.plan,
+            limit=resolution.limit,
+            session=session,
+        )
+        return MemoryClaimProcessResult(
+            fact.id if fact is not None else None,
+            resolution.action,
+            resolution.reason_code,
+            model_requests=resolution.model_requests,
+            input_tokens=resolution.input_tokens,
+            output_tokens=resolution.output_tokens,
+            latency_seconds=resolution.latency_seconds,
         )
 
     @staticmethod

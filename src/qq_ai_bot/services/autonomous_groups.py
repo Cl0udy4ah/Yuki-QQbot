@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ConversationIdentity, ConversationMode
 from qq_ai_bot.domain.messages import InboundMessage
@@ -37,6 +38,8 @@ class _GroupState:
     profiles: deque[UserProfileSnapshot] = field(default_factory=lambda: deque(maxlen=100))
     senders: deque[OutboundSender] = field(default_factory=lambda: deque(maxlen=100))
     latest_token: TurnToken | None = None
+    revision: int = 0
+    changed: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task[None] | None = None
 
 
@@ -61,6 +64,7 @@ class AutonomousGroupService:
         self._planner_signals = planner_signals
         self._states: dict[str, _GroupState] = {}
         self._task_failures = 0
+        self._closed = False
 
     @property
     def task_failures(self) -> int:
@@ -83,8 +87,17 @@ class AutonomousGroupService:
         state.profiles.append(profile)
         state.senders.append(sender)
         state.latest_token = turn_token
+        state.revision += 1
+        state.changed.set()
+        self._ensure_task(group_id, state)
+
+    def _ensure_task(self, group_id: str, state: _GroupState) -> None:
+        """Keep exactly one coalescing worker alive for one group."""
+
+        if self._closed:
+            return
         if state.task is not None and not state.task.done():
-            state.task.cancel()
+            return
         task = asyncio.create_task(
             self._after_silence(group_id),
             name=f"planner-group-{group_id}",
@@ -99,170 +112,223 @@ class AutonomousGroupService:
     def _task_done(self, group_id: str, completed: asyncio.Task[None]) -> None:
         """Own a detached task, consume its outcome, and release its state reference."""
 
-        state = self._states.get(group_id)
-        if state is not None and state.task is completed:
-            state.task = None
         try:
             completed.result()
         except asyncio.CancelledError:
-            return
+            pass
         except Exception as exc:
             self._task_failures += 1
             logger.exception(
                 "autonomous_group_task_failed exception_category=%s",
                 type(exc).__name__,
             )
+        state = self._states.get(group_id)
+        if state is None or state.task is not completed:
+            return
+        state.task = None
+        # A message can arrive between the worker's final revision check and this
+        # callback. Its event is the hand-off that prevents that update being lost.
+        if state.changed.is_set():
+            self._ensure_task(group_id, state)
 
     async def _after_silence(self, group_id: str) -> None:
-        try:
-            runtime = await self._runtime_config.snapshot(group_id=group_id)
-            if not runtime.planner.group_enabled:
-                return
-            await asyncio.sleep(runtime.planner.group_debounce_seconds)
-            state = self._states.get(group_id)
-            if state is None or not state.messages:
-                return
-            last = state.messages[-1]
-            token = state.latest_token
-            if token is None:
-                token = await self._coordinator.notify_message(
-                    f"group:{group_id}",
-                    TurnOrigin.AUTONOMOUS_GROUP,
-                )
-            else:
-                token = await self._coordinator.begin_autonomous(token)
-                if token is None:
+        while True:
+            revision = -1
+            try:
+                runtime = await self._runtime_config.snapshot(group_id=group_id)
+                if not runtime.planner.group_enabled:
                     return
-            batch_messages = tuple(state.messages)[-runtime.planner.max_pending_messages :]
-            batch = "\n".join(
-                f"[外部不可信群消息，发送者 QQ {item.sender.user_id}] {item.text}"
-                for item in batch_messages
+                state = self._states.get(group_id)
+                if state is None or not state.messages:
+                    return
+                # One worker absorbs every update until the group has remained
+                # quiet for a full debounce interval. No cancelled Planner calls.
+                state.changed.clear()
+                revision = state.revision
+                try:
+                    await asyncio.wait_for(
+                        state.changed.wait(),
+                        timeout=runtime.planner.group_debounce_seconds,
+                    )
+                except TimeoutError:
+                    pass
+                if not self._is_latest(group_id, revision):
+                    continue
+                await self._plan_latest(group_id, revision, runtime)
+            except asyncio.CancelledError:
+                raise
+            except (
+                PlannerInterruptedError,
+                ProviderPlannerInterruptedError,
+                TurnSupersededError,
+            ):
+                pass
+            except SQLAlchemyError as exc:
+                self._task_failures += 1
+                logger.warning(
+                    "autonomous_group_task_failed exception_category=%s",
+                    type(exc).__name__,
+                )
+            except (LLMError, OSError, RuntimeError, ValueError, TypeError) as exc:
+                self._task_failures += 1
+                logger.warning(
+                    "autonomous_group_task_failed exception_category=%s",
+                    type(exc).__name__,
+                )
+            if revision >= 0 and not self._is_latest(group_id, revision):
+                continue
+            return
+
+    def _is_latest(self, group_id: str, revision: int) -> bool:
+        state = self._states.get(group_id)
+        return state is not None and state.revision == revision
+
+    async def _plan_latest(
+        self,
+        group_id: str,
+        revision: int,
+        runtime: RuntimeConfigSnapshot,
+    ) -> None:
+        state = self._states.get(group_id)
+        if state is None or not state.messages:
+            return
+        last = state.messages[-1]
+        profile = state.profiles[-1]
+        sender = state.senders[-1]
+        token = state.latest_token
+        if token is None:
+            token = await self._coordinator.notify_message(
+                f"group:{group_id}",
+                TurnOrigin.AUTONOMOUS_GROUP,
             )
-            planner_input = await self._planner_context.build(
+        else:
+            token = await self._coordinator.begin_autonomous(token)
+            if token is None:
+                return
+        plugin_signals = (
+            await self._planner_signals.collect(
+                message=last,
+                origin=TurnOrigin.AUTONOMOUS_GROUP,
+                runtime=runtime,
+            )
+            if self._planner_signals is not None
+            else ()
+        )
+        planner_input = await self._planner_context.build(
+            inbound=last,
+            conversation_key=token.conversation_key,
+            content=last.text,
+            origin=TurnOrigin.AUTONOMOUS_GROUP,
+            runtime=runtime,
+            visual_input_present=False,
+            available_tool_categories=("history", "memory", "web"),
+            plugin_signals=plugin_signals,
+        )
+        if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
+            return
+        async with self._coordinator.track(token, "planner"):
+            outcome = await self._planner.plan(
+                planner_input,
+                runtime=runtime,
+                turn_version=token.version,
+            )
+        if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
+            await self._planner.record_delivery(
+                outcome.run_id,
+                messages_sent=0,
+                interrupted=True,
+            )
+            return
+        plan = outcome.planned_turn.plan
+        if plan.decision is PlannerDecision.WAIT:
+            if plan.wait_seconds > 0:
+                await asyncio.sleep(plan.wait_seconds)
+            if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
+                await self._planner.record_delivery(
+                    outcome.run_id,
+                    messages_sent=0,
+                    interrupted=True,
+                )
+                return
+            await self._planner.record_delivery(
+                outcome.run_id,
+                messages_sent=0,
+                interrupted=False,
+            )
+            # Re-plan exactly once after a bounded wait. A second wait becomes
+            # silence, so one group message cannot create an endless loop.
+            refreshed = await self._planner_context.build(
                 inbound=last,
                 conversation_key=token.conversation_key,
-                content=batch,
+                content=last.text,
                 origin=TurnOrigin.AUTONOMOUS_GROUP,
                 runtime=runtime,
                 visual_input_present=False,
                 available_tool_categories=("history", "memory", "web"),
-                plugin_signals=(
-                    await self._planner_signals.collect(
-                        message=last,
-                        origin=TurnOrigin.AUTONOMOUS_GROUP,
-                        runtime=runtime,
-                    )
-                    if self._planner_signals is not None
-                    else ()
-                ),
+                plugin_signals=plugin_signals,
             )
+            if not self._is_latest(group_id, revision):
+                return
             async with self._coordinator.track(token, "planner"):
                 outcome = await self._planner.plan(
-                    planner_input,
+                    refreshed,
                     runtime=runtime,
                     turn_version=token.version,
                 )
+            if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
+                await self._planner.record_delivery(
+                    outcome.run_id,
+                    messages_sent=0,
+                    interrupted=True,
+                )
+                return
             plan = outcome.planned_turn.plan
             if plan.decision is PlannerDecision.WAIT:
-                if plan.wait_seconds > 0:
-                    await asyncio.sleep(plan.wait_seconds)
-                if not self._coordinator.is_current(token):
-                    await self._planner.record_delivery(
-                        outcome.run_id,
-                        messages_sent=0,
-                        interrupted=True,
-                    )
-                    return
                 await self._planner.record_delivery(
                     outcome.run_id,
                     messages_sent=0,
                     interrupted=False,
                 )
-                # Re-plan exactly once after a bounded wait. A second wait becomes
-                # silence, so one group message cannot create an endless loop.
-                refreshed = await self._planner_context.build(
-                    inbound=last,
-                    conversation_key=token.conversation_key,
-                    content=batch,
-                    origin=TurnOrigin.AUTONOMOUS_GROUP,
-                    runtime=runtime,
-                    visual_input_present=False,
-                    available_tool_categories=("history", "memory", "web"),
-                    plugin_signals=(
-                        await self._planner_signals.collect(
-                            message=last,
-                            origin=TurnOrigin.AUTONOMOUS_GROUP,
-                            runtime=runtime,
-                        )
-                        if self._planner_signals is not None
-                        else ()
-                    ),
-                )
-                async with self._coordinator.track(token, "planner"):
-                    outcome = await self._planner.plan(
-                        refreshed,
-                        runtime=runtime,
-                        turn_version=token.version,
-                    )
-                plan = outcome.planned_turn.plan
-                if plan.decision is PlannerDecision.WAIT:
-                    await self._planner.record_delivery(
-                        outcome.run_id,
-                        messages_sent=0,
-                        interrupted=False,
-                    )
-                    return
-            if plan.decision is not PlannerDecision.REPLY:
                 return
-            identity = ConversationIdentity.group(
-                group_id,
-                last.sender.user_id,
-                ConversationMode.SHARED,
-            )
-            sent = await self._chat.respond(
-                last,
-                identity,
-                state.profiles[-1],
-                batch,
-                state.senders[-1],
-                autonomous=True,
-                runtime_snapshot=runtime,
-                planned_turn=outcome.planned_turn,
-                turn_token=token,
-            )
-            await self._planner.record_delivery(
-                outcome.run_id,
-                messages_sent=sent,
-                interrupted=not self._coordinator.is_current(token),
-            )
-        except asyncio.CancelledError:
-            raise
-        except (
-            PlannerInterruptedError,
-            ProviderPlannerInterruptedError,
-            TurnSupersededError,
-        ):
+        if plan.decision is not PlannerDecision.REPLY:
             return
-        except SQLAlchemyError as exc:
-            self._task_failures += 1
-            logger.warning(
-                "autonomous_group_task_failed exception_category=%s",
-                type(exc).__name__,
-            )
-        except (LLMError, OSError, RuntimeError, ValueError, TypeError) as exc:
-            self._task_failures += 1
-            logger.warning(
-                "autonomous_group_task_failed exception_category=%s",
-                type(exc).__name__,
-            )
+        if not self._is_latest(group_id, revision) or not self._coordinator.is_current(token):
+            return
+        identity = ConversationIdentity.group(
+            group_id,
+            last.sender.user_id,
+            ConversationMode.SHARED,
+        )
+        sent = await self._chat.respond(
+            last,
+            identity,
+            profile,
+            last.text,
+            sender,
+            autonomous=True,
+            runtime_snapshot=runtime,
+            planned_turn=outcome.planned_turn,
+            turn_token=token,
+        )
+        await self._planner.record_delivery(
+            outcome.run_id,
+            messages_sent=sent,
+            interrupted=not self._coordinator.is_current(token),
+        )
 
     async def wait_until_idle(self, group_id: str) -> None:
-        state = self._states.get(group_id)
-        if state is None or state.task is None:
-            return
-        await asyncio.shield(state.task)
+        while True:
+            state = self._states.get(group_id)
+            if state is None or state.task is None:
+                return
+            task = state.task
+            await asyncio.shield(task)
+            # Let the ownership callback restart a task if an update raced with
+            # the worker's last revision check.
+            await asyncio.sleep(0)
 
     async def close(self) -> None:
+        self._closed = True
         tasks = [
             state.task
             for state in self._states.values()

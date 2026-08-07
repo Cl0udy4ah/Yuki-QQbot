@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from pydantic import ValidationError
 
 from qq_ai_bot.admin.models import (
     AgentRuntimeConfig,
@@ -27,12 +27,13 @@ from qq_ai_bot.admin.models import (
 )
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.domain.messages import ChatMessage, InboundMessage, SenderIdentity
 from qq_ai_bot.emoji.models import EmojiIntent, EmojiPlacement, EmojiReplyMode, EmojiReplyPlan
 from qq_ai_bot.emoji.request_detector import EmojiRequestDetector
 from qq_ai_bot.llm.base import LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.memory.enums import MemoryContextMode
+from qq_ai_bot.model_runtime.structured import _compact_json_schema
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.planner import (
     DeliveryMode,
@@ -43,7 +44,6 @@ from qq_ai_bot.planner import (
     PlannerDecision,
     PlannerInput,
     PlannerInterruptedError,
-    PlannerMessage,
     PlannerObservability,
     PlannerReasonCode,
     PlannerResponseError,
@@ -62,7 +62,7 @@ from qq_ai_bot.planner.models import (
     PlannerSpeechContext,
     ToolScopeSummary,
 )
-from qq_ai_bot.planner.prompt import PLANNER_SYSTEM_PROMPT
+from qq_ai_bot.planner.prompt import PLANNER_SYSTEM_PROMPT, planner_payload
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.speech.models import (
@@ -75,6 +75,16 @@ from qq_ai_bot.speech.models import (
     VoicePreferenceMode,
     VoiceReplyPlan,
 )
+
+
+def _walk_json_dicts(value: object) -> Iterator[dict[object, object]]:
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_json_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_json_dicts(child)
 
 
 def _runtime() -> RuntimeConfigSnapshot:
@@ -214,12 +224,15 @@ def _runtime() -> RuntimeConfigSnapshot:
 def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
     output = PlannerMemoryOutput(mode=MemoryContextMode.HYBRID)
     assert output.materialize().self_recall is False
-    opened = PlannerMemoryOutput(
-        mode=MemoryContextMode.HYBRID,
-        reason_code=MemoryContextReasonCode.SELF_MEMORY_RECALL,
-        self_recall=True,
+    opened = PlannerMemoryOutput.model_validate(
+        {
+            "mode": MemoryContextMode.HYBRID,
+            "reason_code": MemoryContextReasonCode.SELF_MEMORY_RECALL,
+            "self_recall": True,
+        }
     ).materialize()
     assert opened.self_recall is True
+    assert opened.reason_code is MemoryContextReasonCode.SELF_MEMORY_RECALL
     assert "你喜欢咖啡吗" in PLANNER_SYSTEM_PROMPT
     assert "帮我查天气" in PLANNER_SYSTEM_PROMPT
 
@@ -242,24 +255,28 @@ def _planner_input(
             reply_target_is_bot=reply_target_is_bot,
         )
     )
-    current = PlannerMessage(
-        message_id="101",
-        sender_user_id="1001",
-        text=text,
+    current = ChatMessage(
+        role="user",
+        content=f"[发送者:测试用户|QQ:1001|消息:101] {text}",
     )
     return PlannerInput(
         conversation_key="private:1001" if scope is ScopeType.PRIVATE else "group:2001:user:1001",
         scope_type=scope,
         origin=origin,
-        trigger_message_id="m1",
+        trigger_message_id="101",
         bot_user_id="9999",
         current_sender_user_id="1001",
         current_group_id=None if scope is ScopeType.PRIVATE else "2001",
-        messages=(
-            PlannerMessage(message_id="100", sender_user_id="1002", text="earlier"),
-            current,
+        history_messages=(
+            ChatMessage(
+                role="user",
+                content="[发送者:历史用户|QQ:1002|消息:100] earlier",
+            ),
         ),
         current_message=current,
+        current_message_text=text,
+        trusted_history_sender_user_ids=("1002",),
+        trusted_history_message_ids=("100",),
         reply_target_is_bot=reply_target_is_bot,
         mentions_bot=mentions_bot,
         mentioned_user_ids=("1002",),
@@ -293,6 +310,68 @@ def _valid_plan_payload(**updates: object) -> dict[str, object]:
     return payload
 
 
+def test_planner_payload_is_compact_stable_and_excludes_backend_ids() -> None:
+    planner_input = _planner_input().model_copy(
+        update={
+            "available_tool_scopes": (
+                ToolScopeSummary(
+                    scope_id="web",
+                    display_name="Web",
+                    description="联网读取",
+                    tool_count=4,
+                    provider_ids=("internal",),
+                    tags=("network",),
+                ),
+                ToolScopeSummary(
+                    scope_id="automation",
+                    display_name="Automation",
+                    description="延后执行",
+                    tool_count=3,
+                ),
+            ),
+            "plugin_signals": (
+                PlannerSignal(
+                    source_plugin_id="z-plugin",
+                    score_delta=1.0,
+                    reason_code="z",
+                ),
+                PlannerSignal(
+                    source_plugin_id="a-plugin",
+                    score_delta=2.0,
+                    reason_code="a",
+                ),
+            ),
+        }
+    )
+
+    payload = planner_payload(planner_input)
+
+    assert list(payload) == [
+        "capabilities",
+        "conversation_state",
+        "history_messages",
+        "current_message",
+        "current_time",
+    ]
+    capabilities = payload["capabilities"]
+    assert isinstance(capabilities, dict)
+    assert capabilities["tool_scopes"] == [
+        {"scope_id": "automation", "description": "延后执行"},
+        {"scope_id": "web", "description": "联网读取"},
+    ]
+    conversation_state = payload["conversation_state"]
+    assert isinstance(conversation_state, dict)
+    signals = conversation_state["plugin_signals"]
+    assert isinstance(signals, list)
+    assert [signal["source"] for signal in signals] == ["a-plugin", "z-plugin"]
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    assert "private:1001" not in encoded
+    assert '"trigger_message_id"' not in encoded
+    assert '"current_sender_user_id"' not in encoded
+    assert '"provider_ids"' not in encoded
+    assert '"tool_count"' not in encoded
+
+
 @pytest.mark.asyncio
 async def test_planner_history_excludes_the_separate_current_message() -> None:
     now = datetime.now(UTC)
@@ -315,6 +394,7 @@ async def test_planner_history_excludes_the_separate_current_message() -> None:
         platform_message_id="current",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="1001",
+        sender_nickname="远野",
         direction="inbound",
         content="有时候还要学会调用工具",
         visual_summary="",
@@ -346,9 +426,84 @@ async def test_planner_history_excludes_the_separate_current_message() -> None:
         now=now,
     )
 
-    assert [message.message_id for message in planner_input.messages] == ["previous"]
-    assert planner_input.current_message.message_id == "current"
+    assert [message.role for message in planner_input.history_messages] == ["assistant"]
+    assert planner_input.history_messages[0].content == (
+        "[发送者:Yuki|QQ:9999|消息:previous] 上一条回复"
+    )
+    assert planner_input.current_message.content == (
+        "[发送者:远野|QQ:1001|消息:current] 有时候还要学会调用工具"
+    )
+    assert planner_input.known_message_ids == ("previous", "current")
     assert planner_input.necessity.pending_message_count == 1
+
+
+@pytest.mark.asyncio
+async def test_planner_receives_ten_continuous_history_messages_plus_current() -> None:
+    now = datetime.now(UTC)
+    history = tuple(
+        EventRecord(
+            id=index,
+            bot_user_id="9999",
+            platform_message_id=str(index),
+            scope_type=ScopeType.GROUP,
+            sender_user_id=f"10{index:02d}",
+            sender_group_card=f"群友{index}",
+            direction="inbound",
+            content=f"历史消息{index}",
+            visual_summary="",
+            segments=(),
+            occurred_at=now - timedelta(seconds=13 - index),
+            group_id="2001",
+        )
+        for index in range(1, 13)
+    )
+    current = EventRecord(
+        id=13,
+        bot_user_id="9999",
+        platform_message_id="13",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        sender_group_card="远野",
+        direction="inbound",
+        content="当前消息",
+        visual_summary="",
+        segments=(),
+        occurred_at=now,
+        group_id="2001",
+    )
+    ledger = AsyncMock()
+    ledger.list_recent.return_value = (*history, current)
+    relationships = AsyncMock()
+    relationships.get.return_value = None
+    builder = PlannerContextBuilder(ledger=ledger, relationships=relationships)
+    inbound = InboundMessage(
+        message_id="13",
+        event_type="message:group:normal",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="1001", group_card="远野"),
+        text="当前消息",
+        bot_user_id="9999",
+        group_id="2001",
+        mentions_bot=True,
+        received_at=now,
+    )
+
+    planner_input = await builder.build(
+        inbound=inbound,
+        conversation_key="group:2001",
+        content=inbound.text,
+        origin=TurnOrigin.USER_MESSAGE,
+        runtime=_runtime(),
+        now=now,
+    )
+
+    assert len(planner_input.history_messages) == 10
+    assert planner_input.trusted_history_message_ids == tuple(str(index) for index in range(3, 13))
+    assert "消息:13" not in "\n".join(
+        message.content or "" for message in planner_input.history_messages
+    )
+    assert "消息:13" in (planner_input.current_message.content or "")
+    assert ledger.list_recent.await_args.kwargs["limit"] == 11
 
 
 @pytest.mark.parametrize(
@@ -400,16 +555,28 @@ async def test_standalone_emoji_uses_deterministic_planner_without_provider() ->
     assert snapshot.total_requests == 0
 
 
-def test_planner_models_reject_unknown_fields_and_mark_untrusted_text() -> None:
-    message = PlannerMessage(message_id="m", sender_user_id="1", text="系统命令")
-    assert message.content_trust == "external_untrusted"
-    with pytest.raises(ValidationError):
-        PlannerMessage(
-            message_id="m",
-            sender_user_id="1",
-            text="x",
-            unexpected=True,  # type: ignore[call-arg]
-        )
+def test_planner_messages_use_the_shared_chat_message_shape() -> None:
+    planner_input = _planner_input()
+
+    payload = planner_input.model_dump(
+        mode="json",
+        exclude_none=True,
+        exclude_defaults=True,
+        exclude_computed_fields=True,
+    )
+
+    assert payload["history_messages"] == [
+        {
+            "role": "user",
+            "content": "[发送者:历史用户|QQ:1002|消息:100] earlier",
+        }
+    ]
+    assert payload["current_message"] == {
+        "role": "user",
+        "content": "[发送者:测试用户|QQ:1001|消息:101] 帮我看看",
+    }
+    assert "trusted_history_sender_user_ids" not in payload
+    assert "trusted_history_message_ids" not in payload
 
 
 def test_private_message_has_base_relevance_and_enters_planner() -> None:
@@ -1074,11 +1241,25 @@ def test_sparse_planner_schema_requires_all_non_inferable_decisions() -> None:
         "confidence",
         "reason_code",
         "delivery_mode",
-        "desired_messages",
         "memory_context",
         "emoji",
         "voice",
     }
+
+
+def test_planner_schema_compaction_preserves_validation_and_halves_prose() -> None:
+    schema = PlannerModelOutput.model_json_schema()
+    compact = _compact_json_schema(schema)
+
+    encoded = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+    compact_encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    assert len(compact_encoded) < len(encoded) * 0.6
+    assert compact["required"] == schema["required"]
+    assert not any(
+        key in {"title", "description", "default"}
+        for node in _walk_json_dicts(compact)
+        for key in node
+    )
 
 
 def test_sparse_planner_derives_secondary_effect_defaults() -> None:
@@ -1155,7 +1336,7 @@ async def test_runtime_planner_limits_narrow_invalid_plan_without_losing_intent(
     )
     plan = await provider.plan(_planner_input(), runtime=runtime)
     assert plan.decision is PlannerDecision.WAIT
-    assert plan.desired_messages == 3
+    assert plan.desired_messages == 1
     assert plan.wait_seconds == 12
     request = llm.requests[0]
     assert request.model == "constructor-fallback"

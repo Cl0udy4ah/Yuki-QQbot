@@ -182,6 +182,9 @@ class MemorySettings(DomainSettings):
     memory_batch_seconds: float = Field(ge=0)
     memory_batch_trigger_count: int = Field(gt=0)
     memory_batch_max_events: int = Field(gt=0)
+    memory_batch_max_characters: int = Field(gt=0)
+    memory_batch_max_wait_seconds: float = Field(ge=0)
+    memory_batch_max_output_tokens: int = Field(gt=0)
     memory_retrieval_enabled: bool
     self_memory_enabled: bool
     memory_max_referenced_targets: int = Field(gt=0)
@@ -249,6 +252,12 @@ class MemorySettings(DomainSettings):
     memory_rebuild_review_page_size: int = Field(gt=0)
     memory_rebuild_source_excerpt_characters: int = Field(gt=0)
     memory_rebuild_max_events_per_run: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _memory_batch_shape(self) -> MemorySettings:
+        if self.memory_batch_trigger_count > self.memory_batch_max_events:
+            raise ValueError("memory batch trigger count cannot exceed batch event limit")
+        return self
 
 
 class RelationshipSettings(DomainSettings):

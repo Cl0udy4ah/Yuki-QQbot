@@ -35,6 +35,7 @@ class StructuredTaskRunner:
         max_output_tokens: int | None = None,
         mode: StructuredOutputMode | None = None,
         allow_text_json: bool = False,
+        compact_schema: bool = False,
     ) -> OutputT:
         result, _response = await self.run_with_response(
             task=task,
@@ -45,6 +46,7 @@ class StructuredTaskRunner:
             max_output_tokens=max_output_tokens,
             mode=mode,
             allow_text_json=allow_text_json,
+            compact_schema=compact_schema,
         )
         return result
 
@@ -59,6 +61,7 @@ class StructuredTaskRunner:
         max_output_tokens: int | None = None,
         mode: StructuredOutputMode | None = None,
         allow_text_json: bool = False,
+        compact_schema: bool = False,
     ) -> tuple[OutputT, ChatResponse]:
         """Return validated data together with provider-safe usage metadata."""
 
@@ -77,6 +80,8 @@ class StructuredTaskRunner:
         else:
             payload = structured_input
         schema = output_model.model_json_schema()
+        if compact_schema:
+            schema = _compact_json_schema(schema)
         tools: tuple[ChatTool, ...] = ()
         tool_choice: str | None = None
         response_format: dict[str, object] | None = None
@@ -139,3 +144,17 @@ class StructuredTaskRunner:
             return output_model.model_validate(decoded), response
         except (json.JSONDecodeError, ValidationError) as exc:
             raise StructuredTaskError("structured task returned an invalid result") from exc
+
+
+def _compact_json_schema(value: Any) -> Any:
+    """Remove non-validating prose while preserving one stable strict schema."""
+
+    if isinstance(value, dict):
+        return {
+            key: _compact_json_schema(item)
+            for key, item in value.items()
+            if key not in {"title", "description", "default"}
+        }
+    if isinstance(value, list):
+        return [_compact_json_schema(item) for item in value]
+    return value

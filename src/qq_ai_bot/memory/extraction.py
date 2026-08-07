@@ -21,6 +21,8 @@ from qq_ai_bot.persistence.repository_records import EventRecord
 EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v2"
 EXTRACTION_SCHEMA_VERSION = "2"
 SOURCE_ADAPTATION_VERSION = "2"
+BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v1"
+BATCH_EXTRACTION_SCHEMA_VERSION = "1"
 
 
 class _ExtractionModel(BaseModel):
@@ -70,6 +72,38 @@ class MemoryClaim(_ExtractionModel):
 
 class MemoryExtractionOutput(_ExtractionModel):
     claims: tuple[MemoryClaim, ...] = ()
+
+
+class BatchPrimaryEvent(_ExtractionModel):
+    source_event_id: int = Field(gt=0)
+    scope_type: ScopeType
+    sender_label: str = Field(min_length=1, max_length=128)
+    content: str = Field(max_length=8000)
+    occurred_at: datetime
+    available_subjects: tuple[AvailableSubject, ...]
+
+
+class BatchConversationContextEvent(_ExtractionModel):
+    speaker_role: str = Field(pattern=r"^(member|bot)$")
+    sender_label: str = Field(min_length=1, max_length=128)
+    content: str = Field(max_length=1000)
+
+
+class BatchMemoryExtractionInput(_ExtractionModel):
+    events: tuple[BatchPrimaryEvent, ...] = Field(min_length=1, max_length=12)
+    conversation_context: tuple[BatchConversationContextEvent, ...] = Field(
+        default=(),
+        max_length=8,
+    )
+
+
+class BatchMemoryClaim(_ExtractionModel):
+    source_event_id: int = Field(gt=0)
+    claim: MemoryClaim
+
+
+class BatchMemoryExtractionOutput(_ExtractionModel):
+    claims: tuple[BatchMemoryClaim, ...] = Field(default=(), max_length=36)
 
 
 def source_event_fingerprint(event: EventRecord) -> str:

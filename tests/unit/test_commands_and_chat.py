@@ -39,6 +39,7 @@ from qq_ai_bot.planner import (
     ToolMode,
     TurnPlan,
 )
+from qq_ai_bot.planner.models import ToolSelection
 from qq_ai_bot.planner.service import PlannerService
 from qq_ai_bot.services.processor import MENTION_ONLY_CONTEXT, _vision_failure_message
 
@@ -384,6 +385,36 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
     result = await harness.processor.handle(inbound("hello", message_id="empty"), sender)
     assert result.reason == "empty_llm_response"
     assert "空内容" in sender.messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_explicit_memory_request_restores_memory_scope_after_planner_none(
+    database: Database,
+) -> None:
+    provider = FakeLLMProvider(lambda _request: "我会按工具回执确认是否记住。")
+    harness = build_harness(database, make_settings(database.url), provider)
+    harness.processor._chat._tools._memory_mutations = object()  # type: ignore[assignment]
+    plan = TurnPlan(
+        decision=PlannerDecision.REPLY,
+        intent="回应用户",
+        delivery_mode=DeliveryMode.SINGLE,
+        desired_messages=1,
+        tool_selection=ToolSelection(mode=ToolMode.NONE, scopes=()),
+        confidence=1.0,
+        reason_code=PlannerReasonCode.DIRECT_REQUEST,
+    )
+    harness.processor._planner = PlannerService(
+        provider=FakePlannerProvider(plan),
+        observability=PlannerObservability(),
+    )
+
+    await harness.processor.handle(
+        inbound("请记住我喜欢美式咖啡", message_id="memory-scope-fallback"),
+        MemorySender(),
+    )
+
+    assert provider.requests
+    assert "memory_change" in {tool.name for tool in provider.requests[-1].tools}
 
 
 @pytest.mark.asyncio

@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter, defaultdict
+from dataclasses import dataclass
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
-from qq_ai_bot.llm.base import LLMError
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
 from qq_ai_bot.memory.classifier import MemoryRelationClassifier
 from qq_ai_bot.memory.enums import MemoryProcessingSource, MemoryRebuildJobOutcome
 from qq_ai_bot.memory.event_extractor import MemoryEventExtractor
+from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import MemoryJob
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
@@ -21,15 +23,31 @@ from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.validation import MemoryClaimValidator
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
-from qq_ai_bot.model_runtime.structured import StructuredTaskError
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class _MemoryJobResult:
+    outcome: MemoryRebuildJobOutcome
+    extracted: int = 0
+    validated: int = 0
+    applied: int = 0
+    rejection_reasons: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def result_category(self) -> str | None:
+        if self.outcome is not MemoryRebuildJobOutcome.ALL_REJECTED:
+            return None
+        if not self.rejection_reasons:
+            return "all_rejected"
+        return f"all_rejected:{self.rejection_reasons[0][0]}"
+
+
 class MemoryWorker:
-    """Claim batches for efficiency while processing every event independently."""
+    """Extract one conversation micro-batch while committing every event independently."""
 
     def __init__(
         self,
@@ -91,7 +109,7 @@ class MemoryWorker:
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
-        self._queued_since_wake = 0
+        self._queued_by_conversation: dict[str, tuple[int, int]] = {}
 
     async def start(self) -> None:
         if self._task is None:
@@ -103,12 +121,23 @@ class MemoryWorker:
         if self._task is not None:
             await self._task
 
-    async def enqueue(self, event_id: int, conversation_key: str) -> bool:
+    async def enqueue(
+        self,
+        event_id: int,
+        conversation_key: str,
+        *,
+        content_characters: int = 0,
+    ) -> bool:
         created = await self._jobs.enqueue(event_id, conversation_key)
         if created:
-            self._queued_since_wake += 1
-            if self._queued_since_wake >= self._settings.memory_batch_trigger_count:
-                self._queued_since_wake = 0
+            count, characters = self._queued_by_conversation.get(conversation_key, (0, 0))
+            pending = (count + 1, characters + max(0, content_characters))
+            self._queued_by_conversation[conversation_key] = pending
+            if (
+                pending[0] >= self._settings.memory_batch_trigger_count
+                or pending[1] >= self._settings.memory_batch_max_characters
+            ):
+                self._queued_by_conversation.pop(conversation_key, None)
                 self._wake.set()
         return created
 
@@ -122,47 +151,134 @@ class MemoryWorker:
                 pass
             self._wake.clear()
             if not self._stop.is_set():
-                await self.process_once()
+                try:
+                    while await self.process_once():
+                        if self._stop.is_set():
+                            break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.exception(
+                        "memory_v2_worker_iteration_failed exception_category=%s",
+                        type(exc).__name__,
+                    )
 
     async def process_once(self) -> int:
-        jobs = await self._jobs.claim(limit=self._settings.memory_batch_max_events)
+        jobs = await self._jobs.claim_ready_batch(
+            limit=min(self._settings.memory_batch_max_events, 12),
+            trigger_count=self._settings.memory_batch_trigger_count,
+            max_characters=self._settings.memory_batch_max_characters,
+            max_wait_seconds=self._settings.memory_batch_max_wait_seconds,
+        )
+        if not jobs:
+            return 0
+        try:
+            context = await self._ledger.list_before(jobs[0].event, limit=8)
+            extracted = await self.extractor.extract_batch(
+                tuple(job.event for job in jobs),
+                context=context,
+                max_output_tokens=self._settings.memory_batch_max_output_tokens,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "memory_v2_batch_failed first_job_id=%d job_count=%d exception_category=%s",
+                jobs[0].id,
+                len(jobs),
+                type(exc).__name__,
+            )
+            for job in jobs:
+                await self._fail_job(job, exc)
+            return 0
+
+        known_event_ids = {job.event_id for job in jobs}
+        claims_by_event: defaultdict[int, list[MemoryClaim]] = defaultdict(list)
+        unknown_claims = 0
+        for anchored in extracted.output.claims:
+            if anchored.source_event_id not in known_event_ids:
+                unknown_claims += 1
+                self.metrics.increment("claims_rejected_unknown_source_event")
+                continue
+            claims_by_event[anchored.source_event_id].append(anchored.claim)
+        if unknown_claims:
+            logger.warning(
+                "memory_v2_batch_unknown_source_events first_job_id=%d "
+                "job_count=%d rejected_claims=%d",
+                jobs[0].id,
+                len(jobs),
+                unknown_claims,
+            )
+
         completed = 0
         for job in jobs:
             try:
-                outcome = await self._process_job(job)
+                result = await self._process_claims(
+                    job,
+                    tuple(claims_by_event.get(job.event_id, ())),
+                )
             except asyncio.CancelledError:
                 raise
-            except (
-                LLMError,
-                StructuredTaskError,
-                OSError,
-                RuntimeError,
-                TypeError,
-                ValueError,
-            ) as exc:
-                logger.warning(
+            except Exception as exc:
+                logger.exception(
                     "memory_v2_job_failed job_id=%d event_id=%d exception_category=%s",
                     job.id,
                     job.event_id,
                     type(exc).__name__,
                 )
-                await self._jobs.fail(job.id, type(exc).__name__)
+                await self._fail_job(job, exc)
                 continue
-            await self._jobs.complete(job.id, outcome=outcome)
+            if result.outcome is MemoryRebuildJobOutcome.ALL_REJECTED:
+                logger.warning(
+                    "memory_v2_job_all_rejected job_id=%d event_id=%d extracted=%d "
+                    "validated=%d applied=%d rejection_reasons=%s",
+                    job.id,
+                    job.event_id,
+                    result.extracted,
+                    result.validated,
+                    result.applied,
+                    dict(result.rejection_reasons),
+                )
+            try:
+                await self._jobs.complete(
+                    job.id,
+                    outcome=result.outcome,
+                    result_category=result.result_category,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception(
+                    "memory_v2_job_completion_failed job_id=%d event_id=%d exception_category=%s",
+                    job.id,
+                    job.event_id,
+                    type(exc).__name__,
+                )
+                await self._fail_job(job, exc)
+                continue
             completed += 1
         return completed
 
-    async def _process_job(self, job: MemoryJob) -> MemoryRebuildJobOutcome:
-        if not job.event.content.strip():
-            return MemoryRebuildJobOutcome.NO_CLAIMS
-        context = await self._ledger.list_before(job.event, limit=8)
-        extracted = await self.extractor.extract(job.event, context=context)
+    async def _process_claims(
+        self,
+        job: MemoryJob,
+        claims: tuple[MemoryClaim, ...],
+    ) -> _MemoryJobResult:
+        extracted_count = len(claims)
+        if not extracted_count:
+            return _MemoryJobResult(MemoryRebuildJobOutcome.NO_CLAIMS)
         applied = 0
-        for claim in extracted.output.claims:
+        validated_count = 0
+        rejection_reasons: Counter[str] = Counter()
+        for claim in claims:
             self.metrics.increment("claims_extracted")
-            validated = self.processor.validate(claim, job.event)
+            validation = self.processor.validate_result(claim, job.event)
+            validated = validation.claim
             if validated is None:
+                rejection_reasons[validation.reason_code] += 1
+                self.metrics.increment(f"claims_rejected_{validation.reason_code}")
                 continue
+            validated_count += 1
             self.metrics.increment(f"claims_{claim.operation.value}ed")
             if validated.fact.authority.value == "third_party":
                 self.metrics.increment("claims_third_party")
@@ -176,6 +292,33 @@ class MemoryWorker:
             )
             if result.ok and (result.new_fact_id is not None or result.old_fact_id is not None):
                 applied += 1
-        return (
-            MemoryRebuildJobOutcome.CLAIMS_APPLIED if applied else MemoryRebuildJobOutcome.NO_CLAIMS
+                continue
+            reason_code = result.reason_code or result.outcome.value
+            rejection_reasons[reason_code] += 1
+            self.metrics.increment(f"claims_rejected_{reason_code}")
+        outcome = (
+            MemoryRebuildJobOutcome.CLAIMS_APPLIED
+            if applied
+            else MemoryRebuildJobOutcome.ALL_REJECTED
         )
+        return _MemoryJobResult(
+            outcome=outcome,
+            extracted=extracted_count,
+            validated=validated_count,
+            applied=applied,
+            rejection_reasons=tuple(
+                sorted(rejection_reasons.items(), key=lambda item: (-item[1], item[0]))
+            ),
+        )
+
+    async def _fail_job(self, job: MemoryJob, exc: Exception) -> None:
+        try:
+            await self._jobs.fail(job.id, type(exc).__name__)
+        except asyncio.CancelledError:
+            raise
+        except Exception as fail_exc:
+            logger.exception(
+                "memory_v2_job_failure_record_failed job_id=%d exception_category=%s",
+                job.id,
+                type(fail_exc).__name__,
+            )

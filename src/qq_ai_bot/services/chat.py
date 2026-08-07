@@ -77,6 +77,7 @@ from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
+from qq_ai_bot.memory.validation import event_requests_memory_mutation
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
@@ -1322,10 +1323,12 @@ class ChatService:
                 return 1
 
             source_display_requested = self._source_policy.requested(content)
+            memory_mutation_intent = event_requests_memory_mutation(content)
             planner_emoji_only = bool(
                 planned_turn is not None
                 and planned_turn.plan.emoji.is_exclusive
                 and planned_turn.plan.tool_mode is ToolMode.NONE
+                and not memory_mutation_intent
             )
             messages = (
                 ()
@@ -1367,6 +1370,18 @@ class ChatService:
                         ),
                     ),
                 )
+            if memory_mutation_intent:
+                messages = (
+                    *messages,
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "当前消息明确要求变更长期记忆，memory_change 已作为候选能力提供。"
+                            "请根据用户真实意图自主决定具体操作；只有工具返回 ok=true 且"
+                            "outcome 表示已提交后，才能声称记忆已经创建、修改、删除或恢复。"
+                        ),
+                    ),
+                )
             gateway = (
                 cast(OneBotToolGateway, sender)
                 if callable(getattr(sender, "call_api", None))
@@ -1397,6 +1412,8 @@ class ChatService:
             tool_groups = planner_tool_groups
             if scheduled_automation_allowed and (planned_turn is None or planner_scopes_explicit):
                 tool_groups = frozenset((*tool_groups, ToolGroup.AUTOMATION.value))
+            if memory_mutation_intent:
+                tool_groups = frozenset((*tool_groups, ToolGroup.MEMORY.value))
             web_route = self._web_router.select(content, runtime_config.web.mode)
             web_scope_authorized = not planner_scopes_explicit or any(
                 scope == ToolGroup.WEB.value or scope.startswith(f"{ToolGroup.WEB.value}.")
@@ -1442,7 +1459,7 @@ class ChatService:
                 origin=(TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE),
                 tool_mode=(
                     ToolMode.INHERIT
-                    if scheduled_automation_allowed
+                    if scheduled_automation_allowed or memory_mutation_intent
                     else (
                         planned_turn.plan.tool_mode
                         if planned_turn is not None
@@ -1461,7 +1478,9 @@ class ChatService:
                 selection_query=content,
                 planner_intent=(planned_turn.plan.intent if planned_turn is not None else ""),
                 scheduled_automation_intent=scheduled_automation_allowed,
-                max_model_requests_override=(1 if fallback_plan else None),
+                max_model_requests_override=(
+                    1 if fallback_plan and not memory_mutation_intent else None
+                ),
                 native_web_fallback=bool(
                     web_route is not None and web_route.provider is WebProvider.TAVILY
                 ),

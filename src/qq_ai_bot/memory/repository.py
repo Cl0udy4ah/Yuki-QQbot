@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -52,6 +53,8 @@ from qq_ai_bot.persistence.repository_helpers import (
     _ensure_person,
     _event_record,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryFactRepository:
@@ -1040,11 +1043,28 @@ class MemoryJobRepository:
         async with self._database.sessions() as session, session.begin():
             event = await session.get(ChatEventModel, event_id)
             if event is None:
+                logger.warning(
+                    "memory_job_enqueue_skipped event_id=%d reason=event_not_found",
+                    event_id,
+                )
                 return False
             sender = await session.get(PersonModel, event.sender_user_id)
-            if sender is None or not self._eligibility.is_eligible(
-                _event_record(event), sender_is_bot=sender.is_bot
-            ):
+            if sender is None:
+                logger.warning(
+                    "memory_job_enqueue_skipped event_id=%d reason=sender_not_found",
+                    event_id,
+                )
+                return False
+            rejection_reason = self._eligibility.rejection_reason(
+                _event_record(event),
+                sender_is_bot=sender.is_bot,
+            )
+            if rejection_reason is not None:
+                logger.info(
+                    "memory_job_enqueue_skipped event_id=%d reason=%s",
+                    event_id,
+                    rejection_reason,
+                )
                 return False
             statement = insert(MemoryJobModel).values(
                 event_id=event_id,
@@ -1062,7 +1082,13 @@ class MemoryJobRepository:
             result = await session.execute(
                 statement.on_conflict_do_nothing(index_elements=[MemoryJobModel.event_id])
             )
-            return bool(cast(CursorResult[Any], result).rowcount)
+            created = bool(cast(CursorResult[Any], result).rowcount)
+            if not created:
+                logger.debug(
+                    "memory_job_enqueue_skipped event_id=%d reason=already_enqueued",
+                    event_id,
+                )
+            return created
 
     async def pending_count(self) -> int:
         async with self._database.sessions() as session:
@@ -1125,11 +1151,105 @@ class MemoryJobRepository:
                 )
             return tuple(jobs)
 
+    async def claim_ready_batch(
+        self,
+        *,
+        limit: int,
+        trigger_count: int,
+        max_characters: int,
+        max_wait_seconds: float,
+        now: datetime | None = None,
+    ) -> tuple[MemoryJob, ...]:
+        """Claim one ready conversation batch without mixing conversation scopes."""
+
+        claimed_at = now or datetime.now(UTC)
+        stale = claimed_at - timedelta(minutes=5)
+        oldest_ready = claimed_at - timedelta(seconds=max_wait_seconds)
+        eligible = and_(
+            or_(
+                MemoryJobModel.status == MemoryJobStatus.PENDING.value,
+                (
+                    (MemoryJobModel.status == MemoryJobStatus.PROCESSING.value)
+                    & (MemoryJobModel.updated_at <= stale)
+                ),
+            ),
+            MemoryJobModel.next_attempt_at <= claimed_at,
+        )
+        job_count = func.count(MemoryJobModel.id)
+        character_count = func.coalesce(func.sum(func.length(ChatEventModel.content)), 0)
+        oldest_job = func.min(MemoryJobModel.created_at)
+        first_job_id = func.min(MemoryJobModel.id)
+        async with self._database.sessions() as session, session.begin():
+            ready = (
+                await session.execute(
+                    select(
+                        MemoryJobModel.conversation_key,
+                        first_job_id.label("first_job_id"),
+                    )
+                    .join(ChatEventModel, ChatEventModel.id == MemoryJobModel.event_id)
+                    .where(eligible)
+                    .group_by(MemoryJobModel.conversation_key)
+                    .having(
+                        or_(
+                            job_count >= max(1, trigger_count),
+                            character_count >= max(1, max_characters),
+                            oldest_job <= oldest_ready,
+                        )
+                    )
+                    .order_by(first_job_id)
+                    .limit(1)
+                )
+            ).first()
+            if ready is None:
+                return ()
+            conversation_key = str(ready[0])
+            rows = (
+                await session.scalars(
+                    select(MemoryJobModel)
+                    .where(eligible, MemoryJobModel.conversation_key == conversation_key)
+                    .order_by(MemoryJobModel.id)
+                    .limit(max(1, limit))
+                )
+            ).all()
+            jobs: list[MemoryJob] = []
+            characters = 0
+            for row in rows:
+                event = await session.get(ChatEventModel, row.event_id)
+                if event is None:
+                    await session.delete(row)
+                    continue
+                event_characters = len(event.content)
+                if jobs and characters + event_characters > max(1, max_characters):
+                    break
+                characters += event_characters
+                row.status = MemoryJobStatus.PROCESSING.value
+                row.updated_at = claimed_at
+                jobs.append(
+                    MemoryJob(
+                        id=row.id,
+                        event_id=row.event_id,
+                        conversation_key=row.conversation_key,
+                        status=row.status,
+                        attempts=row.attempts,
+                        next_attempt_at=row.next_attempt_at,
+                        created_at=row.created_at,
+                        updated_at=row.updated_at,
+                        error_category=row.error_category,
+                        processing_source=row.processing_source,
+                        rebuild_run_id=row.rebuild_run_id,
+                        outcome=row.outcome,
+                        completed_at=row.completed_at,
+                        event=_event_record(event),
+                    )
+                )
+            return tuple(jobs)
+
     async def complete(
         self,
         job_id: int,
         *,
         outcome: MemoryRebuildJobOutcome = MemoryRebuildJobOutcome.CLAIMS_APPLIED,
+        result_category: str | None = None,
     ) -> None:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
@@ -1139,7 +1259,7 @@ class MemoryJobRepository:
                 .values(
                     status=MemoryJobStatus.DONE.value,
                     updated_at=now,
-                    error_category=None,
+                    error_category=(result_category[:64] if result_category else None),
                     outcome=outcome.value,
                     completed_at=now,
                 )

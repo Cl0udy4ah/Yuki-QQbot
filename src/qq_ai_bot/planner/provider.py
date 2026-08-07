@@ -156,7 +156,7 @@ def normalize_reply_target(
         return None
     if (
         planner_input.scope_type is ScopeType.PRIVATE
-        and requested_message_id == planner_input.current_message.message_id
+        and requested_message_id == planner_input.trigger_message_id
     ):
         return None
     return requested_message_id
@@ -319,10 +319,12 @@ class LLMPlannerProvider:
                 if planner_runtime.max_wait_seconds is not None
                 else (self._max_wait_seconds or 60.0)
             )
-            structured_input: dict[str, object] = planner_payload(planner_input)
-            structured_input["delivery_preferences"] = {
-                "preferred_messages": planner_runtime.preferred_messages,
-                "maximum_messages": hard_max_messages,
+            structured_input: dict[str, object] = {
+                "delivery_preferences": {
+                    "preferred_messages": planner_runtime.preferred_messages,
+                    "maximum_messages": hard_max_messages,
+                },
+                **planner_payload(planner_input),
             }
             if self._prompt_registry is not None:
                 plugin_messages = self._prompt_registry.render(target=PromptTarget.PLANNER)
@@ -337,6 +339,7 @@ class LLMPlannerProvider:
                     temperature=planner_runtime.temperature,
                     max_output_tokens=planner_runtime.max_output_tokens,
                     allow_text_json=True,
+                    compact_schema=True,
                 ),
                 cancellation=cancellation,
                 timeout_seconds=timeout_seconds,

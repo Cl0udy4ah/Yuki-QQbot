@@ -521,31 +521,39 @@ async def test_recent_history_strips_media_locations_and_inline_payloads(
 
 class MemoryExtractorProvider(LLMProvider):
     async def complete(self, request: ChatRequest) -> ChatResponse:
+        payload = json.loads(request.messages[-1].content or "{}")
+        source_event_id = payload["events"][0]["source_event_id"]
         return ChatResponse(
             content=json.dumps(
                 {
                     "claims": [
                         {
-                            "subject_ref": "speaker",
-                            "scope_type": "person",
-                            "kind": "preference",
-                            "memory_key": "likes:tea",
-                            "category": "preference",
-                            "content": "喜欢喝红茶",
-                            "evidence_quote": "我喜欢喝红茶",
-                            "importance": 4,
-                            "source_type": "automatic",
+                            "source_event_id": source_event_id,
+                            "claim": {
+                                "subject_ref": "speaker",
+                                "scope_type": "person",
+                                "kind": "preference",
+                                "memory_key": "likes:tea",
+                                "category": "preference",
+                                "content": "喜欢喝红茶",
+                                "evidence_quote": "我喜欢喝红茶",
+                                "importance": 4,
+                                "source_type": "automatic",
+                            },
                         },
                         {
-                            "subject_ref": "speaker",
-                            "scope_type": "person_group",
-                            "kind": "fact",
-                            "memory_key": "alias:captain",
-                            "category": "alias",
-                            "content": "在本群被叫作队长",
-                            "evidence_quote": "大家叫我队长",
-                            "importance": 3,
-                            "source_type": "automatic",
+                            "source_event_id": source_event_id,
+                            "claim": {
+                                "subject_ref": "speaker",
+                                "scope_type": "person_group",
+                                "kind": "fact",
+                                "memory_key": "alias:captain",
+                                "category": "alias",
+                                "content": "在本群被叫作队长",
+                                "evidence_quote": "大家叫我队长",
+                                "importance": 3,
+                                "source_type": "automatic",
+                            },
                         },
                     ]
                 },
@@ -559,7 +567,7 @@ class MemoryExtractorProvider(LLMProvider):
 async def test_persistent_memory_job_builds_cross_scope_memories(
     database: Database,
 ) -> None:
-    settings = make_settings(database.url)
+    settings = make_settings(database.url, memory_batch_max_wait_seconds=0)
     ledger = EventLedgerRepository(database)
     event, _ = await ledger.append(
         bot_user_id="8000",

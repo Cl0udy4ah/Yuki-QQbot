@@ -4,16 +4,29 @@ import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
+from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
+from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.planner.models import PlannerDecision, PlannerReasonCode, TurnPlan
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService, _GroupState
+from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 
 
 class _FailingRuntime:
     async def snapshot(self, **_kwargs: object) -> object:
         raise SQLAlchemyError("database unavailable")
+
+
+class _WorkingRuntime:
+    async def snapshot(self, **_kwargs: object) -> object:
+        return SimpleNamespace(
+            planner=SimpleNamespace(group_enabled=True, group_debounce_seconds=0.02)
+        )
 
 
 def _service() -> AutonomousGroupService:
@@ -24,6 +37,30 @@ def _service() -> AutonomousGroupService:
         planner=cast(Any, object()),
         runtime_config=cast(Any, _FailingRuntime()),
         turn_coordinator=cast(Any, object()),
+    )
+
+
+def _working_service() -> AutonomousGroupService:
+    runtime = _WorkingRuntime()
+    chat = SimpleNamespace(_runtime_config=runtime, _turn_coordinator=object())
+    return AutonomousGroupService(
+        chat=cast(Any, chat),
+        planner_context=cast(Any, object()),
+        planner=cast(Any, object()),
+        runtime_config=cast(Any, runtime),
+        turn_coordinator=cast(Any, object()),
+    )
+
+
+def _group_message(message_id: str, text: str) -> InboundMessage:
+    return InboundMessage(
+        message_id=message_id,
+        event_type="message:group:normal",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="1001", group_card="远野"),
+        text=text,
+        bot_user_id="9999",
+        group_id="2001",
     )
 
 
@@ -80,3 +117,106 @@ async def test_task_owner_treats_cancellation_as_normal() -> None:
 
     assert service._states["2001"].task is None
     assert service.task_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_group_updates_share_one_worker_and_plan_only_latest_quiet_revision() -> None:
+    service = _working_service()
+    profile = UserProfileSnapshot(
+        user_id="1001",
+        scope_type=ScopeType.GROUP,
+        group_id="2001",
+        group_card="远野",
+    )
+    sender = cast(Any, object())
+
+    with patch.object(service, "_plan_latest", new_callable=AsyncMock) as plan_latest:
+        service.observe(_group_message("1", "第一条"), profile, sender)
+        first_task = service._states["2001"].task
+        await asyncio.sleep(0.005)
+        service.observe(_group_message("2", "第二条"), profile, sender)
+
+        assert service._states["2001"].task is first_task
+        await service.wait_until_idle("2001")
+
+    assert plan_latest.await_count == 1
+    assert plan_latest.await_args is not None
+    assert plan_latest.await_args.args[:2] == ("2001", 2)
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_planner_result_cannot_start_agent_or_tools() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    deliveries: list[tuple[int, int, bool]] = []
+
+    class BlockingPlanner:
+        async def plan(self, *_args: object, **_kwargs: object) -> object:
+            started.set()
+            await release.wait()
+            return SimpleNamespace(
+                run_id=7,
+                planned_turn=SimpleNamespace(
+                    plan=TurnPlan(
+                        decision=PlannerDecision.REPLY,
+                        confidence=0.9,
+                        reason_code=PlannerReasonCode.USEFUL_CONTRIBUTION,
+                    )
+                ),
+            )
+
+        async def record_delivery(
+            self,
+            run_id: int,
+            *,
+            messages_sent: int,
+            interrupted: bool,
+        ) -> None:
+            deliveries.append((run_id, messages_sent, interrupted))
+
+    runtime_service = _WorkingRuntime()
+    coordinator = ConversationTurnCoordinator()
+    chat = SimpleNamespace(
+        _runtime_config=runtime_service,
+        _turn_coordinator=coordinator,
+        respond=AsyncMock(),
+    )
+    context = SimpleNamespace(build=AsyncMock(return_value=object()))
+    service = AutonomousGroupService(
+        chat=cast(Any, chat),
+        planner_context=cast(Any, context),
+        planner=cast(Any, BlockingPlanner()),
+        runtime_config=cast(Any, runtime_service),
+        turn_coordinator=coordinator,
+    )
+    message = _group_message("1", "第一条")
+    state = _GroupState()
+    state.messages.append(message)
+    state.profiles.append(
+        UserProfileSnapshot(
+            user_id="1001",
+            scope_type=ScopeType.GROUP,
+            group_id="2001",
+            group_card="远野",
+        )
+    )
+    state.senders.append(cast(Any, object()))
+    state.revision = 1
+    state.latest_token = await coordinator.notify_message(
+        "group:2001",
+        observation=True,
+    )
+    service._states["2001"] = state
+    runtime = await runtime_service.snapshot(group_id="2001")
+
+    task = asyncio.create_task(service._plan_latest("2001", 1, cast(Any, runtime)))
+    await started.wait()
+    state.revision = 2
+    state.changed.set()
+    release.set()
+    await task
+
+    assert chat.respond.await_count == 0
+    assert deliveries == [(7, 0, True)]
+    await service.close()

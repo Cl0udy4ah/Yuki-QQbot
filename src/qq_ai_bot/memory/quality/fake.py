@@ -38,6 +38,19 @@ class QualityFakeModel(LLMProvider):
             self.extraction_requests += 1
             content = str(payload["primary_event"]["content"])
             body: dict[str, object] = {"claims": self._outputs.get(content, ())}
+        elif "events" in payload:
+            self.extraction_requests += 1
+            claims: list[dict[str, object]] = []
+            for event in payload["events"]:
+                content = str(event["content"])
+                claims.extend(
+                    {
+                        "source_event_id": event["source_event_id"],
+                        "claim": claim,
+                    }
+                    for claim in self._outputs.get(content, ())
+                )
+            body = {"claims": claims}
         else:
             self.classification_requests += 1
             body = {"relations": []}

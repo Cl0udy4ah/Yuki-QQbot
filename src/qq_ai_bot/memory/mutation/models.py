@@ -92,7 +92,11 @@ class MemoryMutationRequest(_MutationModel):
     memory_key: str | None = Field(default=None, max_length=128)
     category: str | None = Field(default=None, max_length=64)
     kind: MemoryKind | None = None
-    reason: str = Field(min_length=1, max_length=500)
+    reason: str = Field(
+        default="agent_requested_memory_change",
+        min_length=1,
+        max_length=500,
+    )
     confidence: float = Field(default=0.9, ge=0, le=1)
     importance: int | None = Field(default=None, ge=1, le=5)
     evidence_refs: tuple[str, ...] = ("current_event",)

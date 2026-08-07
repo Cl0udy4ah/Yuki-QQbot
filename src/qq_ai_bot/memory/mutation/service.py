@@ -15,7 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
+from qq_ai_bot.memory.claim_processor import (
+    MemoryClaimProcessor,
+    MemoryClaimResolution,
+    MemoryProcessingContext,
+)
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryClaimOperation,
@@ -167,6 +171,20 @@ class MemoryMutationService:
                     deduplicated=True,
                     requested_operation=request.operation,
                 )
+            claim_resolution: MemoryClaimResolution | None = None
+            if request.operation in {
+                MemoryMutationOperation.CREATE,
+                MemoryMutationOperation.CORRECT,
+            }:
+                if prepared.claim is None:
+                    raise MemoryMutationRejected("validated_claim_required")
+                claim_resolution = await self._processor.resolve(
+                    prepared.claim,
+                    MemoryProcessingContext(
+                        source=MemoryProcessingSource.LIVE,
+                        event=context.event,
+                    ),
+                )
             try:
                 async with self._facts.repository.transaction() as session:
                     duplicate = await self._receipts.find(
@@ -198,7 +216,11 @@ class MemoryMutationService:
                         created_at=datetime.now(UTC),
                         session=session,
                     )
-                    applied = await self._apply(prepared, session=session)
+                    applied = await self._apply(
+                        prepared,
+                        session=session,
+                        claim_resolution=claim_resolution,
+                    )
                     receipt = await self._receipts.finalize(
                         reserved.id,
                         applied_operation=applied.operation,
@@ -274,6 +296,7 @@ class MemoryMutationService:
                     deduplicated=True,
                     requested_operation=operation,
                 )
+            claim_resolution = await self._processor.resolve(claim, processing_context)
             try:
                 async with self._facts.repository.transaction() as session:
                     duplicate = await self._receipts.find(
@@ -305,9 +328,8 @@ class MemoryMutationService:
                         created_at=datetime.now(UTC),
                         session=session,
                     )
-                    processed = await self._processor.process(
-                        claim,
-                        processing_context,
+                    processed = await self._processor.apply_resolution(
+                        claim_resolution,
                         session=session,
                     )
                     applied = self._claim_applied(
@@ -413,20 +435,27 @@ class MemoryMutationService:
             raise MemoryMutationRejected("untrusted_trigger_event")
         if tuple(dict.fromkeys(request.evidence_refs)) != ("current_event",):
             raise MemoryMutationRejected("unsupported_evidence_reference")
-        if request.target is None:
-            raise MemoryMutationRejected("target_required")
-        subject_ref = self._normalize_subject_ref(request.target.subject_ref, event)
-        target = target_override or self._subjects.resolve(
-            event,
-            subject_ref=subject_ref,
-            scope_type=request.target.scope_type,
-        )
-        if target is None:
-            raise MemoryMutationRejected("target_not_available_in_current_event")
-        if request.target.scope_type is not target.scope_type:
-            raise MemoryMutationRejected("target_scope_mismatch")
         fact = await self._load_fact(request.fact_id)
         merge_fact = await self._load_fact(request.merge_fact_id)
+        if request.target is None:
+            if fact is None:
+                raise MemoryMutationRejected("target_required")
+            if request.operation is MemoryMutationOperation.REASSIGN:
+                raise MemoryMutationRejected("reassign_target_required")
+            subject_ref = "existing_fact"
+            target = target_override or self._target_from_fact(fact)
+        else:
+            subject_ref = self._normalize_subject_ref(request.target.subject_ref, event)
+            resolved_target = target_override or self._subjects.resolve(
+                event,
+                subject_ref=subject_ref,
+                scope_type=request.target.scope_type,
+            )
+            if resolved_target is None:
+                raise MemoryMutationRejected("target_not_available_in_current_event")
+            target = resolved_target
+            if request.target.scope_type is not target.scope_type:
+                raise MemoryMutationRejected("target_scope_mismatch")
         target = self._resolve_visibility(request, target, event, fact=fact)
         self._validate_self_request(request, target, event, fact=fact, merge_fact=merge_fact)
         self._authorize(request.operation, target, context)
@@ -509,18 +538,17 @@ class MemoryMutationService:
         prepared: _PreparedMutation,
         *,
         session: AsyncSession,
+        claim_resolution: MemoryClaimResolution | None = None,
     ) -> _AppliedMutation:
         operation = prepared.request.operation
         if operation in {MemoryMutationOperation.CREATE, MemoryMutationOperation.CORRECT}:
             claim = prepared.claim
             if claim is None:
                 raise MemoryMutationRejected("validated_claim_required")
-            processed = await self._processor.process(
-                claim,
-                MemoryProcessingContext(
-                    source=MemoryProcessingSource.LIVE,
-                    event=prepared.context.event,
-                ),
+            if claim_resolution is None:
+                raise MemoryMutationRejected("claim_resolution_required")
+            processed = await self._processor.apply_resolution(
+                claim_resolution,
                 session=session,
             )
             return self._claim_result(
@@ -754,9 +782,6 @@ class MemoryMutationService:
         )
         if not content or not key or not category:
             raise MemoryMutationRejected("memory_content_key_and_category_required")
-        target = request.target
-        if target is None:
-            raise MemoryMutationRejected("target_required")
         quote = self._evidence_quote(request, context.event.content)
         claim = MemoryClaim(
             operation=(
@@ -765,7 +790,7 @@ class MemoryMutationService:
                 else MemoryClaimOperation.CORRECT
             ),
             subject_ref=subject_ref,
-            scope_type=target.scope_type,
+            scope_type=resolved_target.scope_type,
             kind=request.kind or (fact.kind if fact is not None else MemoryKind.FACT),
             memory_key=key,
             category=category,
@@ -783,7 +808,9 @@ class MemoryMutationService:
             valid_until=request.valid_until,
         )
         direct_target = target_override or (
-            resolved_target if resolved_target.scope_type is MemoryScopeType.SELF else None
+            resolved_target
+            if request.target is None or resolved_target.scope_type is MemoryScopeType.SELF
+            else None
         )
         if direct_target is not None:
             try:
@@ -848,7 +875,10 @@ class MemoryMutationService:
             return target
         if not self._settings.self_memory_enabled:
             raise MemoryMutationRejected("self_memory_disabled")
-        if request.target is None or request.target.subject_ref.strip().casefold() != "self":
+        if request.target is None:
+            if fact is None or fact.scope_type is not MemoryScopeType.SELF:
+                raise MemoryMutationRejected("self_memory_requires_self_subject_ref")
+        elif request.target.subject_ref.strip().casefold() != "self":
             raise MemoryMutationRejected("self_memory_requires_self_subject_ref")
         if (
             request.visibility is None
@@ -1181,6 +1211,17 @@ class MemoryMutationService:
         if prepared.fact is None:
             raise MemoryMutationRejected("fact_id_required")
         return prepared.fact
+
+    @staticmethod
+    def _target_from_fact(fact: MemoryFact) -> ResolvedSubject:
+        return ResolvedSubject(
+            fact.scope_type,
+            fact.subject_user_id,
+            fact.group_id,
+            fact.visibility_type,
+            fact.visibility_user_id,
+            fact.visibility_group_id,
+        )
 
     @staticmethod
     def _claim_result(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from contextvars import ContextVar
@@ -70,6 +71,8 @@ _RUNTIME_SNAPSHOT: ContextVar[RuntimeConfigSnapshot | None] = ContextVar(
     "agent_tool_runtime_snapshot",
     default=None,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OneBotToolGateway(Protocol):
@@ -361,7 +364,11 @@ class AgentToolService:
                         "不能保存私聊原始经历，也不能修改 identity/core/safety/system/permission/"
                         "runtime 等保护键。工具回执中的 applied_operation 和 outcome"
                         "才是真实结果，回复用户时必须以回执为准；被降级为 contest 或 noop"
-                        "时不得声称已经覆盖、删除或纠正成功。"
+                        "时不得声称已经覆盖、删除或纠正成功。create 必须提供 target、"
+                        "new_content、memory_key 和 category；correct 可通过 fact_id 继承目标、"
+                        "memory_key 和 category；invalidate、restore、contest、merge 和"
+                        "update_metadata 可通过 fact_id 直接定位，不必重复 target；reassign"
+                        "仍必须提供新 target。reason 可省略。"
                     ),
                     parameters=_object_schema(
                         {
@@ -440,7 +447,7 @@ class AgentToolService:
                             "valid_from": {"type": "string", "maxLength": 64},
                             "valid_until": {"type": "string", "maxLength": 64},
                         },
-                        required=("operation", "target", "reason"),
+                        required=("operation",),
                     ),
                 )
             )
@@ -1380,13 +1387,20 @@ class AgentToolService:
         service = self._memory_mutations
         if service is None or runtime.origin not in _MEMORY_CHANGE_ORIGINS:
             return self._result(error="memory_change_unavailable", detail="当前轮不能变更记忆")
+        normalized_arguments = {key: value for key, value in arguments.items() if value is not None}
         try:
-            request = MemoryMutationRequest.model_validate(arguments)
+            request = MemoryMutationRequest.model_validate(normalized_arguments)
         except ValidationError as exc:
             first = exc.errors(include_url=False)[0]
+            location = ".".join(str(item) for item in first.get("loc", ())) or "request"
+            logger.warning(
+                "memory_change_validation_failed location=%s error_type=%s",
+                location,
+                first.get("type", "validation_error"),
+            )
             return self._result(
                 error="invalid_memory_change",
-                detail=f"记忆变更参数无效：{first.get('type', 'validation_error')}",
+                detail=(f"记忆变更参数无效：{location}:{first.get('type', 'validation_error')}"),
             )
         trigger_message_id = runtime.trigger_message_id or runtime.inbound.message_id
         event = await self._ledger.find_by_platform_message(
@@ -1437,6 +1451,12 @@ class AgentToolService:
         }
         if result.reason_code == "invalid_self_memory_category":
             payload["allowed_self_categories"] = list(SELF_MEMORY_CATEGORIES)
+        if not result.ok:
+            return self._result(
+                data=payload,
+                error=result.reason_code or "memory_change_rejected",
+                detail="记忆变更未执行，请根据 reason_code 调整请求",
+            )
         return self._result(data=payload)
 
     def _can_read_fact(self, fact: Any, runtime: ToolRuntime) -> bool:
@@ -1838,9 +1858,12 @@ class AgentToolService:
         }
 
     def _result(self, *, data: Any = None, error: str | None = None, detail: str = "") -> str:
-        payload = (
-            {"ok": False, "error": error, "detail": detail} if error else {"ok": True, "data": data}
-        )
+        if error:
+            payload = {"ok": False, "error": error, "detail": detail}
+            if data is not None:
+                payload["data"] = data
+        else:
+            payload = {"ok": True, "data": data}
         rendered = json.dumps(payload, ensure_ascii=False, default=str)
         limit = self._runtime().agent.tool_result_max_characters
         if len(rendered) <= limit:

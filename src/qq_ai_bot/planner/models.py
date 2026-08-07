@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validat
 
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.domain.relationships import RelationshipStage
 from qq_ai_bot.emoji.models import (
     EmojiIntent,
@@ -172,17 +173,6 @@ class PlannerMemoryContext(_StrictPlannerModel):
     self_enabled: bool = False
 
 
-class PlannerMessage(_StrictPlannerModel):
-    """One message exposed to Planner with an explicit trust-boundary marker."""
-
-    message_id: str
-    sender_user_id: str
-    text: str
-    sender_is_bot: bool = False
-    sent_at: datetime | None = None
-    content_trust: Literal["external_untrusted"] = "external_untrusted"
-
-
 class PlannerSignal(_StrictPlannerModel):
     """A bounded, non-authoritative relevance hint contributed by one plugin."""
 
@@ -261,8 +251,11 @@ class PlannerInput(_StrictPlannerModel):
     bot_user_id: str
     current_sender_user_id: str
     current_group_id: str | None = None
-    messages: tuple[PlannerMessage, ...] = Field(default=(), max_length=100)
-    current_message: PlannerMessage
+    history_messages: tuple[ChatMessage, ...] = Field(default=(), max_length=10)
+    current_message: ChatMessage
+    current_message_text: str = Field(default="", exclude=True)
+    trusted_history_sender_user_ids: tuple[str, ...] = Field(default=(), exclude=True)
+    trusted_history_message_ids: tuple[str, ...] = Field(default=(), exclude=True)
     reply_target_is_bot: bool = False
     mentions_bot: bool = False
     mentioned_user_ids: tuple[str, ...] = ()
@@ -287,7 +280,7 @@ class PlannerInput(_StrictPlannerModel):
         for user_id in (
             self.current_sender_user_id,
             *self.mentioned_user_ids,
-            *(message.sender_user_id for message in self.messages),
+            *self.trusted_history_sender_user_ids,
         ):
             if not user_id or user_id == self.bot_user_id or user_id in known:
                 continue
@@ -300,13 +293,16 @@ class PlannerInput(_StrictPlannerModel):
         """Return message IDs from only the bounded current conversation input."""
 
         known: list[str] = []
-        for message_id in (
-            *(message.message_id for message in self.messages),
-            self.current_message.message_id,
-        ):
+        for message_id in (*self.trusted_history_message_ids, self.trigger_message_id):
             if message_id and message_id not in known:
                 known.append(message_id)
         return tuple(known)
+
+    @property
+    def current_text(self) -> str:
+        """Return clean current content for deterministic backend constraints."""
+
+        return self.current_message_text or self.current_message.content or ""
 
 
 class TurnPlan(_StrictPlannerModel):
@@ -396,16 +392,37 @@ class PlannerMemoryOutput(_StrictPlannerModel):
             "询问完整记忆概览使用 overview；纯效果回复使用 none。"
         )
     )
-    reason_code: MemoryContextReasonCode = MemoryContextReasonCode.DEFAULT
     self_recall: bool = Field(
         default=False,
         description="是否检索 Yuki 过去形成的动态自我记忆。",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _discard_legacy_reason_code(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "reason_code" not in value:
+            return value
+        normalized = dict(value)
+        normalized.pop("reason_code", None)
+        return normalized
+
     def materialize(self) -> MemoryContextPlan:
+        if self.self_recall:
+            reason_code = (
+                MemoryContextReasonCode.SELF_OVERVIEW
+                if self.mode is MemoryContextMode.OVERVIEW
+                else MemoryContextReasonCode.SELF_MEMORY_RECALL
+            )
+        else:
+            reason_code = {
+                MemoryContextMode.NONE: MemoryContextReasonCode.DEFAULT,
+                MemoryContextMode.LEXICAL: MemoryContextReasonCode.ROUTINE_CONTEXT,
+                MemoryContextMode.HYBRID: MemoryContextReasonCode.MEMORY_RECALL,
+                MemoryContextMode.OVERVIEW: MemoryContextReasonCode.EXPLICIT_OVERVIEW,
+            }[self.mode]
         return MemoryContextPlan(
             mode=self.mode,
-            reason_code=self.reason_code,
+            reason_code=reason_code,
             self_recall=self.self_recall,
         )
 
@@ -491,15 +508,8 @@ class PlannerModelOutput(_StrictPlannerModel):
     confidence: float = Field(ge=0, le=1, strict=True)
     reason_code: PlannerReasonCode
     intent: str = Field(default="", max_length=300)
-    target_user_ids: tuple[str, ...] = Field(default=(), max_length=5)
     delivery_mode: DeliveryMode = Field(
         description="选择正文发送形态；用户要求多条或自然聊天适合拆分时使用 natural_multi。"
-    )
-    desired_messages: int = Field(
-        ge=1,
-        le=20,
-        strict=True,
-        description="本轮计划发送的正文消息数量，受后端硬上限约束。",
     )
     reply_to_message_id: str | None = Field(default=None, max_length=128)
     tool_selection: PlannerToolOutput | None = None
@@ -508,15 +518,23 @@ class PlannerModelOutput(_StrictPlannerModel):
     emoji: PlannerEmojiOutput
     voice: PlannerVoiceOutput
 
+    @model_validator(mode="before")
+    @classmethod
+    def _discard_legacy_derived_fields(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        normalized.pop("target_user_ids", None)
+        normalized.pop("desired_messages", None)
+        return normalized
+
     def materialize(self) -> TurnPlan:
         """Fill omitted provider fields from trusted backend defaults."""
 
         plan = TurnPlan(
             decision=self.decision,
             intent=self.intent,
-            target_user_ids=self.target_user_ids,
             delivery_mode=self.delivery_mode,
-            desired_messages=self.desired_messages,
             reply_to_message_id=self.reply_to_message_id,
             wait_seconds=self.wait_seconds,
             confidence=self.confidence,

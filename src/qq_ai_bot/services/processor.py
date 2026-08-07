@@ -555,7 +555,14 @@ class MessageProcessor:
         # mutation path. Feeding command syntax to the extraction Worker would create
         # a second interpretation of the same write and may pollute long-term memory.
         if created and decision.command is None and direct_match is None:
-            await self._memory_worker.enqueue(record.id, identity.key)
+            memory_conversation_key = (
+                f"group:{record.group_id}" if record.group_id is not None else identity.key
+            )
+            await self._memory_worker.enqueue(
+                record.id,
+                memory_conversation_key,
+                content_characters=len(record.content),
+            )
         is_explicit_emoji_import = bool(
             decision.command is CommandName.EMOJI
             and decision.content.strip().casefold().startswith("import")

@@ -15,16 +15,31 @@ class MemoryEventEligibilityPolicy:
     allowed_origins = frozenset({"user_message", "onebot_history"})
 
     def is_eligible(self, event: EventRecord, *, sender_is_bot: bool = False) -> bool:
-        return bool(
-            event.direction == "inbound"
-            and not sender_is_bot
-            and event.sender_user_id != event.bot_user_id
-            and event.content.strip()
-            and event.origin in self.allowed_origins
-            and event.scope_type.value in {"private", "group"}
-            and (event.scope_type.value != "group" or event.group_id)
-            and (event.scope_type.value != "private" or event.private_peer_user_id)
-        )
+        return self.rejection_reason(event, sender_is_bot=sender_is_bot) is None
+
+    def rejection_reason(
+        self,
+        event: EventRecord,
+        *,
+        sender_is_bot: bool = False,
+    ) -> str | None:
+        """Return a stable, content-free reason when an event cannot be queued."""
+
+        if event.direction != "inbound":
+            return "not_inbound"
+        if sender_is_bot or event.sender_user_id == event.bot_user_id:
+            return "bot_sender"
+        if not event.content.strip():
+            return "blank_content"
+        if event.origin not in self.allowed_origins:
+            return "unsupported_origin"
+        if event.scope_type.value not in {"private", "group"}:
+            return "unsupported_scope"
+        if event.scope_type.value == "group" and not event.group_id:
+            return "group_id_missing"
+        if event.scope_type.value == "private" and not event.private_peer_user_id:
+            return "private_peer_missing"
+        return None
 
     def sql_conditions(self, *, include_failed_live_jobs: bool) -> tuple[object, ...]:
         excluded = [

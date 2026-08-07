@@ -17,7 +17,10 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
-from qq_ai_bot.memory.classifier import MemoryRelationClassifier
+from qq_ai_bot.memory.classifier import (
+    MemoryRelationClassificationResult,
+    MemoryRelationClassifier,
+)
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryClaimOperation,
@@ -27,12 +30,19 @@ from qq_ai_bot.memory.enums import (
     MemoryKind,
     MemoryProcessingSource,
     MemoryScopeType,
+    MemorySemanticRelation,
     MemorySourceType,
     MemoryStatus,
     SelfMemoryVisibility,
 )
 from qq_ai_bot.memory.extraction import MemoryClaim
-from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
+from qq_ai_bot.memory.models import (
+    CandidateRelation,
+    MemoryCandidate,
+    MemoryEvidenceCreate,
+    MemoryFactCreate,
+    MemoryRelationClassification,
+)
 from qq_ai_bot.memory.mutation.models import (
     MemoryDecisionActorType,
     MemoryMutationAppliedOperation,
@@ -47,6 +57,7 @@ from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.validation import ValidatedMemoryClaim
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import MemoryMutationReceiptModel
 from qq_ai_bot.persistence.repositories import (
@@ -538,6 +549,186 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(database: Database)
 
 
 @pytest.mark.asyncio
+async def test_classifier_database_write_happens_before_receipt_transaction(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, facts, ledger, processor = _service(database)
+    original_event = await _event(
+        ledger,
+        message_id="classifier-lock-original",
+        sender_user_id="1001",
+        content="记住我现在住在上海",
+    )
+    original = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.CREATE,
+            target=MemoryMutationTarget(
+                subject_ref="current_speaker",
+                scope_type=MemoryScopeType.PERSON,
+            ),
+            new_content="现在住在上海",
+            memory_key="location:home",
+            category="location",
+        ),
+        _context(original_event),
+    )
+    assert original.ok
+
+    class _DatabaseWritingClassifier:
+        calls = 0
+
+        async def classify_with_usage(
+            self,
+            claim: ValidatedMemoryClaim,
+            candidates: tuple[MemoryCandidate, ...],
+            *,
+            max_output_tokens: int | None = None,
+        ) -> MemoryRelationClassificationResult:
+            del claim, max_output_tokens
+            self.calls += 1
+            await _event(
+                ledger,
+                message_id="classifier-separate-database-write",
+                sender_user_id="8000",
+                content="模拟模型调用统计写入",
+                direction="outbound",
+                sender_is_bot=True,
+            )
+            return MemoryRelationClassificationResult(
+                MemoryRelationClassification(
+                    relations=(
+                        CandidateRelation(
+                            candidate_ref=candidates[0].candidate_ref,
+                            relation=MemorySemanticRelation.CONTRADICTS,
+                            confidence=0.99,
+                        ),
+                    )
+                )
+            )
+
+    classifier = _DatabaseWritingClassifier()
+    monkeypatch.setattr(
+        processor,
+        "_classifier",
+        cast(MemoryRelationClassifier, classifier),
+    )
+    changed_event = await _event(
+        ledger,
+        message_id="classifier-lock-changed",
+        sender_user_id="1001",
+        content="记住我已经搬到北京",
+    )
+    claim = MemoryClaim(
+        operation=MemoryClaimOperation.ASSERT,
+        subject_ref="speaker",
+        scope_type=MemoryScopeType.PERSON,
+        kind=MemoryKind.FACT,
+        memory_key="location:home",
+        category="location",
+        content="已经搬到北京",
+        evidence_quote=changed_event.content,
+        importance=3,
+        confidence=0.96,
+        source_type=MemorySourceType.EXPLICIT,
+    )
+    validated = processor.validate(claim, changed_event)
+    assert validated is not None
+
+    result = await service.mutate_validated_claim(
+        validated,
+        MemoryProcessingContext(source=MemoryProcessingSource.LIVE, event=changed_event),
+        conversation_key="private:1001",
+    )
+
+    assert classifier.calls == 1
+    assert result.ok
+    assert result.outcome is MemoryMutationOutcome.COMMITTED_AS_CONTESTED
+    assert result.new_fact_id is not None
+    contested = await facts.get_fact(result.new_fact_id)
+    assert contested is not None
+    assert contested.status is MemoryStatus.CONTESTED
+
+
+@pytest.mark.asyncio
+async def test_fact_id_tool_operation_infers_target_and_defaults_reason(
+    database: Database,
+) -> None:
+    service, facts, ledger, _processor = _service(database)
+    create_event = await _event(
+        ledger,
+        message_id="fact-id-create",
+        sender_user_id="1001",
+        content="记住我喜欢黑咖啡",
+    )
+    created = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.CREATE,
+            target=MemoryMutationTarget(
+                subject_ref="current_speaker",
+                scope_type=MemoryScopeType.PERSON,
+            ),
+            new_content="喜欢黑咖啡",
+            memory_key="drink:coffee",
+            category="preference",
+        ),
+        _context(create_event),
+    )
+    assert created.ok and created.new_fact_id is not None
+    delete_event = await _event(
+        ledger,
+        message_id="fact-id-delete",
+        sender_user_id="1001",
+        content="删除这条记忆",
+    )
+    tools = AgentToolService(
+        settings=make_settings(database.url),
+        ledger=ledger,
+        memories=facts,
+        memory_mutations=service,
+        actions=AgentActionRepository(database),
+    )
+    runtime = ToolRuntime(
+        inbound=InboundMessage(
+            message_id=delete_event.platform_message_id,
+            event_type="message",
+            scope_type=ScopeType.PRIVATE,
+            sender=SenderIdentity(user_id=delete_event.sender_user_id),
+            text=delete_event.content,
+            bot_user_id=delete_event.bot_user_id,
+        ),
+        gateway=None,
+        allow_generic_onebot=False,
+        conversation_key="private:1001",
+        trigger_message_id=delete_event.platform_message_id,
+        actor_user_id=delete_event.sender_user_id,
+        origin=TurnOrigin.USER_MESSAGE,
+    )
+    definition = next(tool for tool in tools.definitions(runtime) if tool.name == "memory_change")
+    assert definition.parameters["required"] == ["operation"]
+
+    response = json.loads(
+        await tools.execute(
+            "memory_change",
+            json.dumps(
+                {
+                    "operation": "invalidate",
+                    "fact_id": created.new_fact_id,
+                    "target": None,
+                    "reason": None,
+                }
+            ),
+            runtime,
+        )
+    )
+
+    assert response["ok"]
+    assert response["data"]["outcome"] == "committed"
+    fact = await facts.get_fact(created.new_fact_id)
+    assert fact is not None and fact.status is MemoryStatus.INVALIDATED
+
+
+@pytest.mark.asyncio
 async def test_autonomous_group_turn_can_create_self_memory_from_current_event(
     database: Database,
 ) -> None:
@@ -602,6 +793,8 @@ async def test_autonomous_group_turn_can_create_self_memory_from_current_event(
             runtime,
         )
     )
+    assert not rejected["ok"]
+    assert rejected["error"] == "invalid_self_memory_category"
     assert rejected["data"]["reason_code"] == "invalid_self_memory_category"
     assert rejected["data"]["allowed_self_categories"] == [
         "self_fact",

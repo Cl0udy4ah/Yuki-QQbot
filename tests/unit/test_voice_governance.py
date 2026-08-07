@@ -8,12 +8,12 @@ import pytest
 from qq_ai_bot.automation.models import TurnOrigin
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import AttachmentKind, OutboundMedia, OutboundMessage
+from qq_ai_bot.event_prompt import ChatEventPromptRenderer
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import EventRecord, PeopleRepository
 from qq_ai_bot.planner.context import PlannerContextBuilder
 from qq_ai_bot.planner.repository import PlannerRepository, PlannerVoiceCadence
 from qq_ai_bot.services.chat import ChatService
-from qq_ai_bot.services.context_assembler import ContextAssembler
 from qq_ai_bot.speech.models import (
     VoiceIntent,
     VoicePreferenceChange,
@@ -247,7 +247,7 @@ def test_legacy_voice_metadata_is_hidden_from_model_history() -> None:
         private_peer_user_id="1001",
     )
 
-    assert ContextAssembler._history_event_content(legacy, "current", "当前消息") == ""
+    assert ChatEventPromptRenderer.event_content(legacy, "current", "当前消息") == ""
 
 
 def test_model_history_omits_transport_annotations_and_media_only_events() -> None:
@@ -286,15 +286,12 @@ def test_model_history_omits_transport_annotations_and_media_only_events() -> No
         content=("[发送者:Yuki|QQ:8000|消息:old-output|时间:2026-08-05T15:39:05.884399] 看到了。"),
     )
 
-    assert ContextAssembler._history_event_content(image, "current", "当前消息") == ""
-    rendered = ContextAssembler._history_message_content(
-        contaminated_text,
-        current_message_id="current",
-        current_content="当前消息",
-    )
+    renderer = ChatEventPromptRenderer((image, contaminated_text))
+    assert renderer.event_content(image, "current", "当前消息") == ""
+    rendered = renderer.render_event(contaminated_text)
     assert rendered == "[发送者:Yuki|QQ:8000|消息:text] 我会正常说话。"
     assert (
-        ContextAssembler._history_event_content(
+        renderer.event_content(
             leaked_identity,
             "current",
             "当前消息",
@@ -302,7 +299,7 @@ def test_model_history_omits_transport_annotations_and_media_only_events() -> No
         == "看到了。"
     )
     assert (
-        ContextAssembler._history_event_content(
+        renderer.event_content(
             copied_media_description,
             "current",
             "当前消息",
