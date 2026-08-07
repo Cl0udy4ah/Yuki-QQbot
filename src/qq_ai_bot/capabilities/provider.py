@@ -37,6 +37,57 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "send_voice": ("speech", CapabilityEffect.REPLY_EFFECT, CapabilityRisk.READ),
 }
 
+_CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
+    "get_recent_chat_history": (
+        "刚才",
+        "刚刚",
+        "最近消息",
+        "聊天记录",
+        "对话历史",
+        "前面说了什么",
+    ),
+    "search_chat_history": (
+        "之前",
+        "以前",
+        "历史消息",
+        "聊天记录",
+        "说过",
+        "提过",
+        "查记录",
+        "以前聊过",
+    ),
+    "get_person_memories": (
+        "人物记忆",
+        "群友记忆",
+        "某人",
+        "关于他",
+        "关于她",
+        "偏好",
+        "记得",
+    ),
+    "get_self_memories": (
+        "Yuki记忆",
+        "自我记忆",
+        "你的经历",
+        "你的偏好",
+        "你记得",
+    ),
+    "get_group_memories": ("群记忆", "群整体", "这个群", "群信息", "群里的情况"),
+    "memory_change": (
+        "记住",
+        "保存记忆",
+        "纠正记忆",
+        "修改记忆",
+        "忘记",
+        "撤销",
+        "恢复记忆",
+    ),
+    "web_search": ("搜索", "联网", "网上查", "最新", "新闻", "查资料", "查询资料"),
+    "read_webpage": ("网页", "链接", "URL", "打开网页", "读取页面", "看这个链接"),
+    "call_onebot_api": ("QQ群", "好友", "禁言", "踢人", "群设置", "QQ操作"),
+    "send_voice": ("语音", "朗读", "说出来", "用语音"),
+}
+
 _ADMIN_READ = frozenset({"admin_get_config", "admin_get_history"})
 _AUTOMATION_READ = frozenset(
     {
@@ -184,13 +235,26 @@ class InProcessToolProvider:
                 context.runtime,
             )
 
+        search_tags = (
+            _CORE_SEARCH_TAGS.get(tool.name, ())
+            if self._source is CapabilityTrustSource.CORE
+            else ()
+        )
         return replace(
             descriptor,
             provider_id=self._provider_id,
             provider_tool_name=tool.name,
             description=tool.description,
             compact_description=tool.description[:240],
-            tags=(descriptor.group, self._source.value),
+            tags=tuple(
+                dict.fromkeys(
+                    (
+                        descriptor.group,
+                        self._source.value,
+                        *search_tags,
+                    )
+                )
+            ),
             binding=InProcessToolBinding(
                 provider_id=self._provider_id,
                 tool_name=tool.name,

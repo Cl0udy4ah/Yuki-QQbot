@@ -91,15 +91,29 @@ class MemoryFactRepository:
         query: MemoryFactQuery,
         *,
         limit: int = 100,
+        after_id: int | None = None,
+        include_quarantined: bool = False,
+        order_by_id: bool = False,
         session: AsyncSession | None = None,
     ) -> tuple[MemoryFact, ...]:
         if session is None:
             async with self._database.sessions() as owned:
-                return await self.list_facts(query, limit=limit, session=owned)
+                return await self.list_facts(
+                    query,
+                    limit=limit,
+                    after_id=after_id,
+                    include_quarantined=include_quarantined,
+                    order_by_id=order_by_id,
+                    session=owned,
+                )
         conditions = [
             MemoryFactModel.scope_type == query.scope_type.value,
             MemoryFactModel.status == query.status.value,
         ]
+        if not include_quarantined:
+            conditions.append(MemoryFactModel.review_state != "quarantined")
+        if after_id is not None:
+            conditions.append(MemoryFactModel.id > after_id)
         if query.subject_user_id is None:
             conditions.append(MemoryFactModel.subject_user_id.is_(None))
         else:
@@ -118,12 +132,17 @@ class MemoryFactRepository:
                     MemoryFactModel.valid_until > datetime.now(UTC),
                 )
             )
+        order = (
+            (MemoryFactModel.id.asc(),)
+            if order_by_id
+            else (MemoryFactModel.importance.desc(), MemoryFactModel.updated_at.desc())
+        )
         statement = (
             select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
             .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)
             .where(*conditions)
             .group_by(MemoryFactModel.id)
-            .order_by(MemoryFactModel.importance.desc(), MemoryFactModel.updated_at.desc())
+            .order_by(*order)
             .limit(max(1, limit))
         )
         rows = (await session.execute(statement)).all()
@@ -177,6 +196,7 @@ class MemoryFactRepository:
                 MemoryFactModel.subject_user_id == user_id,
                 MemoryFactModel.group_id.is_(None),
                 MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                MemoryFactModel.review_state != "quarantined",
                 or_(
                     MemoryFactModel.valid_until.is_(None),
                     MemoryFactModel.valid_until > datetime.now(UTC),
@@ -239,6 +259,7 @@ class MemoryFactRepository:
                 MemoryFactModel.id.in_(unique_ids),
                 *self._target_conditions(target),
                 MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                MemoryFactModel.review_state != "quarantined",
                 or_(
                     MemoryFactModel.valid_until.is_(None),
                     MemoryFactModel.valid_until > datetime.now(UTC),
@@ -285,6 +306,7 @@ class MemoryFactRepository:
                             MemoryStatus.CONTESTED.value,
                         )
                     ),
+                    MemoryFactModel.review_state != "quarantined",
                     or_(
                         MemoryFactModel.memory_key == fact.memory_key,
                         MemoryFactModel.normalized_content == normalized_content,
@@ -323,6 +345,7 @@ class MemoryFactRepository:
                     .where(
                         *self._target_conditions(target),
                         MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                        MemoryFactModel.review_state != "quarantined",
                         or_(
                             MemoryFactModel.valid_until.is_(None),
                             MemoryFactModel.valid_until > datetime.now(UTC),
@@ -361,6 +384,7 @@ class MemoryFactRepository:
                         MemoryFactModel.kind == "preference",
                         MemoryFactModel.source_type == "explicit",
                         MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                        MemoryFactModel.review_state != "quarantined",
                         or_(
                             MemoryFactModel.valid_until.is_(None),
                             MemoryFactModel.valid_until > datetime.now(UTC),
@@ -388,6 +412,7 @@ class MemoryFactRepository:
                 .where(
                     MemoryFactModel.id.in_(unique_ids),
                     MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+                    MemoryFactModel.review_state != "quarantined",
                 )
                 .values(last_used_at=datetime.now(UTC))
             )
@@ -471,6 +496,9 @@ class MemoryFactRepository:
                 fact.invalidated_reason.value if fact.invalidated_reason is not None else None
             ),
             last_used_at=None,
+            validation_version=fact.validation_version,
+            last_audited_at=fact.last_audited_at,
+            review_state=fact.review_state.value,
         )
         session.add(row)
         await session.flush()
@@ -643,6 +671,7 @@ class MemoryFactRepository:
         statement = insert(MemoryEvidenceModel).values(
             fact_id=fact_id,
             event_id=evidence.event_id,
+            tool_receipt_id=evidence.tool_receipt_id,
             source_speaker_user_id=evidence.source_speaker_user_id,
             relation=evidence.relation.value,
             confidence=evidence.confidence,
@@ -650,10 +679,13 @@ class MemoryFactRepository:
             excerpt=evidence.excerpt[:500],
             created_at=datetime.now(UTC),
         )
+        index_elements = (
+            [MemoryEvidenceModel.fact_id, MemoryEvidenceModel.event_id]
+            if evidence.event_id is not None
+            else [MemoryEvidenceModel.fact_id, MemoryEvidenceModel.tool_receipt_id]
+        )
         result = await session.execute(
-            statement.on_conflict_do_nothing(
-                index_elements=[MemoryEvidenceModel.fact_id, MemoryEvidenceModel.event_id]
-            )
+            statement.on_conflict_do_nothing(index_elements=index_elements)
         )
         return bool(cast(CursorResult[Any], result).rowcount)
 
@@ -680,6 +712,7 @@ class MemoryFactRepository:
                 id=row.id,
                 fact_id=row.fact_id,
                 event_id=row.event_id,
+                tool_receipt_id=row.tool_receipt_id,
                 source_speaker_user_id=row.source_speaker_user_id,
                 relation=row.relation,
                 confidence=row.confidence,
@@ -817,6 +850,7 @@ class MemoryFactRepository:
         )
         conditions = [
             MemoryFactModel.status.in_((MemoryStatus.ACTIVE.value, MemoryStatus.CONTESTED.value)),
+            MemoryFactModel.review_state != "quarantined",
             MemoryFactModel.source_type != "explicit",
             MemoryFactModel.authority != "explicit",
             or_(
@@ -960,6 +994,9 @@ class MemoryFactRepository:
             invalidated_reason=row.invalidated_reason,
             last_used_at=row.last_used_at,
             evidence_count=evidence_count,
+            validation_version=row.validation_version,
+            last_audited_at=row.last_audited_at,
+            review_state=row.review_state,
         )
 
     @staticmethod

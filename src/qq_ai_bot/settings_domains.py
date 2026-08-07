@@ -187,6 +187,20 @@ class MemorySettings(DomainSettings):
     memory_batch_max_output_tokens: int = Field(gt=0)
     memory_retrieval_enabled: bool
     self_memory_enabled: bool
+    memory_self_reflection_enabled: bool
+    memory_self_reflection_schedule_hours: str
+    memory_self_reflection_timezone: str
+    memory_self_reflection_poll_seconds: float = Field(gt=0)
+    memory_self_reflection_max_sessions_per_run: int = Field(gt=0, le=3)
+    memory_self_reflection_max_daily_calls: int = Field(gt=0, le=9)
+    memory_self_reflection_event_threshold: int = Field(gt=0)
+    memory_self_reflection_character_threshold: int = Field(gt=0)
+    memory_self_reflection_max_wait_seconds: float = Field(gt=0)
+    memory_self_reflection_max_events: int = Field(gt=0, le=20)
+    memory_self_reflection_max_characters: int = Field(gt=0, le=8000)
+    memory_self_reflection_max_output_tokens: int = Field(gt=0)
+    memory_self_reflection_tool_receipt_characters: int = Field(gt=0, le=8000)
+    memory_self_reflection_tool_receipt_retention_days: int = Field(gt=0, le=30)
     memory_max_referenced_targets: int = Field(gt=0)
     memory_lexical_candidate_limit: int = Field(gt=0)
     memory_context_limit_per_entity: int = Field(gt=0)
@@ -257,6 +271,11 @@ class MemorySettings(DomainSettings):
     def _memory_batch_shape(self) -> MemorySettings:
         if self.memory_batch_trigger_count > self.memory_batch_max_events:
             raise ValueError("memory batch trigger count cannot exceed batch event limit")
+        hours = [item.strip() for item in self.memory_self_reflection_schedule_hours.split(",")]
+        if len(hours) != 3 or any(not item.isdigit() or not 0 <= int(item) <= 23 for item in hours):
+            raise ValueError("memory self-reflection schedule must contain three hours")
+        if len(set(hours)) != 3:
+            raise ValueError("memory self-reflection schedule hours must be unique")
         return self
 
 

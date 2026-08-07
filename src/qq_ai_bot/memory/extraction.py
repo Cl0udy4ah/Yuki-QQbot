@@ -12,8 +12,11 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.memory.enums import (
     MemoryClaimOperation,
     MemoryKind,
+    MemoryRetention,
     MemoryScopeType,
+    MemorySourceStyle,
     MemorySourceType,
+    MemorySubjectBasis,
     MemoryTemporalMode,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
@@ -65,6 +68,9 @@ class MemoryClaim(_ExtractionModel):
     importance: int = Field(default=3, ge=1, le=5)
     confidence: float = Field(default=0.8, ge=0, le=1)
     source_type: MemorySourceType = MemorySourceType.AUTOMATIC
+    subject_basis: MemorySubjectBasis = MemorySubjectBasis.OMITTED_SELF
+    retention: MemoryRetention = MemoryRetention.DURABLE
+    source_style: MemorySourceStyle = MemorySourceStyle.NATURAL_STATEMENT
     temporal_mode: MemoryTemporalMode = MemoryTemporalMode.PERSISTENT
     valid_from: str | None = None
     valid_until: str | None = None

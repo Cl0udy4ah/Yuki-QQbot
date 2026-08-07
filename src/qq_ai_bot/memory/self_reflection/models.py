@@ -1,0 +1,162 @@
+"""Model-safe contracts for bounded Yuki self-reflection."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.memory.enums import MemoryKind
+from qq_ai_bot.persistence.repository_records import EventRecord
+
+
+class SelfReflectionOperation(StrEnum):
+    CREATE = "create"
+    CORRECT = "correct"
+    MERGE = "merge"
+    CONTEST = "contest"
+    INVALIDATE = "invalidate"
+    NOOP = "noop"
+
+
+class SelfReflectionVisibility(StrEnum):
+    CURRENT_SCOPE = "current_scope"
+    GLOBAL = "global"
+
+
+class SelfCandidateDecision(StrEnum):
+    ACCEPT = "accept"
+    REJECT = "reject"
+    DEFER = "defer"
+
+
+class _Contract(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class SelfReflectionEvent(_Contract):
+    ref: str = Field(pattern=r"^event_[1-9]\d*$")
+    rendered: str = Field(min_length=1, max_length=9000)
+
+
+class SelfReflectionToolReceipt(_Contract):
+    ref: str = Field(pattern=r"^tool_[1-9]\d*$")
+    tool_name: str = Field(min_length=1, max_length=255)
+    success: bool
+    result_excerpt: str = Field(max_length=2000)
+
+
+class SelfReflectionFact(_Contract):
+    ref: str = Field(pattern=r"^(?:fact|candidate)_[1-9]\d*$")
+    category: str = Field(max_length=64)
+    memory_key: str = Field(max_length=128)
+    content: str = Field(max_length=4000)
+    status: str = Field(max_length=32)
+
+
+class SelfReflectionInput(_Contract):
+    scope_type: ScopeType
+    events: tuple[SelfReflectionEvent, ...]
+    tool_receipts: tuple[SelfReflectionToolReceipt, ...] = ()
+    self_facts: tuple[SelfReflectionFact, ...] = ()
+    self_candidates: tuple[SelfReflectionFact, ...] = ()
+
+
+class SelfReflectionProposal(_Contract):
+    operation: SelfReflectionOperation
+    fact_ref: str | None = Field(default=None, pattern=r"^fact_[1-9]\d*$")
+    merge_fact_ref: str | None = Field(default=None, pattern=r"^fact_[1-9]\d*$")
+    candidate_ref: str | None = Field(default=None, pattern=r"^candidate_[1-9]\d*$")
+    candidate_decision: SelfCandidateDecision | None = None
+    evidence_refs: tuple[str, ...] = ()
+    visibility: SelfReflectionVisibility = SelfReflectionVisibility.CURRENT_SCOPE
+    category: str | None = Field(default=None, max_length=64)
+    kind: MemoryKind | None = None
+    memory_key: str | None = Field(default=None, max_length=128)
+    content: str | None = Field(default=None, max_length=4000)
+    reason: str = Field(min_length=1, max_length=500)
+    confidence: float = Field(default=0.85, ge=0, le=1)
+    importance: int = Field(default=3, ge=1, le=5)
+
+    @model_validator(mode="after")
+    def _shape(self) -> SelfReflectionProposal:
+        if self.operation is SelfReflectionOperation.NOOP:
+            if self.fact_ref or self.merge_fact_ref or self.evidence_refs:
+                raise ValueError("noop cannot reference facts or evidence")
+            if self.candidate_ref is None and self.candidate_decision is not None:
+                raise ValueError("candidate decision requires candidate_ref")
+            return self
+        if not self.evidence_refs:
+            raise ValueError("self-reflection mutations require trusted evidence aliases")
+        if self.operation is SelfReflectionOperation.CREATE:
+            if self.fact_ref or self.merge_fact_ref:
+                raise ValueError("create cannot reference an existing fact")
+            if not all((self.category, self.kind, self.memory_key, self.content)):
+                raise ValueError("create requires category, kind, key, and content")
+        elif self.fact_ref is None:
+            raise ValueError("existing-fact operation requires fact_ref")
+        if self.operation is SelfReflectionOperation.MERGE and self.merge_fact_ref is None:
+            raise ValueError("merge requires merge_fact_ref")
+        return self
+
+
+class SelfReflectionOutput(_Contract):
+    proposals: tuple[SelfReflectionProposal, ...] = ()
+
+    @model_validator(mode="after")
+    def _bounded(self) -> SelfReflectionOutput:
+        if len(self.proposals) > 8:
+            raise ValueError("one self-reflection episode may emit at most eight proposals")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class SelfReflectionState:
+    id: int
+    conversation_key_hash: str
+    bot_user_id: str
+    scope_type: ScopeType
+    group_id: str | None
+    private_peer_user_id: str | None
+    last_event_id: int
+    latest_event_id: int
+    pending_events: int
+    pending_characters: int
+    pending_since: datetime | None
+    has_yuki_reply: bool
+    has_tool_result: bool
+    high_value_signal: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SelfReflectionEpisode:
+    state: SelfReflectionState
+    events: tuple[EventRecord, ...]
+    trigger_reason: str
+    scheduled_slot: str
+    run_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class StoredToolReceipt:
+    id: int
+    trigger_event_id: int
+    tool_name: str
+    success: bool
+    result_excerpt: str
+
+
+class SelfReflectionHealth(_Contract):
+    """Content-free scheduler state exposed to administrators and health checks."""
+
+    enabled: bool
+    running: bool
+    schedule_hours: tuple[int, ...]
+    timezone: str
+    pending_conversations: int = Field(ge=0)
+    calls_today: int = Field(ge=0)
+    last_run_status: str | None = None
+    last_run_completed_at: datetime | None = None

@@ -18,6 +18,7 @@ from qq_ai_bot.memory.enums import (
     MemoryRebuildJobOutcome,
     MemoryResolutionAction,
     MemoryRetrievalMode,
+    MemoryReviewState,
     MemoryScopeType,
     MemorySemanticRelation,
     MemorySourceType,
@@ -61,6 +62,9 @@ class MemoryFact(_MemoryModel):
     invalidated_reason: MemoryInvalidationReason | None = None
     last_used_at: datetime | None = None
     evidence_count: int = Field(default=0, ge=0)
+    validation_version: str = "memory-v2-quality-v1"
+    last_audited_at: datetime | None = None
+    review_state: MemoryReviewState = MemoryReviewState.VERIFIED
 
     @field_validator(
         "valid_from",
@@ -69,6 +73,7 @@ class MemoryFact(_MemoryModel):
         "updated_at",
         "last_confirmed_at",
         "last_used_at",
+        "last_audited_at",
         mode="after",
     )
     @classmethod
@@ -123,7 +128,8 @@ class MemoryFact(_MemoryModel):
 class MemoryEvidence(_MemoryModel):
     id: int = Field(gt=0)
     fact_id: int = Field(gt=0)
-    event_id: int = Field(gt=0)
+    event_id: int | None = Field(default=None, gt=0)
+    tool_receipt_id: int | None = Field(default=None, gt=0)
     source_speaker_user_id: str
     relation: MemoryEvidenceRelation
     confidence: float = Field(ge=0, le=1)
@@ -133,12 +139,19 @@ class MemoryEvidence(_MemoryModel):
 
 
 class MemoryEvidenceCreate(_MemoryModel):
-    event_id: int = Field(gt=0)
+    event_id: int | None = Field(default=None, gt=0)
+    tool_receipt_id: int | None = Field(default=None, gt=0)
     source_speaker_user_id: str
     relation: MemoryEvidenceRelation
     confidence: float = Field(default=1.0, ge=0, le=1)
     authority: MemoryAuthority = MemoryAuthority.SELF_REPORT
     excerpt: str
+
+    @model_validator(mode="after")
+    def _one_source(self) -> MemoryEvidenceCreate:
+        if (self.event_id is None) == (self.tool_receipt_id is None):
+            raise ValueError("memory evidence requires exactly one source")
+        return self
 
 
 class MemoryFactCreate(_MemoryModel):
@@ -161,6 +174,9 @@ class MemoryFactCreate(_MemoryModel):
     invalidated_reason: MemoryInvalidationReason | None = None
     valid_from: datetime | None = None
     valid_until: datetime | None = None
+    validation_version: str = "memory-v2-quality-v1"
+    last_audited_at: datetime | None = None
+    review_state: MemoryReviewState = MemoryReviewState.VERIFIED
 
     @field_validator("valid_from", "valid_until", mode="after")
     @classmethod

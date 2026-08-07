@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
@@ -57,9 +59,10 @@ from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.validation import ValidatedMemoryClaim
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import MemoryMutationReceiptModel
+from qq_ai_bot.persistence.models import MemoryMutationReceiptModel, MemoryToolReceiptModel
 from qq_ai_bot.persistence.repositories import (
     AgentActionRepository,
     EventLedgerRepository,
@@ -321,6 +324,78 @@ def _context(event: EventRecord) -> MemoryMutationContext:
 
 
 @pytest.mark.asyncio
+async def test_self_reflection_can_commit_tool_receipt_evidence(database: Database) -> None:
+    service, facts, ledger, _processor = _service(database, self_memory_enabled=True)
+    event = await _event(
+        ledger,
+        message_id="reflection-tool-trigger",
+        sender_user_id="1001",
+        content="请检查刚才的真实工具结果",
+        group_id="3001",
+    )
+    now = datetime.now(UTC)
+    async with database.sessions() as session, session.begin():
+        receipt = MemoryToolReceiptModel(
+            conversation_key_hash=hashlib.sha256(b"group:3001").hexdigest(),
+            trigger_event_id=event.id,
+            bot_user_id="8000",
+            provider_id="test",
+            tool_name="doctor",
+            success=True,
+            result_excerpt="修复后检查成功",
+            result_characters=7,
+            created_at=now,
+            expires_at=now + timedelta(days=7),
+        )
+        session.add(receipt)
+        await session.flush()
+        receipt_id = receipt.id
+
+    result = await service.mutate_resolved(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.CREATE,
+            target=MemoryMutationTarget(
+                subject_ref="self",
+                scope_type=MemoryScopeType.SELF,
+            ),
+            visibility=SelfMemoryVisibilityMode.CURRENT_SCOPE,
+            new_content="Yuki 会在修复后用真实工具结果复查",
+            memory_key="principle:verify_after_fix",
+            category="self_principle",
+            kind=MemoryKind.PREFERENCE,
+            reason="self_reflection_verified_tool_result",
+            evidence_quote="修复后检查成功",
+        ),
+        MemoryMutationContext(
+            event=event,
+            conversation_key="group:3001:self-reflection",
+            turn_origin="memory_self_reflection",
+            delegation_mode="self_reflection",
+            trigger_actor_user_id="1001",
+            decision_actor_type=MemoryDecisionActorType.REFLECTION,
+            decision_actor_id="yuki_self_reflection",
+            executed_by_bot_user_id="8000",
+            evidence_tool_receipt_id=receipt_id,
+        ),
+        target=ResolvedSubject(
+            MemoryScopeType.SELF,
+            None,
+            None,
+            SelfMemoryVisibility.GROUP,
+            None,
+            "3001",
+        ),
+    )
+
+    assert result.ok and result.new_fact_id is not None
+    fact = await facts.get_fact(result.new_fact_id)
+    evidence = await facts.list_evidence(result.new_fact_id)
+    assert fact is not None and fact.authority is MemoryAuthority.AGENT_REFLECTION
+    assert evidence[0].event_id is None
+    assert evidence[0].tool_receipt_id == receipt_id
+
+
+@pytest.mark.asyncio
 async def test_self_create_is_atomic_receipted_and_deduplicated(database: Database) -> None:
     service, facts, ledger, _processor = _service(database)
     event = await _event(
@@ -391,7 +466,7 @@ async def test_third_party_group_correction_commits_as_contested(database: Datab
         ledger,
         message_id="third-party-correct",
         sender_user_id="1001",
-        content="小明已经搬到上海了",
+        content="@小明 你已经搬到上海了",
         group_id="3001",
         mentioned_user_ids=("2002",),
     )
@@ -921,7 +996,7 @@ async def test_group_member_can_create_group_and_third_party_group_memory(
         ledger,
         message_id="open-group-write",
         sender_user_id="1001",
-        content="这个群每周五聚会，小明负责摄影",
+        content="这个群每周五聚会，@小明 你负责摄影",
         group_id="3001",
         mentioned_user_ids=("2002",),
     )
@@ -951,7 +1026,7 @@ async def test_group_member_can_create_group_and_third_party_group_memory(
             memory_key="role:photography",
             category="role",
             reason="third_party_group_report",
-            evidence_quote="小明负责摄影",
+            evidence_quote="你负责摄影",
         ),
         _context(event),
     )

@@ -30,9 +30,11 @@ from qq_ai_bot.memory.enums import (
     MemoryKind,
     MemoryProcessingSource,
     MemoryResolutionAction,
+    MemoryReviewState,
     MemoryScopeType,
     MemorySourceType,
     MemoryStatus,
+    MemorySubjectBasis,
     MemoryTemporalMode,
     SelfMemoryVisibility,
 )
@@ -425,12 +427,27 @@ class MemoryMutationService:
         target_override: ResolvedSubject | None = None,
     ) -> _PreparedMutation:
         event = context.event
+        trusted_self_reflection = (
+            context.turn_origin == "memory_self_reflection"
+            and context.decision_actor_type is MemoryDecisionActorType.REFLECTION
+            and context.decision_actor_id == "yuki_self_reflection"
+            and event.direction in {"inbound", "outbound"}
+            and (
+                (event.direction == "inbound" and event.sender_user_id != event.bot_user_id)
+                or (event.direction == "outbound" and event.sender_user_id == event.bot_user_id)
+            )
+        )
         if (
-            event.direction != "inbound"
+            (not trusted_self_reflection and event.direction != "inbound")
             or event.sender_user_id != context.trigger_actor_user_id
             or event.bot_user_id != context.executed_by_bot_user_id
-            or event.sender_user_id == event.bot_user_id
-            or await self._ledger.sender_is_bot(event.sender_user_id)
+            or (
+                not trusted_self_reflection
+                and (
+                    event.sender_user_id == event.bot_user_id
+                    or await self._ledger.sender_is_bot(event.sender_user_id)
+                )
+            )
         ):
             raise MemoryMutationRejected("untrusted_trigger_event")
         if tuple(dict.fromkeys(request.evidence_refs)) != ("current_event",):
@@ -460,11 +477,22 @@ class MemoryMutationService:
         self._validate_self_request(request, target, event, fact=fact, merge_fact=merge_fact)
         self._authorize(request.operation, target, context)
         self._validate_fact_requirements(request, target, fact, merge_fact, context)
-        quote = self._evidence_quote(request, event.content)
+        quote = (
+            normalize_memory_text(request.evidence_quote or "", maximum=500)
+            if trusted_self_reflection and context.evidence_tool_receipt_id is not None
+            else self._evidence_quote(request, event.content)
+        )
+        if not quote:
+            raise MemoryMutationRejected("memory_evidence_quote_required")
         authority, source_type = self._provenance(target, context)
         evidence = MemoryEvidenceCreate(
-            event_id=event.id,
-            source_speaker_user_id=event.sender_user_id,
+            event_id=(None if context.evidence_tool_receipt_id is not None else event.id),
+            tool_receipt_id=context.evidence_tool_receipt_id,
+            source_speaker_user_id=(
+                event.bot_user_id
+                if context.evidence_tool_receipt_id is not None
+                else event.sender_user_id
+            ),
             relation=self._evidence_relation(request.operation, authority, source_type),
             confidence=request.confidence,
             authority=authority,
@@ -725,6 +753,11 @@ class MemoryMutationService:
             authority=authority,
             valid_from=temporal.valid_from if temporal is not None else fact.valid_from,
             valid_until=temporal.valid_until if temporal is not None else fact.valid_until,
+            validation_version=fact.validation_version,
+            last_audited_at=(
+                datetime.now(UTC) if request.review_state is not None else fact.last_audited_at
+            ),
+            review_state=request.review_state or fact.review_state,
         )
         versioned = await self._facts.version_fact(
             fact.id,
@@ -782,7 +815,7 @@ class MemoryMutationService:
         )
         if not content or not key or not category:
             raise MemoryMutationRejected("memory_content_key_and_category_required")
-        quote = self._evidence_quote(request, context.event.content)
+        quote = evidence.excerpt
         claim = MemoryClaim(
             operation=(
                 MemoryClaimOperation.ASSERT
@@ -799,6 +832,15 @@ class MemoryMutationService:
             importance=request.importance or (fact.importance if fact is not None else 3),
             confidence=request.confidence,
             source_type=source_type,
+            subject_basis=(
+                MemorySubjectBasis.GROUP
+                if resolved_target.scope_type is MemoryScopeType.GROUP
+                else MemorySubjectBasis.REPLY_SUBJECT
+                if subject_ref == "reply_author"
+                else MemorySubjectBasis.MENTIONED_SUBJECT
+                if subject_ref.startswith("mentioned_")
+                else MemorySubjectBasis.OMITTED_SELF
+            ),
             temporal_mode=(
                 MemoryTemporalMode.TEMPORARY
                 if request.valid_until is not None
@@ -843,6 +885,10 @@ class MemoryMutationService:
                     authority=authority,
                     valid_from=temporal.valid_from,
                     valid_until=temporal.valid_until,
+                    last_audited_at=(
+                        datetime.now(UTC) if request.review_state is not None else None
+                    ),
+                    review_state=request.review_state or MemoryReviewState.VERIFIED,
                 ),
                 evidence=evidence,
                 subject_is_speaker=(direct_target.subject_user_id == context.event.sender_user_id),
@@ -901,6 +947,8 @@ class MemoryMutationService:
                 None,
                 SelfMemoryVisibility.GLOBAL,
             )
+        if target.visibility_type is not None:
+            return target
         if event.scope_type is ScopeType.PRIVATE or event.group_id is None:
             return ResolvedSubject(
                 MemoryScopeType.SELF,
@@ -980,6 +1028,16 @@ class MemoryMutationService:
         merge_fact: MemoryFact | None,
         context: MemoryMutationContext,
     ) -> None:
+        if request.review_state is not None and context.decision_actor_type not in {
+            MemoryDecisionActorType.SYSTEM,
+            MemoryDecisionActorType.REFLECTION,
+        }:
+            raise MemoryMutationRejected("review_state_requires_internal_auditor")
+        if request.review_state is not None and request.operation not in {
+            MemoryMutationOperation.UPDATE_METADATA,
+            MemoryMutationOperation.CORRECT,
+        }:
+            raise MemoryMutationRejected("review_state_requires_metadata_update")
         if request.operation is MemoryMutationOperation.CREATE:
             if fact is not None or merge_fact is not None:
                 raise MemoryMutationRejected("create_does_not_accept_fact_id")

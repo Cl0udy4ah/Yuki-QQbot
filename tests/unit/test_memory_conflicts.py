@@ -216,7 +216,7 @@ async def test_third_party_contradiction_becomes_bounded_contest(database: Datab
     event = await _group_event(
         database,
         message_id="third-party-conflict",
-        content="小李现在住上海",
+        content="你现在住上海",
         mentioned_user_ids=("1002",),
     )
     validated = MemoryClaimValidator().validate_claim(
@@ -224,7 +224,8 @@ async def test_third_party_contradiction_becomes_bounded_contest(database: Datab
             subject_ref="mentioned_1",
             scope_type="person_group",
             content="住在上海",
-            evidence_quote="小李现在住上海",
+            evidence_quote="你现在住上海",
+            subject_basis="addressed_second_person",
         ),
         event,
     )

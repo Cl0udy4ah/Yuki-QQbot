@@ -11,12 +11,14 @@ from qq_ai_bot.memory.enums import (
     MemoryClaimOperation,
     MemoryEvidenceRelation,
     MemoryKind,
+    MemoryRetention,
     MemoryScopeType,
     MemorySourceType,
 )
 from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
-from qq_ai_bot.memory.subjects import SubjectResolver
+from qq_ai_bot.memory.quality_policy import AttributionPolicy, RetentionPolicy
+from qq_ai_bot.memory.subjects import SubjectResolutionContext, SubjectResolver
 from qq_ai_bot.memory.temporal import MemoryTemporalResolver
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -119,6 +121,9 @@ class ValidatedMemoryClaim:
     evidence: MemoryEvidenceCreate
     subject_is_speaker: bool
     occurred_at: datetime
+    subject_basis: str = ""
+    retention: str = ""
+    source_style: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +132,8 @@ class MemoryClaimValidationResult:
 
     claim: ValidatedMemoryClaim | None
     reason_code: str
+    candidate_type: str | None = None
+    raw_claim: MemoryClaim | None = None
 
     @property
     def ok(self) -> bool:
@@ -139,6 +146,12 @@ class _MemoryClaimRejected(ValueError):
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code
+
+
+class _MemoryClaimCandidate(_MemoryClaimRejected):
+    def __init__(self, reason_code: str, candidate_type: str) -> None:
+        super().__init__(reason_code)
+        self.candidate_type = candidate_type
 
 
 def normalize_memory_text(value: str, *, maximum: int) -> str:
@@ -183,8 +196,10 @@ class MemoryClaimValidator:
         self,
         claim: MemoryClaim,
         event: EventRecord,
+        *,
+        subject_context: SubjectResolutionContext | None = None,
     ) -> tuple[MemoryFactCreate, MemoryEvidenceCreate] | None:
-        validated = self.validate_claim(claim, event)
+        validated = self.validate_claim(claim, event, subject_context=subject_context)
         if validated is None:
             return None
         return validated.fact, validated.evidence
@@ -193,26 +208,47 @@ class MemoryClaimValidator:
         self,
         claim: MemoryClaim,
         event: EventRecord,
+        *,
+        subject_context: SubjectResolutionContext | None = None,
     ) -> ValidatedMemoryClaim | None:
-        return self.validate_claim_result(claim, event).claim
+        return self.validate_claim_result(
+            claim,
+            event,
+            subject_context=subject_context,
+        ).claim
 
     def validate_claim_result(
         self,
         claim: MemoryClaim,
         event: EventRecord,
+        *,
+        subject_context: SubjectResolutionContext | None = None,
     ) -> MemoryClaimValidationResult:
         """Validate one claim while preserving why a rejected claim was dropped."""
 
         try:
-            validated = self._validate_claim(claim, event)
+            validated = self._validate_claim(
+                claim,
+                event,
+                subject_context=subject_context,
+            )
+        except _MemoryClaimCandidate as exc:
+            return MemoryClaimValidationResult(
+                None,
+                exc.reason_code,
+                candidate_type=exc.candidate_type,
+                raw_claim=claim,
+            )
         except _MemoryClaimRejected as exc:
-            return MemoryClaimValidationResult(None, exc.reason_code)
-        return MemoryClaimValidationResult(validated, "validated")
+            return MemoryClaimValidationResult(None, exc.reason_code, raw_claim=claim)
+        return MemoryClaimValidationResult(validated, "validated", raw_claim=claim)
 
     def _validate_claim(
         self,
         claim: MemoryClaim,
         event: EventRecord,
+        *,
+        subject_context: SubjectResolutionContext | None = None,
     ) -> ValidatedMemoryClaim:
         if not event.content.strip():
             raise _MemoryClaimRejected("empty_event")
@@ -227,7 +263,23 @@ class MemoryClaimValidator:
             event,
             subject_ref=claim.subject_ref,
             scope_type=claim.scope_type,
+            context=subject_context,
         )
+        attribution = AttributionPolicy.evaluate(claim, event, resolved)
+        if attribution.candidate_type is not None:
+            raise _MemoryClaimCandidate(attribution.reason_code, attribution.candidate_type)
+        if not attribution.accepted:
+            raise _MemoryClaimRejected(attribution.reason_code)
+        explicit_request = event_requests_explicit_memory(event.content)
+        retention = RetentionPolicy.evaluate(
+            claim,
+            event,
+            explicit_request=explicit_request,
+        )
+        if not retention.accepted:
+            raise _MemoryClaimRejected(retention.reason_code)
+        if claim.confidence < 0.65 and not explicit_request:
+            raise _MemoryClaimCandidate("low_confidence_candidate", "memory")
         if resolved is None:
             raise _MemoryClaimRejected("subject_unresolved")
         key = normalize_memory_text(claim.memory_key, maximum=128)
@@ -241,6 +293,8 @@ class MemoryClaimValidator:
         ):
             raise _MemoryClaimRejected("semantic_not_anchored")
         kind = claim.kind
+        if claim.retention is MemoryRetention.MEANINGFUL_EPISODE:
+            kind = MemoryKind.EPISODE
         lowered = f"{key} {category} {content} {quote}".casefold()
         if any(marker in lowered for marker in _INTERACTION_MARKERS):
             kind = MemoryKind.PREFERENCE
@@ -308,6 +362,9 @@ class MemoryClaimValidator:
             evidence=evidence,
             subject_is_speaker=subject_is_speaker,
             occurred_at=event.occurred_at,
+            subject_basis=claim.subject_basis.value,
+            retention=claim.retention.value,
+            source_style=claim.source_style.value,
         )
 
     @staticmethod

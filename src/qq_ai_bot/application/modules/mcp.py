@@ -35,7 +35,11 @@ class MCPModule:
 
     def build(self) -> MCPBundle:
         settings = self._settings
-        repository = MCPRepository(self._database)
+        repository = MCPRepository(
+            self._database,
+            reflection_excerpt_characters=settings.memory_self_reflection_tool_receipt_characters,
+            reflection_retention_days=settings.memory_self_reflection_tool_receipt_retention_days,
+        )
         artifacts = ToolArtifactRepository(
             self._database,
             Path("data/tool_artifacts"),

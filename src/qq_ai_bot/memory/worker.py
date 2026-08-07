@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.candidates import MemoryConflictCandidateResolver
+from qq_ai_bot.memory.claim_candidates import MemoryClaimCandidateRepository
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
 from qq_ai_bot.memory.classifier import MemoryRelationClassifier
 from qq_ai_bot.memory.enums import MemoryProcessingSource, MemoryRebuildJobOutcome
@@ -21,8 +22,10 @@ from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.repository import MemoryJobRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.subjects import SubjectResolutionContext
 from qq_ai_bot.memory.validation import MemoryClaimValidator
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
+from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 
@@ -35,6 +38,7 @@ class _MemoryJobResult:
     extracted: int = 0
     validated: int = 0
     applied: int = 0
+    candidates: int = 0
     rejection_reasons: tuple[tuple[str, int], ...] = ()
 
     @property
@@ -56,6 +60,7 @@ class MemoryWorker:
         jobs: MemoryJobRepository,
         facts: MemoryFactService,
         ledger: EventLedgerRepository,
+        people: PeopleRepository | None = None,
         provider: ModelCompleter | None = None,
         model_executor: ModelExecutor | None = None,
         concurrency: ConcurrencyManager,
@@ -68,6 +73,7 @@ class MemoryWorker:
         extractor: MemoryEventExtractor | None = None,
         processor: MemoryClaimProcessor | None = None,
         mutations: MemoryMutationService | None = None,
+        claim_candidates: MemoryClaimCandidateRepository | None = None,
     ) -> None:
         self._settings = settings
         self._jobs = jobs
@@ -84,7 +90,11 @@ class MemoryWorker:
             facts.repository,
             limit=settings.memory_consolidation_candidate_limit,
         )
-        self.extractor = extractor or MemoryEventExtractor(models, concurrency)
+        self.extractor = extractor or MemoryEventExtractor(
+            models,
+            concurrency,
+            people=people,
+        )
         self.processor = processor or MemoryClaimProcessor(
             settings=settings,
             facts=facts,
@@ -105,6 +115,9 @@ class MemoryWorker:
             facts=facts,
             processor=self.processor,
             ledger=ledger,
+        )
+        self.claim_candidates = claim_candidates or MemoryClaimCandidateRepository(
+            facts.repository.database
         )
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
@@ -193,6 +206,7 @@ class MemoryWorker:
             return 0
 
         known_event_ids = {job.event_id for job in jobs}
+        subject_contexts = dict(extracted.subject_contexts)
         claims_by_event: defaultdict[int, list[MemoryClaim]] = defaultdict(list)
         unknown_claims = 0
         for anchored in extracted.output.claims:
@@ -216,6 +230,7 @@ class MemoryWorker:
                 result = await self._process_claims(
                     job,
                     tuple(claims_by_event.get(job.event_id, ())),
+                    subject_context=subject_contexts.get(job.event_id),
                 )
             except asyncio.CancelledError:
                 raise
@@ -263,21 +278,55 @@ class MemoryWorker:
         self,
         job: MemoryJob,
         claims: tuple[MemoryClaim, ...],
+        *,
+        subject_context: SubjectResolutionContext | None = None,
     ) -> _MemoryJobResult:
         extracted_count = len(claims)
         if not extracted_count:
             return _MemoryJobResult(MemoryRebuildJobOutcome.NO_CLAIMS)
         applied = 0
+        candidates = 0
         validated_count = 0
         rejection_reasons: Counter[str] = Counter()
         for claim in claims:
             self.metrics.increment("claims_extracted")
-            validation = self.processor.validate_result(claim, job.event)
+            validation = self.processor.validate_result(
+                claim,
+                job.event,
+                subject_context=subject_context,
+            )
             validated = validation.claim
+            staged_candidate_id: int | None = None
             if validated is None:
-                rejection_reasons[validation.reason_code] += 1
-                self.metrics.increment(f"claims_rejected_{validation.reason_code}")
-                continue
+                if validation.candidate_type is not None:
+                    staged = await self.claim_candidates.stage(
+                        claim,
+                        job.event,
+                        candidate_type=validation.candidate_type,
+                        subject_context=subject_context,
+                    )
+                    candidates += 1
+                    staged_candidate_id = staged.id
+                    self.metrics.increment("claims_candidate")
+                    if (
+                        staged.ready_for_promotion
+                        and validation.reason_code == "low_confidence_candidate"
+                    ):
+                        promoted = claim.model_copy(
+                            update={"confidence": max(0.75, claim.confidence)}
+                        )
+                        validation = self.processor.validate_result(
+                            promoted,
+                            job.event,
+                            subject_context=subject_context,
+                        )
+                        validated = validation.claim
+                    if validated is None:
+                        continue
+                else:
+                    rejection_reasons[validation.reason_code] += 1
+                    self.metrics.increment(f"claims_rejected_{validation.reason_code}")
+                    continue
             validated_count += 1
             self.metrics.increment(f"claims_{claim.operation.value}ed")
             if validated.fact.authority.value == "third_party":
@@ -292,6 +341,11 @@ class MemoryWorker:
             )
             if result.ok and (result.new_fact_id is not None or result.old_fact_id is not None):
                 applied += 1
+                if staged_candidate_id is not None:
+                    await self.claim_candidates.set_status(
+                        staged_candidate_id,
+                        "accepted",
+                    )
                 continue
             reason_code = result.reason_code or result.outcome.value
             rejection_reasons[reason_code] += 1
@@ -299,6 +353,8 @@ class MemoryWorker:
         outcome = (
             MemoryRebuildJobOutcome.CLAIMS_APPLIED
             if applied
+            else MemoryRebuildJobOutcome.CANDIDATES_STAGED
+            if candidates
             else MemoryRebuildJobOutcome.ALL_REJECTED
         )
         return _MemoryJobResult(
@@ -306,6 +362,7 @@ class MemoryWorker:
             extracted=extracted_count,
             validated=validated_count,
             applied=applied,
+            candidates=candidates,
             rejection_reasons=tuple(
                 sorted(rejection_reasons.items(), key=lambda item: (-item[1], item[0]))
             ),

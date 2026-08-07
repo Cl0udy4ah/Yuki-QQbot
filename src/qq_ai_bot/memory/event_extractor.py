@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from qq_ai_bot.memory.extraction import (
@@ -14,10 +15,11 @@ from qq_ai_bot.memory.extraction import (
     MemoryExtractionOutput,
     PrimaryEvent,
 )
-from qq_ai_bot.memory.subjects import SubjectResolver
+from qq_ai_bot.memory.subjects import SubjectContextBuilder, SubjectResolutionContext
 from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
+from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 
@@ -26,6 +28,7 @@ EXTRACTION_INSTRUCTION = """\
 primary_event 是唯一事实来源；conversation_context 仅用于消歧，绝不能单独产生 claim。
 每个 claim.evidence_quote 必须逐字摘自 primary_event.content，不能改写、拼接或引用上下文。
 claim.content 必须与 evidence_quote 语义一致；不确定时不要输出 claim。
+每条 claim 必须声明 subject_basis、retention 和 source_style；它们只是语义声明，后端会验证。
 available_subjects 是唯一允许主体，subject_ref 只能从中选择；不要按普通姓名猜人。
 speaker 只表示 primary_event 的真实发送者。只有明确的第一人称、自称或省略主语的自我陈述，
 才能归给 speaker；若文本明确以普通姓名描述另一个人，但 available_subjects 没有对应的
@@ -44,6 +47,7 @@ events 是唯一事实来源，conversation_context 只用于理解对话边界�
 每条输出必须携带对应 events.source_event_id，且只能使用输入中真实存在的 source_event_id。
 claim.evidence_quote 必须逐字摘自该 source_event_id 对应的 event.content，不能跨事件拼接、
 改写或引用上下文。一个事件包含多个独立长期事实时，应分别输出多条 claim。
+每条 claim 必须声明 subject_basis、retention 和 source_style；不确定主体或长期价值时不要猜测。
 每个事件自己的 available_subjects 是该事件唯一允许主体；claim.subject_ref 只能从对应列表选择。
 speaker 表示该事件的真实发送者。只有明确的第一人称、自称或省略主语的自我陈述才能归给
 speaker；不能因为相邻消息来自同一会话就交换人物、证据或主体。
@@ -63,6 +67,7 @@ class MemoryExtractionResult:
     input_tokens: int | None = None
     output_tokens: int | None = None
     latency_seconds: float = 0.0
+    subject_context: SubjectResolutionContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,15 +77,23 @@ class BatchMemoryExtractionResult:
     input_tokens: int | None = None
     output_tokens: int | None = None
     latency_seconds: float = 0.0
+    subject_contexts: tuple[tuple[int, SubjectResolutionContext], ...] = ()
 
 
 class MemoryEventExtractor:
     """Issue structured extraction requests for one event or one conversation batch."""
 
-    def __init__(self, models: ModelExecutor, concurrency: ConcurrencyManager) -> None:
+    def __init__(
+        self,
+        models: ModelExecutor,
+        concurrency: ConcurrencyManager,
+        *,
+        people: PeopleRepository | None = None,
+    ) -> None:
         self._models = models
         self._structured = StructuredTaskRunner(models)
         self._concurrency = concurrency
+        self._subjects = SubjectContextBuilder(people)
 
     @property
     def model_name(self) -> str:
@@ -94,13 +107,14 @@ class MemoryEventExtractor:
     ) -> MemoryExtractionResult:
         if not event.content.strip():
             return MemoryExtractionResult(MemoryExtractionOutput(), 0)
+        subject_context = await self._subjects.build(event)
         payload = MemoryExtractionInput(
             primary_event=PrimaryEvent(
                 scope_type=event.scope_type,
                 content=event.content,
                 occurred_at=event.occurred_at,
             ),
-            available_subjects=SubjectResolver.available(event),
+            available_subjects=subject_context.available_subjects,
             conversation_context=tuple(
                 ConversationContextEvent(
                     speaker_role=self._speaker_role(event, row),
@@ -129,6 +143,7 @@ class MemoryEventExtractor:
             input_tokens=response.prompt_tokens,
             output_tokens=response.completion_tokens,
             latency_seconds=response.latency_seconds,
+            subject_context=subject_context,
         )
 
     async def extract_batch(
@@ -138,6 +153,8 @@ class MemoryEventExtractor:
         context: tuple[EventRecord, ...] = (),
         max_output_tokens: int = 4096,
     ) -> BatchMemoryExtractionResult:
+        selected_events = tuple(event for event in events if event.content.strip())
+        contexts = await asyncio.gather(*(self._subjects.build(event) for event in selected_events))
         primary_events = tuple(
             BatchPrimaryEvent(
                 source_event_id=event.id,
@@ -145,10 +162,9 @@ class MemoryEventExtractor:
                 sender_label=event.sender_display_name[:128],
                 content=event.content[:8000],
                 occurred_at=event.occurred_at,
-                available_subjects=SubjectResolver.available(event),
+                available_subjects=context.available_subjects,
             )
-            for event in events
-            if event.content.strip()
+            for event, context in zip(selected_events, contexts, strict=True)
         )
         if not primary_events:
             return BatchMemoryExtractionResult(BatchMemoryExtractionOutput(), 0)
@@ -187,7 +203,16 @@ class MemoryEventExtractor:
             input_tokens=response.prompt_tokens,
             output_tokens=response.completion_tokens,
             latency_seconds=response.latency_seconds,
+            subject_contexts=tuple(
+                (event.id, context)
+                for event, context in zip(selected_events, contexts, strict=True)
+            ),
         )
+
+    async def subject_context(self, event: EventRecord) -> SubjectResolutionContext:
+        """Rebuild trusted aliases for staged/rebuild validation without model state."""
+
+        return await self._subjects.build(event)
 
     @staticmethod
     def _speaker_role(primary: EventRecord, row: EventRecord) -> str:

@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     # PromptCompiler uses the repository-wide characters / 4 token estimate.
     # Keep history meaningfully larger than the old 12K-character window without
     # making a rolling cache miss resend a six-figure token prompt.
-    max_context_characters: int = 48_000
+    max_context_characters: int = 12_000
     context_metadata_budget_ratio: float = Field(default=0.55, gt=0, lt=1)
     history_window_low_watermark_ratio: float = Field(default=0.67, gt=0, lt=1)
 
@@ -119,7 +119,21 @@ class Settings(BaseSettings):
     memory_batch_max_wait_seconds: float = Field(default=300.0, ge=0)
     memory_batch_max_output_tokens: int = Field(default=4096, gt=0)
     memory_retrieval_enabled: bool = True
-    self_memory_enabled: bool = False
+    self_memory_enabled: bool = True
+    memory_self_reflection_enabled: bool = True
+    memory_self_reflection_schedule_hours: str = "4,12,20"
+    memory_self_reflection_timezone: str = "Asia/Shanghai"
+    memory_self_reflection_poll_seconds: float = 60.0
+    memory_self_reflection_max_sessions_per_run: int = 3
+    memory_self_reflection_max_daily_calls: int = 9
+    memory_self_reflection_event_threshold: int = 12
+    memory_self_reflection_character_threshold: int = 6000
+    memory_self_reflection_max_wait_seconds: float = 28800.0
+    memory_self_reflection_max_events: int = 20
+    memory_self_reflection_max_characters: int = 8000
+    memory_self_reflection_max_output_tokens: int = 2400
+    memory_self_reflection_tool_receipt_characters: int = 2000
+    memory_self_reflection_tool_receipt_retention_days: int = 7
     memory_max_referenced_targets: int = 5
     memory_lexical_candidate_limit: int = 50
     memory_context_limit_per_entity: int = 8
@@ -188,9 +202,9 @@ class Settings(BaseSettings):
     memory_rebuild_review_page_size: int = 20
     memory_rebuild_source_excerpt_characters: int = 500
     memory_rebuild_max_events_per_run: int | None = None
-    agent_max_tool_calls: int = 12
-    agent_max_model_requests: int = 12
-    agent_tool_result_max_characters: int = 32000
+    agent_max_tool_calls: int = 8
+    agent_max_model_requests: int = 6
+    agent_tool_result_max_characters: int = 8000
 
     # Generous initial Tool Kernel budgets keep schemas bounded without reducing authority;
     # request_tools can still load additional actor-authorized capabilities on demand.

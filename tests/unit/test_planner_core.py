@@ -60,6 +60,7 @@ from qq_ai_bot.planner.models import (
     PlannerMemoryOutput,
     PlannerModelOutput,
     PlannerSpeechContext,
+    PlannerToolOutput,
     ToolScopeSummary,
 )
 from qq_ai_bot.planner.prompt import PLANNER_SYSTEM_PROMPT, planner_payload
@@ -237,6 +238,17 @@ def test_self_recall_defaults_closed_and_prompt_has_strict_examples() -> None:
     assert "帮我查天气" in PLANNER_SYSTEM_PROMPT
 
 
+def test_planner_prompt_requires_explicit_scope_and_query_rewrite_for_tool_tasks() -> None:
+    assert "必须输出 tool_selection 并选最小 scopes" in PLANNER_SYSTEM_PROMPT
+    assert "仅 scope\n不明时省略" in PLANNER_SYSTEM_PROMPT
+    assert "intent 必须用一句短而规范化" in PLANNER_SYSTEM_PROMPT
+    assert "已有合适工具禁用它" in PLANNER_SYSTEM_PROMPT
+    assert "scopes 不是权限边界" in PLANNER_SYSTEM_PROMPT
+    description = PlannerToolOutput.model_fields["scopes"].description or ""
+    assert "capabilities.tool_scopes" in description
+    assert "available_tool_scopes" not in description
+
+
 def _planner_input(
     *,
     scope: ScopeType = ScopeType.PRIVATE,
@@ -348,8 +360,8 @@ def test_planner_payload_is_compact_stable_and_excludes_backend_ids() -> None:
 
     assert list(payload) == [
         "capabilities",
-        "conversation_state",
         "history_messages",
+        "conversation_state",
         "current_message",
         "current_time",
     ]

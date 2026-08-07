@@ -317,6 +317,10 @@ class MemoryFactModel(Base):
             name="ck_memory_facts_status",
         ),
         CheckConstraint(
+            "review_state IN ('legacy_unreviewed', 'verified', 'quarantined')",
+            name="ck_memory_facts_review_state",
+        ),
+        CheckConstraint(
             "authority IN ('explicit', 'self_report', 'group_report', 'third_party', "
             "'agent_reflection')",
             name="ck_memory_facts_authority",
@@ -442,14 +446,30 @@ class MemoryFactModel(Base):
     )
     invalidated_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    validation_version: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="memory-v2-quality-v1", server_default="legacy"
+    )
+    last_audited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_state: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="verified",
+        server_default="legacy_unreviewed",
+    )
 
 
 class MemoryEvidenceModel(Base):
-    """One immutable chat event supporting a Memory V2 fact."""
+    """One immutable chat event or trusted tool receipt supporting a fact."""
 
     __tablename__ = "memory_evidence"
     __table_args__ = (
         UniqueConstraint("fact_id", "event_id", name="uq_memory_evidence_fact_event"),
+        UniqueConstraint("fact_id", "tool_receipt_id", name="uq_memory_evidence_fact_tool_receipt"),
+        CheckConstraint(
+            "(event_id IS NOT NULL AND tool_receipt_id IS NULL) OR "
+            "(event_id IS NULL AND tool_receipt_id IS NOT NULL)",
+            name="ck_memory_evidence_source",
+        ),
         CheckConstraint(
             "relation IN ('self_statement', 'group_statement', 'third_party_statement', "
             "'explicit_command', 'confirmation', 'correction', 'retraction', 'rebuild', "
@@ -470,8 +490,11 @@ class MemoryEvidenceModel(Base):
     fact_id: Mapped[int] = mapped_column(
         ForeignKey("memory_facts.id", ondelete="CASCADE"), nullable=False
     )
-    event_id: Mapped[int] = mapped_column(
-        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=True
+    )
+    tool_receipt_id: Mapped[int | None] = mapped_column(
+        ForeignKey("memory_tool_receipts.id", ondelete="CASCADE"), nullable=True
     )
     source_speaker_user_id: Mapped[str] = mapped_column(
         ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
@@ -640,6 +663,172 @@ class MemoryMutationReceiptModel(Base):
     outcome: Mapped[str] = mapped_column(String(32), nullable=False)
     reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryClaimCandidateModel(Base):
+    """A short-lived claim that is deliberately excluded from normal retrieval."""
+
+    __tablename__ = "memory_claim_candidates"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_memory_claim_candidates_fingerprint"),
+        CheckConstraint(
+            "candidate_type IN ('memory','self')",
+            name="ck_memory_claim_candidates_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending','accepted','rejected','expired')",
+            name="ck_memory_claim_candidates_status",
+        ),
+        CheckConstraint("evidence_count >= 1", name="ck_memory_claim_candidates_evidence"),
+        Index("ix_memory_claim_candidates_status_expiry", "status", "expires_at"),
+        Index("ix_memory_claim_candidates_target", "target_fingerprint", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    target_scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    subject_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    target_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    normalized_memory_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    subject_basis: Mapped[str] = mapped_column(String(32), nullable=False)
+    retention: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_style: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    evidence_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryClaimCandidateEvidenceModel(Base):
+    __tablename__ = "memory_claim_candidate_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id",
+            "event_id",
+            name="uq_memory_claim_candidate_evidence",
+        ),
+        Index("ix_memory_claim_candidate_evidence_event", "event_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    candidate_id: Mapped[int] = mapped_column(
+        ForeignKey("memory_claim_candidates.id", ondelete="CASCADE"), nullable=False
+    )
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryToolReceiptModel(Base):
+    """A bounded, redacted result that SELF reflection may cite as evidence."""
+
+    __tablename__ = "memory_tool_receipts"
+    __table_args__ = (
+        CheckConstraint("result_characters >= 0", name="ck_memory_tool_receipts_size"),
+        Index(
+            "ix_memory_tool_receipts_conversation_created",
+            "conversation_key_hash",
+            "created_at",
+        ),
+        Index("ix_memory_tool_receipts_expires", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    trigger_event_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
+    )
+    bot_user_id: Mapped[str] = mapped_column(
+        ForeignKey("people.user_id", ondelete="CASCADE"), nullable=False
+    )
+    provider_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    result_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    result_characters: Mapped[int] = mapped_column(Integer, nullable=False)
+    error_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemorySelfReflectionStateModel(Base):
+    """Persistent per-conversation cursor; no chat body is duplicated here."""
+
+    __tablename__ = "memory_self_reflection_states"
+    __table_args__ = (
+        UniqueConstraint("conversation_key_hash", name="uq_memory_self_reflection_state_key"),
+        CheckConstraint("scope_type IN ('private','group')", name="ck_self_reflection_state_scope"),
+        CheckConstraint(
+            "pending_events >= 0 AND pending_characters >= 0",
+            name="ck_self_reflection_state_pending",
+        ),
+        Index("ix_memory_self_reflection_state_pending", "pending_since", "last_event_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    private_peer_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    latest_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    pending_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pending_characters: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pending_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    has_yuki_reply: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    has_tool_result: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    high_value_signal: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemorySelfReflectionRuntimeModel(Base):
+    """Singleton scan cursor initialized at deployment to avoid historical reflection."""
+
+    __tablename__ = "memory_self_reflection_runtime"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_scanned_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemorySelfReflectionRunModel(Base):
+    """Content-free scheduled invocation record used for limits and idempotency."""
+
+    __tablename__ = "memory_self_reflection_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_key_hash", "scheduled_slot", name="uq_self_reflection_run_slot"
+        ),
+        CheckConstraint(
+            "status IN ('processing','completed','failed')",
+            name="ck_self_reflection_run_status",
+        ),
+        Index("ix_memory_self_reflection_runs_slot", "scheduled_slot", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    scheduled_slot: Mapped[str] = mapped_column(String(32), nullable=False)
+    trigger_reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    first_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    proposal_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    committed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class MemoryReflectionJobModel(Base):
@@ -858,7 +1047,8 @@ class MemoryJobModel(Base):
         ),
         CheckConstraint(
             "outcome IS NULL OR outcome IN "
-            "('claims_applied', 'no_claims', 'all_rejected', 'already_processed')",
+            "('claims_applied', 'candidates_staged', 'no_claims', 'all_rejected', "
+            "'already_processed')",
             name="ck_memory_jobs_outcome",
         ),
         Index("ix_memory_jobs_status_next", "status", "next_attempt_at"),

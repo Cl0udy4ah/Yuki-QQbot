@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -346,7 +347,11 @@ class MemoryQualityRunner:
         for row in rows:
             ref = fact_refs.get(row.id, self._unmapped_ref(row, reverse_symbols))
             for evidence in await repository.list_evidence(row.id):
-                event_ref = event_refs.get(evidence.event_id, "event_unknown")
+                event_ref = (
+                    event_refs.get(evidence.event_id, "event_unknown")
+                    if evidence.event_id is not None
+                    else "tool_receipt"
+                )
                 observed_evidence.append(
                     evidence_key(
                         QualityEvidenceSpec(
@@ -617,6 +622,19 @@ class MemoryQualityRunner:
     @staticmethod
     def _claim_payload(claim: QualityClaim) -> dict[str, object]:
         data = claim.model_dump(mode="json", exclude={"event_ref"}, exclude_none=True)
+        # Quality v1 fixtures predate the explicit attribution contract. Preserve
+        # their deterministic meaning without weakening production validation.
+        if claim.scope_type == MemoryScopeType.GROUP.value or claim.subject_ref == "group":
+            data["subject_basis"] = "group"
+        elif claim.subject_ref.startswith("mentioned_"):
+            data["subject_basis"] = "mentioned_subject"
+        elif claim.subject_ref == "reply_author":
+            data["subject_basis"] = "reply_subject"
+        elif re.search(
+            r"(?:^|[，。！？；：,.!?;:\s]|记住)(?:我|我的)(?:最|是|有|在|喜欢|讨厌|准备|计划)",
+            claim.evidence_quote,
+        ):
+            data["subject_basis"] = "first_person"
         return dict(data)
 
     @staticmethod
