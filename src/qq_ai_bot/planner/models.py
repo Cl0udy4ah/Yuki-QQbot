@@ -248,6 +248,7 @@ class PlannerInput(_StrictPlannerModel):
     scope_type: ScopeType
     origin: TurnOrigin
     trigger_message_id: str
+    trigger_event_id: int | None = Field(default=None, exclude=True)
     bot_user_id: str
     current_sender_user_id: str
     current_group_id: str | None = None
@@ -255,7 +256,7 @@ class PlannerInput(_StrictPlannerModel):
     current_message: ChatMessage
     current_message_text: str = Field(default="", exclude=True)
     trusted_history_sender_user_ids: tuple[str, ...] = Field(default=(), exclude=True)
-    trusted_history_message_ids: tuple[str, ...] = Field(default=(), exclude=True)
+    trusted_history_event_ids: tuple[int, ...] = Field(default=(), exclude=True)
     reply_target_is_bot: bool = False
     mentions_bot: bool = False
     mentioned_user_ids: tuple[str, ...] = ()
@@ -289,13 +290,13 @@ class PlannerInput(_StrictPlannerModel):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def known_message_ids(self) -> tuple[str, ...]:
-        """Return message IDs from only the bounded current conversation input."""
+    def known_event_ids(self) -> tuple[int, ...]:
+        """Return local event IDs from only the bounded current conversation input."""
 
-        known: list[str] = []
-        for message_id in (*self.trusted_history_message_ids, self.trigger_message_id):
-            if message_id and message_id not in known:
-                known.append(message_id)
+        known: list[int] = []
+        for event_id in (*self.trusted_history_event_ids, self.trigger_event_id):
+            if event_id is not None and event_id not in known:
+                known.append(event_id)
         return tuple(known)
 
     @property
@@ -314,12 +315,13 @@ class TurnPlan(_StrictPlannerModel):
     target_user_ids: tuple[str, ...] = Field(default=(), max_length=5)
     delivery_mode: DeliveryMode = DeliveryMode.SINGLE
     desired_messages: int = Field(default=1, ge=1, le=20, strict=True)
-    reply_to_message_id: str | None = Field(
+    reply_to_event_id: int | None = Field(
         default=None,
-        max_length=128,
+        gt=0,
+        strict=True,
         description=(
-            "默认必须为 null。只有需要在多人对话中明确指向某条真实消息，或特意回到较早消息时"
-            "才填写；正常回答当前消息不得使用。"
+            "默认必须为 null。只有需要在多人对话中明确指向某条真实事件，或特意回到较早事件时"
+            "才填写该事件信封中的 #EventRecord.id；普通顺接无需使用。"
         ),
     )
     tool_selection: ToolSelection = ToolSelection()
@@ -511,7 +513,7 @@ class PlannerModelOutput(_StrictPlannerModel):
     delivery_mode: DeliveryMode = Field(
         description="选择正文发送形态；用户要求多条或自然聊天适合拆分时使用 natural_multi。"
     )
-    reply_to_message_id: str | None = Field(default=None, max_length=128)
+    reply_to_event_id: int | None = Field(default=None, gt=0, strict=True)
     tool_selection: PlannerToolOutput | None = None
     wait_seconds: float = Field(default=0, ge=0, le=300, strict=True)
     memory_context: PlannerMemoryOutput
@@ -535,7 +537,7 @@ class PlannerModelOutput(_StrictPlannerModel):
             decision=self.decision,
             intent=self.intent,
             delivery_mode=self.delivery_mode,
-            reply_to_message_id=self.reply_to_message_id,
+            reply_to_event_id=self.reply_to_event_id,
             wait_seconds=self.wait_seconds,
             confidence=self.confidence,
             reason_code=self.reason_code,

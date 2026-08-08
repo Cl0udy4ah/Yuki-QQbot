@@ -269,26 +269,27 @@ def _planner_input(
     )
     current = ChatMessage(
         role="user",
-        content=f"[发送者:测试用户|QQ:1001|消息:101] {text}",
+        content=f"[测试用户|QQ:1001]\n#101>{text}",
     )
     return PlannerInput(
         conversation_key="private:1001" if scope is ScopeType.PRIVATE else "group:2001:user:1001",
         scope_type=scope,
         origin=origin,
         trigger_message_id="101",
+        trigger_event_id=101,
         bot_user_id="9999",
         current_sender_user_id="1001",
         current_group_id=None if scope is ScopeType.PRIVATE else "2001",
         history_messages=(
             ChatMessage(
                 role="user",
-                content="[发送者:历史用户|QQ:1002|消息:100] earlier",
+                content="[历史用户|QQ:1002]\n#100>earlier",
             ),
         ),
         current_message=current,
         current_message_text=text,
         trusted_history_sender_user_ids=("1002",),
-        trusted_history_message_ids=("100",),
+        trusted_history_event_ids=(100,),
         reply_target_is_bot=reply_target_is_bot,
         mentions_bot=mentions_bot,
         mentioned_user_ids=("1002",),
@@ -306,7 +307,7 @@ def _valid_plan_payload(**updates: object) -> dict[str, object]:
         "target_user_ids": ["1001"],
         "delivery_mode": "single",
         "desired_messages": 1,
-        "reply_to_message_id": None,
+        "reply_to_event_id": None,
         "tool_selection": {"mode": "inherit", "scopes": []},
         "wait_seconds": 0,
         "confidence": 0.9,
@@ -440,12 +441,12 @@ async def test_planner_history_excludes_the_separate_current_message() -> None:
 
     assert [message.role for message in planner_input.history_messages] == ["assistant"]
     assert planner_input.history_messages[0].content == (
-        "[发送者:Yuki|QQ:9999|消息:previous] 上一条回复"
+        "[Yuki|QQ:9999]\n#1>上一条回复"
     )
     assert planner_input.current_message.content == (
-        "[发送者:远野|QQ:1001|消息:current] 有时候还要学会调用工具"
+        "[远野|QQ:1001]\n#2>有时候还要学会调用工具"
     )
-    assert planner_input.known_message_ids == ("previous", "current")
+    assert planner_input.known_event_ids == (1, 2)
     assert planner_input.necessity.pending_message_count == 1
 
 
@@ -510,11 +511,11 @@ async def test_planner_receives_ten_continuous_history_messages_plus_current() -
     )
 
     assert len(planner_input.history_messages) == 10
-    assert planner_input.trusted_history_message_ids == tuple(str(index) for index in range(3, 13))
-    assert "消息:13" not in "\n".join(
+    assert planner_input.trusted_history_event_ids == tuple(range(3, 13))
+    assert "#13>" not in "\n".join(
         message.content or "" for message in planner_input.history_messages
     )
-    assert "消息:13" in (planner_input.current_message.content or "")
+    assert "#13>" in (planner_input.current_message.content or "")
     assert ledger.list_recent.await_args.kwargs["limit"] == 11
 
 
@@ -580,15 +581,15 @@ def test_planner_messages_use_the_shared_chat_message_shape() -> None:
     assert payload["history_messages"] == [
         {
             "role": "user",
-            "content": "[发送者:历史用户|QQ:1002|消息:100] earlier",
+            "content": "[历史用户|QQ:1002]\n#100>earlier",
         }
     ]
     assert payload["current_message"] == {
         "role": "user",
-        "content": "[发送者:测试用户|QQ:1001|消息:101] 帮我看看",
+        "content": "[测试用户|QQ:1001]\n#101>帮我看看",
     }
     assert "trusted_history_sender_user_ids" not in payload
-    assert "trusted_history_message_ids" not in payload
+    assert "trusted_history_event_ids" not in payload
 
 
 def test_private_message_has_base_relevance_and_enters_planner() -> None:
@@ -1093,7 +1094,7 @@ def test_plan_validation_narrows_limits_and_unknown_event_bindings() -> None:
     payload = _valid_plan_payload(
         decision="wait",
         target_user_ids=["unknown", "1002", "1002", "1001"],
-        reply_to_message_id="outside-current-context",
+        reply_to_event_id=999,
         desired_messages=19,
         wait_seconds=250,
         tool_mode="inherit",
@@ -1105,35 +1106,35 @@ def test_plan_validation_narrows_limits_and_unknown_event_bindings() -> None:
         max_wait_seconds=30,
     )
     assert plan.target_user_ids == ("1002", "1001")
-    assert plan.reply_to_message_id is None
+    assert plan.reply_to_event_id is None
     assert plan.desired_messages == 4
     assert plan.wait_seconds == 30
 
     unknown_reply = constrain_turn_plan(
-        _valid_plan_payload(reply_to_message_id="outside-current-context"),
+        _valid_plan_payload(reply_to_event_id=999),
         _planner_input(scope=ScopeType.GROUP),
     )
-    assert unknown_reply.reply_to_message_id is None
+    assert unknown_reply.reply_to_event_id is None
 
 
 def test_reply_target_is_plain_by_default_but_preserves_intentional_quotes() -> None:
     private_input = _planner_input(scope=ScopeType.PRIVATE)
     current_private = constrain_turn_plan(
-        _valid_plan_payload(reply_to_message_id="101"),
+        _valid_plan_payload(reply_to_event_id=101),
         private_input,
     )
     older_private = constrain_turn_plan(
-        _valid_plan_payload(reply_to_message_id="100"),
+        _valid_plan_payload(reply_to_event_id=100),
         private_input,
     )
     current_group = constrain_turn_plan(
-        _valid_plan_payload(reply_to_message_id="101"),
+        _valid_plan_payload(reply_to_event_id=101),
         _planner_input(scope=ScopeType.GROUP),
     )
 
-    assert current_private.reply_to_message_id is None
-    assert older_private.reply_to_message_id == "100"
-    assert current_group.reply_to_message_id == "101"
+    assert current_private.reply_to_event_id is None
+    assert older_private.reply_to_event_id == 100
+    assert current_group.reply_to_event_id == 101
 
 
 def test_plan_parser_rejects_unknown_fields_and_permission_modes() -> None:
@@ -1208,7 +1209,7 @@ async def test_llm_planner_is_tool_free_non_thinking_and_uses_separate_model() -
     assert request.thinking_enabled is False
     assert request.tools == ()
     assert request.tool_choice is None
-    assert "reply_to_message_id 默认必须为 null" in (request.messages[0].content or "")
+    assert "reply_to_event_id 默认必须为 null" in (request.messages[0].content or "")
 
 
 @pytest.mark.asyncio
@@ -1236,7 +1237,7 @@ async def test_llm_planner_materializes_sparse_output_with_backend_defaults() ->
     assert plan.intent == ""
     assert plan.delivery_mode is DeliveryMode.SINGLE
     assert plan.desired_messages == 1
-    assert plan.reply_to_message_id is None
+    assert plan.reply_to_event_id is None
     assert plan.tool_mode is ToolMode.INHERIT
     assert plan.tool_selection.scope_ids == ()
     assert plan.tool_selection_explicit is False

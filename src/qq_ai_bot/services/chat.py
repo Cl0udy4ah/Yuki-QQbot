@@ -117,6 +117,7 @@ from qq_ai_bot.services.reply_sequence import (
     DeliveryFailureRecovery,
     ReplySequenceManager,
 )
+from qq_ai_bot.services.reply_target import ReplyTargetControl, ReplyTargetResolver
 from qq_ai_bot.services.source_policy import SourceDisplayPolicy
 from qq_ai_bot.services.source_renderer import SourceRenderer
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator, TurnToken
@@ -141,6 +142,21 @@ logger = logging.getLogger(__name__)
 # preserving access to the complete actor-authorized catalog.
 _INHERITED_RELATED_TOOL_LIMIT = 6
 _INHERITED_CANDIDATE_POOL_LIMIT = 24
+_SET_REPLY_TARGET_NAME = "set_reply_target"
+_SET_REPLY_TARGET_TOOL = ChatTool(
+    name=_SET_REPLY_TARGET_NAME,
+    description=(
+        "控制本轮最终 QQ 引用回复目标。Planner 已给出默认目标时通常不要调用；仅在多人混聊、"
+        "需要明确回应某条较早消息或 Planner 目标不合适时调用。event_id 必须来自当前上下文"
+        "消息行的 #EventRecord.id；省略 event_id 表示取消 Planner 的引用。该函数只设置本轮"
+        "回复样式，不发送消息。每轮最多成功设置一次。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"event_id": {"type": "integer", "minimum": 1}},
+        "additionalProperties": False,
+    },
+)
 
 _BUILTIN_SCOPE_DESCRIPTIONS = {
     "memory": (
@@ -287,9 +303,15 @@ class _ChatAgentBackend(AgentToolBackend):
 
     def definitions(self, runtime: AgentRuntime, *, web_was_used: bool) -> tuple[ChatTool, ...]:
         self._web_was_used = self._web_was_used or web_was_used
+        response_controls = self._response_control_definitions()
         if self._tools_closed:
-            self._log_tool_exposure((), selected_scopes=(), reason="tools_closed")
-            return ()
+            self._callable_tool_names = {tool.name for tool in response_controls}
+            self._log_tool_exposure(
+                response_controls,
+                selected_scopes=(),
+                reason="business_tools_closed",
+            )
+            return response_controls
         request_runtime = self._request_runtime()
         self._provider_registry = self._service._build_tool_registry(
             request_runtime,
@@ -463,13 +485,13 @@ class _ChatAgentBackend(AgentToolBackend):
                 for entry in filtered_catalog.entries
             )
         ):
-            self._callable_tool_names = set()
+            self._callable_tool_names = {tool.name for tool in response_controls}
             self._log_tool_exposure(
-                (),
+                response_controls,
                 selected_scopes=selected_scopes,
                 reason="selected_scopes_unavailable",
             )
-            return ()
+            return response_controls
         budgeted = ToolSchemaBudgeter(
             selected_tool_limit=(
                 None
@@ -494,6 +516,11 @@ class _ChatAgentBackend(AgentToolBackend):
         )
         if may_request_more:
             definitions = (*definitions, request_tools_definition())
+        if response_controls:
+            definitions = (
+                *(tool for tool in definitions if tool.name != _SET_REPLY_TARGET_NAME),
+                *response_controls,
+            )
         self._callable_tool_names = {tool.name for tool in definitions}
         for entry in budgeted.entries:
             self._service._tool_metrics.record_selection(
@@ -592,6 +619,8 @@ class _ChatAgentBackend(AgentToolBackend):
                 {"ok": False, "error": "tool_batch_state_mismatch"}, ensure_ascii=False
             )
         call = self._batch.pop(call_index)
+        if name == _SET_REPLY_TARGET_NAME:
+            return self._set_reply_target(arguments_json)
         if name == REQUEST_TOOLS_NAME:
             return self._request_tools(arguments_json)
         if name not in self._callable_tool_names:
@@ -902,10 +931,62 @@ class _ChatAgentBackend(AgentToolBackend):
 
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool:
         del runtime
-        if name == REQUEST_TOOLS_NAME:
+        if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME}:
             return False
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         return bool(entry is not None and entry.descriptor.parallel_safe)
+
+    def counts_toward_limit(self, name: str, runtime: AgentRuntime) -> bool:
+        """Keep local reply composition outside the business-tool call budget."""
+
+        del runtime
+        return name != _SET_REPLY_TARGET_NAME
+
+    def _response_control_definitions(self) -> tuple[ChatTool, ...]:
+        if self._runtime.reply_target_control is None or self._runtime.origin not in {
+            TurnOrigin.USER_MESSAGE,
+            TurnOrigin.AUTONOMOUS_GROUP,
+        }:
+            return ()
+        return (_SET_REPLY_TARGET_TOOL,)
+
+    def _set_reply_target(self, arguments_json: str) -> str:
+        control = self._runtime.reply_target_control
+        if control is None:
+            return json.dumps(
+                {"ok": False, "error": "reply_control_unavailable"},
+                ensure_ascii=False,
+            )
+        try:
+            arguments = json.loads(arguments_json)
+        except json.JSONDecodeError:
+            arguments = None
+        if not isinstance(arguments, dict) or set(arguments) - {"event_id"}:
+            return json.dumps(
+                {"ok": False, "error": "invalid_arguments"},
+                ensure_ascii=False,
+            )
+        event_id = arguments.get("event_id")
+        if event_id is not None and (not isinstance(event_id, int) or isinstance(event_id, bool)):
+            return json.dumps(
+                {"ok": False, "error": "invalid_event_id"},
+                ensure_ascii=False,
+            )
+        accepted, outcome = control.apply(event_id)
+        logger.info(
+            "agent_reply_target_control accepted=%s outcome=%s event_id=%s",
+            accepted,
+            outcome,
+            event_id if event_id is not None else "none",
+        )
+        return json.dumps(
+            {
+                "ok": accepted,
+                "outcome": outcome,
+                "reply_to_event_id": event_id if accepted else None,
+            },
+            ensure_ascii=False,
+        )
 
     def _request_tools(self, arguments_json: str) -> str:
         self._request_tools_called = True
@@ -1120,6 +1201,7 @@ class ChatService:
             ),
         )
         self._reply_sequence = reply_sequence or ReplySequenceManager(self._turn_coordinator)
+        self._reply_target_resolver = ReplyTargetResolver(self._ledger)
         self._emoji_effects = emoji_effects
         self._speech_effects = speech_effects
         self._event_publisher = event_publisher
@@ -1408,10 +1490,11 @@ class ChatService:
                 and planned_turn.plan.tool_mode is ToolMode.NONE
                 and not memory_mutation_intent
             )
-            messages = (
-                ()
-                if planner_emoji_only
-                else await self._build_messages(
+            if planner_emoji_only:
+                messages: tuple[ChatMessage, ...] = ()
+                visible_event_ids: frozenset[int] = frozenset()
+            else:
+                messages, visible_event_ids = await self._build_messages(
                     inbound,
                     identity,
                     profile,
@@ -1421,7 +1504,6 @@ class ChatService:
                     visual_failure=visual_failure,
                     planned_turn=planned_turn,
                 )
-            )
             scheduled_automation_intent = bool(
                 not autonomous
                 and not visual_input_present
@@ -1463,6 +1545,11 @@ class ChatService:
             gateway = (
                 cast(OneBotToolGateway, sender)
                 if callable(getattr(sender, "call_api", None))
+                else None
+            )
+            reply_target_control = (
+                ReplyTargetControl(visible_event_ids=visible_event_ids)
+                if not planner_emoji_only
                 else None
             )
             reply_effects: list[ReplyEffect] = []
@@ -1547,6 +1634,7 @@ class ChatService:
                 tool_groups=tool_groups,
                 turn_token=turn_token,
                 reply_effects=reply_effects,
+                reply_target_control=reply_target_control,
                 voice_tool_authorized=(
                     planned_turn is not None
                     and planned_turn.plan.voice.agent_tool is VoiceAgentToolPolicy.REQUIRED
@@ -1627,6 +1715,12 @@ class ChatService:
             sources = await self._web_sources.for_trigger(
                 conversation_key=identity.key,
                 trigger_message_id=inbound.message_id,
+            )
+            reply_to_message_id = await self._resolve_reply_target(
+                inbound=inbound,
+                conversation_key=identity.key,
+                planned_turn=planned_turn,
+                control=reply_target_control,
             )
             response_text = self._source_renderer.sanitize_model_text(response_text, sources)
             effects = runtime.reply_effects or []
@@ -1854,6 +1948,7 @@ class ChatService:
                     before_messages=before,
                     after_messages=after,
                     suppress_text=suppress_text,
+                    reply_to_message_id=reply_to_message_id,
                 )
                 return sequence.sent_messages
             chunks = self._render_chunks(rendered, runtime_config) if rendered else ()
@@ -1874,6 +1969,11 @@ class ChatService:
                 if effect.placement is not EmojiPlacement.BEFORE_TEXT
             )
             legacy_messages.extend(preparation_fallbacks)
+            if reply_to_message_id is not None and legacy_messages:
+                legacy_messages[0] = replace(
+                    legacy_messages[0],
+                    reply_to_message_id=reply_to_message_id,
+                )
             legacy_effect_by_emoji_id = {
                 media.emoji_id: effect
                 for effect, message in prepared_effects
@@ -1900,47 +2000,66 @@ class ChatService:
                     if not isinstance(receipt, OutboundSendReceipt):
                         raise TypeError("outbound sender returned no delivery receipt")
                 except Exception as exc:
-                    if outbound.media and self._emoji_effects is not None:
-                        await self._emoji_effects.record_failure(
-                            outbound,
-                            source="reply_effect",
+                    retry_succeeded = False
+                    if outbound.reply_to_message_id is not None:
+                        outbound = replace(outbound, reply_to_message_id=None)
+                        logger.warning(
+                            "reply_quote_delivery_failed retry_without_quote=true "
+                            "exception_category=%s",
+                            type(exc).__name__,
                         )
-                    emoji_id = next(
-                        (media.emoji_id for media in outbound.media if media.emoji_id),
-                        None,
-                    )
-                    failed_effect = (
-                        legacy_effect_by_emoji_id.get(emoji_id) if emoji_id is not None else None
-                    )
-                    if failed_effect is None:
-                        raise
-                    if (
-                        failed_effect.mode is EmojiReplyMode.OPTIONAL
-                        and not failed_effect.explicit_request
-                    ):
-                        continue
-                    if legacy_failure_notice_sent:
-                        continue
-                    legacy_failure_notice_sent = True
-                    fallback = OutboundMessage(
-                        text=(
-                            "表情没发出去，发送失败了。"
-                            if failed_effect.mode is EmojiReplyMode.EMOJI_ONLY
-                            or failed_effect.placement is EmojiPlacement.ONLY
-                            else "表情没发出去，先用文字回你。"
+                        try:
+                            receipt = await sender.send(outbound)
+                            if not isinstance(receipt, OutboundSendReceipt):
+                                raise TypeError("outbound sender returned no delivery receipt")
+                        except Exception as retry_exc:
+                            exc = retry_exc
+                        else:
+                            retry_succeeded = True
+                    if not retry_succeeded:
+                        if outbound.media and self._emoji_effects is not None:
+                            await self._emoji_effects.record_failure(
+                                outbound,
+                                source="reply_effect",
+                            )
+                        emoji_id = next(
+                            (media.emoji_id for media in outbound.media if media.emoji_id),
+                            None,
                         )
-                    )
-                    fallback_receipt = await sender.send(fallback)
-                    if not isinstance(fallback_receipt, OutboundSendReceipt):
-                        raise TypeError("outbound sender returned no delivery receipt") from exc
-                    sent_count += 1
-                    await self._record_outbound_message(inbound, fallback, fallback_receipt)
-                    await publish_notification(
-                        self._event_publisher,
-                        EventName.EMOJI_FALLBACK_TEXT_SENT,
-                        {"scope_type": inbound.scope_type.value},
-                    )
-                    continue
+                        failed_effect = (
+                            legacy_effect_by_emoji_id.get(emoji_id)
+                            if emoji_id is not None
+                            else None
+                        )
+                        if failed_effect is None:
+                            raise exc
+                        if (
+                            failed_effect.mode is EmojiReplyMode.OPTIONAL
+                            and not failed_effect.explicit_request
+                        ):
+                            continue
+                        if legacy_failure_notice_sent:
+                            continue
+                        legacy_failure_notice_sent = True
+                        fallback = OutboundMessage(
+                            text=(
+                                "表情没发出去，发送失败了。"
+                                if failed_effect.mode is EmojiReplyMode.EMOJI_ONLY
+                                or failed_effect.placement is EmojiPlacement.ONLY
+                                else "表情没发出去，先用文字回你。"
+                            )
+                        )
+                        fallback_receipt = await sender.send(fallback)
+                        if not isinstance(fallback_receipt, OutboundSendReceipt):
+                            raise TypeError("outbound sender returned no delivery receipt") from exc
+                        sent_count += 1
+                        await self._record_outbound_message(inbound, fallback, fallback_receipt)
+                        await publish_notification(
+                            self._event_publisher,
+                            EventName.EMOJI_FALLBACK_TEXT_SENT,
+                            {"scope_type": inbound.scope_type.value},
+                        )
+                        continue
                 sent_count += 1
                 if outbound.media and self._emoji_effects is not None:
                     await self._emoji_effects.record_send_accepted(
@@ -1977,7 +2096,7 @@ class ChatService:
         visual_observation: VisualObservation | None = None,
         visual_failure: bool = False,
         planned_turn: PlannedTurn | None = None,
-    ) -> tuple[ChatMessage, ...]:
+    ) -> tuple[tuple[ChatMessage, ...], frozenset[int]]:
         context = await self._context_assembler.assemble(
             inbound=inbound,
             identity=identity,
@@ -1994,14 +2113,51 @@ class ChatService:
                 planned_turn.plan.memory_context.self_recall if planned_turn is not None else False
             ),
         )
-        return self._prompt_composer.compose(
-            inbound=inbound,
-            context=context,
-            runtime=runtime,
-            visual_observation=visual_observation,
-            visual_failure=visual_failure,
-            planned_turn=planned_turn,
+        return (
+            self._prompt_composer.compose(
+                inbound=inbound,
+                context=context,
+                runtime=runtime,
+                visual_observation=visual_observation,
+                visual_failure=visual_failure,
+                planned_turn=planned_turn,
+            ),
+            context.visible_event_ids,
         )
+
+    async def _resolve_reply_target(
+        self,
+        *,
+        inbound: InboundMessage,
+        conversation_key: str,
+        planned_turn: PlannedTurn | None,
+        control: ReplyTargetControl | None,
+    ) -> str | None:
+        source = "none"
+        event_id: int | None = None
+        if control is not None and control.override_applied:
+            source = "agent"
+            event_id = control.event_id
+        elif planned_turn is not None and planned_turn.plan.reply_to_event_id is not None:
+            source = "planner"
+            event_id = planned_turn.plan.reply_to_event_id
+        if event_id is None:
+            if source == "agent":
+                logger.info(
+                    "reply_target_resolved conversation_hash=%s source=agent "
+                    "event_id=none outcome=cleared",
+                    identifier_hash(conversation_key) or "missing",
+                )
+            return None
+        resolution = await self._reply_target_resolver.resolve(event_id, inbound=inbound)
+        logger.info(
+            "reply_target_resolved conversation_hash=%s source=%s event_id=%d outcome=%s",
+            identifier_hash(conversation_key) or "missing",
+            source,
+            event_id,
+            resolution.reason,
+        )
+        return resolution.platform_message_id
 
     async def _run_agent(
         self,

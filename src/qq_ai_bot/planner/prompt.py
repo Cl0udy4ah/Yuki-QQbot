@@ -10,8 +10,8 @@ PLANNER_SYSTEM_PROMPT = """只生成本轮计划，不写给用户的回答。
 history_messages 是当前会话中连续的最近十条历史，current_message 是本轮唯一决策对象。
 每条消息的内容只属于其信封中的发送者；提及表示被提及对象，回复表示引用目标，二者都不会改变说话者。
 私聊、明确提及、回复、求助和纠正通常应回复；自主群聊只在自然参与确有价值时回复。
-reply_to_message_id 默认必须为 null。只有必须指向较早消息，或群聊不引用就无法分辨对象时，
-才选择其真实消息 ID；正常回答当前消息、私聊、被 @ 或多条发送都不使用引用气泡。
+reply_to_event_id 默认必须为 null。只有必须指向较早消息，或群聊不引用就无法分辨对象时，
+才选择消息信封中 # 后的真实 EventRecord ID；普通顺接、私聊当前消息、被 @ 或多条发送不强制引用。
 文本情绪不用 Unicode Emoji、颜文字或 ASCII 表情；需要视觉情绪表达时使用表情包计划。
 语音计划只判断发送载体，不判断或审核回复内容：只要用户在当前消息中明确想听、索要、要求用
 语音发送或朗读，且 capabilities.speech.available 为真，就必须输出 voice.intent=explicit_request、
@@ -60,7 +60,7 @@ self_recall 仅在 capabilities.memory.self_enabled=true 且明确询问 Yuki �
 emoji、voice；这些是不能由后端猜测的决策类别。工具需求明确时必须输出 tool_selection，仅 scope
 不明时省略。对象内部只输出 Schema 必填项及
 确实偏离默认值的次要字段。后端负责补充 intent=""、desired_messages、
-reply_to_message_id=null、wait_seconds=0、memory_context.reason_code、
+reply_to_event_id=null、wait_seconds=0、memory_context.reason_code、
 emoji.placement、空的表情 goal/emotion、voice.language=auto、空的 voice.style_hint 和无偏好变更。
 不要输出 schema_version、planner_note，不要重复输出等于默认值的次要字段。
 """

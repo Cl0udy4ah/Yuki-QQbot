@@ -367,6 +367,13 @@ class _BatchBackend:
         return json.dumps({"ok": True, "name": name})
 
 
+@dataclass(slots=True)
+class _ControlAwareBatchBackend(_BatchBackend):
+    def counts_toward_limit(self, name: str, runtime: object) -> bool:
+        del runtime
+        return name != "set_reply_target"
+
+
 @pytest.mark.asyncio
 async def test_coordinator_parallelizes_safe_stretches_but_returns_original_order() -> None:
     backend = _BatchBackend()
@@ -401,6 +408,28 @@ async def test_coordinator_parallelizes_safe_stretches_but_returns_original_orde
     )
     assert large_result.executed_count == 64
     assert [call.id for call, _payload, _ran in large_result.calls] == [call.id for call in many]
+
+
+@pytest.mark.asyncio
+async def test_coordinator_keeps_response_controls_outside_business_call_budget() -> None:
+    backend = _ControlAwareBatchBackend()
+    calls = tuple(
+        ToolCall(id=name, function=ToolFunction(name=name, arguments="{}"))
+        for name in ("write", "set_reply_target")
+    )
+
+    result = await ToolInvocationCoordinator().execute_batch(
+        calls,
+        backend,
+        object(),
+        remaining_calls=0,
+        max_parallel_calls=1,
+    )
+
+    assert result.executed_count == 0
+    assert backend.completed == ["set_reply_target"]
+    assert [ran for _call, _payload, ran in result.calls] == [False, True]
+    assert "tool_limit_exceeded" in result.calls[0][1]
 
 
 @pytest.mark.asyncio

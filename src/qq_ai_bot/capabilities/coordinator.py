@@ -45,8 +45,22 @@ class ToolInvocationCoordinator:
                 tuple((call, unavailable, False) for call in calls),
                 0,
             )
-        executable = calls[:remaining_calls]
-        overflow = calls[remaining_calls:]
+        def counts_toward_limit(call: ToolCall) -> bool:
+            check = getattr(backend, "counts_toward_limit", None)
+            return not callable(check) or bool(check(call.function.name, runtime))
+
+        executable_list: list[ToolCall] = []
+        overflow_ids: set[str] = set()
+        counted_executions = 0
+        for call in calls:
+            counted = counts_toward_limit(call)
+            if counted and counted_executions >= remaining_calls:
+                overflow_ids.add(call.id)
+                continue
+            executable_list.append(call)
+            if counted:
+                counted_executions += 1
+        executable = tuple(executable_list)
         results: dict[str, str] = {}
         semaphore = asyncio.Semaphore(max_parallel_calls)
 
@@ -81,7 +95,12 @@ class ToolInvocationCoordinator:
             {"ok": False, "error": "tool_limit_exceeded"},
             ensure_ascii=False,
         )
-        ordered = tuple((call, results[call.id], True) for call in executable) + tuple(
-            (call, limited, False) for call in overflow
+        ordered = tuple(
+            (
+                call,
+                limited if call.id in overflow_ids else results[call.id],
+                call.id not in overflow_ids,
+            )
+            for call in calls
         )
-        return CoordinatedToolResult(ordered, len(executable))
+        return CoordinatedToolResult(ordered, counted_executions)

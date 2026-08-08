@@ -343,6 +343,7 @@ def test_main_agent_history_groups_adjacent_messages_from_the_same_identity() ->
     assert history == (
         (
             48217,
+            (48217, 48219),
             ChatMessage(
                 role="user",
                 content=(
@@ -356,9 +357,16 @@ def test_main_agent_history_groups_adjacent_messages_from_the_same_identity() ->
 
 
 def test_history_window_rolls_in_blocks_between_high_and_low_watermarks() -> None:
-    def rendered(start: int, end: int) -> tuple[tuple[int, ChatMessage], ...]:
+    def rendered(
+        start: int,
+        end: int,
+    ) -> tuple[tuple[int, tuple[int, ...], ChatMessage], ...]:
         return tuple(
-            (event_id, ChatMessage(role="user", content=f"message-{event_id}"))
+            (
+                event_id,
+                (event_id,),
+                ChatMessage(role="user", content=f"message-{event_id}"),
+            )
             for event_id in range(start, end + 1)
         )
 
@@ -372,6 +380,7 @@ def test_history_window_rolls_in_blocks_between_high_and_low_watermarks() -> Non
     )
     assert [item.content for item in seeded.messages] == ["message-3", "message-4", "message-5"]
     assert seeded.anchor_event_id == 3
+    assert seeded.event_ids == (3, 4, 5)
     assert not seeded.rolled
 
     appended = ContextAssembler._select_history_window(
@@ -389,6 +398,7 @@ def test_history_window_rolls_in_blocks_between_high_and_low_watermarks() -> Non
         "message-6",
     ]
     assert appended.anchor_event_id == 3
+    assert appended.event_ids == (3, 4, 5, 6)
     assert not appended.rolled
 
     rolled = ContextAssembler._select_history_window(
@@ -401,12 +411,14 @@ def test_history_window_rolls_in_blocks_between_high_and_low_watermarks() -> Non
     )
     assert [item.content for item in rolled.messages] == ["message-6", "message-7", "message-8"]
     assert rolled.anchor_event_id == 6
+    assert rolled.event_ids == (6, 7, 8)
     assert rolled.rolled
 
 
 def test_history_window_character_roll_keeps_a_contiguous_recent_block() -> None:
     rendered = tuple(
-        (event_id, ChatMessage(role="user", content=str(event_id) * 30)) for event_id in range(1, 6)
+        (event_id, (event_id,), ChatMessage(role="user", content=str(event_id) * 30))
+        for event_id in range(1, 6)
     )
     selection = ContextAssembler._select_history_window(
         rendered,
@@ -419,6 +431,7 @@ def test_history_window_character_roll_keeps_a_contiguous_recent_block() -> None
 
     assert [item.content for item in selection.messages] == ["4" * 30, "5" * 30]
     assert selection.anchor_event_id == 4
+    assert selection.event_ids == (4, 5)
     assert selection.rolled
 
 

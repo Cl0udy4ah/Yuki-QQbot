@@ -234,8 +234,8 @@ class PlannerService:
         updates: dict[str, object] = {
             "delivery_mode": delivery_mode,
             "desired_messages": desired_messages,
-            "reply_to_message_id": normalize_reply_target(
-                plan.reply_to_message_id,
+            "reply_to_event_id": normalize_reply_target(
+                plan.reply_to_event_id,
                 planner_input,
             ),
             "wait_seconds": min(plan.wait_seconds, runtime.planner.max_wait_seconds),

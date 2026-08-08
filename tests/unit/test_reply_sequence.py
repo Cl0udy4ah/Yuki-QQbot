@@ -128,18 +128,87 @@ async def test_only_first_message_in_sequence_quotes_planner_target(database: Da
 
     result = await manager.send(
         text="第一条。\n\n第二条。",
-        plan=_plan(DeliveryMode.NATURAL_MULTI, messages=2).model_copy(
-            update={"reply_to_message_id": "12345"}
-        ),
+        plan=_plan(DeliveryMode.NATURAL_MULTI, messages=2),
         runtime=runtime,
         token=token,
         sender=sender,
         record_outbound=record,
+        reply_to_message_id="12345",
     )
 
     assert result.sent_messages == 2
     assert [message.reply_to_message_id for message in sender.messages] == ["12345", None]
     assert recorded == sender.messages
+
+
+@pytest.mark.asyncio
+async def test_first_actual_media_message_receives_the_quote(database: Database) -> None:
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url),
+        database=database,
+    ).snapshot()
+    coordinator = ConversationTurnCoordinator()
+    token = await coordinator.notify_message("group:2001", TurnOrigin.USER_MESSAGE)
+    manager = ReplySequenceManager(coordinator)
+    sender = MemorySender()
+
+    result = await manager.send(
+        text="随后发送的正文",
+        plan=_plan(DeliveryMode.SINGLE),
+        runtime=runtime,
+        token=token,
+        sender=sender,
+        record_outbound=lambda *_args: asyncio.sleep(0),
+        before_messages=(_emoji_message(),),
+        reply_to_message_id="12345",
+    )
+
+    assert result.sent_messages == 2
+    assert sender.messages[0].media
+    assert [message.reply_to_message_id for message in sender.messages] == ["12345", None]
+
+
+class _QuoteFailingSender:
+    def __init__(self) -> None:
+        self.attempts: list[OutboundMessage] = []
+
+    async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
+        self.attempts.append(message)
+        if message.reply_to_message_id is not None:
+            raise RuntimeError("quoted message is unavailable")
+        return OutboundSendReceipt(platform_message_id="sent-without-quote")
+
+
+@pytest.mark.asyncio
+async def test_quote_failure_retries_once_without_quote(database: Database) -> None:
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url),
+        database=database,
+    ).snapshot()
+    coordinator = ConversationTurnCoordinator()
+    token = await coordinator.notify_message("group:2001", TurnOrigin.USER_MESSAGE)
+    manager = ReplySequenceManager(coordinator)
+    sender = _QuoteFailingSender()
+    recorded: list[OutboundMessage] = []
+
+    async def record(message: OutboundMessage, _receipt: OutboundSendReceipt) -> None:
+        recorded.append(message)
+
+    result = await manager.send(
+        text="正文不能丢",
+        plan=_plan(DeliveryMode.SINGLE),
+        runtime=runtime,
+        token=token,
+        sender=sender,
+        record_outbound=record,
+        reply_to_message_id="12345",
+    )
+
+    assert result.sent_messages == 1
+    assert len(sender.attempts) == 2
+    assert sender.attempts[0].reply_to_message_id == "12345"
+    assert sender.attempts[1].reply_to_message_id is None
+    assert recorded == [sender.attempts[1]]
 
 
 class _MediaFailingSender:

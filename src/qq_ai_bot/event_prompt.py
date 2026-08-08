@@ -50,14 +50,14 @@ class ChatEventPromptRenderer:
             ),
         )
 
-    def main_agent_message(
+    def reference_message(
         self,
         row: EventRecord,
         *,
         current_message_id: str = "",
         current_content: str = "",
     ) -> ChatMessage:
-        """Return the compact event-id projection used only by the main Agent."""
+        """Return the compact stable-event projection used by conversational models."""
 
         return ChatMessage(
             role=(
@@ -65,7 +65,7 @@ class ChatEventPromptRenderer:
                 if row.event_kind == "external_event"
                 else ("assistant" if row.direction == "outbound" else "user")
             ),
-            content=self.render_main_agent_event(
+            content=self.render_reference_event(
                 row,
                 current_message_id=current_message_id,
                 current_content=current_content,
@@ -75,12 +75,14 @@ class ChatEventPromptRenderer:
     def main_agent_history(
         self,
         rows: Iterable[EventRecord],
-    ) -> tuple[tuple[int, ChatMessage], ...]:
+    ) -> tuple[tuple[int, tuple[int, ...], ChatMessage], ...]:
         """Group adjacent visible events from one immutable sender identity."""
 
-        grouped: list[tuple[int, ChatMessage, tuple[str, str, str] | None]] = []
+        grouped: list[
+            tuple[int, tuple[int, ...], ChatMessage, tuple[str, str, str] | None]
+        ] = []
         for row in rows:
-            message = self.main_agent_message(row)
+            message = self.reference_message(row)
             rendered = (message.content or "").strip()
             if not rendered:
                 continue
@@ -89,12 +91,13 @@ class ChatEventPromptRenderer:
                 if row.event_kind == "external_event"
                 else (message.role, row.sender_user_id, row.sender_display_name)
             )
-            if grouped and group_key is not None and grouped[-1][2] == group_key:
-                previous_id, previous, _ = grouped[-1]
+            if grouped and group_key is not None and grouped[-1][3] == group_key:
+                previous_id, event_ids, previous, _ = grouped[-1]
                 _, separator, event_line = rendered.partition("\n")
                 if separator:
                     grouped[-1] = (
                         previous_id,
+                        (*event_ids, row.id),
                         ChatMessage(
                             role=previous.role,
                             content=f"{previous.content}\n{event_line}",
@@ -102,8 +105,11 @@ class ChatEventPromptRenderer:
                         group_key,
                     )
                     continue
-            grouped.append((row.id, message, group_key))
-        return tuple((event_id, message) for event_id, message, _ in grouped)
+            grouped.append((row.id, (row.id,), message, group_key))
+        return tuple(
+            (anchor_event_id, event_ids, message)
+            for anchor_event_id, event_ids, message, _ in grouped
+        )
 
     def render_event(
         self,
@@ -126,7 +132,7 @@ class ChatEventPromptRenderer:
             )
         return f"{self._event_envelope(row)} {content}"
 
-    def render_main_agent_event(
+    def render_reference_event(
         self,
         row: EventRecord,
         *,
@@ -196,7 +202,7 @@ class ChatEventPromptRenderer:
             fields.append(mention_field)
         return f"[{'|'.join(fields)}] {content}"
 
-    def render_main_agent_inbound(self, inbound: InboundMessage, content: str) -> str:
+    def render_reference_inbound(self, inbound: InboundMessage, content: str) -> str:
         """Render the rare unpersisted current input without inventing an event id."""
 
         display_name = self._display_name(

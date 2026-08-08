@@ -118,8 +118,8 @@ def validate_turn_plan(
         "target_user_ids": tuple(
             dict.fromkeys(target for target in plan.target_user_ids if target in known_targets)
         ),
-        "reply_to_message_id": normalize_reply_target(
-            plan.reply_to_message_id,
+        "reply_to_event_id": normalize_reply_target(
+            plan.reply_to_event_id,
             planner_input,
         ),
         "desired_messages": min(plan.desired_messages, hard_max_messages),
@@ -137,10 +137,10 @@ def validate_turn_plan(
 
 
 def normalize_reply_target(
-    requested_message_id: str | None,
+    requested_event_id: int | None,
     planner_input: PlannerInput,
-) -> str | None:
-    """Keep only an intentional, useful OneBot quote target.
+) -> int | None:
+    """Keep only an intentional, useful local event quote target.
 
     Replying to the current private message adds a redundant quote bubble to
     every turn, so it is always rendered as a normal message.  The Planner may
@@ -149,17 +149,16 @@ def normalize_reply_target(
     """
 
     if (
-        requested_message_id is None
-        or not requested_message_id.isdigit()
-        or requested_message_id not in planner_input.known_message_ids
+        requested_event_id is None
+        or requested_event_id not in planner_input.known_event_ids
     ):
         return None
     if (
         planner_input.scope_type is ScopeType.PRIVATE
-        and requested_message_id == planner_input.trigger_message_id
+        and requested_event_id == planner_input.trigger_event_id
     ):
         return None
-    return requested_message_id
+    return requested_event_id
 
 
 def deterministic_effect_plan(planner_input: PlannerInput) -> TurnPlan:

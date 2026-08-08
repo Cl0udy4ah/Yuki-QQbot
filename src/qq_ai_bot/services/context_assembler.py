@@ -62,6 +62,7 @@ class AssembledContext:
     current_time: TimeContext
     current_relationship: RelationshipSnapshot | None
     metrics: ContextMetrics
+    visible_event_ids: frozenset[int] = frozenset()
     external_events: tuple[dict[str, object], ...] = ()
 
 
@@ -73,6 +74,7 @@ class _BoundedMessages:
     current_message: ChatMessage
     history_anchor_event_id: int | None
     history_window_rolled: bool
+    visible_event_ids: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +84,7 @@ class _HistoryWindowSelection:
     messages: tuple[ChatMessage, ...]
     anchor_event_id: int | None
     rolled: bool
+    event_ids: tuple[int, ...] = ()
 
 
 class ContextAssembler:
@@ -294,6 +297,7 @@ class ContextAssembler:
             current_time=current_time,
             current_relationship=current_relationship,
             metrics=metrics,
+            visible_event_ids=bounded_messages.visible_event_ids,
             external_events=external_events,
         )
 
@@ -801,7 +805,7 @@ class ContextAssembler:
             None,
         )
         current_message = (
-            renderer.main_agent_message(
+            renderer.reference_message(
                 current_row,
                 current_message_id=inbound.message_id,
                 current_content=content,
@@ -809,7 +813,7 @@ class ContextAssembler:
             if current_row is not None
             else ChatMessage(
                 role="user",
-                content=renderer.render_main_agent_inbound(inbound, content),
+                content=renderer.render_reference_inbound(inbound, content),
             )
         )
         history_rows = tuple(row for row in recent if row.platform_message_id != inbound.message_id)
@@ -827,11 +831,14 @@ class ContextAssembler:
             current_message=current_message,
             history_anchor_event_id=selection.anchor_event_id,
             history_window_rolled=selection.rolled,
+            visible_event_ids=frozenset(
+                (*selection.event_ids, *((current_row.id,) if current_row is not None else ()))
+            ),
         )
 
     @staticmethod
     def _select_history_window(
-        rendered: tuple[tuple[int, ChatMessage], ...],
+        rendered: tuple[tuple[int, tuple[int, ...], ChatMessage], ...],
         *,
         anchor_event_id: int | None,
         high_event_limit: int,
@@ -847,7 +854,7 @@ class ContextAssembler:
         )
         anchor_found = anchor_index is not None
         candidate = rendered[anchor_index:] if anchor_index is not None else rendered
-        candidate_characters = sum(len(item.content or "") for _, item in candidate)
+        candidate_characters = sum(len(item.content or "") for _, _, item in candidate)
         must_roll = (
             not anchor_found
             or len(candidate) > high_event_limit
@@ -855,9 +862,12 @@ class ContextAssembler:
         )
         if not must_roll:
             return _HistoryWindowSelection(
-                messages=tuple(item for _, item in candidate),
+                messages=tuple(item for _, _, item in candidate),
                 anchor_event_id=(candidate[0][0] if candidate else fallback_anchor_event_id),
                 rolled=False,
+                event_ids=tuple(
+                    event_id for _, event_ids, _ in candidate for event_id in event_ids
+                ),
             )
 
         if high_event_limit <= 0 or high_character_limit <= 0:
@@ -869,10 +879,10 @@ class ContextAssembler:
 
         low_event_limit = max(1, int(high_event_limit * low_watermark_ratio))
         low_character_limit = max(1, int(high_character_limit * low_watermark_ratio))
-        selected_reversed: list[tuple[int, ChatMessage]] = []
+        selected_reversed: list[tuple[int, tuple[int, ...], ChatMessage]] = []
         selected_characters = 0
         for item in reversed(candidate):
-            size = len(item[1].content or "")
+            size = len(item[2].content or "")
             if len(selected_reversed) >= low_event_limit:
                 break
             if not selected_reversed and size > high_character_limit:
@@ -883,9 +893,12 @@ class ContextAssembler:
             selected_characters += size
         selected = tuple(reversed(selected_reversed))
         return _HistoryWindowSelection(
-            messages=tuple(item for _, item in selected),
+            messages=tuple(item for _, _, item in selected),
             anchor_event_id=(selected[0][0] if selected else fallback_anchor_event_id),
             rolled=anchor_event_id is not None,
+            event_ids=tuple(
+                event_id for _, event_ids, _ in selected for event_id in event_ids
+            ),
         )
 
     def _external_event_context(
@@ -935,7 +948,7 @@ class ContextAssembler:
         anchor_event_id: int | None,
     ) -> _BoundedMessages:
         renderer = ChatEventPromptRenderer(recent)
-        trigger = renderer.render_main_agent_event(current_event)
+        trigger = renderer.render_reference_event(current_event)
         history_rows = tuple(row for row in recent if row.id != current_event.id)
         rendered = renderer.main_agent_history(history_rows)
         selection = cls._select_history_window(
@@ -951,4 +964,5 @@ class ContextAssembler:
             current_message=ChatMessage(role="system", content=trigger),
             history_anchor_event_id=selection.anchor_event_id,
             history_window_rolled=selection.rolled,
+            visible_event_ids=frozenset((*selection.event_ids, current_event.id)),
         )

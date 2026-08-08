@@ -7,7 +7,7 @@ import logging
 import random
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -140,17 +140,20 @@ class ReplySequenceManager:
         before_messages: tuple[OutboundMessage, ...] = (),
         after_messages: tuple[OutboundMessage, ...] = (),
         suppress_text: bool = False,
+        reply_to_message_id: str | None = None,
     ) -> ReplySequenceResult:
         chunks = () if suppress_text else self.render(text, plan=plan, runtime=runtime)
         outbound_messages = [*before_messages]
         outbound_messages.extend(
-            OutboundMessage(
-                text=chunk,
-                reply_to_message_id=(plan.reply_to_message_id if index == 0 else None),
-            )
-            for index, chunk in enumerate(chunks)
+            OutboundMessage(text=chunk)
+            for chunk in chunks
         )
         outbound_messages.extend(after_messages)
+        if reply_to_message_id is not None and outbound_messages:
+            outbound_messages[0] = replace(
+                outbound_messages[0],
+                reply_to_message_id=reply_to_message_id,
+            )
         sent = 0
         try:
             async with self._coordinator.track(token, "reply"):
@@ -173,15 +176,42 @@ class ReplySequenceManager:
                         if not isinstance(receipt, OutboundSendReceipt):
                             raise TypeError("outbound sender returned no delivery receipt")
                     except Exception as exc:
+                        failure_message = outbound
+                        failure = exc
+                        if outbound.reply_to_message_id is not None:
+                            failure_message = replace(outbound, reply_to_message_id=None)
+                            logger.warning(
+                                "reply_quote_delivery_failed retry_without_quote=true "
+                                "exception_category=%s",
+                                type(exc).__name__,
+                            )
+                            try:
+                                receipt = await sender.send(failure_message)
+                                if not isinstance(receipt, OutboundSendReceipt):
+                                    raise TypeError(
+                                        "outbound sender returned no delivery receipt"
+                                    )
+                            except Exception as retry_exc:
+                                failure = retry_exc
+                            else:
+                                sent += 1
+                                await self._record_after_acceptance(
+                                    failure_message,
+                                    receipt,
+                                    record_outbound,
+                                )
+                                continue
                         if record_failure is not None:
-                            await record_failure(outbound, exc)
+                            await record_failure(failure_message, failure)
                         recovery = (
-                            await recover_failure(outbound, exc)
+                            await recover_failure(failure_message, failure)
                             if recover_failure is not None
                             else DeliveryFailureRecovery(handled=False)
                         )
                         if not recovery.handled:
-                            raise
+                            if failure is exc:
+                                raise
+                            raise failure from exc
                         for replacement in recovery.replacement_messages:
                             replacement_receipt = await sender.send(replacement)
                             if not isinstance(replacement_receipt, OutboundSendReceipt):

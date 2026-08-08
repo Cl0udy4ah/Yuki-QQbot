@@ -50,6 +50,7 @@ from qq_ai_bot.persistence.repositories import (
     WebSearchSourceRepository,
 )
 from qq_ai_bot.planner.models import ToolGroup, ToolMode
+from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
@@ -104,6 +105,7 @@ class ToolRuntime:
     tool_groups: frozenset[str] = frozenset(group.value for group in ToolGroup)
     turn_token: TurnToken | None = None
     reply_effects: list[ReplyEffect] | None = None
+    reply_target_control: ReplyTargetControl | None = None
     voice_tool_authorized: bool = False
     planner_scopes_explicit: bool = False
     planner_tool_groups: frozenset[str] | None = None

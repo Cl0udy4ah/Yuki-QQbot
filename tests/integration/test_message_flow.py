@@ -399,6 +399,7 @@ async def test_explicit_empty_planner_scopes_keep_authority_tool_discovery(
         assert {tool.name for tool in request.tools} == {
             "get_my_capabilities",
             "request_tools",
+            "set_reply_target",
         }
         return ChatResponse(content="可以，告诉我你想了解哪一类能力", latency_seconds=0)
 

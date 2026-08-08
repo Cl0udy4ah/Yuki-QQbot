@@ -29,6 +29,7 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.planner.models import ToolMode
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.chat import ChatService, _ChatAgentBackend
+from qq_ai_bot.services.reply_target import ReplyTargetControl
 
 
 def _tool(name: str, description: str) -> ChatTool:
@@ -144,6 +145,84 @@ def test_request_matcher_prefers_song_capability_and_has_no_arbitrary_fallback()
 
     assert matches[0].entry.descriptor.model_name == "song_share"
     assert match_requestable_tools(catalog, query="完全无关的量子天气", limit=2) == ()
+
+
+@pytest.mark.asyncio
+async def test_reply_target_control_survives_tool_mode_none_and_is_bounded() -> None:
+    service = _Service(_registry([]))
+    control = ReplyTargetControl(visible_event_ids=frozenset({42}))
+    runtime = replace(
+        _runtime(),
+        tool_mode=ToolMode.NONE,
+        tool_groups=frozenset(),
+        selected_tool_names=frozenset(),
+        reply_target_control=control,
+    )
+    backend = _ChatAgentBackend(service, runtime)  # type: ignore[arg-type]
+    agent_runtime = SimpleNamespace()
+
+    definitions = backend.definitions(agent_runtime, web_was_used=False)
+
+    assert [tool.name for tool in definitions] == ["set_reply_target"]
+    assert backend.counts_toward_limit("set_reply_target", agent_runtime) is False
+    arguments = json.dumps({"event_id": 42})
+    call = ToolCall(
+        id="reply-target",
+        function=ToolFunction(name="set_reply_target", arguments=arguments),
+    )
+    backend.begin_batch((call,), agent_runtime)
+    selected = json.loads(await backend.execute("set_reply_target", arguments, agent_runtime))
+    assert selected == {"ok": True, "outcome": "selected", "reply_to_event_id": 42}
+    assert control.override_applied is True
+    assert control.event_id == 42
+
+    second = ToolCall(
+        id="reply-target-again",
+        function=ToolFunction(name="set_reply_target", arguments="{}"),
+    )
+    backend.begin_batch((second,), agent_runtime)
+    repeated = json.loads(await backend.execute("set_reply_target", "{}", agent_runtime))
+    assert repeated["ok"] is False
+    assert repeated["outcome"] == "reply_target_already_selected"
+
+
+@pytest.mark.asyncio
+async def test_reply_target_control_rejects_unseen_event_without_overriding() -> None:
+    service = _Service(_registry([]))
+    control = ReplyTargetControl(visible_event_ids=frozenset({42}))
+    runtime = replace(_runtime(), reply_target_control=control)
+    backend = _ChatAgentBackend(service, runtime)  # type: ignore[arg-type]
+    agent_runtime = SimpleNamespace()
+    backend.definitions(agent_runtime, web_was_used=False)
+    arguments = json.dumps({"event_id": 99})
+    call = ToolCall(
+        id="unseen-reply-target",
+        function=ToolFunction(name="set_reply_target", arguments=arguments),
+    )
+
+    backend.begin_batch((call,), agent_runtime)
+    rejected = json.loads(await backend.execute("set_reply_target", arguments, agent_runtime))
+
+    assert rejected["ok"] is False
+    assert rejected["outcome"] == "event_not_visible"
+    assert control.override_applied is False
+
+
+def test_reply_target_control_is_not_exposed_to_scheduled_automation() -> None:
+    service = _Service(_registry([]))
+    runtime = replace(
+        _runtime(),
+        origin=TurnOrigin.SCHEDULED_AUTOMATION,
+        tool_mode=ToolMode.NONE,
+        tool_groups=frozenset(),
+        selected_tool_names=frozenset(),
+        reply_target_control=ReplyTargetControl(visible_event_ids=frozenset({42})),
+    )
+    backend = _ChatAgentBackend(service, runtime)  # type: ignore[arg-type]
+
+    definitions = backend.definitions(SimpleNamespace(), web_was_used=False)
+
+    assert definitions == ()
 
 
 def test_core_search_tags_recall_tools_from_natural_chinese_phrases() -> None:

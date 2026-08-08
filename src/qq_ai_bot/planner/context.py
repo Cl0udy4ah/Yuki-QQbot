@@ -142,18 +142,21 @@ class PlannerContextBuilder:
         )[-_PLANNER_HISTORY_LIMIT:]
         renderer_rows = (*history_rows, *((current_row,) if current_row else ()))
         renderer = ChatEventPromptRenderer(renderer_rows)
-        rendered_history = tuple((row, renderer.message(row)) for row in history_rows)
+        rendered_history = tuple((row, renderer.reference_message(row)) for row in history_rows)
         visible_history = tuple(
             (row, message) for row, message in rendered_history if (message.content or "").strip()
         )
         current = (
-            renderer.message(
+            renderer.reference_message(
                 current_row,
                 current_message_id=inbound.message_id,
                 current_content=content,
             )
             if current_row is not None
-            else ChatMessage(role="user", content=renderer.render_inbound(inbound, content))
+            else ChatMessage(
+                role="user",
+                content=renderer.render_reference_inbound(inbound, content),
+            )
         )
         speech_context = (
             await self._speech.planner_context(runtime=runtime.speech)
@@ -214,6 +217,7 @@ class PlannerContextBuilder:
             scope_type=inbound.scope_type,
             origin=origin,
             trigger_message_id=inbound.message_id,
+            trigger_event_id=current_row.id if current_row is not None else None,
             bot_user_id=inbound.bot_user_id,
             current_sender_user_id=inbound.sender.user_id,
             current_group_id=inbound.group_id,
@@ -221,9 +225,7 @@ class PlannerContextBuilder:
             current_message=current,
             current_message_text=content,
             trusted_history_sender_user_ids=tuple(row.sender_user_id for row, _ in visible_history),
-            trusted_history_message_ids=tuple(
-                row.platform_message_id for row, _ in visible_history
-            ),
+            trusted_history_event_ids=tuple(row.id for row, _ in visible_history),
             reply_target_is_bot=(
                 bool(inbound.reply_sender_user_id)
                 and inbound.reply_sender_user_id == inbound.bot_user_id

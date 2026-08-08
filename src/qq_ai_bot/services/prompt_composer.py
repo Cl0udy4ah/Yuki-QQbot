@@ -305,8 +305,8 @@ class PromptComposer:
             "messages": plan.desired_messages,
             "tools": plan.tool_selection.model_dump(mode="json", exclude_defaults=True),
         }
-        if plan.reply_to_message_id is not None:
-            payload["reply_to"] = plan.reply_to_message_id
+        if plan.reply_to_event_id is not None:
+            payload["reply_to_event_id"] = plan.reply_to_event_id
         if plan.emoji.mode.value != "none":
             payload["emoji"] = plan.emoji.model_dump(mode="json", exclude_defaults=True)
         if plan.voice.mode.value != "text" or plan.voice.intent.value != "neutral":
