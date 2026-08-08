@@ -434,8 +434,8 @@ class ProfileCommandHandler:
             if parts:
                 if len(parts) != 2 or parts[0].casefold() != "user":
                     return f"格式：/ai affection {operation} [user <QQ号>]"
-                if not actor.is_superuser:
-                    return "只有超级管理员可以查看其他 QQ 人物的关系数据。"
+                if operation == "history" and not actor.is_superuser:
+                    return "只有超级管理员可以查看其他 QQ 人物的关系变化历史。"
                 if _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None:
                     return "目标 QQ 号格式错误。"
                 target = parts[1]

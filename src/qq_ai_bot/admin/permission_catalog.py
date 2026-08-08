@@ -767,12 +767,17 @@ class PermissionCatalogService:
                 category=spec.name.partition(".")[0],
                 display_name=spec.display_name,
                 description=(
-                    f"{spec.description} 仅可通过确定性 /ai 命令操作发送者本人；"
-                    "不表示普通聊天 Agent 获得管理员工具。"
+                    f"{spec.description} "
+                    + (
+                        "可通过确定性 /ai 命令全局查询已认识人物；"
+                        if "global_person" in spec.self_service_scopes
+                        else "仅可通过确定性 /ai 命令操作发送者本人；"
+                    )
+                    + "不表示普通聊天 Agent 获得管理员工具。"
                 ),
                 minimum_level=PermissionLevel.USER,
                 mutating=spec.mutating,
-                target_scopes=("self",),
+                target_scopes=spec.self_service_scopes,
             )
             for spec in self._action_registry.list()
             if spec.self_service

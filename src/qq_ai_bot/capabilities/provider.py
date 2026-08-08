@@ -28,6 +28,7 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "get_recent_chat_history": ("memory", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "search_chat_history": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "get_person_memories": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "get_relationship": ("relationship", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "get_self_memories": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "get_group_memories": ("memory", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "memory_change": ("memory", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
@@ -64,6 +65,13 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
         "关于她",
         "偏好",
         "记得",
+    ),
+    "get_relationship": (
+        "好感度",
+        "信任度",
+        "关系阶段",
+        "亲密度",
+        "关系数据",
     ),
     "get_self_memories": (
         "Yuki记忆",

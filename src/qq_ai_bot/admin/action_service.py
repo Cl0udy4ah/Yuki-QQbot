@@ -32,6 +32,7 @@ class ActionSpec:
     target_kind: str
     mutating: bool
     self_service: bool = False
+    self_service_scopes: tuple[str, ...] = ("self",)
 
 
 class ActionRegistry:
@@ -46,6 +47,7 @@ class ActionRegistry:
                 "user",
                 False,
                 self_service=True,
+                self_service_scopes=("self", "global_person"),
             ),
             ActionSpec(
                 "relationship.set_affection",

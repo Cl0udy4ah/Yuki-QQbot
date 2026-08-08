@@ -856,7 +856,7 @@ class MessageProcessor:
         message: InboundMessage,
         visual_input_present: bool,
     ) -> tuple[str, ...]:
-        categories = ["memory", "automation", "emoji", "speech", "plugin"]
+        categories = ["memory", "relationship", "automation", "emoji", "speech", "plugin"]
         if self._settings.web.mode.value != "disabled":
             categories.append("web")
         if message.sender.user_id in self._settings.superusers and not visual_input_present:

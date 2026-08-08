@@ -42,8 +42,12 @@ class RelationshipAdminService:
         actor: AdminActor,
         target: str,
     ) -> RelationshipSnapshot:
-        require_self_or_superuser(actor, target, self._settings)
-        return await self._get_or_create(target)
+        existing = await self._relationships.get(target)
+        if existing is not None:
+            return existing
+        if target == actor.user_id:
+            return await self._get_or_create(target)
+        raise ValueError("没有找到该人物的好感度记录")
 
     async def set_affection(
         self,

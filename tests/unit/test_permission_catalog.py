@@ -123,6 +123,12 @@ def test_user_report_includes_automation_and_time_self_service_operations() -> N
             "command:memory.delete:self",
         }
     )
+    relationship_read = next(
+        descriptor
+        for descriptor in report.capabilities
+        if descriptor.id == "command:relationship.get:self"
+    )
+    assert relationship_read.target_scopes == ("self", "global_person")
 
 
 def test_superuser_report_has_exact_registry_counts_and_complete_lists() -> None:

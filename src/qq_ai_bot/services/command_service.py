@@ -536,7 +536,7 @@ class CommandService:
             "/ai memory index status|rebuild（超级管理员）\n"
             "/ai memory embedding status|doctor|retry|rebuild|purge-old（超级管理员）\n"
             "/ai preference list|set|delete\n"
-            "/ai affection show|history\n"
+            "/ai affection show [user <QQ号>] | history\n"
             "/ai affection set|adjust|trust user <QQ号> <数值>（超级管理员）\n"
             "/ai capabilities [类别]（查看当前 QQ 的完整权限与可改范围）\n"
             "/ai config list|get|set|unset|history|rollback（超级管理员）\n"

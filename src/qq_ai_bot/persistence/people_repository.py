@@ -273,6 +273,28 @@ class PeopleRepository:
             values = (await session.scalars(statement)).all()
         return tuple(values)
 
+    async def find_people_by_exact_name(self, name: str) -> tuple[str, ...]:
+        """Resolve one exact nickname or historical alias across all conversations."""
+
+        normalized = name.strip()
+        if not normalized:
+            return ()
+        statement = (
+            select(PersonModel.user_id)
+            .outerjoin(PersonAliasModel, PersonAliasModel.user_id == PersonModel.user_id)
+            .where(
+                or_(
+                    PersonModel.nickname == normalized,
+                    PersonAliasModel.alias == normalized,
+                )
+            )
+            .distinct()
+            .order_by(PersonModel.user_id)
+        )
+        async with self._database.sessions() as session:
+            values = (await session.scalars(statement)).all()
+        return tuple(values)
+
     async def set_enabled(
         self,
         user_id: str,

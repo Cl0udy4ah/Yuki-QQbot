@@ -26,15 +26,19 @@ from qq_ai_bot.domain.relationships import (
     style_policy,
 )
 from qq_ai_bot.llm.base import LLMProvider, LLMUnavailableError
+from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import RelationshipEventModel, RelationshipJobModel
 from qq_ai_bot.persistence.repositories import (
+    AgentActionRepository,
     EventLedgerRepository,
     PeopleRepository,
     RelationshipJobRecord,
     RelationshipJobRepository,
     RelationshipRepository,
 )
+from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.relationship_evaluator import (
     LLMRelationshipEvaluator,
@@ -527,7 +531,7 @@ async def test_only_successful_direct_chat_enqueues_relationship_job(database: D
 
 
 @pytest.mark.asyncio
-async def test_affection_commands_enforce_self_read_and_superuser_write(
+async def test_affection_commands_allow_global_read_and_keep_superuser_write(
     database: Database,
 ) -> None:
     harness = build_harness(database, make_settings(database.url))
@@ -549,15 +553,26 @@ async def test_affection_commands_enforce_self_read_and_superuser_write(
     )
     assert "权限不足" in denied.messages[0].text
 
-    denied_read = MemorySender()
+    await harness.relationships.get_or_create("123456789")
+    global_read = MemorySender()
     await harness.processor.handle(
         inbound(
             "/ai affection show user 123456789",
-            message_id="denied-read",
+            message_id="global-read",
         ),
-        denied_read,
+        global_read,
     )
-    assert "只有超级管理员" in denied_read.messages[0].text
+    assert "好感度：50" in global_read.messages[0].text
+
+    denied_history = MemorySender()
+    await harness.processor.handle(
+        inbound(
+            "/ai affection history user 123456789",
+            message_id="denied-history",
+        ),
+        denied_history,
+    )
+    assert "只有超级管理员" in denied_history.messages[0].text
 
     changed = MemorySender()
     await harness.processor.handle(
@@ -600,6 +615,75 @@ async def test_affection_commands_enforce_self_read_and_superuser_write(
         history_sender,
     )
     assert "manual" in history_sender.messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_private_agent_tool_reads_global_relationship_by_exact_alias(
+    database: Database,
+) -> None:
+    settings = make_settings(database.url)
+    people = PeopleRepository(database)
+    relationships = RelationshipRepository(database)
+    await people.observe(user_id="1001", nickname="查询者")
+    await people.observe(
+        user_id="1002",
+        nickname="张三",
+        group_id="2001",
+        group_card="奶龙",
+    )
+    await relationships.set_affection(
+        user_id="1002",
+        actor_user_id="9000",
+        score=88,
+    )
+    tools = AgentToolService(
+        settings=settings,
+        ledger=EventLedgerRepository(database),
+        memories=MemoryFactService(MemoryFactRepository(database)),
+        actions=AgentActionRepository(database),
+        relationships=relationships,
+    )
+    runtime = ToolRuntime(
+        inbound("查一下奶龙的好感度", message_id="private-global-affection"),
+        None,
+        False,
+    )
+
+    assert "get_relationship" in {tool.name for tool in tools.definitions(runtime)}
+    result = json.loads(
+        await tools.execute(
+            "get_relationship",
+            json.dumps({"display_name": "奶龙"}, ensure_ascii=False),
+            runtime,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["data"] == {
+        "user_id": "1002",
+        "display_name": "张三",
+        "resolved_by": "display_name",
+        "affection_score": 88,
+        "trust_score": 50,
+        "effective_trust": 50,
+        "relationship_weight": 73,
+        "stage": "affectionate",
+    }
+
+    await people.observe(
+        user_id="1003",
+        nickname="李四",
+        group_id="2002",
+        group_card="奶龙",
+    )
+    ambiguous = json.loads(
+        await tools.execute(
+            "get_relationship",
+            json.dumps({"display_name": "奶龙"}, ensure_ascii=False),
+            runtime,
+        )
+    )
+    assert ambiguous["error"] == "ambiguous_person"
 
 
 class ToolDefinitionProvider(LLMProvider):

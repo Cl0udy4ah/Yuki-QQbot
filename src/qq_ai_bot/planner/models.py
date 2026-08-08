@@ -67,6 +67,7 @@ class ToolGroup(StrEnum):
 
     WEB = "web"
     MEMORY = "memory"
+    RELATIONSHIP = "relationship"
     ADMIN = "admin"
     CONFIG = "config"
     AUTOMATION = "automation"

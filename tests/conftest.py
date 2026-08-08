@@ -221,6 +221,7 @@ def build_harness(
         ledger=ledger,
         memories=memories,
         actions=AgentActionRepository(database),
+        relationships=relationships,
         web_provider=web_provider,
         web_sources=web_sources,
         runtime_config=runtime_config,
