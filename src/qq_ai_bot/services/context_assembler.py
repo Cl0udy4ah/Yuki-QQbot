@@ -801,24 +801,23 @@ class ContextAssembler:
             None,
         )
         current_message = (
-            renderer.message(
+            renderer.main_agent_message(
                 current_row,
                 current_message_id=inbound.message_id,
                 current_content=content,
             )
             if current_row is not None
-            else ChatMessage(role="user", content=renderer.render_inbound(inbound, content))
+            else ChatMessage(
+                role="user",
+                content=renderer.render_main_agent_inbound(inbound, content),
+            )
         )
-        rendered: list[tuple[int, ChatMessage]] = []
-        for row in recent:
-            if row.platform_message_id == inbound.message_id:
-                continue
-            message = renderer.message(row)
-            if not (message.content or "").strip():
-                continue
-            rendered.append((row.id, message))
+        history_rows = tuple(
+            row for row in recent if row.platform_message_id != inbound.message_id
+        )
+        rendered = renderer.main_agent_history(history_rows)
         selection = cls._select_history_window(
-            tuple(rendered),
+            rendered,
             anchor_event_id=anchor_event_id,
             high_event_limit=max(0, event_limit - 1),
             high_character_limit=max(0, character_budget - len(current_message.content or "")),
@@ -938,17 +937,11 @@ class ContextAssembler:
         anchor_event_id: int | None,
     ) -> _BoundedMessages:
         renderer = ChatEventPromptRenderer(recent)
-        trigger = renderer.render_event(current_event)
-        rendered: list[tuple[int, ChatMessage]] = []
-        for row in recent:
-            if row.id == current_event.id:
-                continue
-            message = renderer.message(row)
-            if not message.content:
-                continue
-            rendered.append((row.id, message))
+        trigger = renderer.render_main_agent_event(current_event)
+        history_rows = tuple(row for row in recent if row.id != current_event.id)
+        rendered = renderer.main_agent_history(history_rows)
         selection = cls._select_history_window(
-            tuple(rendered),
+            rendered,
             anchor_event_id=anchor_event_id,
             high_event_limit=max(0, event_limit - 1),
             high_character_limit=max(0, character_budget - len(trigger)),

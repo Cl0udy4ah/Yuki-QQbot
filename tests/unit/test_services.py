@@ -153,6 +153,26 @@ def test_model_output_removes_shortened_event_identity_envelopes() -> None:
     assert clean_model_output(text, max_characters=200) == ("安全组只放行常用 IP。\n前缀 第二句。")
 
 
+def test_model_output_removes_main_agent_event_envelopes_and_prefixes() -> None:
+    text = (
+        "[远野|QQ:2186567848]\n"
+        "#48217>你觉得这样设计怎么样？\n"
+        "#48219>那就按这个方向做吧。\n"
+        "[Yuki|QQ:380726517]\n"
+        "#48220|回复:#48219/远野/QQ:2186567848|提及:远野/QQ:2186567848>已经处理好了。"
+    )
+
+    assert clean_model_output(text, max_characters=200) == (
+        "你觉得这样设计怎么样？\n那就按这个方向做吧。\n已经处理好了。"
+    )
+
+
+def test_model_output_keeps_event_like_text_inside_an_ordinary_sentence() -> None:
+    text = "我说的 #48217> 只是正文中的普通示例，不是泄漏的行首信封。"
+
+    assert clean_model_output(text, max_characters=200) == text
+
+
 @pytest.mark.asyncio
 async def test_conversation_isolation_and_clear(database: Database) -> None:
     repository = ConversationRepository(database)

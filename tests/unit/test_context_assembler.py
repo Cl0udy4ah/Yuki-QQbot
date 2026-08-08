@@ -130,9 +130,8 @@ async def test_context_assembler_enforces_one_dynamic_character_budget(
     assert len(payload_text) <= settings.max_context_characters * 55 // 100
     assert len(payload_text) + history_characters <= settings.max_context_characters
     current_history = request.messages[-1].content or ""
-    assert current_history == (
-        "[发送者:测试名片|QQ:1001|消息:bounded-context] 请根据已有信息简短回答"
-    )
+    assert current_history.startswith("[测试名片|QQ:1001]\n#")
+    assert current_history.endswith(">请根据已有信息简短回答")
     assert payload_items["current_person"]["user_id"] == "1001"
     assert len(payload_items["current_person"]["facts"]) < 30
     assert len(payload_items["current_group"]["facts"]) < 30
@@ -299,11 +298,61 @@ def test_history_prompt_keeps_speakers_and_reply_target_self_contained() -> None
 
     history = bounded.history_messages
     assert [item.role for item in history] == ["user", "assistant"]
-    assert history[0].content == "[发送者:池宇健|QQ:1002|消息:member-message] 这个项目完结"
-    assert history[1].content == "[发送者:Yuki|QQ:9999|消息:yuki-message] 说好的完结呢"
-    assert "[发送者:远野|QQ:1001|消息:current-message|" in (bounded.current_message.content or "")
-    assert ("|回复:Yuki/消息:yuki-message|提及:池宇健/QQ:1002,Yuki/QQ:9999] 完结的不是我啊") in (
-        bounded.current_message.content or ""
+    assert history[0].content == "[池宇健|QQ:1002]\n#1>这个项目完结"
+    assert history[1].content == "[Yuki|QQ:9999]\n#2>说好的完结呢"
+    assert bounded.current_message.content == (
+        "[远野|QQ:1001]\n"
+        "#3|回复:#2/Yuki/QQ:9999|提及:池宇健/QQ:1002,Yuki/QQ:9999>完结的不是我啊"
+    )
+
+
+def test_main_agent_history_groups_adjacent_messages_from_the_same_identity() -> None:
+    now = datetime.now(UTC)
+    events = (
+        EventRecord(
+            id=48217,
+            bot_user_id="9999",
+            platform_message_id="qq-message-1",
+            scope_type=ScopeType.GROUP,
+            sender_user_id="2186567848",
+            sender_group_card="远野",
+            direction="inbound",
+            content="你觉得这样设计怎么样？",
+            visual_summary="",
+            segments=(),
+            occurred_at=now,
+            group_id="2001",
+        ),
+        EventRecord(
+            id=48219,
+            bot_user_id="9999",
+            platform_message_id="qq-message-2",
+            scope_type=ScopeType.GROUP,
+            sender_user_id="2186567848",
+            sender_group_card="远野",
+            direction="inbound",
+            content="那就按这个方向做吧。",
+            visual_summary="",
+            segments=(),
+            occurred_at=now,
+            group_id="2001",
+        ),
+    )
+
+    history = ChatEventPromptRenderer(events).main_agent_history(events)
+
+    assert history == (
+        (
+            48217,
+            ChatMessage(
+                role="user",
+                content=(
+                    "[远野|QQ:2186567848]\n"
+                    "#48217>你觉得这样设计怎么样？\n"
+                    "#48219>那就按这个方向做吧。"
+                ),
+            ),
+        ),
     )
 
 

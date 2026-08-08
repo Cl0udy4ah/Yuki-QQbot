@@ -17,7 +17,13 @@ _INTERNAL_HISTORY_MARKER = re.compile(
 _EVENT_IDENTITY_MARKER = re.compile(
     r"\[发送者:[^\]\r\n]{1,128}\|QQ:[^|\]\r\n]{1,64}"
     r"(?:\|消息:[^|\]\r\n]{1,128})?(?:\|时间:[^|\]\r\n]{1,128})?"
-    r"(?:\|回复:[^\]\r\n]{1,256})?\]\s*"
+    r"(?:\|回复:[^|\]\r\n]{1,256})?(?:\|提及:[^\]\r\n]{1,512})?\]\s*"
+)
+_MAIN_AGENT_IDENTITY_MARKER = re.compile(
+    r"\[[^\]\r\n]{1,128}\|QQ:[1-9]\d{4,19}\][ \t]*(?:\n[ \t]*)?"
+)
+_MAIN_AGENT_EVENT_PREFIX = re.compile(
+    r"(?m)^[ \t]*#\d{1,19}(?:\|[^>\r\n]{1,768})?>[ \t]*"
 )
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")
 _STRUCTURED_OUTPUT = re.compile(r"(?m)^\s*(?:```|~~~|[-*+]\s+|\d+[.)、]\s+|>\s+|\|.*\|\s*$)")
@@ -37,7 +43,9 @@ def strip_internal_history_markers(text: str) -> str:
     """Remove model-only annotations from generated or persisted chat text."""
 
     cleaned = _INTERNAL_HISTORY_MARKER.sub("", text)
-    return _EVENT_IDENTITY_MARKER.sub("", cleaned)
+    cleaned = _EVENT_IDENTITY_MARKER.sub("", cleaned)
+    cleaned = _MAIN_AGENT_IDENTITY_MARKER.sub("", cleaned)
+    return _MAIN_AGENT_EVENT_PREFIX.sub("", cleaned)
 
 
 def clean_model_output(text: str, *, max_characters: int) -> str:

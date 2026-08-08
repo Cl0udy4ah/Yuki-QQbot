@@ -50,6 +50,61 @@ class ChatEventPromptRenderer:
             ),
         )
 
+    def main_agent_message(
+        self,
+        row: EventRecord,
+        *,
+        current_message_id: str = "",
+        current_content: str = "",
+    ) -> ChatMessage:
+        """Return the compact event-id projection used only by the main Agent."""
+
+        return ChatMessage(
+            role=(
+                "system"
+                if row.event_kind == "external_event"
+                else ("assistant" if row.direction == "outbound" else "user")
+            ),
+            content=self.render_main_agent_event(
+                row,
+                current_message_id=current_message_id,
+                current_content=current_content,
+            ),
+        )
+
+    def main_agent_history(
+        self,
+        rows: Iterable[EventRecord],
+    ) -> tuple[tuple[int, ChatMessage], ...]:
+        """Group adjacent visible events from one immutable sender identity."""
+
+        grouped: list[tuple[int, ChatMessage, tuple[str, str, str] | None]] = []
+        for row in rows:
+            message = self.main_agent_message(row)
+            rendered = (message.content or "").strip()
+            if not rendered:
+                continue
+            group_key = (
+                None
+                if row.event_kind == "external_event"
+                else (message.role, row.sender_user_id, row.sender_display_name)
+            )
+            if grouped and group_key is not None and grouped[-1][2] == group_key:
+                previous_id, previous, _ = grouped[-1]
+                _, separator, event_line = rendered.partition("\n")
+                if separator:
+                    grouped[-1] = (
+                        previous_id,
+                        ChatMessage(
+                            role=previous.role,
+                            content=f"{previous.content}\n{event_line}",
+                        ),
+                        group_key,
+                    )
+                    continue
+            grouped.append((row.id, message, group_key))
+        return tuple((event_id, message) for event_id, message, _ in grouped)
+
     def render_event(
         self,
         row: EventRecord,
@@ -70,6 +125,48 @@ class ChatEventPromptRenderer:
                 f"occurred_at={row.occurred_at.isoformat()}\n{content}"
             )
         return f"{self._event_envelope(row)} {content}"
+
+    def render_main_agent_event(
+        self,
+        row: EventRecord,
+        *,
+        current_message_id: str = "",
+        current_content: str = "",
+    ) -> str:
+        """Render one main-Agent event with a stable local event reference."""
+
+        content = self.event_content(row, current_message_id, current_content)
+        if not content:
+            return ""
+        if row.event_kind == "external_event":
+            return self.render_event(
+                row,
+                current_message_id=current_message_id,
+                current_content=current_content,
+            )
+        fields = [f"#{row.id}"]
+        if row.reply_to_message_id:
+            target = self._events_by_message_id.get(row.reply_to_message_id)
+            reply_user_id = row.reply_sender_user_id or (
+                target.sender_user_id if target is not None else ""
+            )
+            reply_identity = (
+                self._identity_label(target.sender_user_id, bot_user_id=row.bot_user_id)
+                if target is not None
+                else self._identity_label(reply_user_id, bot_user_id=row.bot_user_id)
+            )
+            reply_reference = f"#{target.id}/" if target is not None else ""
+            fields.append(f"回复:{reply_reference}{reply_identity}")
+        mention_field = self._mention_field(
+            row.mentioned_user_ids,
+            bot_user_id=row.bot_user_id,
+        )
+        if mention_field:
+            fields.append(mention_field)
+        return (
+            f"[{row.sender_display_name}|QQ:{row.sender_user_id}]\n"
+            f"{'|'.join(fields)}>{content}"
+        )
 
     def render_inbound(self, inbound: InboundMessage, content: str) -> str:
         """Render an inbound message that has not been recovered from the ledger."""
@@ -101,6 +198,17 @@ class ChatEventPromptRenderer:
         if mention_field:
             fields.append(mention_field)
         return f"[{'|'.join(fields)}] {content}"
+
+    def render_main_agent_inbound(self, inbound: InboundMessage, content: str) -> str:
+        """Render the rare unpersisted current input without inventing an event id."""
+
+        display_name = self._display_name(
+            user_id=inbound.sender.user_id,
+            bot_user_id=inbound.bot_user_id,
+            nickname=inbound.sender.nickname,
+            group_card=inbound.sender.group_card,
+        )
+        return f"[{display_name}|QQ:{inbound.sender.user_id}]\n{content}"
 
     @staticmethod
     def event_content(

@@ -27,7 +27,14 @@ class FakeLLMProvider(LLMProvider):
         user_messages = [
             message.content or "" for message in request.messages if message.role == "user"
         ]
-        return f"FakeLLM: {user_messages[-1] if user_messages else ''}"
+        content = user_messages[-1] if user_messages else ""
+        _, envelope_separator, event_line = content.partition("\n")
+        if envelope_separator and event_line.startswith("#"):
+            event_header, body_separator, body = event_line.partition(">")
+            event_id = event_header[1:].split("|", maxsplit=1)[0]
+            if body_separator and event_id.isdigit():
+                content = body
+        return f"FakeLLM: {content}"
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
