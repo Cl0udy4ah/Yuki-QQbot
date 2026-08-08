@@ -163,10 +163,7 @@ class ChatEventPromptRenderer:
         )
         if mention_field:
             fields.append(mention_field)
-        return (
-            f"[{row.sender_display_name}|QQ:{row.sender_user_id}]\n"
-            f"{'|'.join(fields)}>{content}"
-        )
+        return f"[{row.sender_display_name}|QQ:{row.sender_user_id}]\n{'|'.join(fields)}>{content}"
 
     def render_inbound(self, inbound: InboundMessage, content: str) -> str:
         """Render an inbound message that has not been recovered from the ledger."""

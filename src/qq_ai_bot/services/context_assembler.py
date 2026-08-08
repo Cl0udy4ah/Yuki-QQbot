@@ -812,9 +812,7 @@ class ContextAssembler:
                 content=renderer.render_main_agent_inbound(inbound, content),
             )
         )
-        history_rows = tuple(
-            row for row in recent if row.platform_message_id != inbound.message_id
-        )
+        history_rows = tuple(row for row in recent if row.platform_message_id != inbound.message_id)
         rendered = renderer.main_agent_history(history_rows)
         selection = cls._select_history_window(
             rendered,

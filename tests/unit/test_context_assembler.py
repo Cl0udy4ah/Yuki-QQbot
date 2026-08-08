@@ -301,8 +301,7 @@ def test_history_prompt_keeps_speakers_and_reply_target_self_contained() -> None
     assert history[0].content == "[池宇健|QQ:1002]\n#1>这个项目完结"
     assert history[1].content == "[Yuki|QQ:9999]\n#2>说好的完结呢"
     assert bounded.current_message.content == (
-        "[远野|QQ:1001]\n"
-        "#3|回复:#2/Yuki/QQ:9999|提及:池宇健/QQ:1002,Yuki/QQ:9999>完结的不是我啊"
+        "[远野|QQ:1001]\n#3|回复:#2/Yuki/QQ:9999|提及:池宇健/QQ:1002,Yuki/QQ:9999>完结的不是我啊"
     )
 
 
