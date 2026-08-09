@@ -43,6 +43,8 @@ from qq_ai_bot.memory.mutation.models import (
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.retrieval import MemoryRetriever
+from qq_ai_bot.memory.self_reflection.models import SelfReflectionManualRun
+from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.targets import MemoryTargetResolver
@@ -68,6 +70,7 @@ class MemoryAdminService:
         maintenance: MemoryMaintenanceWorker | None = None,
         mutations: MemoryMutationService | None = None,
         ledger: EventLedgerRepository | None = None,
+        self_reflection: SelfReflectionWorker | None = None,
     ) -> None:
         self._settings = settings
         self._memories = memories
@@ -91,6 +94,7 @@ class MemoryAdminService:
         self._maintenance = maintenance
         self._mutations = mutations
         self._ledger = ledger
+        self._self_reflection = self_reflection
 
     async def list_memories(
         self,
@@ -740,6 +744,19 @@ class MemoryAdminService:
             raise RuntimeError("memory maintenance worker is unavailable")
         return await self._maintenance.process_once()
 
+    async def self_reflection_run(self, actor: AdminActor) -> SelfReflectionManualRun:
+        """Run one bounded manual SELF reflection cycle for a real superuser."""
+
+        self._require_superuser(actor)
+        if self._self_reflection is None:
+            raise RuntimeError("Self Reflection Worker 当前不可用")
+        processed = await self._self_reflection.run_now()
+        return SelfReflectionManualRun(
+            processed_conversations=processed,
+            health=await self._self_reflection.health(),
+            max_daily_calls=self._settings.memory_self_reflection_max_daily_calls,
+        )
+
     async def _apply_mutation(
         self,
         actor: AdminActor,
@@ -844,4 +861,4 @@ class MemoryAdminService:
 
     def _require_superuser(self, actor: AdminActor) -> None:
         if not actor.is_superuser or actor.user_id not in self._settings.superusers:
-            raise PermissionError("只有超级管理员可以诊断记忆索引")
+            raise PermissionError("只有超级管理员可以执行此记忆管理操作")

@@ -23,6 +23,7 @@ from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
+from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.repositories import (
@@ -81,6 +82,7 @@ class AdminModule:
         memory_rebuild: MemoryRebuildService,
         memory_mutations: MemoryMutationService,
         ledger: EventLedgerRepository,
+        memory_self_reflection: SelfReflectionWorker,
     ) -> None:
         self._settings = settings
         self._database = database
@@ -105,6 +107,7 @@ class AdminModule:
         self._memory_rebuild = memory_rebuild
         self._memory_mutations = memory_mutations
         self._ledger = ledger
+        self._memory_self_reflection = memory_self_reflection
 
     def build(self) -> AdminBundle:
         audit = AdminAuditService(self._database)
@@ -126,6 +129,7 @@ class AdminModule:
             maintenance=self._memory_maintenance,
             mutations=self._memory_mutations,
             ledger=self._ledger,
+            self_reflection=self._memory_self_reflection,
         )
         preferences = PreferenceAdminService(
             settings=self._settings,

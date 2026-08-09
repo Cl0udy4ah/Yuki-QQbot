@@ -4,21 +4,66 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.models import AdminActor
+from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.mcp.repository import MCPRepository
-from qq_ai_bot.memory.self_reflection.models import SelfReflectionOutput
+from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
+from qq_ai_bot.memory.repository import MemoryFactRepository
+from qq_ai_bot.memory.self_reflection.models import (
+    SelfReflectionBatch,
+    SelfReflectionHealth,
+    SelfReflectionOutput,
+)
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
+from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
+from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
+from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     MemorySelfReflectionStateModel,
     MemoryToolReceiptModel,
 )
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from qq_ai_bot.persistence.repositories import EventLedgerRepository, PeopleRepository
+from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
+from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
+from qq_ai_bot.services.admin.relationship_admin import RelationshipAdminService
+from qq_ai_bot.services.profile_commands import ProfileCommandHandler
+
+
+class RecordingSelfReflectionService:
+    def __init__(self) -> None:
+        self.batches: list[SelfReflectionBatch] = []
+
+    async def reflect(self, batch: SelfReflectionBatch) -> tuple[int, int]:
+        self.batches.append(batch)
+        return 0, 0
+
+
+class RecordingSelfReflectionWorker:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def run_now(self) -> int:
+        self.calls += 1
+        return 1
+
+    async def health(self) -> SelfReflectionHealth:
+        return SelfReflectionHealth(
+            enabled=True,
+            running=True,
+            schedule_hours=(4, 12, 20),
+            timezone="Asia/Shanghai",
+            pending_conversations=2,
+            calls_today=1,
+        )
 
 
 @pytest.mark.asyncio
@@ -159,6 +204,104 @@ async def test_reflection_schedule_slot_and_daily_budget_are_idempotent(
         )
         == ()
     )
+
+
+@pytest.mark.asyncio
+async def test_manual_reflection_skips_schedule_and_volume_thresholds(
+    database: Database,
+) -> None:
+    settings = Settings.model_validate(
+        {
+            "database_url": database.url,
+            "memory_self_reflection_schedule_hours": "4,12,20",
+        }
+    )
+    ledger = EventLedgerRepository(database)
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="manual-user-message",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        direction="inbound",
+        content="只有一条、远未达到自动触发阈值的消息",
+        group_id="3001",
+    )
+    await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="manual-yuki-reply",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="8000",
+        direction="outbound",
+        content="但这段对话确实有我的参与",
+        group_id="3001",
+        sender_is_bot=True,
+    )
+    service = RecordingSelfReflectionService()
+    worker = SelfReflectionWorker(
+        settings=settings,
+        repository=repository,
+        service=cast(SelfReflectionService, service),
+        metrics=MemoryLifecycleMetrics(),
+    )
+
+    assert await worker.process_once(datetime(2026, 8, 10, 1, tzinfo=UTC)) == 0
+    assert await worker.run_now() == 1
+    assert len(service.batches) == 1
+    assert service.batches[0].trigger_reason == "manual"
+    assert len(service.batches[0].events) == 2
+
+
+@pytest.mark.asyncio
+async def test_self_reflection_command_requires_superuser_and_reports_usage(
+    database: Database,
+) -> None:
+    settings = Settings.model_validate(
+        {
+            "database_url": database.url,
+            "superusers_csv": "9000",
+        }
+    )
+    memories = MemoryFactService(MemoryFactRepository(database))
+    audit = AdminAuditService(database)
+    worker = RecordingSelfReflectionWorker()
+    memory_admin = MemoryAdminService(
+        settings=settings,
+        memories=memories,
+        audit=audit,
+        self_reflection=cast(SelfReflectionWorker, worker),
+    )
+    handler = ProfileCommandHandler(
+        people=cast(PeopleRepository, object()),
+        memories=memories,
+        memory_admin=memory_admin,
+        preference_admin=cast(PreferenceAdminService, object()),
+        relationship_admin=cast(RelationshipAdminService, object()),
+    )
+    admin = AdminActor(
+        user_id="9000",
+        is_superuser=True,
+        trigger_message_id="admin-command",
+        conversation_key="private:9000",
+    )
+    user = AdminActor(
+        user_id="1001",
+        is_superuser=False,
+        trigger_message_id="user-command",
+        conversation_key="private:1001",
+    )
+
+    result = await handler.memory(actor=admin, argument="self-reflection run")
+
+    assert "处理 1 个会话" in result
+    assert "今日模型调用 1/9" in result
+    assert worker.calls == 1
+    assert "只有超级管理员" in await handler.memory(
+        actor=user,
+        argument="self-reflection run",
+    )
+    assert worker.calls == 1
 
 
 @pytest.mark.asyncio

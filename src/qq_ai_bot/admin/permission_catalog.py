@@ -660,6 +660,12 @@ _MEMORY_LIFECYCLE_CAPABILITIES = (
             ("doctor", "诊断记忆一致性", "运行只读的记忆一致性检查。", False),
             ("maintenance.status", "查看记忆维护", "查看本地记忆维护任务状态。", False),
             ("maintenance.run", "运行记忆维护", "立即运行一次有界的本地生命周期维护。", True),
+            (
+                "self-reflection.run",
+                "运行 Yuki 自省",
+                "立即运行一次有界的 Yuki Self Reflection。",
+                True,
+            ),
         )
     ),
 )

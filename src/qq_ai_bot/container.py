@@ -293,6 +293,7 @@ class ApplicationContainer:
             memory_rebuild=self.memory_rebuild_service,
             memory_mutations=self.memory_mutations,
             ledger=self.ledger,
+            memory_self_reflection=self.memory_self_reflection_worker,
         ).build()
         self.admin = admin
         self.admin_audit = admin.audit

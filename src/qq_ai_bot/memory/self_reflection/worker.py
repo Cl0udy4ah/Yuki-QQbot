@@ -35,6 +35,7 @@ class SelfReflectionWorker:
         self._timezone = ZoneInfo(settings.memory_self_reflection_timezone)
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._process_lock = asyncio.Lock()
 
     async def start(self) -> None:
         if not self._settings.memory_self_reflection_enabled or self._task is not None:
@@ -58,12 +59,39 @@ class SelfReflectionWorker:
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
 
-    async def process_once(self, now: datetime | None = None) -> int:
+    async def run_now(self) -> int:
+        """Run one manual bounded cycle without waiting for a scheduled hour."""
+
+        if not self._settings.memory_self_reflection_enabled:
+            raise RuntimeError("Self Reflection 当前未启用")
+        if self._process_lock.locked():
+            raise RuntimeError("Self Reflection 当前正在运行")
+        return await self.process_once(force=True)
+
+    async def process_once(
+        self,
+        now: datetime | None = None,
+        *,
+        force: bool = False,
+    ) -> int:
+        async with self._process_lock:
+            return await self._process_once(now=now, force=force)
+
+    async def _process_once(
+        self,
+        *,
+        now: datetime | None,
+        force: bool,
+    ) -> int:
         await self._repository.scan_new_events()
         local = (now or datetime.now(UTC)).astimezone(self._timezone)
-        if local.hour not in self._hours:
+        if not force and local.hour not in self._hours:
             return 0
-        slot = f"{local.date().isoformat()}:{local.hour:02d}"
+        slot = (
+            f"{local.date().isoformat()}:manual:{local.strftime('%H%M%S%f')}"
+            if force
+            else f"{local.date().isoformat()}:{local.hour:02d}"
+        )
         batches = await self._repository.claim_due(
             scheduled_slot=slot,
             local_date=local.date().isoformat(),
@@ -75,6 +103,7 @@ class SelfReflectionWorker:
             max_events=self._settings.memory_self_reflection_max_events,
             max_characters=self._settings.memory_self_reflection_max_characters,
             context_events=4,
+            force=force,
         )
         for batch in batches:
             try:

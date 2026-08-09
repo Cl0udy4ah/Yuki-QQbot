@@ -789,6 +789,7 @@ Episode，不增加 LLM 调用；明确展示自我记忆仍由 `self_recall` �
 /ai memory resolve <preferred_fact_id> <contested_fact_id...>
 /ai memory doctor
 /ai memory maintenance status|run
+/ai memory self-reflection run
 ```
 
 普通用户只能查看、修正和撤回属于自己的事实；merge、全局冲突裁决、完整一致性诊断及手动维护
@@ -1138,6 +1139,7 @@ Planner-first 自主参与规则：
 | `/ai memory embedding retry` | 超级管理员重新排队当前 profile 的失败任务 |
 | `/ai memory embedding rebuild` | 超级管理员为全部当前 active facts 重建当前 profile 向量 |
 | `/ai memory embedding purge-old` | 超级管理员清理非当前 profile 的旧派生向量和任务 |
+| `/ai memory self-reflection run` | 超级管理员立即运行一轮有界的 Yuki Self Reflection；跳过时间和消息量阈值，但保留每日调用上限与会话隔离 |
 | `/ai memory rebuild list` | 超级管理员列出受控历史重建任务 |
 | `/ai memory rebuild plan <selection-json>` | 固定事件快照并统计范围，不调用模型 |
 | `/ai memory rebuild start <run_id>` | 显式开始逐事件提取，只暂存 proposal |

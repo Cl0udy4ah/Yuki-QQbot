@@ -145,9 +145,9 @@ def test_superuser_report_has_exact_registry_counts_and_complete_lists() -> None
     assert report.protected_config_count == 12
     assert report.business_action_count == 44
     assert report.mutating_action_count == 33
-    assert report.self_service_operation_count == 42
+    assert report.self_service_operation_count == 43
     assert report.onebot_gateway_count == 1
-    assert len(report.capabilities) == 295
+    assert len(report.capabilities) == 296
 
     config_ids = {
         descriptor.id
@@ -166,6 +166,9 @@ def test_superuser_report_has_exact_registry_counts_and_complete_lists() -> None
     assert "onebot:call_onebot_api:any_public_action" in {
         descriptor.id for descriptor in report.capabilities
     }
+    assert "command:memory.self-reflection.run:admin" in {
+        descriptor.id for descriptor in report.capabilities
+    }
 
 
 def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -> None:
@@ -175,13 +178,13 @@ def test_payload_is_grouped_complete_stable_and_never_contains_config_values() -
 
     assert first == second
     assert first["counts"] == {
-        "total": 295,
+        "total": 296,
         "mutable_configurations": 196,
         "protected_configurations": 12,
         "business_actions": 44,
         "mutating_business_actions": 33,
-        "self_service_operations": 42,
-        "self_service_mutations": 20,
+        "self_service_operations": 43,
+        "self_service_mutations": 21,
         "onebot_api_gateways": 1,
     }
     assert set(first["available_apply_modes"]) == {
@@ -289,7 +292,7 @@ def test_category_filter_recomputes_counts_and_preserves_sorted_output() -> None
     assert report.mutable_config_count == 47
     assert report.business_action_count == 5
     assert report.mutating_action_count == 4
-    assert report.self_service_operation_count == 16
+    assert report.self_service_operation_count == 17
     assert all(descriptor.category == "memory" for descriptor in report.capabilities)
     assert list(report.capabilities) == sorted(
         report.capabilities,

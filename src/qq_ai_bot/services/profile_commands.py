@@ -96,7 +96,10 @@ class ProfileCommandHandler:
             return "\n".join(
                 f"事件 {row.event_id} [{row.relation}] {row.excerpt}" for row in evidence_rows
             )
-        return "可用操作：list、add、update、delete、evidence、search、index、embedding。"
+        return (
+            "可用操作：list、add、update、delete、evidence、search、index、embedding、"
+            "self-reflection。"
+        )
 
     async def _memory_rebuild_command(self, actor: AdminActor, argument: str) -> str:
         if self._memory_rebuild is None:
@@ -190,12 +193,35 @@ class ProfileCommandHandler:
             "merge",
             "resolve",
             "maintenance",
+            "self-reflection",
             "doctor",
         }
         if not parts or parts[0].casefold() not in diagnostic_operations:
             return None
         operation = parts.pop(0).casefold()
         try:
+            if operation == "self-reflection":
+                if parts != ["run"]:
+                    return "格式：/ai memory self-reflection run"
+                reflection_result = await self._memory_admin.self_reflection_run(actor)
+                reflection_health = reflection_result.health
+                usage = (
+                    f"{reflection_health.calls_today}/{reflection_result.max_daily_calls}"
+                )
+                if reflection_result.processed_conversations:
+                    return (
+                        "Self Reflection 已立即运行："
+                        f"处理 {reflection_result.processed_conversations} 个会话；"
+                        f"今日模型调用 {usage}；"
+                        f"仍待处理 {reflection_health.pending_conversations} 个会话。"
+                    )
+                if reflection_health.calls_today >= reflection_result.max_daily_calls:
+                    reason = "今日模型调用已达上限"
+                elif reflection_health.pending_conversations == 0:
+                    reason = "当前没有待处理会话"
+                else:
+                    reason = "待处理会话尚无 Yuki 已发送回复或可信工具结果"
+                return f"Self Reflection 本轮未处理会话：{reason}；今日模型调用 {usage}。"
             if operation in {"show", "explain", "history"}:
                 if len(parts) != 1 or not parts[0].isdigit():
                     return f"格式：/ai memory {operation} <fact_id>"

@@ -143,6 +143,7 @@ class SelfReflectionRepository:
         max_events: int,
         max_characters: int,
         context_events: int = 4,
+        force: bool = False,
     ) -> tuple[SelfReflectionBatch, ...]:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
@@ -158,19 +159,21 @@ class SelfReflectionRepository:
             if available <= 0:
                 return ()
             waited_before = now - timedelta(seconds=max_wait_seconds)
+            state_query = select(MemorySelfReflectionStateModel).where(
+                MemorySelfReflectionStateModel.pending_events > 0
+            )
+            if not force:
+                state_query = state_query.where(
+                    or_(
+                        MemorySelfReflectionStateModel.pending_events >= event_threshold,
+                        MemorySelfReflectionStateModel.pending_characters >= character_threshold,
+                        MemorySelfReflectionStateModel.pending_since <= waited_before,
+                        MemorySelfReflectionStateModel.high_value_signal.is_(True),
+                    )
+                )
             states = (
                 await session.scalars(
-                    select(MemorySelfReflectionStateModel)
-                    .where(
-                        MemorySelfReflectionStateModel.pending_events > 0,
-                        or_(
-                            MemorySelfReflectionStateModel.pending_events >= event_threshold,
-                            MemorySelfReflectionStateModel.pending_characters
-                            >= character_threshold,
-                            MemorySelfReflectionStateModel.pending_since <= waited_before,
-                            MemorySelfReflectionStateModel.high_value_signal.is_(True),
-                        ),
-                    )
+                    state_query
                     .order_by(
                         MemorySelfReflectionStateModel.high_value_signal.desc(),
                         MemorySelfReflectionStateModel.pending_since.asc(),
@@ -243,14 +246,10 @@ class SelfReflectionRepository:
                     ).all()
                 )
                 context_rows.reverse()
-                reason = (
-                    "high_value"
-                    if row.high_value_signal
-                    else "event_count"
-                    if row.pending_events >= event_threshold
-                    else "characters"
-                    if row.pending_characters >= character_threshold
-                    else "max_wait"
+                reason = "manual" if force else self._trigger_reason(
+                    row,
+                    event_threshold=event_threshold,
+                    character_threshold=character_threshold,
                 )
                 run_id = await session.scalar(
                     insert(MemorySelfReflectionRunModel)
@@ -291,6 +290,21 @@ class SelfReflectionRepository:
                 if len(claimed) >= available:
                     break
             return tuple(claimed)
+
+    @staticmethod
+    def _trigger_reason(
+        row: MemorySelfReflectionStateModel,
+        *,
+        event_threshold: int,
+        character_threshold: int,
+    ) -> str:
+        if row.high_value_signal:
+            return "high_value"
+        if row.pending_events >= event_threshold:
+            return "event_count"
+        if row.pending_characters >= character_threshold:
+            return "characters"
+        return "max_wait"
 
     async def health_snapshot(
         self,

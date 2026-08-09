@@ -191,3 +191,12 @@ class SelfReflectionHealth(_Contract):
     calls_today: int = Field(ge=0)
     last_run_status: str | None = None
     last_run_completed_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SelfReflectionManualRun:
+    """Content-free result returned by the explicit administrator command."""
+
+    processed_conversations: int
+    health: SelfReflectionHealth
+    max_daily_calls: int
