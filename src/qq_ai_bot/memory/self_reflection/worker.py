@@ -64,7 +64,7 @@ class SelfReflectionWorker:
         if local.hour not in self._hours:
             return 0
         slot = f"{local.date().isoformat()}:{local.hour:02d}"
-        episodes = await self._repository.claim_due(
+        batches = await self._repository.claim_due(
             scheduled_slot=slot,
             local_date=local.date().isoformat(),
             event_threshold=self._settings.memory_self_reflection_event_threshold,
@@ -74,37 +74,38 @@ class SelfReflectionWorker:
             max_daily_calls=self._settings.memory_self_reflection_max_daily_calls,
             max_events=self._settings.memory_self_reflection_max_events,
             max_characters=self._settings.memory_self_reflection_max_characters,
+            context_events=4,
         )
-        for episode in episodes:
+        for batch in batches:
             try:
-                proposals, committed = await self._service.reflect(episode)
+                proposals, committed = await self._service.reflect(batch)
                 await self._repository.complete(
-                    episode,
+                    batch,
                     proposals=proposals,
                     committed=committed,
                 )
                 logger.info(
                     "memory_self_reflection_completed run_id=%d trigger=%s "
                     "events=%d proposals=%d committed=%d",
-                    episode.run_id,
-                    episode.trigger_reason,
-                    len(episode.events),
+                    batch.run_id,
+                    batch.trigger_reason,
+                    len(batch.events),
                     proposals,
                     committed,
                 )
             except asyncio.CancelledError:
                 raise
             except (OSError, RuntimeError, ValueError) as exc:
-                await self._repository.fail(episode.run_id, type(exc).__name__)
+                await self._repository.fail(batch.run_id, type(exc).__name__)
                 self._metrics.increment("self_reflection_failed")
                 logger.warning(
                     "memory_self_reflection_failed run_id=%d trigger=%s error_category=%s",
-                    episode.run_id,
-                    episode.trigger_reason,
+                    batch.run_id,
+                    batch.trigger_reason,
                     type(exc).__name__,
                 )
         await self._repository.cleanup_receipts()
-        return len(episodes)
+        return len(batches)
 
     async def health(self) -> SelfReflectionHealth:
         local = datetime.now(UTC).astimezone(self._timezone)

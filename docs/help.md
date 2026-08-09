@@ -2,7 +2,7 @@
 
 > **3.4.5 正式版：**自动记忆增加确定性归属、长期价值策略和隔离候选区；Yuki 自省默认每日
 > 三轮运行；Planner 首轮工具路由改用明确 scope、规范化 intent 与中文搜索标签；主 Agent
-> 使用 `EventRecord.id`、原始群名片和 QQ 装配紧凑历史信封。Alembic head 为 `0030`。
+> 使用 `EventRecord.id`、原始群名片和 QQ 装配紧凑历史信封。Alembic head 为 `0031`。
 
 > **3.4.4 Prompt 缓存与输出清理：**历史位于动态上下文之前并使用高低水位分块滚动；首批
 > 工具和 Schema 采用宽松预算且按名称稳定排序；输出清理器兼容省略消息 ID 的身份头。
@@ -359,8 +359,11 @@ Copy-Item config/system_prompt.example.md config/system_prompt.md
 
 ```dotenv
 SYSTEM_PROMPT_FILE=config/system_prompt.md
+YUKI_PERSONA_FILE=config/yuki_persona_core.md
 ```
 
+`yuki_persona_core.md` 是主 Agent 与 Self Reflection 共用的核心人格；默认系统提示词通过
+`{{YUKI_PERSONA_CORE}}` 引入它。旧的自定义 Prompt 没有占位符时保持原样，不会重复追加人格。
 默认示例包含 Yuki 的完整人物设定、7 月 23 日生日、外貌、关系表达和自然口语例句；
 日常聊天以一句轻松短回复为主，避免长难句，普通短回复不以中文句号收尾，并明确禁止 Emoji、颜文字及未经用户要求的括号动作描写。示例负责人格和表达方式，
 权限、工具、视觉与运行时状态继续由后端动态上下文提供，避免在静态提示词里重复堆叠。
@@ -761,9 +764,12 @@ QQ、群、fact ID、status、authority 或数据库动作。完全相同、无�
 
 Yuki 自省默认开启，固定在 `Asia/Shanghai` 的 `04:00、12:00、20:00` 检查新会话，每个时段
 最多 3 个隔离会话、每天最多 9 次模型调用。首次启用只建立最新事件游标，不回看旧聊天；高价值
-信号只提高下一调度批次优先级，不触发即时昂贵调用。输入最多 20 条事件、8000 字符，必须包含
-已确认投递的 Yuki 回复或可信工具结果。模型只能引用后端生成的 event/tool/fact/candidate 别名，
-最终新增、纠正、合并、争议或失效仍统一经过 `MemoryMutationService`、版本链和 receipt。
+信号只提高下一调度批次优先级，不触发即时昂贵调用。它从最旧待处理事件开始读取最多 20 条、
+8000 字符的连续主窗口，并附带最多 4 条只帮助理解的前置上下文；窗口在调用前锁定，新消息留给
+下一批。一个批次可自由写下 0～2 条带 Yuki 个人口吻的 `self_episode`，每条 Episode 自动关联
+整个主窗口及窗口内可信工具回执。Episode 正文不做逐句事实审判，结构、会话范围、证据、游标、
+版本链和 receipt 仍由后端确定。普通相关性检索会在当前群或当前私聊最多自然补入一条相关
+Episode，不增加 LLM 调用；明确展示自我记忆仍由 `self_recall` 完整查询。
 
 迁移前事实保持 `legacy_unreviewed` 且正常可检索；新事实是当前验证版本的 `verified`。只有
 `quarantined` 默认不进入 Prompt、普通检索和 Embedding。内部提供单事实和单实体的 dry-run 优先

@@ -49,9 +49,61 @@ def test_system_prompt_file_must_not_be_empty(tmp_path: Path) -> None:
         Settings.model_validate({"system_prompt_file": prompt_file})
 
 
+def test_yuki_persona_file_is_required_and_expands_fixed_placeholder(
+    tmp_path: Path,
+) -> None:
+    persona_file = tmp_path / "persona.md"
+    persona_file.write_text("Yuki 的共享人格", encoding="utf-8")
+    prompt_file = tmp_path / "prompt.md"
+    prompt_file.write_text(
+        "before\n{{YUKI_PERSONA_CORE}}\nafter",
+        encoding="utf-8",
+    )
+
+    settings = Settings.model_validate(
+        {
+            "yuki_persona_file": persona_file,
+            "system_prompt_file": prompt_file,
+        }
+    )
+
+    assert settings.yuki_persona == "Yuki 的共享人格"
+    assert settings.system_prompt == "before\nYuki 的共享人格\nafter"
+
+
+def test_yuki_persona_file_must_exist_and_not_be_empty(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="cannot read YUKI_PERSONA_FILE"):
+        Settings.model_validate({"yuki_persona_file": tmp_path / "missing.md"})
+
+    empty = tmp_path / "empty-persona.md"
+    empty.write_text("\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="YUKI_PERSONA_FILE must not be empty"):
+        Settings.model_validate({"yuki_persona_file": empty})
+
+
+def test_legacy_prompt_without_placeholder_is_not_duplicated(tmp_path: Path) -> None:
+    persona_file = tmp_path / "persona.md"
+    persona_file.write_text("shared persona", encoding="utf-8")
+    prompt_file = tmp_path / "legacy.md"
+    prompt_file.write_text("legacy prompt already contains its persona", encoding="utf-8")
+
+    settings = Settings.model_validate(
+        {
+            "yuki_persona_file": persona_file,
+            "system_prompt_file": prompt_file,
+        }
+    )
+
+    assert settings.system_prompt == "legacy prompt already contains its persona"
+
+
 def test_example_system_prompt_preserves_yuki_persona_and_short_style() -> None:
     prompt_path = Path(__file__).parents[2] / "config" / "system_prompt.example.md"
-    prompt = prompt_path.read_text(encoding="utf-8")
+    persona_path = Path(__file__).parents[2] / "config" / "yuki_persona_core.md"
+    template = prompt_path.read_text(encoding="utf-8")
+    persona = persona_path.read_text(encoding="utf-8")
+    assert template.count("{{YUKI_PERSONA_CORE}}") == 1
+    prompt = template.replace("{{YUKI_PERSONA_CORE}}", persona)
 
     required_fragments = (
         "生日是 7 月 23 日",
@@ -67,7 +119,7 @@ def test_example_system_prompt_preserves_yuki_persona_and_short_style() -> None:
         "必须由用户明确提出这种表达方式",
         "不使用 Unicode Emoji",
         "不使用颜文字、ASCII 表情",
-        "下面是语气方向，不是必须逐字复读的固定台词",
+        "这些只是反应方向，不是固定台词",
         "作为自己名字或自称出现的英文 Yuki 写成平假名“ゆき”",
     )
     assert all(fragment in prompt for fragment in required_fragments)

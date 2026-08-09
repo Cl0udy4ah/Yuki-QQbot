@@ -29,6 +29,8 @@ from qq_ai_bot.memory.quality.report import write_reports
 from qq_ai_bot.memory.quality.runner import MemoryQualityRunner
 from qq_ai_bot.persistence.database import Database
 
+_ALEMBIC_HEAD = "0031"
+
 
 class MemoryReleaseCheck:
     def __init__(self, repository_root: Path, *, artifact_directory: Path | None = None) -> None:
@@ -47,7 +49,9 @@ class MemoryReleaseCheck:
             )
         )
         head = self._alembic_head()
-        items.append(self._item("alembic_head", head == "0030", f"Alembic head is {head}"))
+        items.append(
+            self._item("alembic_head", head == _ALEMBIC_HEAD, f"Alembic head is {head}")
+        )
         try:
             suite = load_quality_suite(self._root / "tests/fixtures/memory_quality/v1")
             items.append(
@@ -197,12 +201,13 @@ class MemoryReleaseCheck:
             "0028_plugin_external_notifications.py",
             "0029_chat_event_sender_identity.py",
             "0030_memory_quality_candidates.py",
+            "0031_episode_self_reflection_baseline.py",
         }
         missing = sorted(required - versions)
         return self._item(
             "migration_contract",
-            not missing and self._alembic_head() == "0030",
-            "fresh/upgrade matrix is current through 0030"
+            not missing and self._alembic_head() == _ALEMBIC_HEAD,
+            f"fresh/upgrade matrix is current through {_ALEMBIC_HEAD}"
             if not missing
             else f"missing migration files: {','.join(missing)}",
         )
@@ -236,7 +241,7 @@ class MemoryReleaseCheck:
             integrity = str(await session.scalar(text("PRAGMA integrity_check")))
             foreign_keys = tuple((await session.execute(text("PRAGMA foreign_key_check"))).all())
             revision = await session.scalar(text("SELECT version_num FROM alembic_version"))
-        return integrity == "ok" and not foreign_keys and str(revision) == "0030"
+        return integrity == "ok" and not foreign_keys and str(revision) == _ALEMBIC_HEAD
 
     @staticmethod
     def _item(code: str, passed: bool, detail: str) -> ReleaseCheckItem:

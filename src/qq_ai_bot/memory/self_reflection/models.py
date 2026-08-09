@@ -39,7 +39,16 @@ class _Contract(BaseModel):
 
 class SelfReflectionEvent(_Contract):
     ref: str = Field(pattern=r"^event_[1-9]\d*$")
+    occurred_at: datetime
+    direction: str = Field(pattern=r"^(?:inbound|outbound)$")
     rendered: str = Field(min_length=1, max_length=9000)
+
+
+class SelfReflectionContextEvent(_Contract):
+    ref: str = Field(pattern=r"^context_[1-9]\d*$")
+    occurred_at: datetime
+    direction: str = Field(pattern=r"^(?:inbound|outbound)$")
+    rendered: str = Field(min_length=1, max_length=3000)
 
 
 class SelfReflectionToolReceipt(_Contract):
@@ -59,10 +68,22 @@ class SelfReflectionFact(_Contract):
 
 class SelfReflectionInput(_Contract):
     scope_type: ScopeType
+    group_id: str | None = Field(default=None, max_length=64)
+    private_peer_user_id: str | None = Field(default=None, max_length=64)
+    context_events: tuple[SelfReflectionContextEvent, ...] = ()
     events: tuple[SelfReflectionEvent, ...]
     tool_receipts: tuple[SelfReflectionToolReceipt, ...] = ()
     self_facts: tuple[SelfReflectionFact, ...] = ()
     self_candidates: tuple[SelfReflectionFact, ...] = ()
+
+    @model_validator(mode="after")
+    def _scope_identity(self) -> SelfReflectionInput:
+        if self.scope_type is ScopeType.GROUP:
+            if self.group_id is None or self.private_peer_user_id is not None:
+                raise ValueError("group reflection input requires only group_id")
+        elif self.private_peer_user_id is None or self.group_id is not None:
+            raise ValueError("private reflection input requires only private_peer_user_id")
+        return self
 
 
 class SelfReflectionProposal(_Contract):
@@ -103,13 +124,21 @@ class SelfReflectionProposal(_Contract):
         return self
 
 
+class SelfEpisodeProposal(_Contract):
+    content: str = Field(min_length=1, max_length=4000)
+    importance: int = Field(default=3, ge=1, le=5)
+
+
 class SelfReflectionOutput(_Contract):
     proposals: tuple[SelfReflectionProposal, ...] = ()
+    episodes: tuple[SelfEpisodeProposal, ...] = ()
 
     @model_validator(mode="after")
     def _bounded(self) -> SelfReflectionOutput:
         if len(self.proposals) > 8:
-            raise ValueError("one self-reflection episode may emit at most eight proposals")
+            raise ValueError("one self-reflection batch may emit at most eight proposals")
+        if len(self.episodes) > 2:
+            raise ValueError("one self-reflection batch may emit at most two episodes")
         return self
 
 
@@ -132,12 +161,14 @@ class SelfReflectionState:
 
 
 @dataclass(frozen=True, slots=True)
-class SelfReflectionEpisode:
+class SelfReflectionBatch:
     state: SelfReflectionState
     events: tuple[EventRecord, ...]
+    context_events: tuple[EventRecord, ...]
     trigger_reason: str
     scheduled_slot: str
     run_id: int
+    max_input_characters: int
 
 
 @dataclass(frozen=True, slots=True)

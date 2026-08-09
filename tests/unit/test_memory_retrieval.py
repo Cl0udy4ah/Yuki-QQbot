@@ -251,6 +251,98 @@ async def test_query_builder_adds_self_target_only_for_enabled_explicit_recall(
     assert self_target.visibility_user_id == "1001"
 
 
+@pytest.mark.asyncio
+async def test_relevant_chat_adds_one_current_scope_self_episode_without_explicit_recall(
+    database: Database,
+) -> None:
+    people = PeopleRepository(database)
+    await people.observe(user_id="1001", nickname="远野", group_id="2001")
+    memories, retriever = _retriever(database)
+    first = await _remember(
+        memories,
+        content="我记得大家第一次一起讨论海边散步时，最后把计划说得很认真",
+        memory_key="self_episode:first_walk",
+        user_id=None,
+        scope=MemoryScopeType.SELF,
+        kind=MemoryKind.EPISODE,
+        category="self_episode",
+        visibility_type=SelfMemoryVisibility.GROUP,
+        visibility_group_id="2001",
+        authority=MemoryAuthority.AGENT_REFLECTION,
+    )
+    second = await _remember(
+        memories,
+        content="后来又聊到海边散步，我发现自己其实很期待那次见面",
+        memory_key="self_episode:second_walk",
+        user_id=None,
+        scope=MemoryScopeType.SELF,
+        kind=MemoryKind.EPISODE,
+        category="self_episode",
+        visibility_type=SelfMemoryVisibility.GROUP,
+        visibility_group_id="2001",
+        authority=MemoryAuthority.AGENT_REFLECTION,
+    )
+    other_group = await _remember(
+        memories,
+        content="另一个群也提到海边散步",
+        memory_key="self_episode:other_group",
+        user_id=None,
+        scope=MemoryScopeType.SELF,
+        kind=MemoryKind.EPISODE,
+        category="self_episode",
+        visibility_type=SelfMemoryVisibility.GROUP,
+        visibility_group_id="2002",
+        authority=MemoryAuthority.AGENT_REFLECTION,
+    )
+    context = MemoryContextService(
+        query_builder=MemoryQueryBuilder(MemoryTargetResolver(people)),
+        retriever=retriever,
+        facts=memories,
+    )
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url, self_memory_enabled=True),
+        database=database,
+    ).snapshot(user_id="1001", group_id="2001")
+    inbound = InboundMessage(
+        message_id="natural-self-episode",
+        event_type="message:group:normal",
+        scope_type=ScopeType.GROUP,
+        sender=SenderIdentity(user_id="1001", nickname="远野"),
+        text="你还记得我们聊海边散步吗",
+        group_id="2001",
+        bot_user_id="8000",
+    )
+
+    automatic = await context.retrieve_for_turn(
+        inbound=inbound,
+        content=inbound.text,
+        planner_intent="继续普通聊天",
+        runtime=runtime,
+        self_recall=False,
+    )
+    auto_self = [
+        hit for hit in automatic.hits if hit.target.role is MemoryTargetRole.CURRENT_SELF
+    ]
+    assert len(auto_self) == 1
+    assert auto_self[0].fact.id in {first.id, second.id}
+    assert auto_self[0].fact.id != other_group.id
+
+    explicit = await context.retrieve_for_turn(
+        inbound=inbound,
+        content=inbound.text,
+        planner_intent="明确回忆自己的经历",
+        runtime=runtime,
+        self_recall=True,
+    )
+    explicit_self_ids = {
+        hit.fact.id
+        for hit in explicit.hits
+        if hit.target.role is MemoryTargetRole.CURRENT_SELF
+    }
+    assert {first.id, second.id} <= explicit_self_ids
+    assert other_group.id not in explicit_self_ids
+
+
 def _retriever(database: Database) -> tuple[MemoryFactService, MemoryRetriever]:
     repository = MemoryFactRepository(database)
     return (

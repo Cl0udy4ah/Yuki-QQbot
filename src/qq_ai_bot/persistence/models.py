@@ -766,7 +766,11 @@ class MemorySelfReflectionStateModel(Base):
 
     __tablename__ = "memory_self_reflection_states"
     __table_args__ = (
-        UniqueConstraint("conversation_key_hash", name="uq_memory_self_reflection_state_key"),
+        UniqueConstraint(
+            "conversation_key_hash",
+            "bot_user_id",
+            name="uq_memory_self_reflection_state_key_bot",
+        ),
         CheckConstraint("scope_type IN ('private','group')", name="ck_self_reflection_state_scope"),
         CheckConstraint(
             "pending_events >= 0 AND pending_characters >= 0",
@@ -808,7 +812,10 @@ class MemorySelfReflectionRunModel(Base):
     __tablename__ = "memory_self_reflection_runs"
     __table_args__ = (
         UniqueConstraint(
-            "conversation_key_hash", "scheduled_slot", name="uq_self_reflection_run_slot"
+            "conversation_key_hash",
+            "bot_user_id",
+            "scheduled_slot",
+            name="uq_self_reflection_run_slot_bot",
         ),
         CheckConstraint(
             "status IN ('processing','completed','failed')",
@@ -819,6 +826,7 @@ class MemorySelfReflectionRunModel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     scheduled_slot: Mapped[str] = mapped_column(String(32), nullable=False)
     trigger_reason: Mapped[str] = mapped_column(String(32), nullable=False)
     first_event_id: Mapped[int] = mapped_column(Integer, nullable=False)

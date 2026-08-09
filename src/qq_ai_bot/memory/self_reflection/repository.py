@@ -13,7 +13,7 @@ from sqlalchemy.engine import CursorResult
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.memory.self_reflection.models import (
-    SelfReflectionEpisode,
+    SelfReflectionBatch,
     SelfReflectionState,
     StoredToolReceipt,
 )
@@ -90,7 +90,8 @@ class SelfReflectionRepository:
                 )
                 state = await session.scalar(
                     select(MemorySelfReflectionStateModel).where(
-                        MemorySelfReflectionStateModel.conversation_key_hash == key_hash
+                        MemorySelfReflectionStateModel.conversation_key_hash == key_hash,
+                        MemorySelfReflectionStateModel.bot_user_id == row.bot_user_id,
                     )
                 )
                 content = row.content.strip()
@@ -141,7 +142,8 @@ class SelfReflectionRepository:
         max_daily_calls: int,
         max_events: int,
         max_characters: int,
-    ) -> tuple[SelfReflectionEpisode, ...]:
+        context_events: int = 4,
+    ) -> tuple[SelfReflectionBatch, ...]:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
             used = int(
@@ -176,13 +178,14 @@ class SelfReflectionRepository:
                     .limit(available * 3)
                 )
             ).all()
-            claimed: list[SelfReflectionEpisode] = []
+            claimed: list[SelfReflectionBatch] = []
             for row in states:
                 has_tool = bool(
                     await session.scalar(
                         select(MemoryToolReceiptModel.id).where(
                             MemoryToolReceiptModel.conversation_key_hash
                             == row.conversation_key_hash,
+                            MemoryToolReceiptModel.bot_user_id == row.bot_user_id,
                             MemoryToolReceiptModel.trigger_event_id > row.last_event_id,
                             MemoryToolReceiptModel.expires_at > now,
                         )
@@ -202,18 +205,44 @@ class SelfReflectionRepository:
                     event_query = event_query.where(
                         ChatEventModel.private_peer_user_id == row.private_peer_user_id
                     )
-                event_rows = list(
+                candidate_rows = list(
                     (
                         await session.scalars(
-                            event_query.order_by(ChatEventModel.id.desc()).limit(max_events)
+                            event_query.order_by(ChatEventModel.id.asc()).limit(max_events)
                         )
                     ).all()
                 )
-                event_rows.reverse()
-                while event_rows and sum(len(item.content) for item in event_rows) > max_characters:
-                    event_rows.pop(0)
+                event_rows: list[ChatEventModel] = []
+                input_characters = 0
+                for item in candidate_rows:
+                    item_characters = len(item.content)
+                    if event_rows and input_characters + item_characters > max_characters:
+                        break
+                    event_rows.append(item)
+                    input_characters += item_characters
                 if not event_rows:
                     continue
+                context_query = select(ChatEventModel).where(
+                    ChatEventModel.bot_user_id == row.bot_user_id,
+                    ChatEventModel.id < event_rows[0].id,
+                    ChatEventModel.event_kind == "message",
+                )
+                if row.scope_type == ScopeType.GROUP.value:
+                    context_query = context_query.where(ChatEventModel.group_id == row.group_id)
+                else:
+                    context_query = context_query.where(
+                        ChatEventModel.private_peer_user_id == row.private_peer_user_id
+                    )
+                context_rows = list(
+                    (
+                        await session.scalars(
+                            context_query.order_by(ChatEventModel.id.desc()).limit(
+                                max(0, context_events)
+                            )
+                        )
+                    ).all()
+                )
+                context_rows.reverse()
                 reason = (
                     "high_value"
                     if row.high_value_signal
@@ -227,6 +256,7 @@ class SelfReflectionRepository:
                     insert(MemorySelfReflectionRunModel)
                     .values(
                         conversation_key_hash=row.conversation_key_hash,
+                        bot_user_id=row.bot_user_id,
                         scheduled_slot=scheduled_slot,
                         trigger_reason=reason,
                         first_event_id=event_rows[0].id,
@@ -239,6 +269,7 @@ class SelfReflectionRepository:
                     .on_conflict_do_nothing(
                         index_elements=[
                             MemorySelfReflectionRunModel.conversation_key_hash,
+                            MemorySelfReflectionRunModel.bot_user_id,
                             MemorySelfReflectionRunModel.scheduled_slot,
                         ]
                     )
@@ -247,12 +278,14 @@ class SelfReflectionRepository:
                 if run_id is None:
                     continue
                 claimed.append(
-                    SelfReflectionEpisode(
+                    SelfReflectionBatch(
                         state=self._state(row, has_tool=has_tool),
                         events=tuple(_event_record(item) for item in event_rows),
+                        context_events=tuple(_event_record(item) for item in context_rows),
                         trigger_reason=reason,
                         scheduled_slot=scheduled_slot,
                         run_id=run_id,
+                        max_input_characters=max_characters,
                     )
                 )
                 if len(claimed) >= available:
@@ -297,7 +330,7 @@ class SelfReflectionRepository:
 
     async def tool_receipts(
         self,
-        episode: SelfReflectionEpisode,
+        batch: SelfReflectionBatch,
         *,
         limit: int = 8,
     ) -> tuple[StoredToolReceipt, ...]:
@@ -307,9 +340,10 @@ class SelfReflectionRepository:
                     select(MemoryToolReceiptModel)
                     .where(
                         MemoryToolReceiptModel.conversation_key_hash
-                        == episode.state.conversation_key_hash,
-                        MemoryToolReceiptModel.trigger_event_id >= episode.events[0].id,
-                        MemoryToolReceiptModel.trigger_event_id <= episode.events[-1].id,
+                        == batch.state.conversation_key_hash,
+                        MemoryToolReceiptModel.bot_user_id == batch.state.bot_user_id,
+                        MemoryToolReceiptModel.trigger_event_id >= batch.events[0].id,
+                        MemoryToolReceiptModel.trigger_event_id <= batch.events[-1].id,
                         MemoryToolReceiptModel.expires_at > datetime.now(UTC),
                     )
                     .order_by(MemoryToolReceiptModel.created_at.asc())
@@ -329,7 +363,7 @@ class SelfReflectionRepository:
 
     async def complete(
         self,
-        episode: SelfReflectionEpisode,
+        batch: SelfReflectionBatch,
         *,
         proposals: int,
         committed: int,
@@ -338,7 +372,7 @@ class SelfReflectionRepository:
         async with self._database.sessions() as session, session.begin():
             await session.execute(
                 update(MemorySelfReflectionRunModel)
-                .where(MemorySelfReflectionRunModel.id == episode.run_id)
+                .where(MemorySelfReflectionRunModel.id == batch.run_id)
                 .values(
                     status="completed",
                     proposal_count=proposals,
@@ -346,20 +380,54 @@ class SelfReflectionRepository:
                     completed_at=now,
                 )
             )
-            await session.execute(
-                update(MemorySelfReflectionStateModel)
-                .where(MemorySelfReflectionStateModel.id == episode.state.id)
-                .values(
-                    last_event_id=episode.events[-1].id,
-                    pending_events=0,
-                    pending_characters=0,
-                    pending_since=None,
-                    has_yuki_reply=False,
-                    has_tool_result=False,
-                    high_value_signal=False,
-                    updated_at=now,
+            state = await session.get(MemorySelfReflectionStateModel, batch.state.id)
+            if state is None:
+                raise RuntimeError("self-reflection state disappeared during completion")
+            processed_last_event_id = batch.events[-1].id
+            remaining_query = select(ChatEventModel).where(
+                ChatEventModel.bot_user_id == state.bot_user_id,
+                ChatEventModel.id > processed_last_event_id,
+                ChatEventModel.id <= state.latest_event_id,
+                ChatEventModel.event_kind == "message",
+            )
+            if state.scope_type == ScopeType.GROUP.value:
+                remaining_query = remaining_query.where(ChatEventModel.group_id == state.group_id)
+            else:
+                remaining_query = remaining_query.where(
+                    ChatEventModel.private_peer_user_id == state.private_peer_user_id
+                )
+            remaining = list(
+                (
+                    await session.scalars(remaining_query.order_by(ChatEventModel.id.asc()))
+                ).all()
+            )
+            nonempty = [item for item in remaining if item.content.strip()]
+            has_tool = bool(
+                await session.scalar(
+                    select(MemoryToolReceiptModel.id).where(
+                        MemoryToolReceiptModel.conversation_key_hash
+                        == state.conversation_key_hash,
+                        MemoryToolReceiptModel.bot_user_id == state.bot_user_id,
+                        MemoryToolReceiptModel.trigger_event_id > processed_last_event_id,
+                        MemoryToolReceiptModel.trigger_event_id <= state.latest_event_id,
+                        MemoryToolReceiptModel.expires_at > now,
+                    )
                 )
             )
+            state.last_event_id = processed_last_event_id
+            state.pending_events = len(nonempty)
+            state.pending_characters = sum(len(item.content) for item in nonempty)
+            state.pending_since = nonempty[0].occurred_at if nonempty else None
+            state.has_yuki_reply = any(
+                item.direction == "outbound" and item.sender_user_id == item.bot_user_id
+                for item in remaining
+            )
+            state.has_tool_result = has_tool
+            state.high_value_signal = any(
+                item.direction == "inbound" and _HIGH_VALUE.search(item.content)
+                for item in nonempty
+            )
+            state.updated_at = now
 
     async def fail(self, run_id: int, error_category: str) -> None:
         async with self._database.sessions() as session, session.begin():

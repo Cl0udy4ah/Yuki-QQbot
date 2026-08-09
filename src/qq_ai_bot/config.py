@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from qq_ai_bot.domain.messages import ReasoningEffort
@@ -80,6 +80,8 @@ class Settings(BaseSettings):
         "只有联网工具实际成功时，才能说明已经搜索或读取网页。"
     )
     system_prompt_file: Path | None = None
+    yuki_persona_file: Path = Path("config/yuki_persona_core.md")
+    _yuki_persona: str = PrivateAttr(default="")
 
     database_url: str = "sqlite+aiosqlite:///./data/qq_ai_bot.db"
     processed_event_ttl_seconds: int = 86400
@@ -518,18 +520,37 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _load_system_prompt_file(self) -> Self:
-        """Load a UTF-8 prompt file when explicitly configured."""
+        """Load the shared UTF-8 persona and expand its one fixed prompt placeholder."""
 
-        if self.system_prompt_file is None:
-            return self
         try:
-            prompt = self.system_prompt_file.read_text(encoding="utf-8").strip()
+            persona = self.yuki_persona_file.read_text(encoding="utf-8").strip()
         except OSError as exc:
-            raise ValueError(f"cannot read SYSTEM_PROMPT_FILE: {self.system_prompt_file}") from exc
-        if not prompt:
-            raise ValueError("SYSTEM_PROMPT_FILE must not be empty")
-        self.system_prompt = prompt
+            raise ValueError(
+                f"cannot read YUKI_PERSONA_FILE: {self.yuki_persona_file}"
+            ) from exc
+        if not persona:
+            raise ValueError("YUKI_PERSONA_FILE must not be empty")
+        self._yuki_persona = persona
+
+        if self.system_prompt_file is not None:
+            try:
+                prompt = self.system_prompt_file.read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                raise ValueError(
+                    f"cannot read SYSTEM_PROMPT_FILE: {self.system_prompt_file}"
+                ) from exc
+            if not prompt:
+                raise ValueError("SYSTEM_PROMPT_FILE must not be empty")
+            self.system_prompt = prompt
+        self.system_prompt = self.system_prompt.replace(
+            "{{YUKI_PERSONA_CORE}}",
+            self._yuki_persona,
+        )
         return self
+
+    @property
+    def yuki_persona(self) -> str:
+        return self._yuki_persona
 
     @model_validator(mode="after")
     def _compose_domain_settings(self) -> Self:

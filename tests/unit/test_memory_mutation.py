@@ -396,6 +396,130 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
 
 
 @pytest.mark.asyncio
+async def test_self_reflection_episode_commits_full_window_in_one_receipt(
+    database: Database,
+) -> None:
+    service, facts, ledger, _processor = _service(database, self_memory_enabled=True)
+    events = [
+        await _event(
+            ledger,
+            message_id=f"episode-window-{index}",
+            sender_user_id="1001" if index < 2 else "8000",
+            content=f"窗口原文 {index + 1}",
+            group_id="3001",
+            direction="inbound" if index < 2 else "outbound",
+            sender_is_bot=index == 2,
+        )
+        for index in range(3)
+    ]
+    now = datetime.now(UTC)
+    async with database.sessions() as session, session.begin():
+        tool = MemoryToolReceiptModel(
+            conversation_key_hash=hashlib.sha256(b"group:3001").hexdigest(),
+            trigger_event_id=events[1].id,
+            bot_user_id="8000",
+            provider_id="test",
+            tool_name="search",
+            success=True,
+            result_excerpt="可信工具结果",
+            result_characters=6,
+            created_at=now,
+            expires_at=now + timedelta(days=7),
+        )
+        session.add(tool)
+        await session.flush()
+        tool_id = tool.id
+
+    result = await service.mutate_resolved(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.CREATE,
+            target=MemoryMutationTarget(
+                subject_ref="self",
+                scope_type=MemoryScopeType.SELF,
+            ),
+            visibility=SelfMemoryVisibilityMode.CURRENT_SCOPE,
+            new_content=(
+                "我记得那次在群 3001 和 QQ 1001 连续确认了三次，最后我也真正回应了；"
+                "现在回头看，这比单独的一句事实更像完整经历。"
+            ),
+            memory_key="self_episode:stable-window-key",
+            category="self_episode",
+            kind=MemoryKind.EPISODE,
+            reason="self_reflection_episode",
+            confidence=0.9,
+            importance=4,
+            evidence_quote=events[-1].content,
+            valid_from=events[0].occurred_at.isoformat(),
+        ),
+        MemoryMutationContext(
+            event=events[-1],
+            conversation_key="group:3001:self-reflection",
+            turn_origin="memory_self_reflection",
+            delegation_mode=f"self_episode:{events[0].id}:{events[-1].id}",
+            trigger_actor_user_id="8000",
+            decision_actor_type=MemoryDecisionActorType.REFLECTION,
+            decision_actor_id="yuki_self_reflection",
+            executed_by_bot_user_id="8000",
+        ),
+        target=ResolvedSubject(
+            MemoryScopeType.SELF,
+            None,
+            None,
+            SelfMemoryVisibility.GROUP,
+            None,
+            "3001",
+        ),
+        additional_evidence=(
+            MemoryEvidenceCreate(
+                event_id=events[0].id,
+                source_speaker_user_id="1001",
+                relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+                confidence=0.9,
+                authority=MemoryAuthority.AGENT_REFLECTION,
+                excerpt=events[0].content,
+            ),
+            MemoryEvidenceCreate(
+                event_id=events[1].id,
+                source_speaker_user_id="1001",
+                relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+                confidence=0.9,
+                authority=MemoryAuthority.AGENT_REFLECTION,
+                excerpt=events[1].content,
+            ),
+            MemoryEvidenceCreate(
+                tool_receipt_id=tool_id,
+                source_speaker_user_id="8000",
+                relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+                confidence=0.9,
+                authority=MemoryAuthority.AGENT_REFLECTION,
+                excerpt="可信工具结果",
+            ),
+        ),
+    )
+
+    assert result.ok and result.new_fact_id is not None
+    fact = await facts.get_fact(result.new_fact_id)
+    evidence = await facts.list_evidence(result.new_fact_id, limit=10)
+    assert fact is not None
+    assert fact.kind is MemoryKind.EPISODE
+    assert fact.category == "self_episode"
+    assert fact.visibility_type is SelfMemoryVisibility.GROUP
+    assert fact.visibility_group_id == "3001"
+    assert "群 3001" in fact.content and "QQ 1001" in fact.content
+    assert fact.valid_from == events[0].occurred_at
+    assert fact.valid_until is None
+    assert {item.event_id for item in evidence if item.event_id is not None} == {
+        event.id for event in events
+    }
+    assert {item.tool_receipt_id for item in evidence if item.tool_receipt_id is not None} == {
+        tool_id
+    }
+    async with database.sessions() as session:
+        receipts = await session.scalar(select(func.count(MemoryMutationReceiptModel.id)))
+    assert receipts == 1
+
+
+@pytest.mark.asyncio
 async def test_self_create_is_atomic_receipted_and_deduplicated(database: Database) -> None:
     service, facts, ledger, _processor = _service(database)
     event = await _event(

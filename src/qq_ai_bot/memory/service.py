@@ -674,6 +674,28 @@ class MemoryFactService:
                     )
             return await self._repository.get_fact(fact_id, session=session)
 
+    async def append_evidence_bundle(
+        self,
+        fact_id: int,
+        evidence: tuple[MemoryEvidenceCreate, ...],
+        *,
+        confirmed_at: datetime,
+        session: AsyncSession,
+    ) -> int:
+        """Append one trusted evidence window and refresh aggregate metadata once."""
+
+        added = 0
+        for item in evidence:
+            added += int(await self._repository.add_evidence(fact_id, item, session=session))
+        if added:
+            self.metrics.increment("evidence_added", added)
+            await self._refresh_evidence(
+                fact_id,
+                confirmed_at=confirmed_at,
+                session=session,
+            )
+        return added
+
     async def correct_fact(
         self,
         fact_id: int,

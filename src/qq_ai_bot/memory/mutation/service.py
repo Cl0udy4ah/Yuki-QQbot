@@ -147,18 +147,28 @@ class MemoryMutationService:
         context: MemoryMutationContext,
         *,
         target: ResolvedSubject,
+        additional_evidence: tuple[MemoryEvidenceCreate, ...] = (),
     ) -> MemoryMutationResult:
         """Apply a trusted command/admin/plugin target through the same boundary."""
 
+        if additional_evidence and not self._trusted_self_reflection(context):
+            return self._rejected(request.operation, "evidence_bundle_requires_self_reflection")
+        if additional_evidence and not await self._evidence_matches_conversation(
+            additional_evidence,
+            context.event,
+        ):
+            return self._rejected(request.operation, "cross_conversation_evidence")
         try:
             prepared = await self._prepare(request, context, target_override=target)
         except MemoryMutationRejected as exc:
             return self._rejected(request.operation, exc.reason_code)
-        return await self._commit_prepared(prepared)
+        return await self._commit_prepared(prepared, additional_evidence=additional_evidence)
 
     async def _commit_prepared(
         self,
         prepared: _PreparedMutation,
+        *,
+        additional_evidence: tuple[MemoryEvidenceCreate, ...] = (),
     ) -> MemoryMutationResult:
         request = prepared.request
         context = prepared.context
@@ -223,6 +233,13 @@ class MemoryMutationService:
                         session=session,
                         claim_resolution=claim_resolution,
                     )
+                    if applied.new_fact_id is not None and additional_evidence:
+                        await self._facts.append_evidence_bundle(
+                            applied.new_fact_id,
+                            additional_evidence,
+                            confirmed_at=context.event.occurred_at,
+                            session=session,
+                        )
                     receipt = await self._receipts.finalize(
                         reserved.id,
                         applied_operation=applied.operation,
@@ -246,6 +263,39 @@ class MemoryMutationService:
                 )
         await self._schedule_embedding_after_commit(receipt.new_fact_id)
         return MemoryMutationResult.from_receipt(receipt, deduplicated=False)
+
+    @staticmethod
+    def _trusted_self_reflection(context: MemoryMutationContext) -> bool:
+        return bool(
+            context.turn_origin == "memory_self_reflection"
+            and context.decision_actor_type is MemoryDecisionActorType.REFLECTION
+            and context.decision_actor_id == "yuki_self_reflection"
+        )
+
+    async def _evidence_matches_conversation(
+        self,
+        evidence: tuple[MemoryEvidenceCreate, ...],
+        anchor: EventRecord,
+    ) -> bool:
+        for item in evidence:
+            if (
+                item.authority is not MemoryAuthority.AGENT_REFLECTION
+                or item.relation is not MemoryEvidenceRelation.AGENT_REFLECTION
+            ):
+                return False
+            if item.event_id is None:
+                continue
+            event = await self._ledger.get_event(item.event_id)
+            if event is None or event.bot_user_id != anchor.bot_user_id:
+                return False
+            if event.scope_type is not anchor.scope_type:
+                return False
+            if anchor.scope_type is ScopeType.GROUP:
+                if event.group_id != anchor.group_id:
+                    return False
+            elif event.private_peer_user_id != anchor.private_peer_user_id:
+                return False
+        return True
 
     async def mutate_validated_claim(
         self,

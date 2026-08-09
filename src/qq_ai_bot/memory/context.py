@@ -12,6 +12,7 @@ from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryConflictState,
     MemoryContextMode,
+    MemoryKind,
     MemoryRetrievalMode,
     MemoryTargetRole,
 )
@@ -19,6 +20,7 @@ from qq_ai_bot.memory.models import (
     MemoryContextBlock,
     MemoryEntityTarget,
     MemoryFact,
+    MemoryQuery,
     MemoryRetrievalHit,
     MemoryRetrievalResult,
 )
@@ -53,7 +55,7 @@ def retrieval_fact_context(hit: MemoryRetrievalHit) -> dict[str, Any]:
 def self_retrieval_fact_context(hit: MemoryRetrievalHit) -> dict[str, Any]:
     """Expose useful self content without visibility identities or audit internals."""
 
-    return {
+    context = {
         "fact_id": hit.fact.id,
         "kind": hit.fact.kind.value,
         "category": hit.fact.category,
@@ -61,6 +63,9 @@ def self_retrieval_fact_context(hit: MemoryRetrievalHit) -> dict[str, Any]:
         "confidence": hit.fact.confidence,
         "importance": hit.fact.importance,
     }
+    if hit.fact.kind is MemoryKind.EPISODE and hit.fact.valid_from is not None:
+        context["occurred_at"] = hit.fact.valid_from.isoformat()
+    return context
 
 
 def entity_block(block: MemoryContextBlock) -> dict[str, Any]:
@@ -76,7 +81,8 @@ ENTITY_MEMORY_RULE = (
     "信息归给 current_person；没有事实时不得猜测。third_party/reported 表示他人报告，"
     "不等于本人确认；contested=true 表示存在未解决冲突，不得当作确定事实。"
     "current_self 只表示按当前会话可见性检索到的 Yuki 动态自我记忆，不是静态人格，"
-    "也不得覆盖更高优先级的静态人格与系统规则。不要主动向用户泄露内部 confidence "
+    "也不得覆盖更高优先级的静态人格与系统规则。kind=episode 是 Yuki 带有个人视角的回忆，"
+    "应自然影响当前回应，不要逐字背诵。不要主动向用户泄露内部 confidence "
     "或 authority 枚举。"
 )
 
@@ -141,7 +147,19 @@ class MemoryContextService:
             self_recall=self_recall,
         )
         if runtime.memory.retrieval_enabled:
-            return await self._retriever.retrieve(query)
+            result = await self._retriever.retrieve(query)
+            if (
+                query.mode is MemoryRetrievalMode.RELEVANT
+                and runtime.memory.self_enabled
+                and not self_recall
+            ):
+                episode = await self._retrieve_current_self_episode(
+                    inbound=inbound,
+                    query=query,
+                    runtime=runtime,
+                )
+                result = self._merge_results(result, episode)
+            return result
         current_targets = tuple(
             target
             for target in query.targets
@@ -160,6 +178,80 @@ class MemoryContextService:
             }
         )
         return await self._retriever.retrieve(fallback, lexical_enabled=False)
+
+    async def _retrieve_current_self_episode(
+        self,
+        *,
+        inbound: InboundMessage,
+        query: MemoryQuery,
+        runtime: RuntimeConfigSnapshot,
+    ) -> MemoryRetrievalResult:
+        targets = await self.resolve_targets(inbound, runtime, self_recall=True)
+        self_targets = tuple(
+            target for target in targets if target.role is MemoryTargetRole.CURRENT_SELF
+        )
+        episode_query = query.model_copy(
+            update={
+                "targets": self_targets,
+                "kinds": (MemoryKind.EPISODE,),
+                "limit_per_target": query.candidate_limit,
+                "always_on_explicit_preference_limit": 0,
+            }
+        )
+        result = await self._retriever.retrieve(episode_query)
+        if not self_targets:
+            return result
+        target = self_targets[0]
+        selected = tuple(
+            hit
+            for hit in result.hits
+            if hit.fact.visibility_type is target.visibility_type
+            and hit.fact.visibility_user_id == target.visibility_user_id
+            and hit.fact.visibility_group_id == target.visibility_group_id
+        )[:1]
+        selected_ids = {hit.fact.id for hit in selected}
+        blocks = tuple(
+            block.model_copy(
+                update={
+                    "hits": tuple(hit for hit in block.hits if hit.fact.id in selected_ids)
+                }
+            )
+            for block in result.blocks
+        )
+        return result.model_copy(
+            update={
+                "blocks": blocks,
+                "hits": selected,
+                "selected_count": len(selected),
+            }
+        )
+
+    @staticmethod
+    def _merge_results(
+        primary: MemoryRetrievalResult,
+        additional: MemoryRetrievalResult,
+    ) -> MemoryRetrievalResult:
+        known = {hit.fact.id for hit in primary.hits}
+        new_hits = tuple(hit for hit in additional.hits if hit.fact.id not in known)
+        if not new_hits:
+            return primary
+        new_ids = {hit.fact.id for hit in new_hits}
+        blocks = list(primary.blocks)
+        for block in additional.blocks:
+            selected = tuple(hit for hit in block.hits if hit.fact.id in new_ids)
+            if selected:
+                blocks.append(block.model_copy(update={"hits": selected}))
+        return primary.model_copy(
+            update={
+                "blocks": tuple(blocks),
+                "hits": (*primary.hits, *new_hits),
+                "candidate_count": primary.candidate_count + additional.candidate_count,
+                "selected_count": primary.selected_count + len(new_hits),
+                "semantic_degraded": (
+                    primary.semantic_degraded or additional.semantic_degraded
+                ),
+            }
+        )
 
     async def search(
         self,
