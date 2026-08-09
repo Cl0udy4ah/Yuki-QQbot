@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,6 +12,7 @@ from pathlib import Path
 from sqlalchemy import delete, select
 
 from qq_ai_bot.mcp.models import MCPServerConfig, MCPToolMetadata
+from qq_ai_bot.mcp.redaction import redact_sensitive_data, redact_sensitive_text
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
@@ -23,23 +23,6 @@ from qq_ai_bot.persistence.models import (
     ToolInvocationModel,
 )
 
-_SENSITIVE_RESULT = re.compile(
-    r"""(?ix)(["']?(?:api[_-]?key|authorization|password|secret|access[_-]?token|"""
-    r"""refresh[_-]?token|token)["']?)\s*[:=]\s*["']?([^\s,;"']+)"""
-)
-_SENSITIVE_KEYS = frozenset(
-    {
-        "api_key",
-        "apikey",
-        "authorization",
-        "password",
-        "secret",
-        "token",
-        "access_token",
-        "refresh_token",
-    }
-)
-
 
 def _redact_reflection_result(value: str) -> str:
     """Redact structured secrets before a bounded tool result can become evidence."""
@@ -47,23 +30,12 @@ def _redact_reflection_result(value: str) -> str:
     try:
         decoded = json.loads(value)
     except json.JSONDecodeError:
-        return _SENSITIVE_RESULT.sub(r"\1=[redacted]", value)
-
-    def redact(item: object) -> object:
-        if isinstance(item, dict):
-            return {
-                str(key): (
-                    "[redacted]"
-                    if str(key).casefold().replace("-", "_") in _SENSITIVE_KEYS
-                    else redact(child)
-                )
-                for key, child in item.items()
-            }
-        if isinstance(item, list):
-            return [redact(child) for child in item]
-        return item
-
-    return json.dumps(redact(decoded), ensure_ascii=False, separators=(",", ":"))
+        return redact_sensitive_text(value)
+    return json.dumps(
+        redact_sensitive_data(decoded),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 class MCPRepository:

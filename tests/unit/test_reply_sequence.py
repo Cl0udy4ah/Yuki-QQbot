@@ -67,7 +67,33 @@ async def test_blank_line_splits_even_a_single_mode_chat_reply(database: Databas
 
 
 @pytest.mark.asyncio
-async def test_structured_mode_preserves_internal_blank_lines(database: Database) -> None:
+@pytest.mark.parametrize(
+    "mode",
+    (DeliveryMode.SINGLE, DeliveryMode.CONCISE, DeliveryMode.NATURAL_MULTI),
+)
+async def test_each_plain_chat_line_becomes_one_qq_message(
+    database: Database,
+    mode: DeliveryMode,
+) -> None:
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url),
+        database=database,
+    ).snapshot()
+    manager = ReplySequenceManager(ConversationTurnCoordinator())
+
+    assert manager.render(
+        "first line\nsecond line",
+        plan=_plan(mode, messages=3),
+        runtime=runtime,
+    ) == ("first line", "second line")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", (DeliveryMode.STRUCTURED, DeliveryMode.DETAILED))
+async def test_formatted_modes_preserve_internal_lines(
+    database: Database,
+    mode: DeliveryMode,
+) -> None:
     runtime = await RuntimeConfigService(
         settings=make_settings(database.url),
         database=database,
@@ -77,7 +103,51 @@ async def test_structured_mode_preserves_internal_blank_lines(database: Database
 
     assert manager.render(
         text,
-        plan=_plan(DeliveryMode.STRUCTURED),
+        plan=_plan(mode),
+        runtime=runtime,
+    ) == (text,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    (
+        "items:\n- first\n- second",
+        "```python\nprint('one')\nprint('two')\n```",
+        "| name | value |\n| --- | --- |\n| one | two |",
+    ),
+)
+async def test_structured_content_guard_preserves_lines_after_chat_mode_misclassification(
+    database: Database,
+    text: str,
+) -> None:
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url),
+        database=database,
+    ).snapshot()
+    manager = ReplySequenceManager(ConversationTurnCoordinator())
+
+    assert manager.render(
+        text,
+        plan=_plan(DeliveryMode.SINGLE),
+        runtime=runtime,
+    ) == (text,)
+
+
+@pytest.mark.asyncio
+async def test_natural_multi_does_not_split_punctuation_without_model_line_break(
+    database: Database,
+) -> None:
+    runtime = await RuntimeConfigService(
+        settings=make_settings(database.url),
+        database=database,
+    ).snapshot()
+    manager = ReplySequenceManager(ConversationTurnCoordinator())
+    text = "first sentence! second sentence?"
+
+    assert manager.render(
+        text,
+        plan=_plan(DeliveryMode.NATURAL_MULTI, messages=3),
         runtime=runtime,
     ) == (text,)
 

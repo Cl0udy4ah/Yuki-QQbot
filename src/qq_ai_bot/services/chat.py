@@ -108,11 +108,7 @@ from qq_ai_bot.services.plugin_events import (
     publish_notification,
 )
 from qq_ai_bot.services.prompt_composer import PromptComposer
-from qq_ai_bot.services.renderer import (
-    clean_model_output,
-    split_daily_chat_sentences,
-    split_qq_message,
-)
+from qq_ai_bot.services.renderer import clean_model_output, split_qq_message
 from qq_ai_bot.services.reply_sequence import (
     DeliveryFailureRecovery,
     ReplySequenceManager,
@@ -2464,20 +2460,9 @@ class ChatService:
         rendered: str,
         runtime: RuntimeConfigSnapshot,
     ) -> tuple[str, ...]:
-        messages: tuple[str, ...] = (rendered,)
-        if runtime.reply.daily_split_enabled:
-            messages = split_daily_chat_sentences(
-                rendered,
-                max_characters=runtime.reply.daily_split_max_characters,
-                max_messages=runtime.reply.daily_split_max_messages,
-            )
-        return tuple(
-            chunk
-            for message in messages
-            for chunk in split_qq_message(
-                message,
-                limit=runtime.reply.max_qq_message_chars,
-            )
+        return split_qq_message(
+            rendered,
+            limit=runtime.reply.max_qq_message_chars,
         )
 
     async def _record_outbound(

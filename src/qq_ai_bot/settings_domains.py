@@ -100,9 +100,6 @@ class ConversationSettings(DomainSettings):
     max_input_characters: int = Field(gt=0)
     max_output_characters: int = Field(gt=0)
     max_qq_message_chars: int = Field(gt=0)
-    split_daily_chat_sentences: bool
-    daily_chat_split_max_characters: int = Field(gt=0)
-    daily_chat_split_max_messages: int = Field(gt=0)
     daily_chat_message_delay_min_seconds: float = Field(ge=0)
     daily_chat_message_delay_max_seconds: float = Field(ge=0)
     observe_enabled_groups: bool

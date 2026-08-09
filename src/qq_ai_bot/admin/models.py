@@ -179,9 +179,6 @@ class MemoryRetrievalRuntimeConfig:
 
 @dataclass(frozen=True, slots=True)
 class ReplyRuntimeConfig:
-    daily_split_enabled: bool
-    daily_split_max_characters: int
-    daily_split_max_messages: int
     delay_min_seconds: float
     delay_max_seconds: float
     max_qq_message_chars: int

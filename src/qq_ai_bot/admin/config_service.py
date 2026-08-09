@@ -1130,11 +1130,6 @@ class RuntimeConfigService:
                 stale_max_confidence=float(cast(float | int, value("memory.stale_max_confidence"))),
             ),
             reply=ReplyRuntimeConfig(
-                daily_split_enabled=bool(value("reply.daily_split_enabled")),
-                daily_split_max_characters=int(
-                    cast(int, value("reply.daily_split_max_characters"))
-                ),
-                daily_split_max_messages=int(cast(int, value("reply.daily_split_max_messages"))),
                 delay_min_seconds=delay_min,
                 delay_max_seconds=delay_max,
                 max_qq_message_chars=int(cast(int, value("reply.max_qq_message_chars"))),

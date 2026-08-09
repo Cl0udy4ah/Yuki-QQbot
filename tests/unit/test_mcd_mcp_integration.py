@@ -34,9 +34,12 @@ def _remote_tool(name: str, description: str) -> SimpleNamespace:
 def test_checked_in_mcp_presets_are_standalone_and_secret_free() -> None:
     loaded = load_mcp_config(
         Path(".mcp.json.example"),
-        environment={"MCD_MCP_TOKEN": "offline-token"},
+        environment={
+            "MCD_MCP_TOKEN": "offline-token",
+            "MINIFLUX_MCP_TOKEN": "miniflux-offline-token",
+        },
     )
-    assert set(loaded.servers) == {"mcd", "netease_music"}
+    assert set(loaded.servers) == {"mcd", "miniflux", "netease_music"}
     server = loaded.servers["mcd"]
     assert server.url == "https://mcp.mcd.cn"
     assert server.headers["Authorization"] == "Bearer offline-token"
@@ -101,6 +104,27 @@ def test_checked_in_mcp_presets_are_standalone_and_secret_free() -> None:
     }.isdisjoint(music.include_tools)
     music_display = json.dumps(redacted_server_config(music), ensure_ascii=False)
     assert "Authorization" not in music_display
+
+    miniflux = loaded.servers["miniflux"]
+    assert miniflux.disabled is True
+    assert miniflux.url == "http://miniflux-mcp:8080/mcp"
+    assert miniflux.headers["Authorization"] == "Bearer miniflux-offline-token"
+    assert miniflux.yuki.scope == "mcp.miniflux"
+    assert len(miniflux.include_tools) == 33
+    assert {
+        "create_user",
+        "delete_user",
+        "create_api_key",
+        "delete_api_key",
+        "export",
+        "flush_history",
+    }.isdisjoint(miniflux.include_tools)
+    assert miniflux.yuki.automation.permission == "user"
+    assert "get_entries" in miniflux.yuki.automation.include_tools
+    assert "delete_feed" not in miniflux.yuki.automation.include_tools
+    assert set(miniflux.yuki.tool_bundles) == {"subscriptions", "articles", "categories"}
+    miniflux_display = json.dumps(redacted_server_config(miniflux), ensure_ascii=False)
+    assert "miniflux-offline-token" not in miniflux_display
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from qq_ai_bot.capabilities.results import ToolExecutionResult
+from qq_ai_bot.mcp.redaction import redact_sensitive_data, redact_sensitive_text
 
 
 def normalize_mcp_result(value: Any, *, server_id: str, tool_name: str) -> ToolExecutionResult:
@@ -31,7 +32,15 @@ def normalize_mcp_result(value: Any, *, server_id: str, tool_name: str) -> ToolE
             parsed_error = _parse_structured_error(normalized.get("text"))
             if parsed_error is not None:
                 upstream_error_code, public_error, retryable = parsed_error
-        content.append(normalized)
+        content.append(redact_sensitive_data(normalized))
+
+    if structured is None and not is_error:
+        promoted, content = _promote_single_json_text(content)
+        if promoted is not None:
+            structured = promoted
+    content = _redact_text_blocks(content)
+    structured = redact_sensitive_data(structured)
+    public_error = redact_sensitive_text(public_error)
     return ToolExecutionResult(
         ok=not is_error,
         data=structured,
@@ -49,6 +58,41 @@ def normalize_mcp_result(value: Any, *, server_id: str, tool_name: str) -> ToolE
     )
 
 
+def _promote_single_json_text(
+    content: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | list[Any] | None, list[dict[str, Any]]]:
+    """Promote one complete JSON object/array text block to structured data."""
+
+    text_indexes = [
+        index
+        for index, item in enumerate(content)
+        if item.get("type") == "text" and isinstance(item.get("text"), str)
+    ]
+    if len(text_indexes) != 1:
+        return None, content
+    text_index = text_indexes[0]
+    raw_text = str(content[text_index]["text"]).strip()
+    try:
+        decoded = json.loads(raw_text)
+    except (json.JSONDecodeError, TypeError):
+        content[text_index]["text"] = redact_sensitive_text(raw_text)
+        return None, content
+    if not isinstance(decoded, (dict, list)):
+        content[text_index]["text"] = redact_sensitive_text(raw_text)
+        return None, content
+    remaining = content[:text_index] + content[text_index + 1 :]
+    return redact_sensitive_data(decoded), remaining
+
+
+def _redact_text_blocks(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    redacted: list[dict[str, Any]] = []
+    for item in content:
+        if item.get("type") == "text" and isinstance(item.get("text"), str):
+            item = {**item, "text": redact_sensitive_text(str(item["text"]))}
+        redacted.append(item)
+    return redacted
+
+
 def _parse_structured_error(value: object) -> tuple[str, str, bool] | None:
     """Extract the bounded server error envelope used by MCP tool failures."""
 
@@ -63,7 +107,7 @@ def _parse_structured_error(value: object) -> tuple[str, str, bool] | None:
         return None
     if not isinstance(payload, dict):
         return None
-    message = " ".join(str(payload.get("message", "")).split())[:500]
+    message = redact_sensitive_text(" ".join(str(payload.get("message", "")).split())[:500])
     if not message:
         return None
     error_code = str(payload.get("error_code", "")).strip()[:64]

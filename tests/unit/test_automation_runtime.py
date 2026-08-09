@@ -659,7 +659,7 @@ async def test_web_result_can_be_followed_by_authorized_admin_mutation(database)
                     "id": "mutate",
                     "call": "config.set",
                     "arguments": {
-                        "key": "reply.daily_split_enabled",
+                        "key": "reply.cancel_on_new_message",
                         "scope_type": "global",
                         "scope_id": "",
                         "value": False,

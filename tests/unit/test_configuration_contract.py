@@ -9,6 +9,7 @@ from qq_ai_bot.config import Settings
 
 _EXTERNAL_ENVIRONMENT_KEYS = {
     "MCD_MCP_TOKEN",
+    "MINIFLUX_MCP_TOKEN",
     # Explicit offline quality experiments are read only by the administrative CLI.
     "MEMORY_QUALITY_REAL_EMBEDDING_ENABLED",
     "MEMORY_QUALITY_REAL_MODEL_ENABLED",

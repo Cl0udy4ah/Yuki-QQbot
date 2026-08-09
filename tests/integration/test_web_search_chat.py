@@ -323,7 +323,6 @@ def web_settings(database: Database):
         database.url,
         web_enabled=True,
         tavily_api_key="test-placeholder",
-        split_daily_chat_sentences=False,
     )
 
 
@@ -336,7 +335,6 @@ async def test_native_web_sources_are_persisted_before_backend_rendering(
         web_enabled=False,
         web_mode=WebMode.NATIVE,
         tavily_api_key="",
-        split_daily_chat_sentences=False,
     )
     harness = build_harness(database, settings, NativeWebLLM())
     sender = MemorySender()
@@ -346,9 +344,11 @@ async def test_native_web_sources_are_persisted_before_backend_rendering(
         sender,
     )
 
-    assert result.sent_messages == 2
-    assert sender.messages[0].text == "公开文档确认了该信息："
-    assert sender.messages[1].text == ("来源：\n1. Native docs\n   https://example.com/native-docs")
+    assert result.sent_messages == 1
+    assert sender.messages[0].text == (
+        "公开文档确认了该信息：\n\n"
+        "来源：\n1. Native docs\n   https://example.com/native-docs"
+    )
     stored = await WebSearchSourceRepository(database).for_trigger(
         conversation_key="private:1001",
         trigger_message_id="native-visible",
@@ -365,7 +365,6 @@ async def test_chat_completions_profile_uses_tavily_fallback_before_request(
         web_enabled=False,
         web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
         tavily_api_key="test-placeholder",
-        split_daily_chat_sentences=False,
     )
     llm = NativeSourceFailureThenTavilyLLM()
     harness = build_harness(
@@ -381,9 +380,9 @@ async def test_chat_completions_profile_uses_tavily_fallback_before_request(
         sender,
     )
 
-    assert result.sent_messages == 2
-    assert sender.messages[0].text == "已通过备用搜索核验。"
-    assert "https://example.com/deepseek-update" in sender.messages[1].text
+    assert result.sent_messages == 1
+    assert sender.messages[0].text.startswith("已通过备用搜索核验。\n\n来源：")
+    assert "https://example.com/deepseek-update" in sender.messages[0].text
     assert len(llm.requests) == 2
 
 
@@ -408,7 +407,6 @@ async def test_explicit_domain_rule_routes_directly_to_tavily(
         web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
         tavily_api_key="test-placeholder",
         web_tavily_domains_csv="github.com",
-        split_daily_chat_sentences=False,
     )
     llm = DomainRoutedTavilyLLM(target_url)
     web = FakeWebSearchProvider(extracted={target_url: source})
@@ -438,7 +436,6 @@ async def test_tavily_keyword_without_verb_routes_directly_to_tavily(
         web_enabled=False,
         web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
         tavily_api_key="test-placeholder",
-        split_daily_chat_sentences=False,
     )
     llm = WebToolLLM()
     web = FakeWebSearchProvider(response=web_response())
@@ -478,7 +475,6 @@ async def test_chat_completions_url_read_uses_tavily_fallback(
         web_enabled=False,
         web_mode=WebMode.NATIVE_WITH_TAVILY_FALLBACK,
         tavily_api_key="test-placeholder",
-        split_daily_chat_sentences=False,
     )
     llm = TargetMissThenTavilyLLM(target_url)
     web = FakeWebSearchProvider(extracted={target_url: source})
@@ -537,9 +533,9 @@ async def test_explicit_request_sends_backend_rendered_real_sources(
         sender,
     )
 
-    assert result.sent_messages == 2
-    assert sender.messages[0].text == "DeepSeek 最近更新了工具调用能力。"
-    assert sender.messages[1].text == (
+    assert result.sent_messages == 1
+    assert sender.messages[0].text == (
+        "DeepSeek 最近更新了工具调用能力。\n\n"
         "来源：\n1. DeepSeek 官方更新\n   https://example.com/deepseek-update"
     )
     assert "fake.example" not in "\n".join(message.text for message in sender.messages)

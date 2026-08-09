@@ -13,7 +13,7 @@ from typing import Protocol
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.domain.messages import OutboundMessage, OutboundSendReceipt
 from qq_ai_bot.planner.models import DeliveryMode, TurnPlan
-from qq_ai_bot.services.renderer import split_daily_chat_sentences, split_qq_message
+from qq_ai_bot.services.renderer import split_qq_message
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
     ReplySequenceCancelled,
@@ -26,7 +26,13 @@ RecordOutbound = Callable[[OutboundMessage, OutboundSendReceipt], Awaitable[None
 RecordFailure = Callable[[OutboundMessage, Exception], Awaitable[None]]
 BeforeSend = Callable[[OutboundMessage], Awaitable[None]]
 _FENCED_BLOCK = re.compile(r"(```[^\n]*\n.*?\n```|~~~[^\n]*\n.*?\n~~~)", re.DOTALL)
-_BLANK_LINE = re.compile(r"\n[ \t]*\n+")
+_CHAT_LINE_BREAK = re.compile(r"\n+")
+_STRUCTURED_CHAT_OUTPUT = re.compile(
+    r"(?m)^[ \t]*(?:```|~~~|[-*+]\s+|\d+[.)、]\s+|>\s+|#{1,6}\s+|\|.*\|[ \t]*$)"
+)
+_CHAT_DELIVERY_MODES = frozenset(
+    {DeliveryMode.SINGLE, DeliveryMode.CONCISE, DeliveryMode.NATURAL_MULTI}
+)
 
 
 class OutboundSender(Protocol):
@@ -71,29 +77,15 @@ class ReplySequenceManager:
         runtime: RuntimeConfigSnapshot,
     ) -> tuple[str, ...]:
         hard_max = runtime.reply.plan_hard_max_messages
+        split_chat_lines = (
+            plan.delivery_mode in _CHAT_DELIVERY_MODES
+            and _STRUCTURED_CHAT_OUTPUT.search(text) is None
+        )
         messages = (
-            self._split_blank_line_sections(text, max_messages=hard_max)
-            if plan.delivery_mode is not DeliveryMode.STRUCTURED
+            self._split_chat_line_sections(text, max_messages=hard_max)
+            if split_chat_lines
             else (text,)
         )
-        if len(messages) == 1:
-            if plan.delivery_mode is DeliveryMode.NATURAL_MULTI:
-                target = max(1, min(plan.desired_messages, hard_max))
-                messages = split_daily_chat_sentences(
-                    text,
-                    max_characters=runtime.reply.daily_split_max_characters,
-                    max_messages=target,
-                )
-            elif (
-                plan.delivery_mode not in {DeliveryMode.SINGLE, DeliveryMode.CONCISE}
-                and runtime.reply.daily_split_enabled
-                and plan.delivery_mode is not DeliveryMode.STRUCTURED
-            ):
-                messages = split_daily_chat_sentences(
-                    text,
-                    max_characters=runtime.reply.daily_split_max_characters,
-                    max_messages=min(plan.desired_messages, hard_max),
-                )
         chunks = tuple(
             chunk
             for message in messages
@@ -109,10 +101,12 @@ class ReplySequenceManager:
         return (*chunks[: hard_max - 1], "\n".join(chunks[hard_max - 1 :]))
 
     @staticmethod
-    def _split_blank_line_sections(text: str, *, max_messages: int) -> tuple[str, ...]:
-        """Treat visible empty lines as strong chat boundaries without losing text."""
+    def _split_chat_line_sections(text: str, *, max_messages: int) -> tuple[str, ...]:
+        """Treat model-authored line breaks as ordinary-chat send boundaries."""
 
-        sections = tuple(section.strip() for section in _BLANK_LINE.split(text) if section.strip())
+        sections = tuple(
+            section.strip() for section in _CHAT_LINE_BREAK.split(text) if section.strip()
+        )
         if len(sections) < 2:
             return (text,) if text else ()
         if len(sections) <= max_messages:
@@ -121,8 +115,8 @@ class ReplySequenceManager:
         for index, section in enumerate(sections):
             group_index = min(index * max_messages // len(sections), max_messages - 1)
             groups[group_index].append(section)
-        # A single newline keeps merged overflow readable without recreating the
-        # blank line that should have become a send boundary.
+        # The hard cap wins when the model emits too many lines; retained line
+        # breaks keep the merged overflow readable without dropping content.
         return tuple("\n".join(group) for group in groups if group)
 
     async def send(

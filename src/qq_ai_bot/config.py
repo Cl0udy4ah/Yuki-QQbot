@@ -97,9 +97,6 @@ class Settings(BaseSettings):
     max_input_characters: int = 4000
     max_output_characters: int = 12000
     max_qq_message_chars: int = 1800
-    split_daily_chat_sentences: bool = True
-    daily_chat_split_max_characters: int = 240
-    daily_chat_split_max_messages: int = 4
     daily_chat_message_delay_min_seconds: float = 1.0
     daily_chat_message_delay_max_seconds: float = 2.0
     group_memory_max_entries: int = 100

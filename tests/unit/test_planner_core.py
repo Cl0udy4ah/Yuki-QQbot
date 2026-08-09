@@ -6,6 +6,8 @@ import json
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -41,6 +43,7 @@ from qq_ai_bot.planner import (
     LLMPlannerProvider,
     MemoryContextPlan,
     MemoryContextReasonCode,
+    PlannedTurn,
     PlannerDecision,
     PlannerInput,
     PlannerInterruptedError,
@@ -122,9 +125,6 @@ def _runtime() -> RuntimeConfigSnapshot:
             short_query_fallback_enabled=True,
         ),
         reply=ReplyRuntimeConfig(
-            daily_split_enabled=True,
-            daily_split_max_characters=80,
-            daily_split_max_messages=5,
             delay_min_seconds=3,
             delay_max_seconds=5,
             max_qq_message_chars=1500,
@@ -1032,6 +1032,25 @@ def test_agent_speech_runtime_policy_contains_no_internal_transport_details() ->
     source = inspect.getsource(PromptComposer)
     assert "/run/yuki-speech" not in source
     assert "8080" not in source and "6099" not in source
+
+
+def test_main_agent_plan_projection_excludes_planner_delivery_constraints() -> None:
+    plan = TurnPlan(
+        **_valid_plan_payload(
+            delivery_mode="natural_multi",
+            desired_messages=4,
+        )
+    )
+    planned_turn = cast(PlannedTurn, SimpleNamespace(plan=plan))
+
+    contribution = PromptComposer._plan_contribution(planned_turn)
+
+    assert isinstance(contribution.payload, dict)
+    assert contribution.payload["decision"] == "reply"
+    assert contribution.payload["intent"] == plan.intent
+    assert "tools" in contribution.payload
+    assert "delivery" not in contribution.payload
+    assert "messages" not in contribution.payload
 
 
 @pytest.mark.parametrize(

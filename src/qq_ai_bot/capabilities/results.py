@@ -109,27 +109,23 @@ class ToolResultBudgeter:
                 media_type="application/json",
                 retention_seconds=self._artifact_retention_seconds,
             )
-        summary = _bounded_payload(payload, item_limit=self._item_limit)
-        important = _important_fields(payload)
-        if important:
-            summary["important_fields"] = important
+        summary_item_limit = self._item_limit or 5
+        summary = _bounded_payload(payload, item_limit=summary_item_limit)
         summary["truncated"] = True
         summary["original_characters"] = len(text)
         if artifact_id:
             summary["artifact_handle"] = artifact_id
-        rendered = json.dumps(summary, ensure_ascii=False, default=str)
+        rendered = _json_dumps(summary)
         if self._max_characters is not None and len(rendered) > self._max_characters:
-            minimal = {
-                "ok": result.ok,
-                "truncated": True,
-                "original_characters": len(text),
-                "artifact_handle": artifact_id,
-                "public_message": result.public_message,
-                "important_fields": important or None,
-            }
-            rendered = json.dumps(
-                {key: value for key, value in minimal.items() if value is not None},
-                ensure_ascii=False,
+            rendered = _minimal_summary(
+                result,
+                original_characters=len(text),
+                artifact_id=artifact_id,
+                important_fields=_important_fields(
+                    payload,
+                    item_limit=summary_item_limit,
+                ),
+                max_characters=self._max_characters,
             )
         return BudgetedToolResult(
             text=rendered,
@@ -217,24 +213,29 @@ def _largest_collection(value: object) -> int:
     return 0
 
 
-def _bounded_payload(value: object, *, item_limit: int | None) -> dict[str, Any]:
+def _bounded_payload(value: object, *, item_limit: int) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {"summary": str(value)[:1000]}
-    limit = item_limit
 
-    def bounded(item: object) -> object:
+    def bounded(item: object, *, compact_record: bool = False) -> object:
         if isinstance(item, list):
-            selected = item if limit is None else item[:limit]
+            selected = item[:item_limit]
             return {
                 "total_items": len(item),
-                "items": [bounded(value) for value in selected],
+                "shown_items": len(selected),
+                "items": [bounded(value, compact_record=True) for value in selected],
             }
         if isinstance(item, tuple):
             return bounded(list(item))
         if isinstance(item, dict):
-            pairs = list(item.items())
-            selected_pairs = pairs if limit is None else pairs[:limit]
-            return {str(key): bounded(child) for key, child in selected_pairs}
+            pairs = _compact_record_pairs(item) if compact_record else item.items()
+            return {
+                str(key): bounded(
+                    child,
+                    compact_record=compact_record and isinstance(child, dict),
+                )
+                for key, child in pairs
+            }
         if isinstance(item, str) and len(item) > 1000:
             return f"{item[:1000]}…"
         return item
@@ -242,13 +243,61 @@ def _bounded_payload(value: object, *, item_limit: int | None) -> dict[str, Any]
     return {str(key): bounded(item) for key, item in value.items()}
 
 
-def _important_fields(value: object) -> dict[str, object]:
-    """Project identifiers, status, errors, and URLs before lossy truncation."""
+def _compact_record_pairs(value: dict[object, object]) -> list[tuple[object, object]]:
+    ranked: list[tuple[int, int, object, object]] = []
+    for index, (raw_key, item) in enumerate(value.items()):
+        rank = _record_field_rank(str(raw_key), item)
+        if rank is not None:
+            ranked.append((rank, index, raw_key, item))
+    if sum(rank < 20 for rank, _index, _key, _item in ranked) >= 3:
+        ranked = [field for field in ranked if field[0] < 20]
+    ranked.sort(key=lambda field: (field[0], field[1]))
+    return [(key, item) for _rank, _index, key, item in ranked[:12]]
 
-    important: dict[str, object] = {}
+
+def _record_field_rank(value: str, item: object) -> int | None:
+    if item in (None, "", [], {}, "[redacted]"):
+        return None
+    key = value.casefold().replace("-", "_")
+    if key in {"id", "title", "name", "label", "status", "state"}:
+        return 0
+    if key in {"category", "feed", "source", "author", "owner", "disabled", "starred"}:
+        return 1
+    if "url" in key or key in {"uri", "link", "href"}:
+        return 2
+    if key in {
+        "published",
+        "published_at",
+        "updated",
+        "updated_at",
+        "created",
+        "created_at",
+        "changed_at",
+        "started_at",
+        "finished_at",
+        "completed_at",
+    }:
+        return 3
+    if key in {"language", "reading_time", "tags"}:
+        return 4
+    if key.endswith("_id") or key.endswith("id"):
+        return 5
+    if any(part in key for part in ("price", "amount", "currency", "count", "total")):
+        return 6
+    if key in {"content", "body", "html", "raw", "text", "blob", "data", "icon"}:
+        return None
+    if isinstance(item, (str, int, float, bool)):
+        return 20
+    return None
+
+
+def _important_fields(value: object, *, item_limit: int) -> dict[str, object]:
+    """Project counts and common record identity fields before lossy truncation."""
+
+    collected: list[tuple[int, str, object]] = []
 
     def visit(item: object, path: tuple[str, ...]) -> None:
-        if len(important) >= 64:
+        if len(collected) >= 256:
             return
         if isinstance(item, dict):
             for raw_key, child in item.items():
@@ -256,19 +305,109 @@ def _important_fields(value: object) -> dict[str, object]:
                 visit(child, (*path, key))
             return
         if isinstance(item, (list, tuple)):
-            for index, child in enumerate(item[:20]):
+            collection_path = ".".join(path) or "result"
+            collected.append((0, f"{collection_path}.total_items", len(item)))
+            collected.append(
+                (0, f"{collection_path}.shown_items", min(len(item), item_limit))
+            )
+            for index, child in enumerate(item[:item_limit]):
                 visit(child, (*path, str(index)))
             return
         if not path:
             return
-        key = path[-1].casefold()
-        is_important = (
-            "url" in key or key == "id" or key.endswith("id") or "status" in key or "error" in key
-        )
-        if not is_important:
+        priority = _field_priority(path[-1])
+        if priority is None or item in (None, "", [], {}):
             return
         field_path = ".".join(path)
-        important[field_path] = item[:2000] if isinstance(item, str) else item
+        collected.append(
+            (priority, field_path, item[:500] if isinstance(item, str) else item)
+        )
 
     visit(value, ())
-    return important
+    collected.sort(key=lambda field: (field[0], field[1]))
+    return {path: item for _priority, path, item in collected[:128]}
+
+
+def _field_priority(value: str) -> int | None:
+    key = value.casefold().replace("-", "_")
+    if key in {
+        "total",
+        "total_count",
+        "count",
+        "item_count",
+        "page_count",
+        "has_more",
+        "next_cursor",
+    }:
+        return 0
+    if "error" in key or key in {"ok", "status", "state", "disabled", "starred"}:
+        return 1
+    if key in {
+        "title",
+        "name",
+        "label",
+        "summary",
+        "description",
+        "author",
+        "language",
+    }:
+        return 2
+    if key == "id" or key.endswith("_id") or key.endswith("id"):
+        return 3
+    if "url" in key or key in {"uri", "link", "href"}:
+        return 4
+    if key.endswith(("_at", "_time", "_date")) or key in {
+        "published",
+        "updated",
+        "created",
+    }:
+        return 5
+    if any(part in key for part in ("price", "amount", "currency")):
+        return 6
+    return None
+
+
+def _minimal_summary(
+    result: ToolExecutionResult,
+    *,
+    original_characters: int,
+    artifact_id: str | None,
+    important_fields: dict[str, object],
+    max_characters: int,
+) -> str:
+    base: dict[str, object] = {
+        "ok": result.ok,
+        "truncated": True,
+        "original_characters": original_characters,
+    }
+    if result.tool_name:
+        base["tool_name"] = result.tool_name
+    if artifact_id:
+        base["artifact_handle"] = artifact_id
+    if result.public_message:
+        base["public_message"] = result.public_message[:500]
+
+    selected: dict[str, object] = {}
+    for path, item in important_fields.items():
+        candidate = {**base, "important_fields": {**selected, path: item}}
+        if len(_json_dumps(candidate)) > max_characters:
+            continue
+        selected[path] = item
+    if selected:
+        base["important_fields"] = selected
+    rendered = _json_dumps(base)
+    if len(rendered) <= max_characters:
+        return rendered
+
+    tiny = {"ok": result.ok, "truncated": True}
+    tiny_rendered = _json_dumps(tiny)
+    return tiny_rendered if len(tiny_rendered) <= max_characters else "{}"
+
+
+def _json_dumps(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        default=str,
+        separators=(",", ":"),
+    )

@@ -130,7 +130,7 @@ Yuki-QQbot 3.4.5 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLi
 - 每轮聊天获得后端可信当前时间；每个 QQ 可保存独立 IANA 时区，历史消息按本地时间显示。
 - 普通用户和超级管理员都可以用自然语言创建自己的持久化自动化任务；普通用户严格限于本人和当前群，超级管理员可显式委托现有管理员与 OneBot 能力。
 - 默认启用 Planner-first 会话：后端先做确定性回复必要性评分，再生成受约束 `TurnPlan`，规划回复/等待/沉默、工具上限、消息条数和发送节奏。
-- 新消息可以中断过期的自主 Planner、自主生成和尚未发送的旧分句；已经开始的修改型业务操作不会被自动取消。
+- 新消息可以中断过期的自主 Planner、自主生成和尚未发送的旧消息序列；已经开始的修改型业务操作不会被自动取消。
 - 提供 Plugin API v1、独立 `yuki_plugin_sdk`、Manifest/批准/权限/事件/Prompt/PlannerSignal 扩展点和无网络测试 SDK；插件系统默认关闭。
 - 插件可以创建与主聊天账本、人物记忆分离的持久或临时 AI 会话，适合骰子跑团等连续任务；插件拿不到模型隐藏推理，也不能伪造超级管理员。
 - 内置持久化表情系统会按配置观察图片、保存原图与静态预览、复用 Qwen 视觉分类、自动采用合格表情，并由 Planner 在正常回复序列中选择发送。
@@ -687,7 +687,7 @@ MC赵小六《中国有弹舌》的专辑卡片”。结果唯一时会直接发
   → reply 才装配上下文并进入同一个正常聊天 Agent
   → 纯文本轮次可按当前真实 QQ 创建或管理本人自动化任务
   → 当前真实发送者是超级管理员时，为该 Agent 动态增加管理员工具
-  → ReplySequenceManager 按计划发送，并在新消息到达时停止过期的剩余分句
+  → ReplySequenceManager 按计划发送，并在新消息到达时停止过期的剩余消息
   → 普通聊天成功发送后，关系评价任务入队
 ```
 
@@ -1235,7 +1235,7 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 |---|---|
 | HOT | `planner.enabled`、`planner.direct_enabled`、`planner.group_enabled`、`planner.group_debounce_seconds`、`planner.confidence_threshold`、`planner.reply_necessity_threshold`、`planner.max_pending_messages`、`planner.recent_presence_window_seconds`、`planner.max_wait_seconds`、`planner.interrupt_autonomous_on_new_message` |
 | HOT | `context.local_event_limit`、`memory.max_referenced_targets` |
-| HOT | `reply.daily_split_enabled`、`reply.daily_split_max_characters`、`reply.daily_split_max_messages`、`reply.delay_min_seconds`、`reply.delay_max_seconds`、`reply.max_qq_message_chars` |
+| HOT | `reply.delay_min_seconds`、`reply.delay_max_seconds`、`reply.max_qq_message_chars` |
 | HOT | `llm.temperature`、`llm.max_output_tokens`、`llm.thinking_enabled` |
 | HOT | `agent.max_tool_calls`、`agent.max_model_requests`、`agent.tool_result_max_characters` |
 | HOT | `web.search_max_results`、`web.extract_max_results`、`web.max_calls_per_turn`、`web.tool_result_max_characters` |

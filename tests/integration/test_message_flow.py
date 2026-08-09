@@ -229,7 +229,6 @@ async def test_automation_hint_adds_scope_without_replacing_planner_web_scope(
         web_enabled=True,
         web_mode=WebMode.TAVILY,
         tavily_api_key="test-placeholder",
-        split_daily_chat_sentences=False,
     )
     web = FakeWebSearchProvider(
         response=WebSearchResponse(
@@ -288,7 +287,9 @@ async def test_automation_hint_adds_scope_without_replacing_planner_web_scope(
     assert calls == 2
     assert len(web.search_requests) == 1
     assert await repository.list_for_creator("1001") == ()
-    assert sender.messages[0].text == "已根据当前网页总结三项功能。"
+    assert len(sender.messages) == 1
+    assert sender.messages[0].text.startswith("已根据当前网页总结三项功能。")
+    assert "DeepSeek Responses API" in sender.messages[0].text
     assert (
         "planner_scopes=web automation_scope_added=True memory_scope_added=False "
         "effective_scopes=automation,web"
@@ -527,45 +528,26 @@ async def test_ordinary_capability_payload_echo_is_neither_sent_nor_persisted(
 
 
 @pytest.mark.asyncio
-async def test_short_plain_chat_is_sent_as_one_message_per_sentence(
+async def test_short_plain_chat_without_line_break_stays_one_message(
     database: Database,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    delay_bounds: list[tuple[float, float]] = []
-    delays: list[float] = []
-
-    def fake_uniform(minimum: float, maximum: float) -> float:
-        delay_bounds.append((minimum, maximum))
-        return 4.0
-
-    async def fake_sleep(delay: float) -> None:
-        delays.append(delay)
-
-    monkeypatch.setattr("qq_ai_bot.services.reply_sequence.asyncio.sleep", fake_sleep)
     provider = FakeLLMProvider(lambda _request: "第一句。第二句！")
-    settings = make_settings(
-        database.url,
-        daily_chat_message_delay_min_seconds=3,
-        daily_chat_message_delay_max_seconds=5,
-    )
+    settings = make_settings(database.url)
     harness = build_harness(database, settings, provider)
-    harness.processor._chat._reply_sequence._random_uniform = fake_uniform
     sender = MemorySender()
     event = normalize_event(private_event(Message("聊聊天"), message_id=103))
 
     result = await harness.processor.handle(event, sender)
 
     assert result.reason == "chat"
-    assert result.sent_messages == 2
-    assert [message.text for message in sender.messages] == ["第一句。", "第二句！"]
-    assert delay_bounds == [(3.0, 5.0)]
-    assert delays == [4.0]
+    assert result.sent_messages == 1
+    assert [message.text for message in sender.messages] == ["第一句。第二句！"]
     history = await harness.conversations.list_context(
         ConversationIdentity.private("1001"),
         max_messages=10,
         max_characters=1000,
     )
-    assert [item.content for item in history[-2:]] == ["第一句。", "第二句！"]
+    assert [item.content for item in history[-1:]] == ["第一句。第二句！"]
 
 
 @pytest.mark.asyncio
