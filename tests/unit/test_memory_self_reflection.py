@@ -19,6 +19,7 @@ from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.self_reflection.models import (
     SelfReflectionBatch,
+    SelfReflectionCycleResult,
     SelfReflectionHealth,
     SelfReflectionOutput,
 )
@@ -47,13 +48,23 @@ class RecordingSelfReflectionService:
         return 0, 0
 
 
+class FailingSelfReflectionService:
+    async def reflect(self, batch: SelfReflectionBatch) -> tuple[int, int]:
+        del batch
+        raise ValueError("invalid reflection input")
+
+
 class RecordingSelfReflectionWorker:
     def __init__(self) -> None:
         self.calls = 0
+        self.result = SelfReflectionCycleResult(
+            attempted_conversations=1,
+            completed_conversations=1,
+        )
 
-    async def run_now(self) -> int:
+    async def run_now(self) -> SelfReflectionCycleResult:
         self.calls += 1
-        return 1
+        return self.result
 
     async def health(self) -> SelfReflectionHealth:
         return SelfReflectionHealth(
@@ -144,6 +155,47 @@ async def test_reflection_episode_is_bounded_and_requires_yuki_participation(
     assert len(episodes[0].events) == 12
     assert {item.group_id for item in episodes[0].events} == {"3001"}
     await repository.complete(episodes[0], proposals=0, committed=0)
+
+
+@pytest.mark.asyncio
+async def test_group_reflection_state_never_keeps_a_private_peer_and_repairs_legacy_rows(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="group-state-user",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        direction="inbound",
+        content="群聊消息",
+        group_id="3001",
+    )
+    await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="group-state-yuki",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="8000",
+        direction="outbound",
+        content="Yuki 的群聊回复",
+        group_id="3001",
+        sender_is_bot=True,
+    )
+
+    assert await repository.scan_new_events() == 2
+    async with database.sessions() as session, session.begin():
+        state = await session.scalar(select(MemorySelfReflectionStateModel))
+        assert state is not None
+        assert state.private_peer_user_id is None
+        state.private_peer_user_id = "1001"
+
+    assert await repository.scan_new_events() == 0
+    async with database.sessions() as session:
+        repaired = await session.scalar(select(MemorySelfReflectionStateModel))
+    assert repaired is not None
+    assert repaired.private_peer_user_id is None
 
 
 @pytest.mark.asyncio
@@ -247,10 +299,56 @@ async def test_manual_reflection_skips_schedule_and_volume_thresholds(
     )
 
     assert await worker.process_once(datetime(2026, 8, 10, 1, tzinfo=UTC)) == 0
-    assert await worker.run_now() == 1
+    result = await worker.run_now()
+    assert result.attempted_conversations == 1
+    assert result.completed_conversations == 1
+    assert result.failed_conversations == 0
     assert len(service.batches) == 1
     assert service.batches[0].trigger_reason == "manual"
     assert len(service.batches[0].events) == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_reflection_batch_is_not_reported_as_completed(
+    database: Database,
+) -> None:
+    settings = Settings.model_validate({"database_url": database.url})
+    ledger = EventLedgerRepository(database)
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="failed-user-message",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        direction="inbound",
+        content="请回想这段群聊",
+        group_id="3001",
+    )
+    await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="failed-yuki-reply",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="8000",
+        direction="outbound",
+        content="这是我的回复",
+        group_id="3001",
+        sender_is_bot=True,
+    )
+    worker = SelfReflectionWorker(
+        settings=settings,
+        repository=repository,
+        service=cast(SelfReflectionService, FailingSelfReflectionService()),
+        metrics=MemoryLifecycleMetrics(),
+    )
+
+    result = await worker.run_now()
+
+    assert result.attempted_conversations == 1
+    assert result.completed_conversations == 0
+    assert result.failed_conversations == 1
+    assert result.proposal_count == 0
+    assert result.committed_count == 0
 
 
 @pytest.mark.asyncio
@@ -294,14 +392,23 @@ async def test_self_reflection_command_requires_superuser_and_reports_usage(
 
     result = await handler.memory(actor=admin, argument="self-reflection run")
 
-    assert "处理 1 个会话" in result
-    assert "今日模型调用 1/9" in result
+    assert "尝试 1 个会话，成功 1 个，失败 0 个" in result
+    assert "实际写入 0 条" in result
+    assert "今日反思批次 1/9" in result
     assert worker.calls == 1
+    worker.result = SelfReflectionCycleResult(
+        attempted_conversations=1,
+        failed_conversations=1,
+    )
+    failed_result = await handler.memory(actor=admin, argument="self-reflection run")
+    assert "尝试 1 个会话，成功 0 个，失败 1 个" in failed_result
+    assert "实际写入 0 条" in failed_result
+    assert worker.calls == 2
     assert "只有超级管理员" in await handler.memory(
         actor=user,
         argument="self-reflection run",
     )
-    assert worker.calls == 1
+    assert worker.calls == 2
 
 
 @pytest.mark.asyncio

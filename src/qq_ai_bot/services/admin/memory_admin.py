@@ -750,9 +750,13 @@ class MemoryAdminService:
         self._require_superuser(actor)
         if self._self_reflection is None:
             raise RuntimeError("Self Reflection Worker 当前不可用")
-        processed = await self._self_reflection.run_now()
+        cycle = await self._self_reflection.run_now()
         return SelfReflectionManualRun(
-            processed_conversations=processed,
+            attempted_conversations=cycle.attempted_conversations,
+            completed_conversations=cycle.completed_conversations,
+            failed_conversations=cycle.failed_conversations,
+            proposal_count=cycle.proposal_count,
+            committed_count=cycle.committed_count,
             health=await self._self_reflection.health(),
             max_daily_calls=self._settings.memory_self_reflection_max_daily_calls,
         )

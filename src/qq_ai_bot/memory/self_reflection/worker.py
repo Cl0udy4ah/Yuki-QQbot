@@ -9,7 +9,10 @@ from zoneinfo import ZoneInfo
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
-from qq_ai_bot.memory.self_reflection.models import SelfReflectionHealth
+from qq_ai_bot.memory.self_reflection.models import (
+    SelfReflectionCycleResult,
+    SelfReflectionHealth,
+)
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
 
@@ -59,14 +62,15 @@ class SelfReflectionWorker:
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
 
-    async def run_now(self) -> int:
+    async def run_now(self) -> SelfReflectionCycleResult:
         """Run one manual bounded cycle without waiting for a scheduled hour."""
 
         if not self._settings.memory_self_reflection_enabled:
             raise RuntimeError("Self Reflection 当前未启用")
         if self._process_lock.locked():
             raise RuntimeError("Self Reflection 当前正在运行")
-        return await self.process_once(force=True)
+        async with self._process_lock:
+            return await self._process_cycle(now=None, force=True)
 
     async def process_once(
         self,
@@ -75,18 +79,19 @@ class SelfReflectionWorker:
         force: bool = False,
     ) -> int:
         async with self._process_lock:
-            return await self._process_once(now=now, force=force)
+            result = await self._process_cycle(now=now, force=force)
+            return result.completed_conversations
 
-    async def _process_once(
+    async def _process_cycle(
         self,
         *,
         now: datetime | None,
         force: bool,
-    ) -> int:
+    ) -> SelfReflectionCycleResult:
         await self._repository.scan_new_events()
         local = (now or datetime.now(UTC)).astimezone(self._timezone)
         if not force and local.hour not in self._hours:
-            return 0
+            return SelfReflectionCycleResult()
         slot = (
             f"{local.date().isoformat()}:manual:{local.strftime('%H%M%S%f')}"
             if force
@@ -105,6 +110,10 @@ class SelfReflectionWorker:
             context_events=4,
             force=force,
         )
+        completed = 0
+        failed = 0
+        proposal_count = 0
+        committed_count = 0
         for batch in batches:
             try:
                 proposals, committed = await self._service.reflect(batch)
@@ -113,6 +122,9 @@ class SelfReflectionWorker:
                     proposals=proposals,
                     committed=committed,
                 )
+                completed += 1
+                proposal_count += proposals
+                committed_count += committed
                 logger.info(
                     "memory_self_reflection_completed run_id=%d trigger=%s "
                     "events=%d proposals=%d committed=%d",
@@ -126,6 +138,7 @@ class SelfReflectionWorker:
                 raise
             except (OSError, RuntimeError, ValueError) as exc:
                 await self._repository.fail(batch.run_id, type(exc).__name__)
+                failed += 1
                 self._metrics.increment("self_reflection_failed")
                 logger.warning(
                     "memory_self_reflection_failed run_id=%d trigger=%s error_category=%s",
@@ -134,7 +147,13 @@ class SelfReflectionWorker:
                     type(exc).__name__,
                 )
         await self._repository.cleanup_receipts()
-        return len(batches)
+        return SelfReflectionCycleResult(
+            attempted_conversations=len(batches),
+            completed_conversations=completed,
+            failed_conversations=failed,
+            proposal_count=proposal_count,
+            committed_count=committed_count,
+        )
 
     async def health(self) -> SelfReflectionHealth:
         local = datetime.now(UTC).astimezone(self._timezone)

@@ -208,11 +208,15 @@ class ProfileCommandHandler:
                 usage = (
                     f"{reflection_health.calls_today}/{reflection_result.max_daily_calls}"
                 )
-                if reflection_result.processed_conversations:
+                if reflection_result.attempted_conversations:
                     return (
-                        "Self Reflection 已立即运行："
-                        f"处理 {reflection_result.processed_conversations} 个会话；"
-                        f"今日模型调用 {usage}；"
+                        "Self Reflection 本轮结束："
+                        f"尝试 {reflection_result.attempted_conversations} 个会话，"
+                        f"成功 {reflection_result.completed_conversations} 个，"
+                        f"失败 {reflection_result.failed_conversations} 个；"
+                        f"生成 {reflection_result.proposal_count} 条 proposal，"
+                        f"实际写入 {reflection_result.committed_count} 条；"
+                        f"今日反思批次 {usage}；"
                         f"仍待处理 {reflection_health.pending_conversations} 个会话。"
                     )
                 if reflection_health.calls_today >= reflection_result.max_daily_calls:
@@ -221,7 +225,7 @@ class ProfileCommandHandler:
                     reason = "当前没有待处理会话"
                 else:
                     reason = "待处理会话尚无 Yuki 已发送回复或可信工具结果"
-                return f"Self Reflection 本轮未处理会话：{reason}；今日模型调用 {usage}。"
+                return f"Self Reflection 本轮未处理会话：{reason}；今日反思批次 {usage}。"
             if operation in {"show", "explain", "history"}:
                 if len(parts) != 1 or not parts[0].isdigit():
                     return f"格式：/ai memory {operation} <fact_id>"

@@ -54,6 +54,16 @@ class SelfReflectionRepository:
 
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
+            # Older workers accidentally copied a group sender into this
+            # private-only field. Existing deployments heal on the next scan.
+            await session.execute(
+                update(MemorySelfReflectionStateModel)
+                .where(
+                    MemorySelfReflectionStateModel.scope_type == ScopeType.GROUP.value,
+                    MemorySelfReflectionStateModel.private_peer_user_id.is_not(None),
+                )
+                .values(private_peer_user_id=None, updated_at=now)
+            )
             runtime = await session.get(MemorySelfReflectionRuntimeModel, 1)
             if runtime is None:
                 maximum = int(await session.scalar(select(func.max(ChatEventModel.id))) or 0)
@@ -78,13 +88,16 @@ class SelfReflectionRepository:
                 )
             ).all()
             for row in rows:
-                peer = row.private_peer_user_id or (
-                    row.sender_user_id if row.direction == "inbound" else None
-                )
-                if row.scope_type == ScopeType.PRIVATE.value and not peer:
-                    continue
+                scope_type = ScopeType(row.scope_type)
+                peer: str | None = None
+                if scope_type is ScopeType.PRIVATE:
+                    peer = row.private_peer_user_id or (
+                        row.sender_user_id if row.direction == "inbound" else None
+                    )
+                    if not peer:
+                        continue
                 key_hash = conversation_key_hash(
-                    ScopeType(row.scope_type),
+                    scope_type,
                     group_id=row.group_id,
                     private_peer_user_id=peer,
                 )
@@ -468,13 +481,16 @@ class SelfReflectionRepository:
 
     @staticmethod
     def _state(row: MemorySelfReflectionStateModel, *, has_tool: bool) -> SelfReflectionState:
+        scope_type = ScopeType(row.scope_type)
         return SelfReflectionState(
             id=row.id,
             conversation_key_hash=row.conversation_key_hash,
             bot_user_id=row.bot_user_id,
-            scope_type=ScopeType(row.scope_type),
+            scope_type=scope_type,
             group_id=row.group_id,
-            private_peer_user_id=row.private_peer_user_id,
+            private_peer_user_id=(
+                None if scope_type is ScopeType.GROUP else row.private_peer_user_id
+            ),
             last_event_id=row.last_event_id,
             latest_event_id=row.latest_event_id,
             pending_events=row.pending_events,

@@ -194,9 +194,24 @@ class SelfReflectionHealth(_Contract):
 
 
 @dataclass(frozen=True, slots=True)
+class SelfReflectionCycleResult:
+    """Content-free outcome of one bounded worker cycle."""
+
+    attempted_conversations: int = 0
+    completed_conversations: int = 0
+    failed_conversations: int = 0
+    proposal_count: int = 0
+    committed_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class SelfReflectionManualRun:
     """Content-free result returned by the explicit administrator command."""
 
-    processed_conversations: int
+    attempted_conversations: int
+    completed_conversations: int
+    failed_conversations: int
+    proposal_count: int
+    committed_count: int
     health: SelfReflectionHealth
     max_daily_calls: int
