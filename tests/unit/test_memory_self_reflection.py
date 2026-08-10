@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -15,7 +16,15 @@ from qq_ai_bot.admin.models import AdminActor
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.mcp.repository import MCPRepository
+from qq_ai_bot.memory.enums import (
+    MemoryAuthority,
+    MemoryKind,
+    MemoryScopeType,
+    MemorySourceType,
+    SelfMemoryVisibility,
+)
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
+from qq_ai_bot.memory.models import MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.self_reflection.models import (
     SelfReflectionBatch,
@@ -552,6 +561,121 @@ async def test_reflection_uses_oldest_window_context_and_keeps_concurrent_arriva
 
 
 @pytest.mark.asyncio
+async def test_reflection_watermarks_cut_at_natural_pause_without_source_overlap(
+    database: Database,
+) -> None:
+    ledger = EventLedgerRepository(database)
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    event_ids: list[int] = []
+    occurred_at = datetime(2026, 8, 10, 1, tzinfo=UTC)
+    for index in range(50):
+        if index == 37:
+            occurred_at += timedelta(minutes=10)
+        event, _ = await ledger.append(
+            bot_user_id="8000",
+            platform_message_id=f"watermark-{index}",
+            scope_type=ScopeType.GROUP,
+            sender_user_id="8000" if index in {5, 42} else "1001",
+            direction="outbound" if index in {5, 42} else "inbound",
+            content=f"连续对话中的第 {index + 1} 条消息",
+            group_id="3001",
+            sender_is_bot=index in {5, 42},
+            occurred_at=occurred_at,
+        )
+        event_ids.append(event.id)
+        occurred_at += timedelta(minutes=1)
+    assert await repository.scan_new_events() == 50
+
+    first = (
+        await repository.claim_due(
+            scheduled_slot="2026-08-10:04",
+            local_date="2026-08-10",
+            event_threshold=50,
+            character_threshold=8000,
+            low_event_threshold=30,
+            low_character_threshold=4800,
+            natural_gap_seconds=300,
+            max_wait_seconds=28800,
+            max_sessions=1,
+            max_daily_calls=9,
+            max_events=50,
+            max_characters=8000,
+            context_events=4,
+        )
+    )[0]
+    assert [event.id for event in first.events] == event_ids[:37]
+    assert first.context_events == ()
+    await repository.complete(first, proposals=0, committed=0)
+
+    second = (
+        await repository.claim_due(
+            scheduled_slot="manual:watermark-tail",
+            local_date="2026-08-10",
+            event_threshold=50,
+            character_threshold=8000,
+            low_event_threshold=30,
+            low_character_threshold=4800,
+            natural_gap_seconds=300,
+            max_wait_seconds=28800,
+            max_sessions=1,
+            max_daily_calls=9,
+            max_events=50,
+            max_characters=8000,
+            context_events=4,
+            force=True,
+        )
+    )[0]
+    assert [event.id for event in second.events] == event_ids[37:]
+    assert [event.id for event in second.context_events] == event_ids[33:37]
+    assert {event.id for event in first.events}.isdisjoint(event.id for event in second.events)
+
+
+@pytest.mark.asyncio
+async def test_reflection_uses_latest_episode_from_the_same_scope(
+    database: Database,
+) -> None:
+    facts = MemoryFactService(MemoryFactRepository(database))
+
+    async def remember_episode(*, group_id: str, key: str, content: str) -> None:
+        await facts.remember(
+            MemoryFactCreate(
+                scope_type=MemoryScopeType.SELF,
+                visibility_type=SelfMemoryVisibility.GROUP,
+                visibility_group_id=group_id,
+                kind=MemoryKind.EPISODE,
+                memory_key=key,
+                category="self_episode",
+                content=content,
+                importance=4,
+                source_type=MemorySourceType.AUTOMATIC,
+                authority=MemoryAuthority.AGENT_REFLECTION,
+            )
+        )
+
+    await remember_episode(group_id="3001", key="older", content="较早的同群经历")
+    await remember_episode(group_id="3002", key="other", content="另一个群的经历")
+    await remember_episode(group_id="3001", key="latest", content="最近的同群经历")
+    service = object.__new__(SelfReflectionService)
+    service._facts = facts
+    batch = cast(
+        SelfReflectionBatch,
+        SimpleNamespace(
+            state=SimpleNamespace(
+                scope_type=ScopeType.GROUP,
+                group_id="3001",
+                private_peer_user_id=None,
+            )
+        ),
+    )
+
+    previous = await service._previous_episode(batch)
+
+    assert previous is not None
+    assert previous.content == "最近的同群经历"
+
+
+@pytest.mark.asyncio
 async def test_reflection_character_limit_keeps_the_oldest_event(database: Database) -> None:
     ledger = EventLedgerRepository(database)
     repository = SelfReflectionRepository(database)
@@ -644,38 +768,31 @@ async def test_reflection_batches_same_conversation_separately_per_bot(
     )
 
 
-def test_reflection_output_allows_zero_to_two_free_episodes() -> None:
+def test_reflection_output_allows_zero_or_one_free_episode() -> None:
     assert SelfReflectionOutput.model_validate({}).episodes == ()
     one = SelfReflectionOutput.model_validate(
         {"episodes": [{"content": "我记得那天终于把问题修好了", "importance": 4}]}
     )
     assert one.episodes[0].content == "我记得那天终于把问题修好了"
-    two = SelfReflectionOutput.model_validate(
-        {
-            "episodes": [
-                {"content": "QQ 2186567848 当时说终于成功了", "importance": 4},
-                {"content": "在群 1049765710 里，我后来觉得这件事挺有趣", "importance": 3},
-            ]
-        }
-    )
-    assert len(two.episodes) == 2
-    with pytest.raises(ValidationError, match="at most two episodes"):
+    with pytest.raises(ValidationError, match="at most one episode"):
         SelfReflectionOutput.model_validate(
             {
                 "episodes": [
-                    {"content": "第一条"},
-                    {"content": "第二条"},
-                    {"content": "第三条"},
+                    {"content": "QQ 2186567848 当时说终于成功了", "importance": 4},
+                    {
+                        "content": "在群 1049765710 里，我后来觉得这件事挺有趣",
+                        "importance": 3,
+                    },
                 ]
             }
         )
+
+
 def test_reflection_output_keeps_episode_out_of_fact_proposals() -> None:
     schema = SelfReflectionOutput.model_json_schema()
     proposal_kind = schema["$defs"]["SelfReflectionProposal"]["properties"]["kind"]
     encoded_kind_schema = json.dumps(proposal_kind, ensure_ascii=False)
-    proposal_category = schema["$defs"]["SelfReflectionProposal"]["properties"][
-        "category"
-    ]
+    proposal_category = schema["$defs"]["SelfReflectionProposal"]["properties"]["category"]
     encoded_category_schema = json.dumps(proposal_category, ensure_ascii=False)
 
     assert '"fact"' in encoded_kind_schema

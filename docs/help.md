@@ -1,8 +1,8 @@
 # Yuki-QQbot
 
-> **3.4.5 正式版：**自动记忆增加确定性归属、长期价值策略和隔离候选区；Yuki 自省默认每日
-> 三轮运行；Planner 首轮工具路由改用明确 scope、规范化 intent 与中文搜索标签；主 Agent
-> 使用 `EventRecord.id`、原始群名片和 QQ 装配紧凑历史信封。Alembic head 为 `0031`。
+> **3.4.6 正式版：**Self Reflection 按连续聊天的高低水位和自然停顿生成不重叠的长
+> Episode，每批最多保留一条经历，并参考同范围最近 Episode 避免重复。Alembic head 为
+> `0031`。
 
 > **3.4.4 Prompt 缓存与输出清理：**历史位于动态上下文之前并使用高低水位分块滚动；首批
 > 工具和 Schema 采用宽松预算且按名称稳定排序；输出清理器兼容省略消息 ID 的身份头。
@@ -104,7 +104,7 @@ docker compose down
 
 ## 项目定位
 
-Yuki-QQbot 3.4.5 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
+Yuki-QQbot 3.4.6 是基于 Python 3.12、NoneBot2、OneBot v11、NapCatQQ、SQLite 和 OpenAI-compatible Chat Completions / Responses API 的人物中心 QQ Agent。
 
 - QQ 号字符串是人物的全局唯一身份。
 - 当前消息发送者的 QQ 是否属于 `SUPERUSERS`，是唯一管理员凭证。
@@ -1295,10 +1295,13 @@ current_event.sender.user_id in 启动时加载的 SUPERUSERS
 | `MEMORY_SELF_REFLECTION_TIMEZONE` | `Asia/Shanghai` |
 | `MEMORY_SELF_REFLECTION_MAX_SESSIONS_PER_RUN` | `3` |
 | `MEMORY_SELF_REFLECTION_MAX_DAILY_CALLS` | `9` |
-| `MEMORY_SELF_REFLECTION_EVENT_THRESHOLD` | `12` |
-| `MEMORY_SELF_REFLECTION_CHARACTER_THRESHOLD` | `6000` |
+| `MEMORY_SELF_REFLECTION_EVENT_THRESHOLD` | `50` |
+| `MEMORY_SELF_REFLECTION_CHARACTER_THRESHOLD` | `8000` |
+| `MEMORY_SELF_REFLECTION_LOW_EVENT_THRESHOLD` | `30` |
+| `MEMORY_SELF_REFLECTION_LOW_CHARACTER_THRESHOLD` | `4800` |
+| `MEMORY_SELF_REFLECTION_NATURAL_GAP_SECONDS` | `300` |
 | `MEMORY_SELF_REFLECTION_MAX_WAIT_SECONDS` | `28800` |
-| `MEMORY_SELF_REFLECTION_MAX_EVENTS` | `20` |
+| `MEMORY_SELF_REFLECTION_MAX_EVENTS` | `50` |
 | `MEMORY_SELF_REFLECTION_MAX_CHARACTERS` | `8000` |
 | `MEMORY_LEXICAL_CANDIDATE_LIMIT` | `50` |
 | `MEMORY_CONTEXT_LIMIT_PER_ENTITY` | `8` |

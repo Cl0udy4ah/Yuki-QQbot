@@ -7,9 +7,10 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.memory.self_reflection.models import (
@@ -156,6 +157,9 @@ class SelfReflectionRepository:
         max_daily_calls: int,
         max_events: int,
         max_characters: int,
+        low_event_threshold: int | None = None,
+        low_character_threshold: int | None = None,
+        natural_gap_seconds: float | None = None,
         context_events: int = 4,
         force: bool = False,
     ) -> tuple[SelfReflectionBatch, ...]:
@@ -177,22 +181,32 @@ class SelfReflectionRepository:
                 MemorySelfReflectionStateModel.pending_events > 0
             )
             if not force:
+                high_value_ready: ColumnElement[bool] = (
+                    MemorySelfReflectionStateModel.high_value_signal.is_(True)
+                )
+                if low_event_threshold is not None and low_character_threshold is not None:
+                    high_value_ready = and_(
+                        high_value_ready,
+                        or_(
+                            MemorySelfReflectionStateModel.pending_events >= low_event_threshold,
+                            MemorySelfReflectionStateModel.pending_characters
+                            >= low_character_threshold,
+                        ),
+                    )
                 state_query = state_query.where(
                     or_(
                         MemorySelfReflectionStateModel.pending_events >= event_threshold,
                         MemorySelfReflectionStateModel.pending_characters >= character_threshold,
                         MemorySelfReflectionStateModel.pending_since <= waited_before,
-                        MemorySelfReflectionStateModel.high_value_signal.is_(True),
+                        high_value_ready,
                     )
                 )
             states = (
                 await session.scalars(
-                    state_query
-                    .order_by(
+                    state_query.order_by(
                         MemorySelfReflectionStateModel.high_value_signal.desc(),
                         MemorySelfReflectionStateModel.pending_since.asc(),
-                    )
-                    .limit(available * 3)
+                    ).limit(available * 3)
                 )
             ).all()
             claimed: list[SelfReflectionBatch] = []
@@ -237,6 +251,22 @@ class SelfReflectionRepository:
                         break
                     event_rows.append(item)
                     input_characters += item_characters
+                if (
+                    event_rows
+                    and natural_gap_seconds is not None
+                    and low_event_threshold is not None
+                    and low_character_threshold is not None
+                    and (
+                        row.pending_events >= event_threshold
+                        or row.pending_characters >= character_threshold
+                    )
+                ):
+                    event_rows = self._watermark_segment(
+                        event_rows,
+                        low_event_threshold=low_event_threshold,
+                        low_character_threshold=low_character_threshold,
+                        natural_gap_seconds=natural_gap_seconds,
+                    )
                 if not event_rows:
                     continue
                 context_query = select(ChatEventModel).where(
@@ -260,10 +290,14 @@ class SelfReflectionRepository:
                     ).all()
                 )
                 context_rows.reverse()
-                reason = "manual" if force else self._trigger_reason(
-                    row,
-                    event_threshold=event_threshold,
-                    character_threshold=character_threshold,
+                reason = (
+                    "manual"
+                    if force
+                    else self._trigger_reason(
+                        row,
+                        event_threshold=event_threshold,
+                        character_threshold=character_threshold,
+                    )
                 )
                 run_id = await session.scalar(
                     insert(MemorySelfReflectionRunModel)
@@ -304,6 +338,29 @@ class SelfReflectionRepository:
                 if len(claimed) >= available:
                     break
             return tuple(claimed)
+
+    @staticmethod
+    def _watermark_segment(
+        rows: list[ChatEventModel],
+        *,
+        low_event_threshold: int,
+        low_character_threshold: int,
+        natural_gap_seconds: float,
+    ) -> list[ChatEventModel]:
+        """Cut one oldest non-overlapping segment at the latest natural pause."""
+
+        if len(rows) < 2:
+            return rows
+        characters = 0
+        boundary: int | None = None
+        for index, item in enumerate(rows[:-1], start=1):
+            characters += len(item.content)
+            if index < low_event_threshold and characters < low_character_threshold:
+                continue
+            gap_seconds = (rows[index].occurred_at - item.occurred_at).total_seconds()
+            if gap_seconds >= natural_gap_seconds:
+                boundary = index
+        return rows[:boundary] if boundary is not None else rows
 
     @staticmethod
     def _trigger_reason(
@@ -425,16 +482,13 @@ class SelfReflectionRepository:
                     ChatEventModel.private_peer_user_id == state.private_peer_user_id
                 )
             remaining = list(
-                (
-                    await session.scalars(remaining_query.order_by(ChatEventModel.id.asc()))
-                ).all()
+                (await session.scalars(remaining_query.order_by(ChatEventModel.id.asc()))).all()
             )
             nonempty = [item for item in remaining if item.content.strip()]
             has_tool = bool(
                 await session.scalar(
                     select(MemoryToolReceiptModel.id).where(
-                        MemoryToolReceiptModel.conversation_key_hash
-                        == state.conversation_key_hash,
+                        MemoryToolReceiptModel.conversation_key_hash == state.conversation_key_hash,
                         MemoryToolReceiptModel.bot_user_id == state.bot_user_id,
                         MemoryToolReceiptModel.trigger_event_id > processed_last_event_id,
                         MemoryToolReceiptModel.trigger_event_id <= state.latest_event_id,

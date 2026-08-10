@@ -94,8 +94,11 @@ class MemoryFactRepository:
         after_id: int | None = None,
         include_quarantined: bool = False,
         order_by_id: bool = False,
+        order_by_id_desc: bool = False,
         session: AsyncSession | None = None,
     ) -> tuple[MemoryFact, ...]:
+        if order_by_id and order_by_id_desc:
+            raise ValueError("memory facts cannot use both ascending and descending id order")
         if session is None:
             async with self._database.sessions() as owned:
                 return await self.list_facts(
@@ -104,6 +107,7 @@ class MemoryFactRepository:
                     after_id=after_id,
                     include_quarantined=include_quarantined,
                     order_by_id=order_by_id,
+                    order_by_id_desc=order_by_id_desc,
                     session=owned,
                 )
         conditions = [
@@ -132,11 +136,13 @@ class MemoryFactRepository:
                     MemoryFactModel.valid_until > datetime.now(UTC),
                 )
             )
-        order = (
-            (MemoryFactModel.id.asc(),)
-            if order_by_id
-            else (MemoryFactModel.importance.desc(), MemoryFactModel.updated_at.desc())
-        )
+        order: tuple[Any, ...]
+        if order_by_id:
+            order = (MemoryFactModel.id.asc(),)
+        elif order_by_id_desc:
+            order = (MemoryFactModel.id.desc(),)
+        else:
+            order = (MemoryFactModel.importance.desc(), MemoryFactModel.updated_at.desc())
         statement = (
             select(MemoryFactModel, func.count(MemoryEvidenceModel.id))
             .outerjoin(MemoryEvidenceModel, MemoryEvidenceModel.fact_id == MemoryFactModel.id)

@@ -42,6 +42,7 @@ from qq_ai_bot.memory.self_reflection.models import (
     SelfReflectionInput,
     SelfReflectionOperation,
     SelfReflectionOutput,
+    SelfReflectionPreviousEpisode,
     SelfReflectionProposal,
     SelfReflectionToolReceipt,
     SelfReflectionVisibility,
@@ -79,9 +80,11 @@ self_preference/self_reflection/self_principle 抽象内容才可 global。不�
 system/permission/runtime 键。没有值得长期保留或修改的内容时输出空 proposals。
 
 episodes 是创建 Episode 的唯一输出位置，用来记录你在当前群聊或私聊中真实参与过的长期经历，
-一次最多两条。context_events
+一次最多一条。context_events
 只帮助你理解主窗口；events 和 tool_receipts 是这次经历的完整来源窗口。Episode 的类别、范围、
-时间和来源由后端确定，你只需输出自由的 content 和 importance。
+时间和来源由后端确定，你只需输出自由的 content 和 importance。previous_episode 是当前范围内
+最近一条既有 Episode，只用于避免重复，不是本轮证据。如果当前窗口只是它的重复延续且没有
+重要新进展，保持 episodes 为空。不要把 context_events 或 previous_episode 重新总结进正文。
 """
 
 
@@ -273,6 +276,7 @@ class SelfReflectionService:
             )
             for ref, item in candidate_map.items()
         )
+        previous_episode = await self._previous_episode(batch)
         return (
             SelfReflectionInput(
                 scope_type=batch.state.scope_type,
@@ -281,6 +285,15 @@ class SelfReflectionService:
                 context_events=tuple(context_rows),
                 events=events,
                 tool_receipts=tools,
+                previous_episode=(
+                    SelfReflectionPreviousEpisode(
+                        content=previous_episode.content,
+                        valid_from=previous_episode.valid_from,
+                        importance=previous_episode.importance,
+                    )
+                    if previous_episode is not None
+                    else None
+                ),
                 self_facts=fact_rows,
                 self_candidates=candidate_rows,
             ),
@@ -289,6 +302,30 @@ class SelfReflectionService:
             event_map,
             tool_map,
         )
+
+    async def _previous_episode(self, batch: SelfReflectionBatch) -> MemoryFact | None:
+        if batch.state.scope_type is ScopeType.GROUP:
+            query = MemoryFactQuery(
+                scope_type=MemoryScopeType.SELF,
+                visibility_type=SelfMemoryVisibility.GROUP,
+                visibility_group_id=batch.state.group_id,
+                kind=MemoryKind.EPISODE,
+                status=MemoryStatus.ACTIVE,
+            )
+        else:
+            query = MemoryFactQuery(
+                scope_type=MemoryScopeType.SELF,
+                visibility_type=SelfMemoryVisibility.PRIVATE,
+                visibility_user_id=batch.state.private_peer_user_id,
+                kind=MemoryKind.EPISODE,
+                status=MemoryStatus.ACTIVE,
+            )
+        rows = await self._facts.repository.list_facts(
+            query,
+            limit=1,
+            order_by_id_desc=True,
+        )
+        return rows[0] if rows else None
 
     async def _visible_self_facts(self, batch: SelfReflectionBatch) -> tuple[MemoryFact, ...]:
         global_rows = await self._facts.repository.list_facts(

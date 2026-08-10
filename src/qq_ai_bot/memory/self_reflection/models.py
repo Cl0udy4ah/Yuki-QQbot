@@ -67,6 +67,12 @@ class SelfReflectionFact(_Contract):
     status: str = Field(max_length=32)
 
 
+class SelfReflectionPreviousEpisode(_Contract):
+    content: str = Field(min_length=1, max_length=4000)
+    valid_from: datetime | None = None
+    importance: int = Field(ge=1, le=5)
+
+
 class SelfReflectionInput(_Contract):
     scope_type: ScopeType
     group_id: str | None = Field(default=None, max_length=64)
@@ -74,6 +80,7 @@ class SelfReflectionInput(_Contract):
     context_events: tuple[SelfReflectionContextEvent, ...] = ()
     events: tuple[SelfReflectionEvent, ...]
     tool_receipts: tuple[SelfReflectionToolReceipt, ...] = ()
+    previous_episode: SelfReflectionPreviousEpisode | None = None
     self_facts: tuple[SelfReflectionFact, ...] = ()
     self_candidates: tuple[SelfReflectionFact, ...] = ()
 
@@ -95,12 +102,15 @@ class SelfReflectionProposal(_Contract):
     candidate_decision: SelfCandidateDecision | None = None
     evidence_refs: tuple[str, ...] = ()
     visibility: SelfReflectionVisibility = SelfReflectionVisibility.CURRENT_SCOPE
-    category: Literal[
-        "self_fact",
-        "self_preference",
-        "self_reflection",
-        "self_principle",
-    ] | None = None
+    category: (
+        Literal[
+            "self_fact",
+            "self_preference",
+            "self_reflection",
+            "self_principle",
+        ]
+        | None
+    ) = None
     kind: Literal[MemoryKind.FACT, MemoryKind.PREFERENCE] | None = None
     memory_key: str | None = Field(default=None, max_length=128)
     content: str | None = Field(default=None, max_length=4000)
@@ -150,8 +160,8 @@ class SelfReflectionOutput(_Contract):
     def _bounded(self) -> SelfReflectionOutput:
         if len(self.proposals) > 8:
             raise ValueError("one self-reflection batch may emit at most eight proposals")
-        if len(self.episodes) > 2:
-            raise ValueError("one self-reflection batch may emit at most two episodes")
+        if len(self.episodes) > 1:
+            raise ValueError("one self-reflection batch may emit at most one episode")
         return self
 
 

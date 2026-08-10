@@ -205,6 +205,12 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.agent_max_tool_calls == 8
     assert settings.agent_max_model_requests == 6
     assert settings.agent_tool_result_max_characters == 8000
+    assert settings.memory_self_reflection_event_threshold == 50
+    assert settings.memory_self_reflection_character_threshold == 8000
+    assert settings.memory_self_reflection_low_event_threshold == 30
+    assert settings.memory_self_reflection_low_character_threshold == 4800
+    assert settings.memory_self_reflection_natural_gap_seconds == 300
+    assert settings.memory_self_reflection_max_events == 50
     assert settings.emoji_selector_candidate_count == 3
     assert settings.emoji_selector_score_gap == 0.75
     assert settings.emoji_selector_timeout_seconds == 2
@@ -236,6 +242,46 @@ def test_memory_limits_are_configurable_positive_values() -> None:
     assert Settings.model_validate({"person_group_memory_max_entries": 500})
     with pytest.raises(ValidationError, match="greater than 0"):
         Settings.model_validate({"person_group_memory_max_entries": 0})
+
+
+@pytest.mark.parametrize(
+    ("override", "error"),
+    [
+        (
+            {
+                "memory_self_reflection_low_event_threshold": 31,
+                "memory_self_reflection_event_threshold": 30,
+            },
+            "low event watermark cannot exceed high watermark",
+        ),
+        (
+            {
+                "memory_self_reflection_event_threshold": 51,
+                "memory_self_reflection_max_events": 50,
+            },
+            "high event watermark cannot exceed batch event limit",
+        ),
+        (
+            {
+                "memory_self_reflection_low_character_threshold": 6001,
+                "memory_self_reflection_character_threshold": 6000,
+            },
+            "low character watermark cannot exceed high watermark",
+        ),
+        (
+            {
+                "memory_self_reflection_character_threshold": 8001,
+                "memory_self_reflection_max_characters": 8000,
+            },
+            "high character watermark cannot exceed batch character limit",
+        ),
+    ],
+)
+def test_self_reflection_watermarks_must_be_ordered(
+    override: dict[str, object], error: str
+) -> None:
+    with pytest.raises(ValidationError, match=error):
+        Settings.model_validate(override)
 
 
 def test_web_enabled_requires_tavily_key_and_hides_it_from_repr() -> None:

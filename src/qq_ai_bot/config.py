@@ -125,10 +125,13 @@ class Settings(BaseSettings):
     memory_self_reflection_poll_seconds: float = 60.0
     memory_self_reflection_max_sessions_per_run: int = 3
     memory_self_reflection_max_daily_calls: int = 9
-    memory_self_reflection_event_threshold: int = 12
-    memory_self_reflection_character_threshold: int = 6000
+    memory_self_reflection_event_threshold: int = 50
+    memory_self_reflection_character_threshold: int = 8000
+    memory_self_reflection_low_event_threshold: int = 30
+    memory_self_reflection_low_character_threshold: int = 4800
+    memory_self_reflection_natural_gap_seconds: float = 300.0
     memory_self_reflection_max_wait_seconds: float = 28800.0
-    memory_self_reflection_max_events: int = 20
+    memory_self_reflection_max_events: int = 50
     memory_self_reflection_max_characters: int = 8000
     memory_self_reflection_max_output_tokens: int = 2400
     memory_self_reflection_tool_receipt_characters: int = 2000
@@ -525,9 +528,7 @@ class Settings(BaseSettings):
         try:
             persona = self.yuki_persona_file.read_text(encoding="utf-8").strip()
         except OSError as exc:
-            raise ValueError(
-                f"cannot read YUKI_PERSONA_FILE: {self.yuki_persona_file}"
-            ) from exc
+            raise ValueError(f"cannot read YUKI_PERSONA_FILE: {self.yuki_persona_file}") from exc
         if not persona:
             raise ValueError("YUKI_PERSONA_FILE must not be empty")
         self._yuki_persona = persona
