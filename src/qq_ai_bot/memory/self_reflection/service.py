@@ -71,7 +71,8 @@ _INSTRUCTION = """\
 
 proposals 只用于 Yuki 自己的动态偏好、反思、原则及既有 SELF 记忆变更，kind 只能是 fact
 或 preference，不能用于 Episode。用户对 Yuki 的评价
-可以接受、改写后接受、拒绝或暂缓。不要创建人物记忆。proposals 只能引用输入提供的
+可以接受、改写后接受、拒绝或暂缓；接受必须伴随实际记忆变更，拒绝或暂缓必须使用 noop。
+不要创建人物记忆。proposals 只能引用输入提供的
 event_N、tool_N、fact_N、candidate_N 别名；create/correct/merge/contest/invalidate 必须引用
 至少一条真实 event/tool evidence。只有去除具体人物隐私后的
 self_preference/self_reflection/self_principle 抽象内容才可 global。不要修改 identity/core/safety/
@@ -125,18 +126,22 @@ class SelfReflectionService:
             translate_cancellation=False,
         )
         committed = 0
+        requested_mutations = 0
+        successful_mutations = 0
         for proposal in output.proposals:
+            is_mutation = proposal.operation is not SelfReflectionOperation.NOOP
+            requested_mutations += int(is_mutation)
             try:
-                committed += int(
-                    await self._apply(
-                        batch,
-                        proposal,
-                        fact_map=fact_map,
-                        candidate_map=candidate_map,
-                        event_map=event_map,
-                        tool_map=tool_map,
-                    )
+                changed = await self._apply(
+                    batch,
+                    proposal,
+                    fact_map=fact_map,
+                    candidate_map=candidate_map,
+                    event_map=event_map,
+                    tool_map=tool_map,
                 )
+                committed += int(changed)
+                successful_mutations += int(is_mutation and changed)
             except (ValueError, RuntimeError) as exc:
                 logger.warning(
                     "memory_self_reflection_proposal_rejected run_id=%d operation=%s "
@@ -170,6 +175,8 @@ class SelfReflectionService:
             committed += int(changed)
         if output.episodes and not episode_committed:
             raise RuntimeError("all self-reflection episodes failed to commit")
+        if requested_mutations and not successful_mutations and not episode_committed:
+            raise RuntimeError("all self-reflection mutations failed to commit")
         if not output.proposals and not output.episodes:
             self._metrics.increment("self_reflection_noop")
         self._metrics.increment("self_reflection_episode_committed", episode_committed)

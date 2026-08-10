@@ -9,7 +9,13 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.memory.enums import MemoryReviewState, MemoryScopeType
+from qq_ai_bot.memory.enums import (
+    MemoryAuthority,
+    MemoryKind,
+    MemoryReviewState,
+    MemoryScopeType,
+    SelfMemoryVisibility,
+)
 from qq_ai_bot.memory.models import MemoryFact, MemoryFactQuery
 from qq_ai_bot.memory.mutation.models import (
     MemoryDecisionActorType,
@@ -47,9 +53,14 @@ class _AuditContract(BaseModel):
 class AuditFactInput(_AuditContract):
     fact_ref: str = "fact_1"
     scope_type: MemoryScopeType
+    kind: MemoryKind
     category: str
     memory_key: str
     content: str
+    visibility_type: SelfMemoryVisibility | None = None
+    visibility_user_id: str | None = None
+    visibility_group_id: str | None = None
+    authority: MemoryAuthority
     evidence: tuple[str, ...]
 
 
@@ -155,9 +166,14 @@ class MemoryAuditCoordinator:
         renderer = ChatEventPromptRenderer(event_rows)
         payload = AuditFactInput(
             scope_type=fact.scope_type,
+            kind=fact.kind,
             category=fact.category,
             memory_key=fact.memory_key,
             content=fact.content,
+            visibility_type=fact.visibility_type,
+            visibility_user_id=fact.visibility_user_id,
+            visibility_group_id=fact.visibility_group_id,
+            authority=fact.authority,
             evidence=tuple(renderer.render_event(item) for item in event_rows),
         )
         auditor = self._self if fact.scope_type is MemoryScopeType.SELF else self._user
@@ -194,6 +210,14 @@ class MemoryAuditCoordinator:
         decision: AuditDecision,
         events: tuple[EventRecord, ...],
     ) -> tuple[bool, str]:
+        if fact.scope_type is MemoryScopeType.SELF and decision.action not in {
+            MemoryAuditAction.KEEP,
+            MemoryAuditAction.CONTEST,
+            MemoryAuditAction.INVALIDATE,
+            MemoryAuditAction.QUARANTINE,
+            MemoryAuditAction.NOOP,
+        }:
+            return False, "self_audit_action_not_allowed"
         if decision.action in {
             MemoryAuditAction.NOOP,
             MemoryAuditAction.REASSIGN,

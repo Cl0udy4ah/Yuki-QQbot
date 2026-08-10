@@ -58,6 +58,7 @@ from qq_ai_bot.memory.mutation.models import (
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.resolution import MemoryResolutionPolicy
+from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.validation import ValidatedMemoryClaim
@@ -393,6 +394,75 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
     assert fact is not None and fact.authority is MemoryAuthority.AGENT_REFLECTION
     assert evidence[0].event_id is None
     assert evidence[0].tool_receipt_id == receipt_id
+
+    async with database.sessions() as session, session.begin():
+        linked = await session.get(MemoryToolReceiptModel, receipt_id)
+        assert linked is not None
+        linked.expires_at = now - timedelta(seconds=1)
+        session.add(
+            MemoryToolReceiptModel(
+                conversation_key_hash=hashlib.sha256(b"group:3001").hexdigest(),
+                trigger_event_id=event.id,
+                bot_user_id="8000",
+                provider_id="test",
+                tool_name="unused",
+                success=True,
+                result_excerpt="未被正式记忆引用",
+                result_characters=9,
+                created_at=now - timedelta(days=8),
+                expires_at=now - timedelta(seconds=1),
+            )
+        )
+
+    assert await SelfReflectionRepository(database).cleanup_receipts() == 1
+    async with database.sessions() as session:
+        assert await session.get(MemoryToolReceiptModel, receipt_id) is not None
+    assert (await facts.list_evidence(result.new_fact_id))[0].tool_receipt_id == receipt_id
+
+
+@pytest.mark.asyncio
+async def test_self_episode_kind_and_category_must_match(database: Database) -> None:
+    service, _facts, ledger, _processor = _service(database, self_memory_enabled=True)
+    event = await _event(
+        ledger,
+        message_id="self-episode-pairing",
+        sender_user_id="1001",
+        content="请记住我们今天测试了自我记忆",
+        group_id="3001",
+    )
+    target = ResolvedSubject(
+        MemoryScopeType.SELF,
+        None,
+        None,
+        SelfMemoryVisibility.GROUP,
+        None,
+        "3001",
+    )
+
+    for kind, category in (
+        (MemoryKind.FACT, "self_episode"),
+        (MemoryKind.EPISODE, "self_fact"),
+    ):
+        result = await service.mutate_resolved(
+            MemoryMutationRequest(
+                operation=MemoryMutationOperation.CREATE,
+                target=MemoryMutationTarget(
+                    subject_ref="self",
+                    scope_type=MemoryScopeType.SELF,
+                ),
+                visibility=SelfMemoryVisibilityMode.CURRENT_SCOPE,
+                new_content="我们今天测试了自我记忆",
+                memory_key=f"test:{kind.value}:{category}",
+                category=category,
+                kind=kind,
+                evidence_quote=event.content,
+            ),
+            _context(event),
+            target=target,
+        )
+
+        assert not result.ok
+        assert result.reason_code == "self_episode_kind_category_mismatch"
 
 
 @pytest.mark.asyncio

@@ -851,11 +851,11 @@ class MemoryFactRepository:
         conditions = [
             MemoryFactModel.status.in_((MemoryStatus.ACTIVE.value, MemoryStatus.CONTESTED.value)),
             MemoryFactModel.review_state != "quarantined",
-            MemoryFactModel.source_type != "explicit",
-            MemoryFactModel.authority != "explicit",
             or_(
                 MemoryFactModel.valid_until <= now,
                 and_(
+                    MemoryFactModel.source_type != "explicit",
+                    MemoryFactModel.authority != "explicit",
                     MemoryFactModel.scope_type != MemoryScopeType.SELF.value,
                     MemoryFactModel.source_type == "automatic",
                     MemoryFactModel.importance <= max_importance,

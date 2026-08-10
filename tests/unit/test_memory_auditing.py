@@ -72,6 +72,24 @@ class _AuditExecutor:
         return frozenset({ModelCapability.STRUCTURED_OUTPUT})
 
 
+class _CorrectingAuditExecutor(_AuditExecutor):
+    async def execute(self, task: ModelTask, request: ChatRequest) -> ChatResponse:
+        self.tasks.append(task)
+        self.prompts.append(request.messages[0].content or "")
+        return ChatResponse(
+            content=json.dumps(
+                {
+                    "action": "correct",
+                    "corrected_content": "审计器不应改写 SELF",
+                    "reason": "测试后端动作边界",
+                    "confidence": 0.9,
+                },
+                ensure_ascii=False,
+            ),
+            latency_seconds=0,
+        )
+
+
 def _coordinator(
     database: Database,
     executor: _AuditExecutor,
@@ -168,6 +186,48 @@ async def test_user_and_self_audits_use_separate_tasks_and_prompts(database: Dat
         ModelTask.MEMORY_SELF_REFLECTION,
     ]
     assert executor.prompts[0] != executor.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_self_audit_backend_rejects_semantic_rewrite(database: Database) -> None:
+    executor = _CorrectingAuditExecutor()
+    coordinator, facts, ledger = _coordinator(database, executor)
+    event, _ = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="self-audit-boundary",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="1001",
+        direction="inbound",
+        content="Yuki 认为重要结果要复查",
+        private_peer_user_id="1001",
+    )
+    fact = await facts.remember(
+        MemoryFactCreate(
+            scope_type=MemoryScopeType.SELF,
+            visibility_type=SelfMemoryVisibility.PRIVATE,
+            visibility_user_id="1001",
+            kind=MemoryKind.PREFERENCE,
+            memory_key="principle:audit-boundary",
+            category="self_principle",
+            content="重要结果需要复查",
+            source_type=MemorySourceType.AUTOMATIC,
+            authority=MemoryAuthority.AGENT_REFLECTION,
+        ),
+        evidence=MemoryEvidenceCreate(
+            event_id=event.id,
+            source_speaker_user_id="1001",
+            relation=MemoryEvidenceRelation.AGENT_REFLECTION,
+            authority=MemoryAuthority.AGENT_REFLECTION,
+            excerpt=event.content,
+        ),
+    )
+
+    report = await coordinator.audit_fact(fact.id, dry_run=False)
+
+    assert not report.applied
+    assert report.reason_code == "self_audit_action_not_allowed"
+    unchanged = await facts.get_fact(fact.id)
+    assert unchanged is not None and unchanged.content == "重要结果需要复查"
 
 
 @pytest.mark.asyncio

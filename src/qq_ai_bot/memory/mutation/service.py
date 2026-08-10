@@ -1044,6 +1044,11 @@ class MemoryMutationService:
         ):
             raise MemoryMutationRejected("protected_self_memory_key")
         kind = request.kind or (fact.kind if fact is not None else MemoryKind.FACT)
+        if request.operation in {
+            MemoryMutationOperation.CREATE,
+            MemoryMutationOperation.CORRECT,
+        } and ((kind is MemoryKind.EPISODE) != (category == "self_episode")):
+            raise MemoryMutationRejected("self_episode_kind_category_mismatch")
         if target.visibility_type is SelfMemoryVisibility.GLOBAL:
             if kind is MemoryKind.EPISODE or category == "self_episode":
                 raise MemoryMutationRejected("self_episode_cannot_be_global")

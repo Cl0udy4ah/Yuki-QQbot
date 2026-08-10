@@ -186,7 +186,6 @@ class MemoryAuditService:
             "expired_active_count": """
                 SELECT COUNT(*) FROM memory_facts
                 WHERE status IN ('active','contested')
-                    AND source_type != 'explicit' AND authority != 'explicit'
                     AND valid_until IS NOT NULL AND valid_until <= :now
             """,
         }

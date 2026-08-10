@@ -20,6 +20,7 @@ from qq_ai_bot.memory.self_reflection.models import (
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
+    MemoryEvidenceModel,
     MemorySelfReflectionRunModel,
     MemorySelfReflectionRuntimeModel,
     MemorySelfReflectionStateModel,
@@ -472,9 +473,15 @@ class SelfReflectionRepository:
         from sqlalchemy import delete
 
         async with self._database.sessions() as session, session.begin():
+            referenced = (
+                select(MemoryEvidenceModel.id)
+                .where(MemoryEvidenceModel.tool_receipt_id == MemoryToolReceiptModel.id)
+                .exists()
+            )
             result = await session.execute(
                 delete(MemoryToolReceiptModel).where(
-                    MemoryToolReceiptModel.expires_at <= datetime.now(UTC)
+                    MemoryToolReceiptModel.expires_at <= datetime.now(UTC),
+                    ~referenced,
                 )
             )
             return int(cast(CursorResult[object], result).rowcount)

@@ -499,7 +499,7 @@ async def test_explicit_correction_creates_version_and_retraction_is_reversible(
     ]
 
 
-def test_lifecycle_never_expires_explicit_or_fresh_high_value_facts() -> None:
+def test_lifecycle_protects_explicit_from_staleness_but_honors_deadline() -> None:
     from qq_ai_bot.memory.models import MemoryFact
 
     now = datetime.now(UTC)
@@ -537,6 +537,13 @@ def test_lifecycle_never_expires_explicit_or_fresh_high_value_facts() -> None:
         }
     )
     assert policy.reason(explicit, now=now, config=config) is None
+    expired_explicit = explicit.model_copy(
+        update={"valid_until": now - timedelta(seconds=1)}
+    )
+    assert (
+        policy.reason(expired_explicit, now=now, config=config)
+        is MemoryInvalidationReason.EXPIRED
+    )
     important = base.model_copy(update={"importance": 5})
     assert policy.reason(important, now=now, config=config) is None
 

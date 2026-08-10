@@ -54,6 +54,14 @@ class FailingSelfReflectionService:
         raise ValueError("invalid reflection input")
 
 
+class StaticReflectionConcurrency:
+    def __init__(self, output: SelfReflectionOutput) -> None:
+        self.output = output
+
+    async def run_llm(self, *_args: object, **_kwargs: object) -> SelfReflectionOutput:
+        return self.output
+
+
 class RecordingSelfReflectionWorker:
     def __init__(self) -> None:
         self.calls = 0
@@ -661,8 +669,6 @@ def test_reflection_output_allows_zero_to_two_free_episodes() -> None:
                 ]
             }
         )
-
-
 def test_reflection_output_keeps_episode_out_of_fact_proposals() -> None:
     schema = SelfReflectionOutput.model_json_schema()
     proposal_kind = schema["$defs"]["SelfReflectionProposal"]["properties"]["kind"]
@@ -712,3 +718,71 @@ def test_reflection_output_keeps_episode_out_of_fact_proposals() -> None:
                 ]
             }
         )
+
+
+def test_candidate_decision_matches_the_proposal_operation() -> None:
+    with pytest.raises(ValidationError, match="acceptance requires a memory mutation"):
+        SelfReflectionOutput.model_validate(
+            {
+                "proposals": [
+                    {
+                        "operation": "noop",
+                        "candidate_ref": "candidate_1",
+                        "candidate_decision": "accept",
+                        "reason": "不能只说接受却不写入",
+                    }
+                ]
+            }
+        )
+    with pytest.raises(ValidationError, match="rejection or deferral requires noop"):
+        SelfReflectionOutput.model_validate(
+            {
+                "proposals": [
+                    {
+                        "operation": "create",
+                        "candidate_ref": "candidate_1",
+                        "candidate_decision": "reject",
+                        "evidence_refs": ["event_1"],
+                        "category": "self_fact",
+                        "kind": "fact",
+                        "memory_key": "test:candidate",
+                        "content": "候选内容",
+                        "reason": "不能一边拒绝一边写入",
+                    }
+                ]
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_all_rejected_mutation_proposals_fail_the_batch() -> None:
+    output = SelfReflectionOutput.model_validate(
+        {
+            "proposals": [
+                {
+                    "operation": "create",
+                    "evidence_refs": ["event_1"],
+                    "category": "self_fact",
+                    "kind": "fact",
+                    "memory_key": "test:rejected",
+                    "content": "这条提案会被后端拒绝",
+                    "reason": "测试游标不能误推进",
+                }
+            ]
+        }
+    )
+    service = object.__new__(SelfReflectionService)
+
+    async def fake_input(_batch: object) -> tuple[object, dict, dict, dict, dict]:
+        return object(), {}, {}, {}, {}
+
+    async def reject_apply(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    service._input = fake_input  # type: ignore[method-assign]
+    service._apply = reject_apply  # type: ignore[method-assign]
+    service._concurrency = StaticReflectionConcurrency(output)  # type: ignore[assignment]
+    service._metrics = MemoryLifecycleMetrics()
+
+    with pytest.raises(RuntimeError, match="all self-reflection mutations failed"):
+        await service.reflect(cast(SelfReflectionBatch, object()))

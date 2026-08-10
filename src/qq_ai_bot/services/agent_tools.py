@@ -408,15 +408,17 @@ class AgentToolService:
                         "功能开启且 Yuki 根据当前真实用户消息形成自己的判断时变更，visibility"
                         "只能用 current_scope 或 global；global 只适合抽象偏好、反思和原则，"
                         "SELF 的 category 必须精确使用 self_fact、self_preference、self_episode、"
-                        "self_reflection 或 self_principle；"
-                        "不能保存私聊原始经历，也不能修改 identity/core/safety/system/permission/"
+                        "self_reflection 或 self_principle；self_episode 必须与 kind=episode 配对，"
+                        "私聊原始经历只能保存为当前私聊可见，不能提升为 global；不能修改 "
+                        "identity/core/safety/system/permission/"
                         "runtime 等保护键。工具回执中的 applied_operation 和 outcome"
                         "才是真实结果，回复用户时必须以回执为准；被降级为 contest 或 noop"
                         "时不得声称已经覆盖、删除或纠正成功。create 必须提供 target、"
                         "new_content、memory_key 和 category；correct 可通过 fact_id 继承目标、"
                         "memory_key 和 category；invalidate、restore、contest、merge 和"
-                        "update_metadata 可通过 fact_id 直接定位，不必重复 target；reassign"
-                        "仍必须提供新 target。reason 可省略。"
+                        "update_metadata 可通过 fact_id 直接定位，不必重复 target；但 SELF 不支持"
+                        " reassign 或 update_metadata。reassign 仍必须提供新 target。"
+                        "reason 可省略。"
                     ),
                     parameters=_object_schema(
                         {

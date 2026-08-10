@@ -110,12 +110,19 @@ class SelfReflectionProposal(_Contract):
 
     @model_validator(mode="after")
     def _shape(self) -> SelfReflectionProposal:
+        if self.candidate_ref is None and self.candidate_decision is not None:
+            raise ValueError("candidate decision requires candidate_ref")
         if self.operation is SelfReflectionOperation.NOOP:
             if self.fact_ref or self.merge_fact_ref or self.evidence_refs:
                 raise ValueError("noop cannot reference facts or evidence")
-            if self.candidate_ref is None and self.candidate_decision is not None:
-                raise ValueError("candidate decision requires candidate_ref")
+            if self.candidate_decision is SelfCandidateDecision.ACCEPT:
+                raise ValueError("candidate acceptance requires a memory mutation")
             return self
+        if self.candidate_decision in {
+            SelfCandidateDecision.REJECT,
+            SelfCandidateDecision.DEFER,
+        }:
+            raise ValueError("candidate rejection or deferral requires noop")
         if not self.evidence_refs:
             raise ValueError("self-reflection mutations require trusted evidence aliases")
         if self.operation is SelfReflectionOperation.CREATE:

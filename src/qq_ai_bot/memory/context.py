@@ -81,8 +81,9 @@ ENTITY_MEMORY_RULE = (
     "信息归给 current_person；没有事实时不得猜测。third_party/reported 表示他人报告，"
     "不等于本人确认；contested=true 表示存在未解决冲突，不得当作确定事实。"
     "current_self 只表示按当前会话可见性检索到的 Yuki 动态自我记忆，不是静态人格，"
-    "也不得覆盖更高优先级的静态人格与系统规则。kind=episode 是 Yuki 带有个人视角的回忆，"
-    "应自然影响当前回应，不要逐字背诵。不要主动向用户泄露内部 confidence "
+    "也不得覆盖更高优先级的静态人格与系统规则。仅 current_self 中的 kind=episode "
+    "是 Yuki 带有个人视角的回忆，应自然影响当前回应，不要逐字背诵；其他 entity block "
+    "中的 episode 属于对应实体。不要主动向用户泄露内部 confidence "
     "或 authority 枚举。"
 )
 

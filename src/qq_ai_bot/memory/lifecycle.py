@@ -31,13 +31,13 @@ class MemoryLifecyclePolicy:
         now: datetime,
         config: MemoryLifecycleConfig,
     ) -> MemoryInvalidationReason | None:
+        if fact.valid_until is not None and fact.valid_until <= now:
+            return MemoryInvalidationReason.EXPIRED
         if (
             fact.source_type is MemorySourceType.EXPLICIT
             or fact.authority is MemoryAuthority.EXPLICIT
         ):
             return None
-        if fact.valid_until is not None and fact.valid_until <= now:
-            return MemoryInvalidationReason.EXPIRED
         if fact.source_type is not MemorySourceType.AUTOMATIC:
             return None
         if fact.importance > config.stale_max_importance:
