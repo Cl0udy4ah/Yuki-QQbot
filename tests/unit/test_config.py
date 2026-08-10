@@ -203,7 +203,7 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.mcp_selected_tool_limit == 16
     assert settings.mcp_schema_token_budget == 8000
     assert settings.agent_max_tool_calls == 12
-    assert settings.agent_max_model_requests == 10
+    assert settings.agent_max_model_requests == 13
     assert settings.agent_tool_result_max_characters == 8000
     assert settings.memory_self_reflection_event_threshold == 50
     assert settings.memory_self_reflection_character_threshold == 8000

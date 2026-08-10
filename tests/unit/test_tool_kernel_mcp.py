@@ -133,12 +133,17 @@ def test_conditional_mutation_result_preserves_explicit_commit_state() -> None:
 
 def test_mutation_commit_resolution_uses_explicit_result_then_descriptor_effect() -> None:
     descriptors = ChatToolCapabilityProvider(
-        (_tool("get_person_memories"), _tool("get_my_capabilities")),
+        (
+            _tool("get_person_memories"),
+            _tool("get_my_capabilities"),
+            _tool("read_tool_artifact"),
+        ),
         source=CapabilityTrustSource.CORE,
     ).descriptors()
-    read, capability = descriptors
+    read, capability, artifact_reader = descriptors
     assert capability.scope_id == "capability"
     assert capability.exposure is CapabilityExposure.DIRECT_ALWAYS
+    assert artifact_reader.exposure is CapabilityExposure.DIRECT_ALWAYS
     write = replace(
         read,
         effect=CapabilityEffect.WRITE_STATE,

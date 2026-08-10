@@ -22,6 +22,7 @@
               "delivery-query-addresses",
               "delivery-query-stores",
               "query-nearby-stores",
+              "query-my-coupons",
               "query-meals",
               "query-meal-detail",
               "calculate-price"
@@ -34,6 +35,7 @@
               "delivery-query-addresses",
               "delivery-query-stores",
               "query-nearby-stores",
+              "query-my-coupons",
               "query-meals",
               "query-meal-detail",
               "calculate-price",

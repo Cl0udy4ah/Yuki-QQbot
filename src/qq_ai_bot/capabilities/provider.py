@@ -161,7 +161,7 @@ class ChatToolCapabilityProvider:
             ),
             exposure=(
                 CapabilityExposure.DIRECT_ALWAYS
-                if tool.name == "get_my_capabilities"
+                if tool.name in {"get_my_capabilities", "read_tool_artifact"}
                 else CapabilityExposure.PLANNED
             ),
         )
