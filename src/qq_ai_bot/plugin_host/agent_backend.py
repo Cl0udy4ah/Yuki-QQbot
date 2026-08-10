@@ -58,6 +58,15 @@ class PluginAgentToolBackend:
         del name, runtime
         return True
 
+    def is_side_effecting(
+        self,
+        name: str,
+        arguments_json: str,
+        runtime: AgentRuntime,
+    ) -> bool:
+        del name, arguments_json, runtime
+        return False
+
     async def execute(
         self,
         name: str,

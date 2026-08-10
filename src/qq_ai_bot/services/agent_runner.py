@@ -11,7 +11,7 @@ from typing import Protocol, cast
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.automation.authority import DelegatedAuthority
 from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
+from qq_ai_bot.capabilities.coordinator import CoordinatedToolResult, ToolInvocationCoordinator
 from qq_ai_bot.domain.messages import (
     ChatMessage,
     ChatRequest,
@@ -88,6 +88,13 @@ class AgentToolBackend(Protocol):
 
     def parallel_safe(self, name: str, runtime: AgentRuntime) -> bool: ...
 
+    def is_side_effecting(
+        self,
+        name: str,
+        arguments_json: str,
+        runtime: AgentRuntime,
+    ) -> bool: ...
+
     def finalize(self, content: str, runtime: AgentRuntime) -> str: ...
 
     def exhausted(self, runtime: AgentRuntime) -> str: ...
@@ -140,6 +147,9 @@ class AgentRunner:
         previous_batch_fingerprint: tuple[tuple[str, str, str], ...] | None = None
         repeated_batch_count = 0
         no_progress_recovery = False
+        force_finalization = False
+        reusable_tool_results: dict[tuple[str, str], str] = {}
+        finalization_prompt_added = False
         web_route = runtime.web_route
         tavily_fallback = bool(
             runtime.force_tavily_fallback
@@ -197,6 +207,28 @@ class AgentRunner:
                 native_definitions = self._merge_native_tools(
                     continuation_native_tools, native_definitions
                 )
+            finalization_only = force_finalization or (
+                request_index + 1 >= runtime.max_model_requests
+            )
+            if finalization_only:
+                # Chat Completions can omit tools entirely. Responses continuations
+                # must retain every previously declared schema, so keep those
+                # definitions but force tool_choice=none below.
+                if continuation is None:
+                    definitions = ()
+                    native_definitions = ()
+                if not finalization_prompt_added:
+                    messages.append(
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "这是本轮预留的最终回复请求。不得继续调用工具；请只根据"
+                                "当前对话和已经取得的工具结果，给出简短、真实的最终答复。"
+                                "不得声称未成功的操作已经完成。"
+                            ),
+                        )
+                    )
+                    finalization_prompt_added = True
             if incomplete_recovery_used and continuation is None:
                 definitions = ()
                 native_definitions = ()
@@ -216,7 +248,11 @@ class AgentRunner:
                             max_output_tokens=runtime.runtime_config.llm.max_output_tokens,
                             thinking_enabled=runtime.runtime_config.llm.thinking_enabled,
                             tools=definitions,
-                            tool_choice=("auto" if definitions or native_definitions else None),
+                            tool_choice=(
+                                "none"
+                                if finalization_only and (definitions or native_definitions)
+                                else ("auto" if definitions or native_definitions else None)
+                            ),
                             native_tools=native_definitions,
                             continuation=continuation,
                             function_outputs=pending_function_outputs,
@@ -474,6 +510,40 @@ class AgentRunner:
                     response_status=response_status,
                     web_route=web_route,
                 )
+            if finalization_only:
+                logger.warning(
+                    "agent_finalization_tool_call_rejected tool_calls=%d model_requests=%d",
+                    len(response.tool_calls),
+                    request_index + 1,
+                )
+                recovered = self._recover_committed_mutation(
+                    tools,
+                    calls_used=calls_used,
+                    model_requests=request_index + 1,
+                    web_was_used=web_was_used,
+                    native_events=native_events,
+                    citations=citations,
+                    response_status=response_status,
+                    web_route=web_route,
+                    exception_category="tool_call_during_finalization",
+                )
+                if recovered is not None:
+                    return recovered
+                exhausted = (
+                    tools.exhausted(runtime)
+                    if tools is not None
+                    else "工具调用次数过多，Agent 已停止。"
+                )
+                return AgentRunResult(
+                    text=exhausted,
+                    tool_calls_used=calls_used,
+                    model_requests=request_index + 1,
+                    web_was_used=web_was_used,
+                    native_tool_events=tuple(native_events),
+                    citations=tuple(citations),
+                    response_status=response_status,
+                    web_route=web_route,
+                )
             if no_progress_recovery:
                 logger.warning(
                     "agent_tool_no_progress_stopped tool_calls_used=%d model_requests=%d",
@@ -500,15 +570,14 @@ class AgentRunner:
                         reasoning_content=response.reasoning_content,
                     )
                 )
-            if tools is not None:
-                tools.begin_batch(response.tool_calls, runtime)
             tooling = getattr(runtime.runtime_config, "tooling", None)
-            coordinated = await self._tool_coordinator.execute_batch(
+            coordinated = await self._execute_tool_batch(
                 response.tool_calls,
                 tools,
                 runtime,
                 remaining_calls=max(0, runtime.max_tool_calls - calls_used),
                 max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
+                reusable_results=reusable_tool_results,
             )
             batch, executed = coordinated.calls, coordinated.executed_count
             calls_used += executed
@@ -518,7 +587,7 @@ class AgentRunner:
                 except json.JSONDecodeError:
                     outcome = {}
                 logger.info(
-                    "agent_tool_complete tool=%s ok=%s error=%s",
+                    "agent_tool_complete tool=%s ok=%s error=%s reused=%s",
                     call.function.name,
                     outcome.get("ok") if isinstance(outcome, dict) else None,
                     (
@@ -526,6 +595,7 @@ class AgentRunner:
                         if isinstance(outcome, dict)
                         else None
                     ),
+                    not _was_executed,
                 )
                 if responses_path:
                     pending_function_outputs = (
@@ -535,7 +605,7 @@ class AgentRunner:
                 else:
                     messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
             fingerprint = tuple(
-                (call.function.name, call.function.arguments, result)
+                (call.function.name, self._tool_call_signature(call)[1], result)
                 for call, result, _was_executed in batch
             )
             if fingerprint and fingerprint == previous_batch_fingerprint:
@@ -543,8 +613,16 @@ class AgentRunner:
             else:
                 repeated_batch_count = 0
             previous_batch_fingerprint = fingerprint
+            if coordinated.reused_count == len(batch) and batch:
+                logger.info(
+                    "agent_tool_batch_reused "
+                    "reused_calls=%d tool_calls_used=%d",
+                    coordinated.reused_count,
+                    calls_used,
+                )
             if repeated_batch_count >= 2:
                 no_progress_recovery = True
+                force_finalization = True
                 logger.warning(
                     "agent_tool_no_progress_detected repeated_batches=%d tool_calls_used=%d",
                     repeated_batch_count,
@@ -560,6 +638,28 @@ class AgentRunner:
                             ),
                         )
                     )
+            if calls_used >= runtime.max_tool_calls or (
+                request_index + 2 >= runtime.max_model_requests
+            ):
+                recovered = self._recover_committed_mutation(
+                    tools,
+                    calls_used=calls_used,
+                    model_requests=request_index + 1,
+                    web_was_used=web_was_used,
+                    native_events=native_events,
+                    citations=citations,
+                    response_status=response_status,
+                    web_route=web_route,
+                    exception_category="successful_side_effect_short_circuit",
+                )
+                if recovered is not None:
+                    logger.info(
+                        "agent_successful_side_effect_short_circuit "
+                        "tool_calls_used=%d model_requests=%d",
+                        calls_used,
+                        request_index + 1,
+                    )
+                    return recovered
             if tools is not None:
                 effect_probe = getattr(tools, "did_use_web", None)
                 if callable(effect_probe) and effect_probe():
@@ -589,6 +689,142 @@ class AgentRunner:
             citations=tuple(citations),
             response_status=response_status,
             web_route=web_route,
+        )
+
+    async def _execute_tool_batch(
+        self,
+        calls: tuple[ToolCall, ...],
+        tools: AgentToolBackend | None,
+        runtime: AgentRuntime,
+        *,
+        remaining_calls: int,
+        max_parallel_calls: int,
+        reusable_results: dict[tuple[str, str], str],
+    ) -> CoordinatedToolResult:
+        """Execute each semantic call once and fan its result out to duplicate IDs."""
+
+        signatures = {call.id: self._tool_call_signature(call) for call in calls}
+        first_call_by_signature: dict[tuple[str, str], ToolCall] = {}
+        reused_by_id: dict[str, str] = {}
+        aliases: dict[str, str] = {}
+        unique_calls: list[ToolCall] = []
+        for call in calls:
+            signature = signatures[call.id]
+            side_effecting = self._is_side_effecting(tools, call, runtime)
+            cached = None if side_effecting else reusable_results.get(signature)
+            if cached is not None:
+                reused_by_id[call.id] = cached
+                continue
+            representative = None if side_effecting else first_call_by_signature.get(signature)
+            if representative is not None:
+                aliases[call.id] = representative.id
+                continue
+            if not side_effecting:
+                first_call_by_signature[signature] = call
+            unique_calls.append(call)
+
+        if tools is not None:
+            tools.begin_batch(tuple(unique_calls), runtime)
+        coordinated = await self._tool_coordinator.execute_batch(
+            tuple(unique_calls),
+            tools,
+            runtime,
+            remaining_calls=remaining_calls,
+            max_parallel_calls=max_parallel_calls,
+        )
+        unique_results = {call.id: result for call, result, _executed in coordinated.calls}
+        unique_executed = {
+            call.id: executed for call, _result, executed in coordinated.calls
+        }
+
+        ordered: list[tuple[ToolCall, str, bool]] = []
+        for call in calls:
+            if call.id in reused_by_id:
+                ordered.append((call, reused_by_id[call.id], False))
+                continue
+            representative_id = aliases.get(call.id, call.id)
+            ordered.append(
+                (
+                    call,
+                    unique_results[representative_id],
+                    unique_executed[representative_id] if representative_id == call.id else False,
+                )
+            )
+
+        for call, result, executed in coordinated.calls:
+            if not executed or not self._tool_result_reusable(result):
+                continue
+            signature = signatures[call.id]
+            if self._successful_side_effect(tools, call, result, runtime):
+                reusable_results.clear()
+            elif not self._is_side_effecting(tools, call, runtime):
+                reusable_results[signature] = result
+
+        return CoordinatedToolResult(
+            calls=tuple(ordered),
+            executed_count=coordinated.executed_count,
+            reused_count=len(reused_by_id) + len(aliases),
+        )
+
+    @staticmethod
+    def _tool_call_signature(call: ToolCall) -> tuple[str, str]:
+        try:
+            arguments = json.loads(call.function.arguments)
+        except json.JSONDecodeError:
+            normalized = call.function.arguments.strip()
+        else:
+            normalized = json.dumps(
+                arguments,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        return call.function.name, normalized
+
+    @staticmethod
+    def _tool_result_reusable(result: str) -> bool:
+        try:
+            payload = json.loads(result)
+        except json.JSONDecodeError:
+            return True
+        return not (isinstance(payload, dict) and payload.get("retryable") is True)
+
+    @staticmethod
+    def _successful_side_effect(
+        tools: AgentToolBackend | None,
+        call: ToolCall,
+        result: str,
+        runtime: AgentRuntime,
+    ) -> bool:
+        if tools is None:
+            return False
+        try:
+            payload = json.loads(result)
+        except json.JSONDecodeError:
+            payload = None
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            return False
+        committed = payload.get("mutation_committed")
+        if committed is not None:
+            return committed is True
+        probe = getattr(tools, "is_side_effecting", None)
+        return bool(
+            callable(probe)
+            and probe(call.function.name, call.function.arguments, runtime)
+        )
+
+    @staticmethod
+    def _is_side_effecting(
+        tools: AgentToolBackend | None,
+        call: ToolCall,
+        runtime: AgentRuntime,
+    ) -> bool:
+        if tools is None:
+            return False
+        probe = getattr(tools, "is_side_effecting", None)
+        return bool(
+            callable(probe)
+            and probe(call.function.name, call.function.arguments, runtime)
         )
 
     @staticmethod

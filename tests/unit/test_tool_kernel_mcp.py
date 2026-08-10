@@ -48,6 +48,7 @@ from qq_ai_bot.mcp.repository import MCPRepository, ToolArtifactRepository
 from qq_ai_bot.model_runtime.models import ModelTask, StructuredOutputMode
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.planner.models import ToolMode
+from qq_ai_bot.services.chat import _fit_artifact_page_result
 
 
 def _tool(name: str, description: str = "") -> ChatTool:
@@ -456,6 +457,72 @@ async def test_result_budget_keeps_valid_summary_and_pages_full_artifact(
     assert page is not None
     assert page["next_offset"] == 80
     assert "content" in page
+
+
+@pytest.mark.asyncio
+async def test_artifact_reader_result_never_creates_nested_artifact(
+    database: Database,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "artifacts"
+    artifacts = ToolArtifactRepository(database, root, retention_seconds=60)
+    original_handle = await artifacts.write_artifact(
+        provider_id="fake",
+        tool_name="large",
+        content="source",
+        media_type="text/plain",
+    )
+    result = ToolExecutionResult(
+        ok=True,
+        data={
+            "handle": original_handle,
+            "offset": 0,
+            "next_offset": 2000,
+            "total_characters": 2000,
+            "content": "x" * 2000,
+            "query_matched": None,
+        },
+        provider_id="artifacts",
+        tool_name="read_tool_artifact",
+    )
+
+    rendered = await ToolResultBudgeter(
+        max_characters=400,
+        artifacts=artifacts,
+    ).render(result)
+
+    assert rendered.truncated is True
+    assert rendered.artifact_id is None
+    assert len(tuple(root.glob("*.json"))) == 1
+
+
+def test_artifact_pages_fit_budget_and_reconstruct_without_gaps() -> None:
+    source = ('中文\\"menu"\n' * 600) + "end"
+    reconstructed: list[str] = []
+    offset = 0
+    while offset < len(source):
+        raw_end = min(len(source), offset + 32_000)
+        page = {
+            "handle": "stable-handle",
+            "offset": offset,
+            "next_offset": raw_end if raw_end < len(source) else None,
+            "total_characters": len(source),
+            "content": source[offset:raw_end],
+            "query_matched": None,
+        }
+        fitted = _fit_artifact_page_result(page, max_characters=700)
+        assert fitted.ok is True
+        assert len(json.dumps(fitted.model_payload(), ensure_ascii=False, default=str)) <= 700
+        assert isinstance(fitted.data, dict)
+        assert fitted.data["handle"] == "stable-handle"
+        assert fitted.data["offset"] == offset
+        content = fitted.data["content"]
+        assert isinstance(content, str) and content
+        reconstructed.append(content)
+        next_offset = fitted.data["next_offset"]
+        offset = len(source) if next_offset is None else int(next_offset)
+
+    assert "".join(reconstructed) == source
 
 
 @pytest.mark.asyncio

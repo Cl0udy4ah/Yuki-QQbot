@@ -204,8 +204,8 @@ class Settings(BaseSettings):
     memory_rebuild_review_page_size: int = 20
     memory_rebuild_source_excerpt_characters: int = 500
     memory_rebuild_max_events_per_run: int | None = None
-    agent_max_tool_calls: int = 8
-    agent_max_model_requests: int = 6
+    agent_max_tool_calls: int = 12
+    agent_max_model_requests: int = 10
     agent_tool_result_max_characters: int = 8000
 
     # Generous initial Tool Kernel budgets keep schemas bounded without reducing authority;

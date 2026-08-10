@@ -807,6 +807,18 @@ class _AutomationAgentBackend(AgentToolBackend):
         definition = self._registry.require(capability_name)
         return definition.risk_class.value == "read"
 
+    def is_side_effecting(
+        self,
+        name: str,
+        arguments_json: str,
+        runtime: AgentRuntime,
+    ) -> bool:
+        del arguments_json, runtime
+        capability_name = self._name_map.get(name)
+        if capability_name is None:
+            return False
+        return self._registry.require(capability_name).risk_class.value != "read"
+
     async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
         capability_name = self._name_map.get(name)
         if capability_name is None:

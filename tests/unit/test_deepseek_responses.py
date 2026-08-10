@@ -232,6 +232,126 @@ async def test_function_outputs_remain_paired_across_three_requests() -> None:
 
 
 @pytest.mark.asyncio
+async def test_textual_dsml_tool_call_is_recovered_without_leaking_markup() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) == 1:
+            response: dict[str, object] = {
+                "id": "resp_dsml_1",
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": "msg_dsml_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    '<｜｜DSML｜｜tool_calls>\n'
+                                    '<｜｜DSML｜｜invoke name="read_tool_artifact">\n'
+                                    '<｜｜DSML｜｜parameter name="query" string="true">'
+                                    '麦当劳 套餐</｜｜DSML｜｜parameter>\n'
+                                    '</｜｜DSML｜｜invoke>\n'
+                                    '</｜｜DSML｜｜tool_calls>'
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                "usage": {},
+            }
+        else:
+            response = _fixture("text_completed.json")
+        return httpx.Response(200, request=request, json=response)
+
+    tool = ChatTool(
+        name="read_tool_artifact",
+        description="read artifact",
+        parameters={"type": "object"},
+    )
+    async with httpx.AsyncClient(
+        base_url="https://api.deepseek.com", transport=httpx.MockTransport(handler)
+    ) as client:
+        provider = DeepSeekResponsesProvider(
+            base_url="https://api.deepseek.com",
+            api_key="secret",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+        first = await provider.complete(_request(tools=(tool,), tool_choice="auto"))
+        assert first.content == ""
+        assert len(first.tool_calls) == 1
+        call = first.tool_calls[0]
+        assert call.function.name == "read_tool_artifact"
+        assert json.loads(call.function.arguments) == {"query": "麦当劳 套餐"}
+        assert first.continuation is not None
+
+        second = await provider.complete(
+            _request(
+                tools=(tool,),
+                tool_choice="auto",
+                continuation=first.continuation,
+                function_outputs=(FunctionCallOutput(call_id=call.id, output='{"ok":true}'),),
+            )
+        )
+
+    assert second.content == "这是脱敏后的测试回答。"
+    second_inputs = requests[1]["input"]
+    assert isinstance(second_inputs, list)
+    assert [item["type"] for item in second_inputs[1:]] == [
+        "function_call",
+        "function_call_output",
+    ]
+    assert all("DSML" not in json.dumps(item) for item in second_inputs)
+
+
+@pytest.mark.asyncio
+async def test_textual_dsml_call_to_undeclared_tool_is_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "resp_dsml_unknown",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": (
+                            '<｜｜DSML｜｜tool_calls>'
+                            '<｜｜DSML｜｜invoke name="unknown_tool">'
+                            '</｜｜DSML｜｜invoke>'
+                            '</｜｜DSML｜｜tool_calls>'
+                        ),
+                    }
+                ],
+                "usage": {},
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://api.deepseek.com", transport=httpx.MockTransport(handler)
+    ) as client:
+        provider = DeepSeekResponsesProvider(
+            base_url="https://api.deepseek.com",
+            api_key="secret",
+            timeout_seconds=1,
+            max_retries=0,
+            client=client,
+        )
+        with pytest.raises(LLMInvalidResponseError):
+            await provider.complete(_request())
+
+
+@pytest.mark.asyncio
 async def test_native_web_events_and_last_message_are_parsed_from_incomplete_fixture() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

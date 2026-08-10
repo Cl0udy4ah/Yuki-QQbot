@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import cast
@@ -213,6 +213,48 @@ class NativeIsolationBackend(VoiceEffectBackend):
         return await super().execute(name, arguments_json, runtime)
 
 
+class FinalizationBudgetProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        if request.tools:
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="read-1",
+                        function=ToolFunction(name="send_voice", arguments="{}"),
+                    ),
+                ),
+            )
+        return ChatResponse(content="根据已有结果回答。", latency_seconds=0)
+
+
+class TerminalMutationBackend(VoiceEffectBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.committed = False
+
+    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
+        del arguments_json, runtime
+        self.effects.append(name)
+        self.committed = True
+        return json.dumps(
+            {
+                "ok": True,
+                "mutation_committed": True,
+                "public_message": "任务已取消。",
+            },
+            ensure_ascii=False,
+        )
+
+    def post_commit_recovery_text(self) -> str | None:
+        return "任务已取消。" if self.committed else None
+
+
 def _agent_runtime() -> AgentRuntime:
     now = datetime.now(UTC)
     config = cast(
@@ -300,6 +342,45 @@ async def test_committed_mutation_uses_receipt_when_final_model_request_fails() 
     assert result.text == "任务已取消。\n后续回复生成失败，但操作已经生效。"
     assert result.tool_calls_used == 1
     assert result.model_requests == 2
+    assert backend.effects == ["send_voice"]
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_reserves_last_request_for_final_text() -> None:
+    provider = FinalizationBudgetProvider()
+    runtime = replace(_agent_runtime(), max_model_requests=2)
+
+    result = await AgentRunner(provider, ConcurrencyManager(1)).run(
+        (ChatMessage(role="user", content="先查再回答"),),
+        runtime,
+        VoiceEffectBackend(),
+    )
+
+    assert result.text == "根据已有结果回答。"
+    assert result.model_requests == 2
+    assert provider.requests[0].tools
+    assert provider.requests[0].tool_choice == "auto"
+    assert provider.requests[1].tools == ()
+    assert provider.requests[1].tool_choice is None
+    assert "预留的最终回复请求" in (provider.requests[1].messages[-1].content or "")
+
+
+@pytest.mark.asyncio
+async def test_successful_mutation_short_circuits_when_only_finalization_budget_remains() -> None:
+    provider = FinalizationBudgetProvider()
+    backend = TerminalMutationBackend()
+    runtime = replace(_agent_runtime(), max_model_requests=2)
+
+    result = await AgentRunner(provider, ConcurrencyManager(1)).run(
+        (ChatMessage(role="user", content="取消任务"),),
+        runtime,
+        backend,
+    )
+
+    assert result.text == "任务已取消。"
+    assert result.model_requests == 1
+    assert result.tool_calls_used == 1
+    assert len(provider.requests) == 1
     assert backend.effects == ["send_voice"]
 
 

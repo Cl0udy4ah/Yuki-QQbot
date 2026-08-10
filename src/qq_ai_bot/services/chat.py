@@ -57,6 +57,7 @@ from qq_ai_bot.domain.messages import (
     OutboundSendReceipt,
     SenderIdentity,
     ToolCall,
+    ToolFunction,
 )
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.effects import EmojiReplyEffectService
@@ -138,6 +139,8 @@ logger = logging.getLogger(__name__)
 # preserving access to the complete actor-authorized catalog.
 _INHERITED_RELATED_TOOL_LIMIT = 6
 _INHERITED_CANDIDATE_POOL_LIMIT = 24
+_ARTIFACT_PROVIDER_ID = "artifacts"
+_ARTIFACT_READER_NAME = "read_tool_artifact"
 _SET_REPLY_TARGET_NAME = "set_reply_target"
 _SET_REPLY_TARGET_TOOL = ChatTool(
     name=_SET_REPLY_TARGET_NAME,
@@ -179,6 +182,80 @@ _ADMIN_RETRYABLE_ERRORS = frozenset(
         "ValueError",
     }
 )
+
+
+def _core_result_character_budget(runtime: RuntimeConfigSnapshot | None) -> int:
+    if runtime is None:
+        return 8000
+    tooling = runtime.tooling
+    if tooling is not None and tooling.result_token_budget is not None:
+        return tooling.result_token_budget * 4
+    return runtime.agent.tool_result_max_characters
+
+
+def _fit_artifact_page_result(
+    page: dict[str, object],
+    *,
+    max_characters: int,
+) -> ToolExecutionResult:
+    """Fit one artifact page into the model result budget without changing its handle."""
+
+    def outcome(candidate: dict[str, object]) -> ToolExecutionResult:
+        return ToolExecutionResult(
+            ok=True,
+            data=candidate,
+            provider_id=_ARTIFACT_PROVIDER_ID,
+            tool_name=_ARTIFACT_READER_NAME,
+        )
+
+    def rendered_size(candidate: dict[str, object]) -> int:
+        return len(
+            json.dumps(
+                outcome(candidate).model_payload(),
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+
+    if rendered_size(page) <= max_characters:
+        return outcome(page)
+    content = page.get("content")
+    offset = page.get("offset")
+    total = page.get("total_characters")
+    if not isinstance(content, str) or not isinstance(offset, int) or not isinstance(total, int):
+        return ToolExecutionResult(
+            ok=False,
+            error_code="artifact_page_budget_exceeded",
+            public_message="Artifact 页面无法放入当前工具结果预算",
+            provider_id=_ARTIFACT_PROVIDER_ID,
+            tool_name=_ARTIFACT_READER_NAME,
+        )
+
+    best: dict[str, object] | None = None
+    low = 0
+    high = len(content)
+    while low <= high:
+        length = (low + high) // 2
+        next_offset = offset + length
+        candidate = {
+            **page,
+            "content": content[:length],
+            "next_offset": next_offset if next_offset < total else None,
+        }
+        if rendered_size(candidate) <= max_characters:
+            best = candidate
+            low = length + 1
+        else:
+            high = length - 1
+    if best is None or (content and not best.get("content")):
+        return ToolExecutionResult(
+            ok=False,
+            error_code="artifact_page_budget_exceeded",
+            public_message="Artifact 页面预算过小，无法返回有效内容",
+            provider_id=_ARTIFACT_PROVIDER_ID,
+            tool_name=_ARTIFACT_READER_NAME,
+        )
+    return outcome(best)
 
 
 class OutboundSender(Protocol):
@@ -933,6 +1010,27 @@ class _ChatAgentBackend(AgentToolBackend):
         entry = self._catalog.by_model_name(name) if self._catalog is not None else None
         return bool(entry is not None and entry.descriptor.parallel_safe)
 
+    def is_side_effecting(
+        self,
+        name: str,
+        arguments_json: str,
+        runtime: AgentRuntime,
+    ) -> bool:
+        """Classify cache invalidation through the same descriptor used for execution."""
+
+        del runtime
+        if name in {REQUEST_TOOLS_NAME, _SET_REPLY_TARGET_NAME}:
+            return False
+        entry = self._catalog.by_model_name(name) if self._catalog is not None else None
+        descriptor = entry.descriptor if entry is not None else None
+        if descriptor is None:
+            return False
+        call = ToolCall(
+            id="cache-classification",
+            function=ToolFunction(name=name, arguments=arguments_json),
+        )
+        return self._effective_descriptor(call, descriptor).risk is not CapabilityRisk.READ
+
     def counts_toward_limit(self, name: str, runtime: AgentRuntime) -> bool:
         """Keep local reply composition outside the business-tool call budget."""
 
@@ -1318,7 +1416,7 @@ class ChatService:
                 arguments: str,
                 context: ToolRuntime,
             ) -> object:
-                del name, context
+                del name
                 decoded = json.loads(arguments)
                 if not isinstance(decoded, dict):
                     raise ValueError("artifact arguments must be an object")
@@ -1338,7 +1436,10 @@ class ChatService:
                         "error": "artifact_not_found",
                         "detail": "Artifact 不存在或已过期",
                     }
-                return {"ok": True, "data": result}
+                return _fit_artifact_page_result(
+                    result,
+                    max_characters=_core_result_character_budget(context.runtime_config),
+                )
 
             registry.register(
                 InProcessToolProvider(

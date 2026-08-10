@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import html
+import json
 import logging
+import re
 import time
 from collections.abc import Iterable
 from typing import Any
@@ -109,6 +113,7 @@ class DeepSeekResponsesProvider(LLMProvider):
             response,
             request.continuation,
             function_outputs=request.function_outputs,
+            allowed_tool_names=frozenset(tool.name for tool in request.tools),
             latency=latency,
         )
         completed = sum(
@@ -250,6 +255,7 @@ class DeepSeekResponsesProvider(LLMProvider):
         previous: ProviderContinuation | None,
         *,
         function_outputs: tuple[FunctionCallOutput, ...] = (),
+        allowed_tool_names: frozenset[str] = frozenset(),
         latency: float,
     ) -> ChatResponse:
         try:
@@ -272,6 +278,7 @@ class DeepSeekResponsesProvider(LLMProvider):
         calls: list[ToolCall] = []
         native_events: list[NativeToolEvent] = []
         citations: list[ResponseCitation] = []
+        last_assistant_message: dict[str, Any] | None = None
         for raw_item in output:
             if not isinstance(raw_item, dict):
                 raise LLMInvalidResponseError("provider returned an invalid output item")
@@ -280,6 +287,7 @@ class DeepSeekResponsesProvider(LLMProvider):
                 text, item_citations = cls._parse_message(raw_item)
                 if raw_item.get("role", "assistant") == "assistant" and text:
                     messages.append(text)
+                    last_assistant_message = raw_item
                 citations.extend(item_citations)
             elif item_type == "reasoning":
                 reasoning.extend(cls._reasoning_text(raw_item))
@@ -300,6 +308,34 @@ class DeepSeekResponsesProvider(LLMProvider):
                 raise LLMNativeToolError("custom_tool_call is not supported")
 
         content = messages[-1].strip() if messages else ""
+        continuation_output = output
+        if content and cls._contains_dsml(content):
+            raw_response_id = payload.get("id")
+            textual_calls = cls._parse_dsml_tool_calls(
+                content,
+                allowed_tool_names=allowed_tool_names,
+                response_id=raw_response_id if isinstance(raw_response_id, str) else "",
+            )
+            calls.extend(textual_calls)
+            content = ""
+            continuation_output = [
+                item for item in output if item is not last_assistant_message
+            ]
+            continuation_output.extend(
+                {
+                    "id": f"fc_{call.id}",
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": call.id,
+                    "name": call.function.name,
+                    "arguments": call.function.arguments,
+                }
+                for call in textual_calls
+            )
+            logger.warning(
+                "responses_textual_tool_call_recovered count=%d",
+                len(textual_calls),
+            )
         response_status = (
             ModelResponseStatus.INCOMPLETE
             if status == "incomplete"
@@ -310,7 +346,7 @@ class DeepSeekResponsesProvider(LLMProvider):
         continuation = ProviderContinuation(
             provider="deepseek",
             protocol="responses",
-            payload=cls._merge_continuation(previous, function_outputs, output),
+            payload=cls._merge_continuation(previous, function_outputs, continuation_output),
         )
         usage = payload.get("usage")
         usage = usage if isinstance(usage, dict) else {}
@@ -409,6 +445,102 @@ class DeepSeekResponsesProvider(LLMProvider):
         ):
             raise LLMInvalidResponseError("provider returned an invalid function_call")
         return ToolCall(id=call_id, function=ToolFunction(name=name, arguments=arguments))
+
+    @staticmethod
+    def _contains_dsml(content: str) -> bool:
+        return "DSML" in content and ("<｜｜DSML｜｜" in content or "<||DSML||" in content)
+
+    @classmethod
+    def _parse_dsml_tool_calls(
+        cls,
+        content: str,
+        *,
+        allowed_tool_names: frozenset[str],
+        response_id: str,
+    ) -> tuple[ToolCall, ...]:
+        normalized = content.replace("｜", "|").strip()
+        wrapper = re.fullmatch(
+            r"<\|\|DSML\|\|tool_calls>\s*(?P<body>.*?)\s*"
+            r"</\|\|DSML\|\|tool_calls>",
+            normalized,
+            flags=re.DOTALL,
+        )
+        if wrapper is None:
+            raise LLMInvalidResponseError("provider returned malformed textual tool markup")
+        body = wrapper.group("body")
+        invoke_pattern = re.compile(
+            r"<\|\|DSML\|\|invoke(?P<attrs>[^>]*)>\s*(?P<body>.*?)\s*"
+            r"</\|\|DSML\|\|invoke>",
+            flags=re.DOTALL,
+        )
+        parameter_pattern = re.compile(
+            r"<\|\|DSML\|\|parameter(?P<attrs>[^>]*)>"
+            r"(?P<value>.*?)</\|\|DSML\|\|parameter>",
+            flags=re.DOTALL,
+        )
+        calls: list[ToolCall] = []
+        cursor = 0
+        for index, invoke in enumerate(invoke_pattern.finditer(body)):
+            if body[cursor : invoke.start()].strip():
+                raise LLMInvalidResponseError("provider returned malformed textual tool markup")
+            cursor = invoke.end()
+            invoke_attrs = cls._parse_dsml_attributes(invoke.group("attrs"))
+            name = invoke_attrs.get("name")
+            if not name or name not in allowed_tool_names:
+                raise LLMInvalidResponseError("provider returned an undeclared textual tool call")
+            arguments: dict[str, Any] = {}
+            parameter_body = invoke.group("body")
+            parameter_cursor = 0
+            for parameter in parameter_pattern.finditer(parameter_body):
+                if parameter_body[parameter_cursor : parameter.start()].strip():
+                    raise LLMInvalidResponseError(
+                        "provider returned malformed textual tool arguments"
+                    )
+                parameter_cursor = parameter.end()
+                attrs = cls._parse_dsml_attributes(parameter.group("attrs"))
+                argument_name = attrs.get("name")
+                if not argument_name or argument_name in arguments:
+                    raise LLMInvalidResponseError(
+                        "provider returned malformed textual tool arguments"
+                    )
+                raw_value = html.unescape(parameter.group("value").strip())
+                if attrs.get("string", "false").lower() == "true":
+                    arguments[argument_name] = raw_value
+                else:
+                    try:
+                        arguments[argument_name] = json.loads(raw_value)
+                    except json.JSONDecodeError as exc:
+                        raise LLMInvalidResponseError(
+                            "provider returned malformed textual tool arguments"
+                        ) from exc
+            if parameter_body[parameter_cursor:].strip():
+                raise LLMInvalidResponseError("provider returned malformed textual tool arguments")
+            arguments_json = json.dumps(
+                arguments,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            digest = hashlib.sha256(
+                f"{response_id}\0{index}\0{name}\0{arguments_json}".encode()
+            ).hexdigest()[:24]
+            calls.append(
+                ToolCall(
+                    id=f"call_dsml_{digest}",
+                    function=ToolFunction(name=name, arguments=arguments_json),
+                )
+            )
+        if body[cursor:].strip() or not calls:
+            raise LLMInvalidResponseError("provider returned malformed textual tool markup")
+        return tuple(calls)
+
+    @staticmethod
+    def _parse_dsml_attributes(raw: str) -> dict[str, str]:
+        pattern = re.compile(r'([A-Za-z_][\w.-]*)\s*=\s*"([^"]*)"')
+        attributes = {match.group(1): match.group(2) for match in pattern.finditer(raw)}
+        if pattern.sub("", raw).strip():
+            raise LLMInvalidResponseError("provider returned malformed textual tool attributes")
+        return attributes
 
     @classmethod
     def _parse_native_event(cls, item: dict[str, Any]) -> NativeToolEvent:

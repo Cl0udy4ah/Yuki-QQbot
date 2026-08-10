@@ -335,7 +335,14 @@ async def test_agent_runner_stops_identical_no_progress_tool_batches_early() -> 
             tool_calls=(
                 ToolCall(
                     id=f"same-{index}",
-                    function=ToolFunction(name="demo", arguments='{"query":"same"}'),
+                    function=ToolFunction(
+                        name="demo",
+                        arguments=(
+                            '{"query":"same","limit":5}'
+                            if index == 0
+                            else '{"limit":5,"query":"same"}'
+                        ),
+                    ),
                 ),
             ),
             continuation=continuation,
@@ -358,8 +365,10 @@ async def test_agent_runner_stops_identical_no_progress_tool_batches_early() -> 
 
     assert result.text == "根据已有结果回答"
     assert result.model_requests == 4
-    assert result.tool_calls_used == 3
-    assert backend.executions == 3
+    assert result.tool_calls_used == 1
+    assert backend.executions == 1
+    assert executor.requests[-1].tool_choice == "none"
+    assert executor.requests[-1].tools
 
 
 @pytest.mark.asyncio

@@ -101,7 +101,11 @@ class ToolResultBudgeter:
         if not item_overflow and not character_overflow:
             return BudgetedToolResult(text=text)
         artifact_id: str | None = None
-        if self._artifacts is not None:
+        recursive_artifact_read = (
+            result.provider_id == "artifacts"
+            and result.tool_name == "read_tool_artifact"
+        )
+        if self._artifacts is not None and not recursive_artifact_read:
             artifact_id = await self._artifacts.write_artifact(
                 provider_id=result.provider_id,
                 tool_name=result.tool_name,

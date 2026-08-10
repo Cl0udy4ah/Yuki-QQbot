@@ -20,6 +20,7 @@ class CoordinatedToolBackend(Protocol):
 class CoordinatedToolResult:
     calls: tuple[tuple[ToolCall, str, bool], ...]
     executed_count: int
+    reused_count: int = 0
 
 
 class ToolInvocationCoordinator:
