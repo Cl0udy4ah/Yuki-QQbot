@@ -661,3 +661,54 @@ def test_reflection_output_allows_zero_to_two_free_episodes() -> None:
                 ]
             }
         )
+
+
+def test_reflection_output_keeps_episode_out_of_fact_proposals() -> None:
+    schema = SelfReflectionOutput.model_json_schema()
+    proposal_kind = schema["$defs"]["SelfReflectionProposal"]["properties"]["kind"]
+    encoded_kind_schema = json.dumps(proposal_kind, ensure_ascii=False)
+    proposal_category = schema["$defs"]["SelfReflectionProposal"]["properties"][
+        "category"
+    ]
+    encoded_category_schema = json.dumps(proposal_category, ensure_ascii=False)
+
+    assert '"fact"' in encoded_kind_schema
+    assert '"preference"' in encoded_kind_schema
+    assert '"episode"' not in encoded_kind_schema
+    assert '"self_fact"' in encoded_category_schema
+    assert '"self_preference"' in encoded_category_schema
+    assert '"self_reflection"' in encoded_category_schema
+    assert '"self_principle"' in encoded_category_schema
+    assert '"self_episode"' not in encoded_category_schema
+    with pytest.raises(ValidationError):
+        SelfReflectionOutput.model_validate(
+            {
+                "proposals": [
+                    {
+                        "operation": "create",
+                        "evidence_refs": ["event_1"],
+                        "category": "self_episode",
+                        "kind": "episode",
+                        "memory_key": "self_episode:wrong-channel",
+                        "content": "这条经历不应该出现在 proposals",
+                        "reason": "wrong output channel",
+                    }
+                ]
+            }
+        )
+    with pytest.raises(ValidationError):
+        SelfReflectionOutput.model_validate(
+            {
+                "proposals": [
+                    {
+                        "operation": "create",
+                        "evidence_refs": ["event_1"],
+                        "category": "self_episode",
+                        "kind": "fact",
+                        "memory_key": "self_episode:disguised-channel",
+                        "content": "也不能把 Episode 伪装成普通 fact",
+                        "reason": "wrong output category",
+                    }
+                ]
+            }
+        )

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -94,8 +95,13 @@ class SelfReflectionProposal(_Contract):
     candidate_decision: SelfCandidateDecision | None = None
     evidence_refs: tuple[str, ...] = ()
     visibility: SelfReflectionVisibility = SelfReflectionVisibility.CURRENT_SCOPE
-    category: str | None = Field(default=None, max_length=64)
-    kind: MemoryKind | None = None
+    category: Literal[
+        "self_fact",
+        "self_preference",
+        "self_reflection",
+        "self_principle",
+    ] | None = None
+    kind: Literal[MemoryKind.FACT, MemoryKind.PREFERENCE] | None = None
     memory_key: str | None = Field(default=None, max_length=128)
     content: str | None = Field(default=None, max_length=4000)
     reason: str = Field(min_length=1, max_length=500)
