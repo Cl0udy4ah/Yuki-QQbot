@@ -51,6 +51,7 @@ class EmojiModule:
         models: ModelExecutor,
         runtime_config: RuntimeConfigService,
         lifecycle: LifecycleRegistry,
+        bot_display_name: str = "Yuki",
     ) -> None:
         self._settings = settings
         self._conversation_settings = conversation_settings
@@ -62,6 +63,7 @@ class EmojiModule:
         self._models = models
         self._runtime_config = runtime_config
         self._lifecycle = lifecycle
+        self._bot_display_name = bot_display_name
 
     def build(self) -> EmojiBundle:
         settings = self._settings
@@ -94,6 +96,7 @@ class EmojiModule:
             selector=selector,
             repository=self._repository,
             storage=storage,
+            bot_display_name=self._bot_display_name,
         )
         worker: EmojiWorker | None = None
         if self._vision_provider is not None:

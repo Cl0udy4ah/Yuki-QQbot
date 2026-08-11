@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import IntEnum, StrEnum
 from typing import Literal
 
@@ -480,7 +480,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         kind=CapabilityKind.COMMAND,
         category="chat",
         display_name="连接测试",
-        description="通过确定性 /ai ping 命令检查机器人响应。",
+        description="通过确定性 /ai ping 命令检查 {bot_name} 响应。",
         minimum_level=PermissionLevel.USER,
         mutating=False,
         target_scopes=("current_conversation",),
@@ -490,7 +490,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         kind=CapabilityKind.COMMAND,
         category="identity",
         display_name="查看本人身份",
-        description="通过确定性 /ai whoami 命令查看机器人识别到的本人资料。",
+        description="通过确定性 /ai whoami 命令查看 {bot_name} 识别到的本人资料。",
         minimum_level=PermissionLevel.USER,
         mutating=False,
         target_scopes=("self",),
@@ -662,8 +662,8 @@ _MEMORY_LIFECYCLE_CAPABILITIES = (
             ("maintenance.run", "运行记忆维护", "立即运行一次有界的本地生命周期维护。", True),
             (
                 "self-reflection.run",
-                "运行 Yuki 自省",
-                "立即运行一次有界的 Yuki Self Reflection。",
+                "运行 {bot_name} 自省",
+                "立即运行一次有界的 {bot_name} Self Reflection。",
                 True,
             ),
         )
@@ -682,6 +682,7 @@ class PermissionCatalogService:
         action_registry: ActionRegistry | None = None,
     ) -> None:
         self._resolver = PermissionResolver(settings)
+        self._bot_display_name = settings.bot_display_name
         self._config_registry = config_registry or ConfigRegistry()
         self._action_registry = action_registry or ActionRegistry()
         self._descriptors = self._build_descriptors()
@@ -732,7 +733,21 @@ class PermissionCatalogService:
         )
 
     def _build_descriptors(self) -> tuple[CapabilityDescriptor, ...]:
-        descriptors = [*_BASE_SELF_SERVICE_CAPABILITIES, *_MEMORY_LIFECYCLE_CAPABILITIES]
+        descriptors = [
+            replace(
+                descriptor,
+                display_name=descriptor.display_name.format(
+                    bot_name=self._bot_display_name
+                ),
+                description=descriptor.description.format(
+                    bot_name=self._bot_display_name
+                ),
+            )
+            for descriptor in (
+                *_BASE_SELF_SERVICE_CAPABILITIES,
+                *_MEMORY_LIFECYCLE_CAPABILITIES,
+            )
+        ]
         descriptors.extend(self._self_service_descriptors())
         descriptors.extend(
             self._configuration_descriptor(spec) for spec in self._config_registry.list()

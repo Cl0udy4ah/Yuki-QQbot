@@ -74,7 +74,6 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
         "关系数据",
     ),
     "get_self_memories": (
-        "Yuki记忆",
         "自我记忆",
         "你的经历",
         "你的偏好",
@@ -205,12 +204,14 @@ class InProcessToolProvider:
         definitions: DefinitionFactory,
         execute: LegacyExecutor,
         plugin_read_only: Callable[[str], bool] | None = None,
+        bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪"),
     ) -> None:
         self._provider_id = provider_id
         self._source = source
         self._definitions = definitions
         self._execute = execute
         self._plugin_read_only = plugin_read_only
+        self._bot_aliases = bot_aliases
 
     @property
     def provider_id(self) -> str:
@@ -248,6 +249,11 @@ class InProcessToolProvider:
             if self._source is CapabilityTrustSource.CORE
             else ()
         )
+        if tool.name == "get_self_memories":
+            search_tags = (
+                *search_tags,
+                *(f"{alias}记忆" for alias in self._bot_aliases if alias.strip()),
+            )
         return replace(
             descriptor,
             provider_id=self._provider_id,

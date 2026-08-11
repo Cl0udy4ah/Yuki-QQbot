@@ -7,7 +7,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatMessage, InboundMessage
 from qq_ai_bot.domain.relationships import RelationshipSnapshot, style_policy
-from qq_ai_bot.memory.context import ENTITY_MEMORY_RULE
+from qq_ai_bot.memory.context import entity_memory_rule
 from qq_ai_bot.planner.models import PlannedTurn
 from qq_ai_bot.prompting import (
     CORE_CONTRACT,
@@ -78,7 +78,7 @@ class PromptComposer:
             ),
             static_text(
                 "memory.entity_contract",
-                ENTITY_MEMORY_RULE,
+                entity_memory_rule(self._settings.bot_display_name),
                 channel=PromptChannel.INVARIANT,
                 priority=95,
             ),
@@ -117,6 +117,7 @@ class PromptComposer:
                         "style": style_policy(
                             context.current_relationship.stage,
                             inbound.scope_type,
+                            self._settings.bot_display_name,
                         ),
                         "unverified_claim_gap": (runtime.relationship.conflict_preference_min_gap),
                     },
@@ -236,7 +237,7 @@ class PromptComposer:
             ),
             static_text(
                 "memory.entity_contract",
-                ENTITY_MEMORY_RULE,
+                entity_memory_rule(self._settings.bot_display_name),
                 channel=PromptChannel.INVARIANT,
                 priority=95,
             ),

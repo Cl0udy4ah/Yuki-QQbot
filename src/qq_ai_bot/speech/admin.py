@@ -28,11 +28,13 @@ class SpeechAdminService:
         profiles: VoiceProfileService,
         runtime_config: RuntimeConfigService,
         worker: GenieWorkerClient,
+        bot_display_name: str = "Yuki",
     ) -> None:
         self._speech = speech
         self._profiles = profiles
         self._runtime_config = runtime_config
         self._worker = worker
+        self._bot_display_name = bot_display_name
 
     async def execute(
         self,
@@ -316,7 +318,7 @@ class SpeechAdminService:
                         kind=AttachmentKind.AUDIO,
                         mime_type="audio/wav",
                         summary=(
-                            f"Yuki 语音测试，声线：{generated.profile_id}，"
+                            f"{self._bot_display_name} 语音测试，声线：{generated.profile_id}，"
                             f"风格：{generated.reference_key}"
                         ),
                         local_path=str(self._speech.audio_path(generated)),

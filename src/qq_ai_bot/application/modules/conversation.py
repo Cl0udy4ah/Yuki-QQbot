@@ -137,6 +137,7 @@ class ConversationModule:
             max_wait_seconds=settings.planner_max_wait_seconds,
             observability=planner_observability,
             prompt_registry=prompt_registry,
+            bot_display_name=settings.bot_display_name,
         )
         planner = PlannerService(
             provider=planner_provider,
@@ -149,6 +150,8 @@ class ConversationModule:
             speech=self._speech,
             voice_preferences=persistence.voice_preferences,
             planner_runs=persistence.planner_runs,
+            bot_display_name=settings.bot_display_name,
+            bot_aliases=settings.bot_aliases,
         )
         reply_sequence = ReplySequenceManager(self._turns)
         _route, chat_profile = self._model_runtime.router.route(ModelTask.CHAT_AGENT)
@@ -191,8 +194,16 @@ class ConversationModule:
             facts=persistence.memories,
             ledger=persistence.ledger,
             mutations=memory_mutations,
-            user_auditor=UserMemoryAuditor(models, self._concurrency),
-            self_auditor=SelfMemoryAuditor(models, self._concurrency),
+            user_auditor=UserMemoryAuditor(
+                models,
+                self._concurrency,
+                bot_display_name=settings.bot_display_name,
+            ),
+            self_auditor=SelfMemoryAuditor(
+                models,
+                self._concurrency,
+                bot_display_name=settings.bot_display_name,
+            ),
         )
         agent_tools = AgentToolService(
             settings=settings,

@@ -19,14 +19,20 @@ _MEDIA_DESCRIPTION = re.compile(r"\[(?:表情|语音)：[\s\S]*\]")
 class ChatEventPromptRenderer:
     """Render one canonical prompt envelope for both Planner and main Agent."""
 
-    def __init__(self, events: Iterable[EventRecord] = ()) -> None:
+    def __init__(
+        self,
+        events: Iterable[EventRecord] = (),
+        *,
+        bot_display_name: str = "Yuki",
+    ) -> None:
         rows = tuple(events)
+        self._bot_display_name = bot_display_name
         self._events_by_message_id = {
             row.platform_message_id: row for row in rows if row.platform_message_id
         }
         self._display_names_by_user_id: dict[str, str] = {}
         for row in rows:
-            self._display_names_by_user_id[row.sender_user_id] = row.sender_display_name
+            self._display_names_by_user_id[row.sender_user_id] = self._row_display_name(row)
 
     def message(
         self,
@@ -89,7 +95,7 @@ class ChatEventPromptRenderer:
             group_key = (
                 None
                 if row.event_kind == "external_event"
-                else (message.role, row.sender_user_id, row.sender_display_name)
+                else (message.role, row.sender_user_id, self._row_display_name(row))
             )
             if grouped and group_key is not None and grouped[-1][3] == group_key:
                 previous_id, event_ids, previous, _ = grouped[-1]
@@ -169,7 +175,10 @@ class ChatEventPromptRenderer:
         )
         if mention_field:
             fields.append(mention_field)
-        return f"[{row.sender_display_name}|QQ:{row.sender_user_id}]\n{'|'.join(fields)}>{content}"
+        return (
+            f"[{self._row_display_name(row)}|QQ:{row.sender_user_id}]\n"
+            f"{'|'.join(fields)}>{content}"
+        )
 
     def render_inbound(self, inbound: InboundMessage, content: str) -> str:
         """Render an inbound message that has not been recovered from the ledger."""
@@ -236,8 +245,10 @@ class ChatEventPromptRenderer:
                 "",
             )
             return text.strip()
-        if row.direction == "outbound" and row.content.startswith(
-            "[语音：Yuki 发送了一条语音，声线："
+        if (
+            row.direction == "outbound"
+            and row.content.startswith("[语音：")
+            and "发送了一条语音，声线：" in row.content
         ):
             return ""
         base = _LEGACY_HISTORY_PREFIX.sub("", row.content, count=1)
@@ -251,7 +262,7 @@ class ChatEventPromptRenderer:
 
     def _event_envelope(self, row: EventRecord) -> str:
         fields = [
-            f"发送者:{row.sender_display_name}",
+            f"发送者:{self._row_display_name(row)}",
             f"QQ:{row.sender_user_id}",
             f"消息:{row.platform_message_id}",
         ]
@@ -261,7 +272,7 @@ class ChatEventPromptRenderer:
                 target.sender_user_id if target is not None else ""
             )
             reply_name = (
-                target.sender_display_name
+                self._row_display_name(target)
                 if target is not None
                 else self._identity_label(reply_user_id, bot_user_id=row.bot_user_id)
             )
@@ -286,13 +297,13 @@ class ChatEventPromptRenderer:
             return "未知发送者"
         name = self._display_names_by_user_id.get(user_id)
         if not name and user_id == bot_user_id:
-            name = "Yuki"
+            name = self._bot_display_name
         if not name:
             return f"QQ {user_id}"
         return f"{name}/QQ:{user_id}"
 
-    @staticmethod
     def _display_name(
+        self,
         *,
         user_id: str,
         bot_user_id: str,
@@ -306,5 +317,13 @@ class ChatEventPromptRenderer:
         if nickname:
             return nickname
         if user_id == bot_user_id:
-            return "Yuki"
+            return self._bot_display_name
         return f"QQ {user_id}"
+
+    def _row_display_name(self, row: EventRecord) -> str:
+        return self._display_name(
+            user_id=row.sender_user_id,
+            bot_user_id=row.bot_user_id,
+            nickname=row.sender_nickname,
+            group_card=row.sender_group_card,
+        )

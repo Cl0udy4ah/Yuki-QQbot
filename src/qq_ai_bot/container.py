@@ -193,6 +193,7 @@ class ApplicationContainer:
             models=self.models,
             runtime_config=self.runtime_config,
             lifecycle=self.lifecycle,
+            bot_display_name=settings.bot_display_name,
         )
         emoji = self.emoji_module.build()
         self.emoji_bundle = emoji
@@ -217,6 +218,8 @@ class ApplicationContainer:
             turns=self.turn_coordinator,
             runtime_config=self.runtime_config,
             lifecycle=self.lifecycle,
+            bot_display_name=settings.bot_display_name,
+            bot_voice_name=settings.bot_voice_name,
         ).build()
         self.speech_bundle = speech
         self.voice_preference_service = speech.preferences
@@ -373,6 +376,7 @@ class ApplicationContainer:
             signal_invocation_scope=self._plugin_signal_scope,
             on_activated=self._activate_plugin_extensions,
             on_deactivated=self._deactivate_plugin_extensions,
+            bot_display_name=settings.bot_display_name,
         )
         plugins = self.plugin_module.build()
         self.plugins = plugins
@@ -545,6 +549,7 @@ class ApplicationContainer:
                 self.settings.plugin_background_task_limit,
             ),
             services=PluginFacadeServices(
+                bot_display_name=self.settings.bot_display_name,
                 ledger=self.ledger,
                 people=self.people,
                 groups=self.groups,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from typing import Literal
 from uuid import uuid4
@@ -60,12 +61,24 @@ class VoiceReplyEffectService:
         speech: SpeechService,
         *,
         event_publisher: LifecycleEventPublisher | None = None,
+        bot_display_name: str = "Yuki",
+        bot_voice_name: str = "ゆき",
     ) -> None:
         self._speech = speech
         self._event_publisher = event_publisher
+        self._bot_voice_name = bot_voice_name
+        self._spoken_bot_name = re.compile(
+            rf"(?<![A-Za-z0-9_]){re.escape(bot_display_name)}(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        )
 
     def set_event_publisher(self, publisher: LifecycleEventPublisher) -> None:
         self._event_publisher = publisher
+
+    def spoken_text(self, response_text: str) -> str:
+        """Map the display name to its pronunciation without changing text replies."""
+
+        return self._spoken_bot_name.sub(self._bot_voice_name, response_text)
 
     async def prepare(
         self,
@@ -88,6 +101,7 @@ class VoiceReplyEffectService:
         )
         if not scope_enabled:
             return None
+        speech_text = self.spoken_text(response_text)
         cancellation = asyncio.Event()
         try:
             generated = await self._speech.synthesize(
@@ -95,7 +109,7 @@ class VoiceReplyEffectService:
                     request_id=str(uuid4()),
                     profile_id=profile_id or runtime.speech.default_profile,
                     style_hint=style_hint,
-                    text=response_text,
+                    text=speech_text,
                     split_sentence=runtime.speech.split_sentence,
                     conversation_key=token.conversation_key,
                     trigger_event_id=None,
@@ -141,7 +155,7 @@ class VoiceReplyEffectService:
                         mime_type="audio/wav",
                         summary="语音消息",
                         local_path=str(path),
-                        spoken_text=response_text if voice_only else "",
+                        spoken_text=speech_text if voice_only else "",
                         generation_id=generated.generation_id,
                         voice_profile_id=generated.profile_id,
                         voice_reference_key=generated.reference_key,

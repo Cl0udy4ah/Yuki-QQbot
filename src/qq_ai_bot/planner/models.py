@@ -397,7 +397,7 @@ class PlannerMemoryOutput(_StrictPlannerModel):
     )
     self_recall: bool = Field(
         default=False,
-        description="是否检索 Yuki 过去形成的动态自我记忆。",
+        description="是否检索过去形成的动态 SELF 记忆。",
     )
 
     @model_validator(mode="before")

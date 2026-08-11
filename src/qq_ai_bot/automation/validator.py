@@ -118,7 +118,7 @@ class AutomationValidator:
             if step.call in _LLM_CAPABILITIES and (
                 step.arguments.get("context_profile") != script.context.scene
             ):
-                raise ValueError("Yuki 步骤的 context_profile 必须与脚本 context.scene 一致")
+                raise ValueError("Agent 步骤的 context_profile 必须与脚本 context.scene 一致")
             self._validate_targets(step.call, step.arguments, provenance)
             available_steps.add(step.id)
             if step.save_as:

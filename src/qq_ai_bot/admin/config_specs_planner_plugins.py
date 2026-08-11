@@ -150,7 +150,7 @@ def planner_plugin_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "planner.recent_presence_window_seconds",
             "存在感统计窗口",
-            "计算近期 Yuki 发言占比的窗口秒数。",
+            "计算近期自身发言占比的窗口秒数。",
             value_type="integer",
             minimum=1,
             maximum=86400,

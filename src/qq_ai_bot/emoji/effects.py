@@ -34,11 +34,13 @@ class EmojiReplyEffectService:
         repository: EmojiRepository,
         storage: EmojiStorage,
         event_publisher: LifecycleEventPublisher | None = None,
+        bot_display_name: str = "Yuki",
     ) -> None:
         self._selector = selector
         self._repository = repository
         self._storage = storage
         self._event_publisher = event_publisher
+        self._bot_display_name = bot_display_name
 
     def set_event_publisher(self, publisher: LifecycleEventPublisher) -> None:
         self._event_publisher = publisher
@@ -149,7 +151,7 @@ class EmojiReplyEffectService:
                 source=effect.source,
                 exception=exc,
             )
-        summary = asset.description or "Yuki 发送了一张表情图片"
+        summary = asset.description or f"{self._bot_display_name} 发送了一张表情图片"
         message = OutboundMessage(
             media=(
                 OutboundMedia(

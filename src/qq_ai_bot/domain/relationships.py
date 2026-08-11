@@ -90,7 +90,11 @@ def relationship_weight(affection_score: int, effective_trust_score: int) -> int
     return round(0.6 * affection + 0.4 * trust)
 
 
-def style_policy(stage: RelationshipStage, scope_type: ScopeType) -> str:
+def style_policy(
+    stage: RelationshipStage,
+    scope_type: ScopeType,
+    bot_name: str = "Yuki",
+) -> str:
     """Return the trusted conversation style for one stage and scope."""
 
     if stage is RelationshipStage.GUARDED:
@@ -101,7 +105,7 @@ def style_policy(stage: RelationshipStage, scope_type: ScopeType) -> str:
     if stage is RelationshipStage.DISTANT:
         return "保持基本礼貌，很少主动关心，不暧昧；可以自然表现轻微不满或戒备。"
     if stage is RelationshipStage.FRIENDLY:
-        return "正常友好，保持 Yuki 聪明、可爱、活泼的基本人格，可以进行普通玩笑。"
+        return f"正常友好，保持 {bot_name} 聪明、可爱、活泼的基本人格，可以进行普通玩笑。"
     if stage is RelationshipStage.CLOSE:
         return "更温暖自然，可以主动关心、轻微撒娇、调侃和害羞，并自然提及双方过去的交流。"
     if stage is RelationshipStage.AFFECTIONATE:

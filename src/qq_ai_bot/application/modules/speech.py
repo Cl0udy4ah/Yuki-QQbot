@@ -44,6 +44,8 @@ class SpeechModule:
         turns: ConversationTurnCoordinator,
         runtime_config: RuntimeConfigService,
         lifecycle: LifecycleRegistry,
+        bot_display_name: str = "Yuki",
+        bot_voice_name: str = "ゆき",
     ) -> None:
         self._settings = settings
         self._preference_repository = preference_repository
@@ -52,6 +54,8 @@ class SpeechModule:
         self._turns = turns
         self._runtime_config = runtime_config
         self._lifecycle = lifecycle
+        self._bot_display_name = bot_display_name
+        self._bot_voice_name = bot_voice_name
 
     def build(self) -> SpeechBundle:
         settings = self._settings
@@ -82,12 +86,17 @@ class SpeechModule:
             paths=paths,
             loader=worker if settings.speech_enabled else None,
         )
-        effects = VoiceReplyEffectService(service)
+        effects = VoiceReplyEffectService(
+            service,
+            bot_display_name=self._bot_display_name,
+            bot_voice_name=self._bot_voice_name,
+        )
         admin = SpeechAdminService(
             speech=service,
             profiles=profiles,
             runtime_config=self._runtime_config,
             worker=worker,
+            bot_display_name=self._bot_display_name,
         )
         self._lifecycle.register("speech", close=service.close, health=service.health)
         return SpeechBundle(

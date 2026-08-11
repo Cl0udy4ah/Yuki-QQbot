@@ -32,6 +32,7 @@ class ProfileCommandHandler:
         preference_admin: PreferenceAdminService,
         relationship_admin: RelationshipAdminService,
         memory_rebuild: MemoryRebuildService | None = None,
+        bot_display_name: str = "Yuki",
     ) -> None:
         self._people = people
         self._memories = memories
@@ -39,6 +40,7 @@ class ProfileCommandHandler:
         self._preference_admin = preference_admin
         self._relationship_admin = relationship_admin
         self._memory_rebuild = memory_rebuild
+        self._bot_display_name = bot_display_name
 
     async def memory(self, *, actor: AdminActor, argument: str) -> str:
         if argument.strip().casefold().startswith("rebuild"):
@@ -224,7 +226,9 @@ class ProfileCommandHandler:
                 elif reflection_health.pending_conversations == 0:
                     reason = "当前没有待处理会话"
                 else:
-                    reason = "待处理会话尚无 Yuki 已发送回复或可信工具结果"
+                    reason = (
+                        f"待处理会话尚无 {self._bot_display_name} 已发送回复或可信工具结果"
+                    )
                 return f"Self Reflection 本轮未处理会话：{reason}；今日反思批次 {usage}。"
             if operation in {"show", "explain", "history"}:
                 if len(parts) != 1 or not parts[0].isdigit():

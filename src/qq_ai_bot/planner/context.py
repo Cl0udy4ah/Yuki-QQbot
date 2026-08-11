@@ -67,13 +67,17 @@ class PlannerContextBuilder:
         voice_preferences: VoicePreferenceRepository | None = None,
         planner_runs: PlannerRepository | None = None,
         emoji_requests: EmojiRequestDetector | None = None,
+        bot_display_name: str = "Yuki",
+        bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪"),
     ) -> None:
         self._ledger = ledger
         self._relationships = relationships
         self._speech = speech
         self._voice_preferences = voice_preferences
         self._planner_runs = planner_runs
-        self._emoji_requests = emoji_requests or EmojiRequestDetector()
+        self._bot_display_name = bot_display_name
+        self._bot_aliases = bot_aliases
+        self._emoji_requests = emoji_requests or EmojiRequestDetector(bot_aliases)
 
     async def build(
         self,
@@ -109,6 +113,7 @@ class PlannerContextBuilder:
             )
         scorer = ReplyNecessityScorer(
             threshold=runtime.planner.reply_necessity_threshold,
+            bot_aliases=self._bot_aliases,
         )
         necessity = scorer.score(
             ReplyNecessityFeatures(
@@ -141,7 +146,10 @@ class PlannerContextBuilder:
             row for row in recent if row.platform_message_id != inbound.message_id
         )[-_PLANNER_HISTORY_LIMIT:]
         renderer_rows = (*history_rows, *((current_row,) if current_row else ()))
-        renderer = ChatEventPromptRenderer(renderer_rows)
+        renderer = ChatEventPromptRenderer(
+            renderer_rows,
+            bot_display_name=self._bot_display_name,
+        )
         rendered_history = tuple((row, renderer.reference_message(row)) for row in history_rows)
         visible_history = tuple(
             (row, message) for row, message in rendered_history if (message.content or "").strip()

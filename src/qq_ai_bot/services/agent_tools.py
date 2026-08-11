@@ -202,11 +202,12 @@ class AgentToolService:
         )
 
     def definitions(self, runtime: ToolRuntime) -> tuple[ChatTool, ...]:
+        bot_name = self._settings.bot_display_name
         tools = [
             ChatTool(
                 name="get_my_capabilities",
                 description=(
-                    "给 Yuki 当前模型轮内部查询真实发送者本人能够修改、管理和读取的权限。"
+                    f"给 {bot_name} 当前模型轮内部查询真实发送者本人能够修改、管理和读取的权限。"
                     "当用户问‘我能改什么’‘有哪些设置’‘权限范围’‘能改多少参数’"
                     "或类似问题时必须调用。结果不得原样复制给用户，也不会写入长期上下文；"
                     "默认 summary，具体问题用 focused+category/query，只有明确要求完整清单"
@@ -256,7 +257,7 @@ class AgentToolService:
             ChatTool(
                 name="get_relationship",
                 description=(
-                    "全局读取 Yuki 对一个已认识人物的好感度、信任度和关系阶段。"
+                    f"全局读取 {bot_name} 对一个已认识人物的好感度、信任度和关系阶段。"
                     "不受当前群或私聊会话限制，普通用户也可查询；这不会开放关系历史或修改权限。"
                     "真实 @、回复目标或当前发送者优先使用 subject_ref；手输昵称或历史群名片"
                     "使用 display_name，手输 QQ 号使用 user_id。三个目标字段必须且只能提供一个。"
@@ -299,7 +300,7 @@ class AgentToolService:
                     "目标时必须使用 subject_ref，不要把昵称、[提及成员1] 等占位符填入 user_id；"
                     "手输昵称/群名片使用 display_name，手输 QQ 号使用兼容字段 user_id。"
                     "用户询问‘某人的群记忆’仍属于本工具；get_group_memories 只查询群整体事实。"
-                    "本工具不能读取 Yuki 自己；读取 Yuki 的自我长期记忆必须使用"
+                    f"本工具不能读取 {bot_name} 自己；读取 {bot_name} 的自我长期记忆必须使用"
                     " get_self_memories。"
                 ),
                 parameters=_object_schema(
@@ -371,8 +372,9 @@ class AgentToolService:
                 ChatTool(
                     name="get_self_memories",
                     description=(
-                        "读取 Yuki 自己在当前会话中有权回忆的长期记忆。用户询问 Yuki 的过去、"
-                        "经历、偏好、反思、原则，或要求展示 Yuki 自己的长期记忆时使用。"
+                        f"读取 {bot_name} 自己在当前会话中有权回忆的长期记忆。"
+                        f"用户询问 {bot_name} 的过去、经历、偏好、反思、原则，"
+                        f"或要求展示 {bot_name} 自己的长期记忆时使用。"
                         "无 query 时默认总览；有 query 时默认相关检索。后端只返回全局记忆加当前"
                         "私聊用户或当前群可见的记忆，不得用 get_person_memories 代替，也不能指定"
                         "用户、群或其他会话的可见范围。"
@@ -382,7 +384,7 @@ class AgentToolService:
                             "query": {
                                 "type": "string",
                                 "maxLength": 400,
-                                "description": "可选；要检索的 Yuki 自我记忆主题",
+                                "description": f"可选；要检索的 {bot_name} 自我记忆主题",
                             },
                             "mode": {
                                 "type": "string",
@@ -398,14 +400,15 @@ class AgentToolService:
                 ChatTool(
                     name="memory_change",
                     description=(
-                        "Yuki 唯一的长期记忆变更工具。只能根据当前用户这条真实入站消息"
+                        f"{bot_name} 唯一的长期记忆变更工具。只能根据当前用户这条真实入站消息"
                         "（包括由当前群消息触发的自主回应）"
                         "创建、纠正、撤销、恢复、争议、合并、改归属或更新记忆元数据；"
-                        "不能把 Yuki 自己的输出当证据，也不能传 QQ 号、群号或事件 ID。"
+                        f"不能把 {bot_name} 自己的输出当证据，也不能传 QQ 号、群号或事件 ID。"
                         "target.subject_ref 只能使用 current_speaker、current_group、"
                         "mentioned_user、mentioned_user_1 等本轮可验证别名，或"
-                        "replied_message_author；Yuki 自我记忆使用 self + self。自我记忆仅在"
-                        "功能开启且 Yuki 根据当前真实用户消息形成自己的判断时变更，visibility"
+                        f"replied_message_author；{bot_name} 自我记忆使用 self + self。"
+                        f"自我记忆仅在功能开启且 {bot_name} 根据当前真实用户消息形成自己的"
+                        "判断时变更，visibility"
                         "只能用 current_scope 或 global；global 只适合抽象偏好、反思和原则，"
                         "SELF 的 category 必须精确使用 self_fact、self_preference、self_episode、"
                         "self_reflection 或 self_principle；self_episode 必须与 kind=episode 配对，"
@@ -1201,7 +1204,10 @@ class AgentToolService:
                 return _ToolFailure("invalid_user_id", "user_id 必须是数字 QQ 号字符串")
             user_id = candidate.strip()
         if user_id == runtime.inbound.bot_user_id:
-            return _ToolFailure("person_not_found", "Yuki 自己不使用人物好感度记录")
+            return _ToolFailure(
+                "person_not_found",
+                f"{self._settings.bot_display_name} 自己不使用人物好感度记录",
+            )
         return _RelationshipSelection(
             user_id=user_id,
             resolved_by=selector,
@@ -1332,7 +1338,10 @@ class AgentToolService:
     ) -> _PersonMemorySelection | _ToolFailure:
         inbound = runtime.inbound
         if user_id == inbound.bot_user_id:
-            return _ToolFailure("permission_denied", "不能读取机器人身份的个人记忆")
+            return _ToolFailure(
+                "permission_denied",
+                f"不能读取 {self._settings.bot_display_name} 身份的个人记忆",
+            )
         if user_id == inbound.sender.user_id:
             targets = await self._memory_context.resolve_targets(inbound, self._runtime())
             own_targets = tuple(
@@ -1985,14 +1994,20 @@ class AgentToolService:
             raise ValueError("limit must be an integer")
         return max(1, min(int(value), maximum))
 
-    @staticmethod
-    def _event_json(row: Any) -> dict[str, Any]:
+    def _event_json(self, row: Any) -> dict[str, Any]:
+        display_name = row.sender_display_name
+        if (
+            row.sender_user_id == row.bot_user_id
+            and not row.sender_group_card.strip()
+            and not row.sender_nickname.strip()
+        ):
+            display_name = self._settings.bot_display_name
         return {
             "id": row.id,
             "sender_user_id": row.sender_user_id,
             "sender_nickname": row.sender_nickname,
             "sender_group_card": row.sender_group_card,
-            "sender_display_name": row.sender_display_name,
+            "sender_display_name": display_name,
             "scope": row.scope_type.value,
             "group_id": row.group_id,
             "direction": row.direction,

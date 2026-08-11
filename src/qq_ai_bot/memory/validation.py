@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -17,7 +18,11 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
-from qq_ai_bot.memory.quality_policy import AttributionPolicy, RetentionPolicy
+from qq_ai_bot.memory.quality_policy import (
+    AttributionPolicy,
+    RetentionPolicy,
+    compile_bot_subject_pattern,
+)
 from qq_ai_bot.memory.subjects import SubjectResolutionContext, SubjectResolver
 from qq_ai_bot.memory.temporal import MemoryTemporalResolver
 from qq_ai_bot.persistence.repository_records import EventRecord
@@ -26,27 +31,6 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
 _EXPLICIT_MEMORY_PATTERNS = (
     re.compile(r"(?:记住|别忘|请保存|加入记忆)"),
     re.compile(r"^(?:请|要|一定要|以后)?记得(?!.*[吗么？?])"),
-)
-_MEMORY_OBJECT = (
-    r"(?:这条|那条|某条|我的|你的|Yuki的|yuki的|长期)?记忆"
-    r"(?!功能|模块|系统|代码|接口|工具|数据库|数据表|实现|逻辑|设计|架构)"
-)
-_MEMORY_MUTATION_PATTERNS = (
-    re.compile(r"(?:记住|别忘|请保存|加入记忆)"),
-    re.compile(r"^(?:请|要|一定要|以后)?记得(?!.*[吗么？?])"),
-    re.compile(
-        r"(?:删除|删掉|移除|清除|忘掉|忘记|撤销|恢复|还原|纠正|更正|修正|修改|更新|"
-        rf"合并|调整|改归属).{{0,16}}{_MEMORY_OBJECT}"
-    ),
-    re.compile(
-        rf"{_MEMORY_OBJECT}.{{0,16}}(?:删除|删掉|移除|清除|忘掉|忘记|撤销|恢复|"
-        r"还原|纠正|更正|修正|修改|更新|合并|调整|改归属)"
-    ),
-    re.compile(r"(?:你|Yuki|yuki)?记错了"),
-    re.compile(
-        r"\b(?:remember|forget|correct|update|delete|remove|restore)\b.{0,24}\bmemor(?:y|ies)\b",
-        re.IGNORECASE,
-    ),
 )
 _MEMORY_COMMAND_PREFIX = re.compile(r"^(?:请)?(?:记住|记得|别忘|保存|加入记忆)\s*")
 _INTERACTION_MARKERS = (
@@ -59,7 +43,6 @@ _INTERACTION_MARKERS = (
     "简短",
     "句号",
     "引用",
-    "yuki",
     "机器人",
 )
 _NAMED_OTHER_PREFIX = re.compile(
@@ -112,6 +95,40 @@ _SELF_OR_TOPIC_SUBJECTS = frozenset(
         "公司",
     }
 )
+
+
+@lru_cache(maxsize=32)
+def _memory_mutation_patterns(bot_aliases: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    aliases = tuple(dict.fromkeys(alias for alias in bot_aliases if alias.strip()))
+    named_possessives = "|".join(f"{re.escape(alias)}的" for alias in aliases)
+    optional_owner = r"这条|那条|某条|我的|你的|长期"
+    if named_possessives:
+        optional_owner = f"{optional_owner}|{named_possessives}"
+    memory_object = (
+        rf"(?:{optional_owner})?记忆"
+        r"(?!功能|模块|系统|代码|接口|工具|数据库|数据表|实现|逻辑|设计|架构)"
+    )
+    bot_subjects = "|".join(re.escape(alias) for alias in aliases)
+    mistaken_subject = rf"(?:你|{bot_subjects})?" if bot_subjects else r"(?:你)?"
+    return (
+        re.compile(r"(?:记住|别忘|请保存|加入记忆)"),
+        re.compile(r"^(?:请|要|一定要|以后)?记得(?!.*[吗么？?])"),
+        re.compile(
+            r"(?:删除|删掉|移除|清除|忘掉|忘记|撤销|恢复|还原|纠正|更正|修正|修改|更新|"
+            rf"合并|调整|改归属).{{0,16}}{memory_object}",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"{memory_object}.{{0,16}}(?:删除|删掉|移除|清除|忘掉|忘记|撤销|恢复|"
+            r"还原|纠正|更正|修正|修改|更新|合并|调整|改归属)",
+            re.IGNORECASE,
+        ),
+        re.compile(rf"{mistaken_subject}记错了", re.IGNORECASE),
+        re.compile(
+            r"\b(?:remember|forget|correct|update|delete|remove|restore)\b.{0,24}\bmemor(?:y|ies)\b",
+            re.IGNORECASE,
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,12 +186,20 @@ def event_requests_explicit_memory(value: str) -> bool:
     )
 
 
-def event_requests_memory_mutation(value: str) -> bool:
+def event_requests_memory_mutation(
+    value: str,
+    *,
+    bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪"),
+) -> bool:
     """Conservatively detect an explicit request to change durable memory."""
 
     normalized = " ".join(value.split())
     return bool(
-        normalized and any(pattern.search(normalized) for pattern in _MEMORY_MUTATION_PATTERNS)
+        normalized
+        and any(
+            pattern.search(normalized)
+            for pattern in _memory_mutation_patterns(bot_aliases)
+        )
     )
 
 
@@ -187,10 +212,16 @@ class MemoryClaimValidator:
         temporal: MemoryTemporalResolver | None = None,
         *,
         timezone_name: str = "Asia/Shanghai",
+        bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪"),
     ) -> None:
         self._resolver = resolver or SubjectResolver()
         self._temporal = temporal or MemoryTemporalResolver()
         self._timezone_name = timezone_name
+        self._bot_subject_pattern = compile_bot_subject_pattern(bot_aliases)
+        self._interaction_markers = (
+            *_INTERACTION_MARKERS,
+            *(alias.casefold() for alias in bot_aliases if alias.strip()),
+        )
 
     def validate(
         self,
@@ -265,7 +296,12 @@ class MemoryClaimValidator:
             scope_type=claim.scope_type,
             context=subject_context,
         )
-        attribution = AttributionPolicy.evaluate(claim, event, resolved)
+        attribution = AttributionPolicy.evaluate(
+            claim,
+            event,
+            resolved,
+            bot_subject_pattern=self._bot_subject_pattern,
+        )
         if attribution.candidate_type is not None:
             raise _MemoryClaimCandidate(attribution.reason_code, attribution.candidate_type)
         if not attribution.accepted:
@@ -296,7 +332,7 @@ class MemoryClaimValidator:
         if claim.retention is MemoryRetention.MEANINGFUL_EPISODE:
             kind = MemoryKind.EPISODE
         lowered = f"{key} {category} {content} {quote}".casefold()
-        if any(marker in lowered for marker in _INTERACTION_MARKERS):
+        if any(marker in lowered for marker in self._interaction_markers):
             kind = MemoryKind.PREFERENCE
         subject_is_speaker = resolved.subject_user_id == event.sender_user_id
         is_third_party = bool(resolved.subject_user_id) and not subject_is_speaker

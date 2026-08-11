@@ -29,8 +29,6 @@ _IGNORED_NAMES = frozenset(
         "现在",
         "最近",
         "以后",
-        "Yuki",
-        "yuki",
     }
 )
 
@@ -162,8 +160,17 @@ class SubjectResolver:
 class SubjectContextBuilder:
     """Add only uniquely resolved current-group names to the trusted alias set."""
 
-    def __init__(self, people: PeopleRepository | None = None) -> None:
+    def __init__(
+        self,
+        people: PeopleRepository | None = None,
+        *,
+        bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪"),
+    ) -> None:
         self._people = people
+        self._ignored_names = {
+            *(name.casefold() for name in _IGNORED_NAMES),
+            *(alias.casefold() for alias in bot_aliases if alias.strip()),
+        }
 
     async def build(self, event: EventRecord) -> SubjectResolutionContext:
         base = SubjectResolver.context(event)
@@ -173,7 +180,7 @@ class SubjectContextBuilder:
             dict.fromkeys(
                 match.group("name")
                 for match in _NAMED_SUBJECT.finditer(event.content)
-                if match.group("name") not in _IGNORED_NAMES
+                if match.group("name").casefold() not in self._ignored_names
             )
         )[:3]
         if not names:

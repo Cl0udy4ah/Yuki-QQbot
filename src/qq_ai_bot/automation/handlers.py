@@ -453,7 +453,7 @@ class AutomationCapabilityHandlers:
             content=content,
             mime_type=asset.mime_type,
             emoji_id=asset.id,
-            summary=asset.description or "Yuki 发送的表情",
+            summary=asset.description or f"{self._settings.bot_display_name} 发送的表情",
         )
         await repository.mark_used(
             asset.id,
@@ -702,7 +702,11 @@ class AutomationCapabilityHandlers:
                     ]
             if declared.include_relationship:
                 relationship = await self._relationships.get_or_create(context.creator_user_id)
-                data["relationship_style"] = style_policy(relationship.stage, scope)
+                data["relationship_style"] = style_policy(
+                    relationship.stage,
+                    scope,
+                    self._settings.bot_display_name,
+                )
             if declared.history_limit:
                 data["recent_history"] = [
                     {

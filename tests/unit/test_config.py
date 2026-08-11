@@ -97,9 +97,44 @@ def test_legacy_prompt_without_placeholder_is_not_duplicated(tmp_path: Path) -> 
     assert settings.system_prompt == "legacy prompt already contains its persona"
 
 
+def test_bot_identity_is_configurable_and_aliases_are_stably_deduplicated() -> None:
+    settings = Settings.model_validate(
+        {
+            "BOT_DISPLAY_NAME": "Mika",
+            "BOT_ALIASES": "Mika,mika,米卡, MIKA ",
+            "BOT_VOICE_NAME": "みか",
+        }
+    )
+
+    assert settings.bot_display_name == "Mika"
+    assert settings.bot_aliases == ("Mika", "米卡")
+    assert settings.bot_voice_name == "みか"
+    assert settings.bot_identity.display_name == "Mika"
+
+
+def test_bot_persona_does_not_modify_prompt_without_legacy_placeholder(
+    tmp_path: Path,
+) -> None:
+    persona_file = tmp_path / "persona.md"
+    persona_file.write_text("Mika 的独立共享人格", encoding="utf-8")
+    prompt_file = tmp_path / "system_prompt.md"
+    original_prompt = "# 私有系统提示词\n\n这里不包含任何人格占位符。"
+    prompt_file.write_text(original_prompt, encoding="utf-8")
+
+    settings = Settings.model_validate(
+        {
+            "BOT_PERSONA_FILE": persona_file,
+            "system_prompt_file": prompt_file,
+        }
+    )
+
+    assert settings.bot_persona == "Mika 的独立共享人格"
+    assert settings.system_prompt == original_prompt
+
+
 def test_example_system_prompt_preserves_yuki_persona_and_short_style() -> None:
     prompt_path = Path(__file__).parents[2] / "config" / "system_prompt.example.md"
-    persona_path = Path(__file__).parents[2] / "config" / "yuki_persona_core.md"
+    persona_path = Path(__file__).parents[2] / "config" / "persona.md"
     template = prompt_path.read_text(encoding="utf-8")
     persona = persona_path.read_text(encoding="utf-8")
     assert template.count("{{YUKI_PERSONA_CORE}}") == 1

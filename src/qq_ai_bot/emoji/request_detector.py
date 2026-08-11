@@ -31,14 +31,16 @@ _STANDALONE = re.compile(
 class EmojiRequestDetector:
     """Recognize only self-contained send requests from the current message."""
 
-    def detect(self, content: str) -> EmojiRequestHint:
-        without_address = re.sub(
-            r"^\s*(?:(?:@\S+)|Yuki)\s*[,，:：]?\s*",
-            "",
-            content,
-            count=1,
+    def __init__(self, bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪")) -> None:
+        address_targets = [r"@\S+"]
+        address_targets.extend(re.escape(alias) for alias in bot_aliases if alias.strip())
+        self._leading_address = re.compile(
+            rf"^\s*(?:{'|'.join(address_targets)})\s*[,，:：]?\s*",
             flags=re.IGNORECASE,
         )
+
+    def detect(self, content: str) -> EmojiRequestHint:
+        without_address = self._leading_address.sub("", content, count=1)
         normalized = re.sub(r"\s+", "", without_address).strip("，,：:")
         if not normalized or _NEGATED.search(normalized):
             return EmojiRequestHint()

@@ -305,6 +305,29 @@ def test_history_prompt_keeps_speakers_and_reply_target_self_contained() -> None
     )
 
 
+def test_history_renderer_uses_configured_bot_name_for_missing_event_identity() -> None:
+    event = EventRecord(
+        id=8,
+        bot_user_id="9999",
+        platform_message_id="bot-message",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="9999",
+        direction="outbound",
+        content="我在这里",
+        visual_summary="",
+        segments=(),
+        occurred_at=datetime.now(UTC),
+        group_id="2001",
+    )
+
+    rendered = ChatEventPromptRenderer(
+        (event,),
+        bot_display_name="Mika",
+    ).render_reference_event(event)
+
+    assert rendered == "[Mika|QQ:9999]\n#8>我在这里"
+
+
 def test_main_agent_history_groups_adjacent_messages_from_the_same_identity() -> None:
     now = datetime.now(UTC)
     events = (

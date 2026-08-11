@@ -259,6 +259,7 @@ class PluginInvocation:
 class PluginFacadeServices:
     """Private dependency bundle; never returned through PluginContext."""
 
+    bot_display_name: str = "Yuki"
     ledger: EventLedgerRepository | None = None
     people: PeopleRepository | None = None
     groups: GroupSettingsRepository | None = None
@@ -1431,7 +1432,8 @@ class _LLMFacade:
             ChatMessage(
                 role="system",
                 content=(
-                    "You are executing a bounded request for a trusted local Yuki plugin. "
+                    "You are executing a bounded request for a trusted local "
+                    f"{self._host._services.bot_display_name} plugin. "
                     "Return visible answer text only; never expose hidden reasoning." + context
                 ),
             ),

@@ -31,7 +31,7 @@ from qq_ai_bot.planner.models import (
     TurnPlan,
 )
 from qq_ai_bot.planner.observability import PlannerObservability
-from qq_ai_bot.planner.prompt import PLANNER_SYSTEM_PROMPT, planner_payload
+from qq_ai_bot.planner.prompt import planner_payload, planner_system_prompt
 from qq_ai_bot.services.prompt_registry import PromptRegistry, PromptTarget
 
 logger = logging.getLogger(__name__)
@@ -255,6 +255,7 @@ class LLMPlannerProvider:
         fallback_on_error: bool = True,
         observability: PlannerObservability | None = None,
         prompt_registry: PromptRegistry | None = None,
+        bot_display_name: str = "Yuki",
     ) -> None:
         if temperature is not None and not 0 <= temperature <= 2:
             raise ValueError("temperature must be between 0 and 2")
@@ -279,6 +280,7 @@ class LLMPlannerProvider:
         self._fallback_on_error = fallback_on_error
         self._observability = observability
         self._prompt_registry = prompt_registry
+        self._system_prompt = planner_system_prompt(bot_display_name)
         self._structured = StructuredTaskRunner(self._models)
 
     @property
@@ -332,7 +334,7 @@ class LLMPlannerProvider:
             model_output = await _await_with_cancellation(
                 self._structured.run(
                     task=ModelTask.PLANNER,
-                    instruction=PLANNER_SYSTEM_PROMPT,
+                    instruction=self._system_prompt,
                     structured_input=structured_input,
                     output_model=PlannerModelOutput,
                     temperature=planner_runtime.temperature,

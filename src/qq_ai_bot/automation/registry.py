@@ -328,7 +328,7 @@ def build_capability_registry(
         ),
         (
             "yuki.agent",
-            "运行受委托能力约束的 Yuki Agent。",
+            "运行受委托能力约束的 Agent。",
             AgentArguments,
             PermissionLevel.USER,
             RiskClass.GENERATE,

@@ -159,14 +159,14 @@ _SET_REPLY_TARGET_TOOL = ChatTool(
 
 _BUILTIN_SCOPE_DESCRIPTIONS = {
     "memory": (
-        "搜索近期或永久聊天历史；读取人物、群和 Yuki 自我长期记忆；"
+        "搜索近期或永久聊天历史；读取人物、群和 {bot_name} 自我长期记忆；"
         "创建、纠正、撤销、恢复和管理长期记忆"
     ),
-    "relationship": "全局查询 Yuki 对已认识人物的好感度、信任度和关系阶段",
+    "relationship": "全局查询 {bot_name} 对已认识人物的好感度、信任度和关系阶段",
     "web": "联网搜索公开信息，并读取网页、链接和在线资料",
     "automation": "创建、查询、修改和删除提醒、定时任务与周期任务",
     "onebot": "执行 QQ 平台、群聊、好友和消息相关操作",
-    "config": "读取和修改 Yuki 的运行配置",
+    "config": "读取和修改 {bot_name} 的运行配置",
     "admin": "超级管理员诊断和管理操作",
     "capability": "查询当前真实用户拥有的权限和可操作能力",
     "speech": "处理已经由 Planner 授权的语音回复",
@@ -1328,6 +1328,8 @@ class ChatService:
         base_scopes: tuple[str, ...],
         runtime: RuntimeConfigSnapshot | None = None,
     ) -> tuple[ToolScopeSummary, ...]:
+        settings = getattr(self, "_settings", None)
+        bot_name = settings.bot_display_name if settings is not None else "Yuki"
         summaries = [
             ToolScopeSummary(
                 scope_id=scope,
@@ -1335,8 +1337,8 @@ class ChatService:
                 display_name=scope,
                 description=_BUILTIN_SCOPE_DESCRIPTIONS.get(
                     scope,
-                    f"Yuki 内置 {scope} 能力",
-                ),
+                    "{bot_name} 内置 " + scope + " 能力",
+                ).format(bot_name=bot_name),
                 tool_count=0,
                 provider_ids=("core",),
                 tags=(scope,),
@@ -1406,6 +1408,7 @@ class ChatService:
                 source=CapabilityTrustSource.CORE,
                 definitions=core_definitions,
                 execute=core_execute,
+                bot_aliases=self._settings.bot_aliases,
             )
         )
         if self._tool_artifacts is not None:
@@ -1581,7 +1584,10 @@ class ChatService:
                 return 1
 
             source_display_requested = self._source_policy.requested(content)
-            memory_mutation_intent = event_requests_memory_mutation(content)
+            memory_mutation_intent = event_requests_memory_mutation(
+                content,
+                bot_aliases=self._settings.bot_aliases,
+            )
             planner_emoji_only = bool(
                 planned_turn is not None
                 and planned_turn.plan.emoji.is_exclusive

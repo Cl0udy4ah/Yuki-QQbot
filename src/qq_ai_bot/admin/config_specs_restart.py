@@ -400,7 +400,7 @@ def restart_config_specs() -> tuple[ConfigSpec, ...]:
         ),
         _spec(
             "memory.self_reflection_enabled",
-            "Yuki 自省开关",
+            "Self Reflection 开关",
             "重启后按每日三个固定时段运行有界 SELF 反思；首次启用不会回看历史聊天。",
             aliases=("自省开关",),
             value_type="boolean",

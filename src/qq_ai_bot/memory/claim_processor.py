@@ -156,7 +156,10 @@ class MemoryClaimProcessor:
         self._candidates = candidate_resolver
         self._classifier = relation_classifier
         self._resolution = resolution_policy
-        self._validator = validator or MemoryClaimValidator()
+        self._validator = validator or MemoryClaimValidator(
+            timezone_name=settings.default_timezone,
+            bot_aliases=settings.bot_aliases,
+        )
         self._runtime_config = runtime_config
         self.metrics = metrics or MemoryLifecycleMetrics()
 

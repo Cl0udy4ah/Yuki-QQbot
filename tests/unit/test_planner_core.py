@@ -537,6 +537,13 @@ def test_emoji_request_detector_is_conservative(text: str, standalone: bool) -> 
     assert hint.explicit_request is standalone
 
 
+def test_emoji_request_detector_accepts_configured_bot_alias() -> None:
+    hint = EmojiRequestDetector(("Mika", "米卡")).detect("米卡，发个开心的表情")
+
+    assert hint.standalone_request
+    assert hint.goal == "开心"
+
+
 @pytest.mark.asyncio
 async def test_standalone_emoji_uses_deterministic_planner_without_provider() -> None:
     provider = FakePlannerProvider(TurnPlan(**_valid_plan_payload()))
@@ -1229,6 +1236,18 @@ async def test_llm_planner_is_tool_free_non_thinking_and_uses_separate_model() -
     assert request.tools == ()
     assert request.tool_choice is None
     assert "reply_to_event_id 默认必须为 null" in (request.messages[0].content or "")
+
+
+@pytest.mark.asyncio
+async def test_llm_planner_uses_configured_bot_name_in_its_instruction() -> None:
+    llm = FakeLLMProvider(lambda _request: json.dumps(_valid_plan_payload()))
+    provider = LLMPlannerProvider(llm, model="planner-model", bot_display_name="Mika")
+
+    await provider.plan(_planner_input(), runtime=_runtime())
+
+    instruction = llm.requests[0].messages[0].content or ""
+    assert "明确询问 Mika 过去的偏好" in instruction
+    assert "明确询问机器人自己" not in instruction
 
 
 @pytest.mark.asyncio

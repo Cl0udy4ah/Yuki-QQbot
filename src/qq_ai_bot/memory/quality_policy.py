@@ -21,9 +21,20 @@ _FIRST_PERSON = re.compile(
 _SECOND_PERSON_SUBJECT = re.compile(
     r"^[\s，。！？；：,.!?;:@\[\]【】]*(?:你|您)(?:今天|昨天|明天|现在|最近|已经|是|有|会|能|在|喜欢|讨厌|想|叫|姓)"
 )
-_YUKI_SUBJECT = re.compile(
-    r"^[\s，。！？；：,.!?;:@\[\]【】]*(?:Yuki|yuki|机器人)(?:今天|现在|最近|已经|是|有|会|能|在|喜欢|讨厌|想|叫|缺少|完成)"
-)
+
+
+def compile_bot_subject_pattern(bot_aliases: tuple[str, ...]) -> re.Pattern[str]:
+    aliases = tuple(dict.fromkeys(alias for alias in bot_aliases if alias.strip()))
+    subjects = ("机器人", *aliases)
+    return re.compile(
+        r"^[\s，。！？；：,.!?;:@\[\]【】]*(?:"
+        + "|".join(re.escape(subject) for subject in subjects)
+        + r")\s*(?:今天|现在|最近|已经|是|有|会|能|在|喜欢|讨厌|想|叫|缺少|完成)",
+        re.IGNORECASE,
+    )
+
+
+_DEFAULT_BOT_SUBJECT = compile_bot_subject_pattern(("Yuki", "yuki", "由纪"))
 _LEADING_NAMED_OTHER = re.compile(
     r"^[\s，。！？；：,.!?;:@\[\]【】]*(?P<name>[\u4e00-\u9fff·]{2,8}|[A-Za-z][A-Za-z0-9_.-]{1,31})"
     r"\s*(?:不是|没有|不会|不能|住在|来自|负责|擅长|喜欢|讨厌|已经|是|有|爱|想|会|能|在|叫|姓)"
@@ -65,10 +76,12 @@ class AttributionPolicy:
         claim: MemoryClaim,
         event: EventRecord,
         resolved: ResolvedSubject | None,
+        *,
+        bot_subject_pattern: re.Pattern[str] = _DEFAULT_BOT_SUBJECT,
     ) -> MemoryPolicyDecision:
         quote = claim.evidence_quote.strip()
         basis = claim.subject_basis
-        if basis is MemorySubjectBasis.ABOUT_YUKI or _YUKI_SUBJECT.search(quote):
+        if basis is MemorySubjectBasis.ABOUT_YUKI or bot_subject_pattern.search(quote):
             return MemoryPolicyDecision.candidate(
                 "self_candidate_requires_agent_judgment",
                 "self",
@@ -109,7 +122,7 @@ class AttributionPolicy:
                 if (
                     event.mentioned_user_ids
                     or _SECOND_PERSON_SUBJECT.search(quote)
-                    or _YUKI_SUBJECT.search(quote)
+                    or bot_subject_pattern.search(quote)
                 ):
                     return MemoryPolicyDecision.reject("speaker_basis_not_verified")
                 # Ordinary Chinese predicates are too ambiguous to infer a named

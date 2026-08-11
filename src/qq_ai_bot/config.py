@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import Self
@@ -37,6 +38,19 @@ def _csv_set(value: str) -> frozenset[str]:
     return frozenset(item.strip() for item in value.split(",") if item.strip())
 
 
+def _csv_tuple(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+@dataclass(frozen=True, slots=True)
+class BotIdentity:
+    """Human-facing identity shared by deterministic bot subsystems."""
+
+    display_name: str
+    aliases: tuple[str, ...]
+    voice_name: str
+
+
 class Settings(BaseSettings):
     """Configuration loaded from environment variables and an optional .env file."""
 
@@ -59,6 +73,24 @@ class Settings(BaseSettings):
     ignored_bot_users_csv: str = Field(default="", validation_alias="IGNORED_BOT_USERS")
     ai_prefix: str = "!ai"
 
+    bot_display_name: str = Field(
+        default="Yuki",
+        min_length=1,
+        max_length=128,
+        validation_alias="BOT_DISPLAY_NAME",
+    )
+    bot_aliases_csv: str = Field(
+        default="Yuki,yuki,由纪",
+        validation_alias="BOT_ALIASES",
+    )
+    bot_voice_name: str = Field(
+        default="ゆき",
+        min_length=1,
+        max_length=128,
+        validation_alias="BOT_VOICE_NAME",
+    )
+    bot_persona_file: Path | None = Field(default=None, validation_alias="BOT_PERSONA_FILE")
+
     llm_provider: str = "openai"
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = ""
@@ -80,8 +112,9 @@ class Settings(BaseSettings):
         "只有联网工具实际成功时，才能说明已经搜索或读取网页。"
     )
     system_prompt_file: Path | None = None
-    yuki_persona_file: Path = Path("config/yuki_persona_core.md")
-    _yuki_persona: str = PrivateAttr(default="")
+    # Compatibility for deployments created before BOT_PERSONA_FILE existed.
+    yuki_persona_file: Path | None = None
+    _bot_persona: str = PrivateAttr(default="")
 
     database_url: str = "sqlite+aiosqlite:///./data/qq_ai_bot.db"
     processed_event_ttl_seconds: int = 86400
@@ -473,6 +506,14 @@ class Settings(BaseSettings):
             raise ValueError("SPEECH_DEFAULT_MODE must be text, voice, text_and_voice, or optional")
         return normalized
 
+    @field_validator("bot_display_name", "bot_voice_name")
+    @classmethod
+    def _single_line_bot_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or any(character in normalized for character in "\r\n"):
+            raise ValueError("bot names must be non-empty single-line values")
+        return normalized
+
     @field_validator("default_timezone")
     @classmethod
     def _valid_default_timezone(cls, value: str) -> str:
@@ -523,15 +564,31 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _load_system_prompt_file(self) -> Self:
-        """Load the shared UTF-8 persona and expand its one fixed prompt placeholder."""
+        """Load the shared UTF-8 persona without changing prompt assembly semantics."""
 
+        persona_file = (
+            self.bot_persona_file
+            or self.yuki_persona_file
+            or Path("config/persona.md")
+        )
+        if (
+            self.bot_persona_file is None
+            and persona_file == Path("config/yuki_persona_core.md")
+            and not persona_file.exists()
+        ):
+            persona_file = Path("config/persona.md")
+        persona_setting = (
+            "BOT_PERSONA_FILE"
+            if self.bot_persona_file is not None or self.yuki_persona_file is None
+            else "YUKI_PERSONA_FILE"
+        )
         try:
-            persona = self.yuki_persona_file.read_text(encoding="utf-8").strip()
+            persona = persona_file.read_text(encoding="utf-8").strip()
         except OSError as exc:
-            raise ValueError(f"cannot read YUKI_PERSONA_FILE: {self.yuki_persona_file}") from exc
+            raise ValueError(f"cannot read {persona_setting}: {persona_file}") from exc
         if not persona:
-            raise ValueError("YUKI_PERSONA_FILE must not be empty")
-        self._yuki_persona = persona
+            raise ValueError(f"{persona_setting} must not be empty")
+        self._bot_persona = persona
 
         if self.system_prompt_file is not None:
             try:
@@ -545,13 +602,19 @@ class Settings(BaseSettings):
             self.system_prompt = prompt
         self.system_prompt = self.system_prompt.replace(
             "{{YUKI_PERSONA_CORE}}",
-            self._yuki_persona,
+            self._bot_persona,
         )
         return self
 
     @property
+    def bot_persona(self) -> str:
+        return self._bot_persona
+
+    @property
     def yuki_persona(self) -> str:
-        return self._yuki_persona
+        """Compatibility alias for older callers."""
+
+        return self._bot_persona
 
     @model_validator(mode="after")
     def _compose_domain_settings(self) -> Self:
@@ -676,6 +739,27 @@ class Settings(BaseSettings):
     @cached_property
     def ignored_bot_users(self) -> frozenset[str]:
         return _csv_set(self.ignored_bot_users_csv)
+
+    @cached_property
+    def bot_aliases(self) -> tuple[str, ...]:
+        aliases = (self.bot_display_name, *_csv_tuple(self.bot_aliases_csv))
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for alias in aliases:
+            key = alias.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(alias)
+        return tuple(normalized)
+
+    @cached_property
+    def bot_identity(self) -> BotIdentity:
+        return BotIdentity(
+            display_name=self.bot_display_name,
+            aliases=self.bot_aliases,
+            voice_name=self.bot_voice_name,
+        )
 
     @property
     def web_tavily_domains(self) -> frozenset[str]:

@@ -261,6 +261,7 @@ class ContextAssembler:
             recent,
             inbound=inbound,
             content=content,
+            bot_display_name=self._settings.bot_display_name,
             character_budget=history_budget,
             event_limit=runtime.context.local_event_limit,
             low_watermark_ratio=self._settings.history_window_low_watermark_ratio,
@@ -384,6 +385,7 @@ class ContextAssembler:
         bounded_messages = self._bounded_external_history(
             recent,
             current_event=event,
+            bot_display_name=self._settings.bot_display_name,
             character_budget=max(
                 0,
                 self._settings.max_context_characters - metadata_characters,
@@ -477,7 +479,9 @@ class ContextAssembler:
             }
         ]
         if self._settings.self_memory_enabled:
-            subjects.append({"subject_ref": "self", "display_name": "Yuki"})
+            subjects.append(
+                {"subject_ref": "self", "display_name": self._settings.bot_display_name}
+            )
         group_id = inbound.group_id
         if group_id is None:
             return subjects
@@ -798,8 +802,12 @@ class ContextAssembler:
         event_limit: int,
         low_watermark_ratio: float,
         anchor_event_id: int | None,
+        bot_display_name: str = "Yuki",
     ) -> _BoundedMessages:
-        renderer = ChatEventPromptRenderer(recent)
+        renderer = ChatEventPromptRenderer(
+            recent,
+            bot_display_name=bot_display_name,
+        )
         current_row = next(
             (row for row in reversed(recent) if row.platform_message_id == inbound.message_id),
             None,
@@ -946,8 +954,12 @@ class ContextAssembler:
         event_limit: int,
         low_watermark_ratio: float,
         anchor_event_id: int | None,
+        bot_display_name: str = "Yuki",
     ) -> _BoundedMessages:
-        renderer = ChatEventPromptRenderer(recent)
+        renderer = ChatEventPromptRenderer(
+            recent,
+            bot_display_name=bot_display_name,
+        )
         trigger = renderer.render_reference_event(current_event)
         history_rows = tuple(row for row in recent if row.id != current_event.id)
         rendered = renderer.main_agent_history(history_rows)

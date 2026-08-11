@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -23,6 +24,19 @@ from qq_ai_bot.speech.models import (
 )
 from qq_ai_bot.speech.preference_repository import VoicePreferenceRepository
 from qq_ai_bot.speech.preference_service import VoicePreferenceService
+from qq_ai_bot.speech.reply_effect import VoiceReplyEffectService
+
+
+def test_voice_name_mapping_does_not_change_the_text_reply() -> None:
+    effects = VoiceReplyEffectService(
+        MagicMock(),
+        bot_display_name="Mika",
+        bot_voice_name="みか",
+    )
+    response_text = "我是Mika，今天也在。"
+
+    assert effects.spoken_text(response_text) == "我是みか，今天也在。"
+    assert response_text == "我是Mika，今天也在。"
 
 
 @pytest.mark.asyncio

@@ -26,7 +26,7 @@ COPY --from=builder --chown=bot:bot /app/.venv /app/.venv
 COPY --chown=bot:bot alembic.ini ./
 COPY --chown=bot:bot migrations ./migrations
 COPY --chown=bot:bot scripts ./scripts
-COPY --chown=bot:bot config/yuki_persona_core.md ./config/yuki_persona_core.md
+COPY --chown=bot:bot config/persona.md ./config/persona.md
 RUN chmod +x /app/scripts/start.sh && mkdir -p /app/data /app/napcat-config
 EXPOSE 8080
 ENTRYPOINT ["/app/scripts/start.sh"]

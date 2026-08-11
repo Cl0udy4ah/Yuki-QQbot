@@ -212,6 +212,29 @@ def test_explicit_memory_mutation_intent_is_detected(text: str) -> None:
     assert event_requests_memory_mutation(text)
 
 
+def test_configured_bot_alias_is_used_for_memory_mutation_intent() -> None:
+    assert event_requests_memory_mutation(
+        "米卡记错了",
+        bot_aliases=("Mika", "米卡"),
+    )
+
+
+def test_configured_bot_alias_cannot_fall_back_to_sender_memory() -> None:
+    text = "Mika 是 CI runner"
+    event = replace(_event(), content=text)
+    result = MemoryClaimValidator(bot_aliases=("Mika", "米卡")).validate_claim_result(
+        _claim(
+            content=text,
+            evidence_quote=text,
+            subject_basis=MemorySubjectBasis.OMITTED_SELF,
+        ),
+        event,
+    )
+
+    assert not result.ok
+    assert result.candidate_type == "self"
+
+
 def test_memory_discussion_is_not_treated_as_mutation_intent() -> None:
     assert not event_requests_memory_mutation("记忆模块的架构应该怎么设计")
     assert not event_requests_memory_mutation("按修改路径修复记忆模块的错误")

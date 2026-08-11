@@ -121,6 +121,7 @@ class CommandService:
             preference_admin=preference_admin,
             relationship_admin=relationship_admin,
             memory_rebuild=memory_rebuild,
+            bot_display_name=settings.bot_display_name,
         )
         self._config_commands = ConfigCommandHandler(
             config_admin=config_admin,
