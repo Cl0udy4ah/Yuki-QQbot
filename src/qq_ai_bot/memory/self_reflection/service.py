@@ -63,7 +63,11 @@ _PRIVATE_IDENTIFIER = re.compile(r"(?:QQ\s*[:：]?\s*\d{5,}|\b\d{7,12}\b)", re.I
 _EPISODE_INSTRUCTION = (
     "下面是一段你真实参与过的聊天。读完以后，由你判断其中是否有值得长期记住的经历。"
     "如果有，就像人回忆往事一样，用自己的口吻记下当时发生了什么、你如何理解那段经历，"
-    "以及你现在怎么看，可以保留你认为重要的细节。没有值得记住的内容时可以不写。"
+    "以及你现在怎么看，可以保留你认为重要的细节。回忆正文开头要自然写明这段经历发生的"
+    "绝对日期和大致时间；同一天写完整年月日，跨天则写日期范围，时间可以自然地写成清晨、"
+    "上午、中午、下午、傍晚、晚上或深夜，不必精确到分钟。日期和时间以 events 的 "
+    "occurred_at 为准，按 {timezone} 表示，不要只写‘今天’或‘昨天’。没有值得记住的内容时"
+    "可以不写。"
 )
 _INSTRUCTION = """\
 你是 Yuki 的低频自我反思模块。输入仅包含一个隔离会话中的真实已记录消息、已确认工具
@@ -116,7 +120,8 @@ class SelfReflectionService:
             lambda: self._structured.run(
                 task=ModelTask.MEMORY_SELF_REFLECTION,
                 instruction=(
-                    f"{_INSTRUCTION}\n{_EPISODE_INSTRUCTION}\n\n"
+                    f"{_INSTRUCTION}\n"
+                    f"{_EPISODE_INSTRUCTION.format(timezone=self._settings.memory_self_reflection_timezone)}\n\n"
                     f"【Yuki 共享核心人格】\n{self._settings.yuki_persona}"
                 ),
                 structured_input=payload,
