@@ -353,6 +353,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
         self._committed_mutation_messages: list[str] = []
+        self._mutation_committed = False
         self._automation_persisted = False
         self._batch: list[ToolCall] = []
         self._catalog: UnifiedToolCatalog | None = None
@@ -668,6 +669,7 @@ class _ChatAgentBackend(AgentToolBackend):
         )
 
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
+        del runtime
         self._batch = list(calls)
 
     def did_use_web(self) -> bool:
@@ -695,6 +697,21 @@ class _ChatAgentBackend(AgentToolBackend):
         call = self._batch.pop(call_index)
         if name == _SET_REPLY_TARGET_NAME:
             return self._set_reply_target(arguments_json)
+        if self._tools_closed:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": (
+                        "mutation_already_committed" if self._mutation_committed else "tools_closed"
+                    ),
+                    "detail": (
+                        "本轮已有修改成功提交，后续工具调用已关闭。"
+                        if self._mutation_committed
+                        else "本轮工具调用已因之前的终止错误关闭。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
         if name == REQUEST_TOOLS_NAME:
             return self._request_tools(arguments_json)
         if name not in self._callable_tool_names:
@@ -739,9 +756,7 @@ class _ChatAgentBackend(AgentToolBackend):
         is_web_tool = ToolGroup.WEB.value in effective_descriptor.scope_ids
         config = self._runtime.runtime_config
         assert config is not None
-        mutation_identity = (
-            (call.function.name, call.function.arguments) if self._is_mutating_call(call) else None
-        )
+        mutation_identity = self._mutation_identity(call)
         mutation_committed = False
         if mutation_identity is not None and mutation_identity in self._completed_admin_mutations:
             result = json.dumps(
@@ -823,13 +838,21 @@ class _ChatAgentBackend(AgentToolBackend):
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
                     )
-                mutation_committed = resolve_mutation_commit(
+                mutation_committed = self._is_mutating_call(call) and resolve_mutation_commit(
                     outcome,
                     effective_descriptor,
+                )
+                should_finalize_after_commit = bool(
+                    mutation_committed
+                    and (
+                        outcome.finalize_after_commit is True
+                        or effective_descriptor.finalize_after_commit
+                    )
                 )
                 outcome = replace(
                     outcome,
                     mutation_committed=mutation_committed,
+                    finalize_after_commit=True if should_finalize_after_commit else None,
                 )
                 tooling = config.tooling
                 mcp = config.mcp
@@ -911,6 +934,7 @@ class _ChatAgentBackend(AgentToolBackend):
                 if mutation_identity is not None and mutation_committed:
                     self._completed_admin_mutations.add(mutation_identity)
                     self._remember_committed_mutation(decoded)
+                    self._mutation_committed = True
             elif (decoded.get("error") or decoded.get("error_code")) == "duplicate_mutation":
                 # A prior identical call already committed in this turn. Keep
                 # the successful result available so the model can summarize it.
@@ -965,7 +989,13 @@ class _ChatAgentBackend(AgentToolBackend):
     def _remember_committed_mutation(self, result: dict[str, object]) -> None:
         message = str(result.get("public_message") or "").strip()
         if not message:
-            message = "操作已成功完成。"
+            receipt = json.dumps(
+                result,
+                ensure_ascii=False,
+                default=str,
+                separators=(",", ":"),
+            )
+            message = f"操作已经提交。以下是工具返回的结果：\n{receipt}"
         if message not in self._committed_mutation_messages:
             self._committed_mutation_messages.append(message)
 
@@ -979,6 +1009,12 @@ class _ChatAgentBackend(AgentToolBackend):
             self._catalog.by_model_name(call.function.name) if self._catalog is not None else None
         )
         descriptor = entry.descriptor if entry is not None else None
+        admin_tools = getattr(self._service, "_admin_tools", None)
+        if descriptor is not None and descriptor.provider_id == "admin" and admin_tools is not None:
+            return cast(AdminToolService, admin_tools).is_mutating_call(
+                call.function.name,
+                call.function.arguments,
+            )
         return bool(
             descriptor is not None
             and self._effective_descriptor(call, descriptor).risk is not CapabilityRisk.READ
@@ -1032,10 +1068,26 @@ class _ChatAgentBackend(AgentToolBackend):
         return self._effective_descriptor(call, descriptor).risk is not CapabilityRisk.READ
 
     def counts_toward_limit(self, name: str, runtime: AgentRuntime) -> bool:
-        """Keep local reply composition outside the business-tool call budget."""
+        """Keep local response controls and Artifact reads outside the business budget."""
 
         del runtime
-        return name != _SET_REPLY_TARGET_NAME
+        return name not in {_SET_REPLY_TARGET_NAME, _ARTIFACT_READER_NAME}
+
+    def _mutation_identity(self, call: ToolCall) -> tuple[str, str] | None:
+        if not self._is_mutating_call(call):
+            return None
+        try:
+            arguments = json.loads(call.function.arguments)
+        except json.JSONDecodeError:
+            normalized = call.function.arguments.strip()
+        else:
+            normalized = json.dumps(
+                arguments,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        return call.function.name, normalized
 
     def _response_control_definitions(self) -> tuple[ChatTool, ...]:
         if self._runtime.reply_target_control is None or self._runtime.origin not in {
@@ -1424,24 +1476,65 @@ class ChatService:
                 if not isinstance(decoded, dict):
                     raise ValueError("artifact arguments must be an object")
                 handle = str(decoded.get("handle", ""))
+                operation = str(decoded.get("operation", "text"))
+                raw_path = decoded.get("path", [])
+                if not isinstance(raw_path, list) or any(
+                    isinstance(part, bool) or not isinstance(part, (str, int)) for part in raw_path
+                ):
+                    return ToolExecutionResult(
+                        ok=False,
+                        error_code="artifact_path_invalid",
+                        public_message="Artifact path 必须是字符串键和整数下标组成的数组",
+                        provider_id=_ARTIFACT_PROVIDER_ID,
+                        tool_name=_ARTIFACT_READER_NAME,
+                    )
                 offset = int(decoded.get("offset", 0))
                 limit = int(decoded.get("limit", 8000))
                 query = str(decoded.get("query", ""))
+                max_characters = _core_result_character_budget(context.runtime_config)
                 result = await artifacts.read(
                     handle,
+                    operation=operation,
+                    path=tuple(raw_path),
                     offset=offset,
                     limit=limit,
                     query=query,
+                    max_characters=max_characters,
                 )
                 if result is None:
-                    return {
-                        "ok": False,
-                        "error": "artifact_not_found",
-                        "detail": "Artifact 不存在或已过期",
+                    return ToolExecutionResult(
+                        ok=False,
+                        error_code="artifact_not_found",
+                        public_message="Artifact 不存在或已过期",
+                        provider_id=_ARTIFACT_PROVIDER_ID,
+                        tool_name=_ARTIFACT_READER_NAME,
+                    )
+                error_code = result.get("error_code")
+                if isinstance(error_code, str):
+                    detail = str(result.get("detail") or "Artifact 读取失败")
+                    error_data = {
+                        key: value
+                        for key, value in result.items()
+                        if key not in {"error_code", "detail"}
                     }
+                    return ToolExecutionResult(
+                        ok=False,
+                        data=error_data or None,
+                        error_code=error_code,
+                        public_message=detail,
+                        provider_id=_ARTIFACT_PROVIDER_ID,
+                        tool_name=_ARTIFACT_READER_NAME,
+                    )
+                if result.get("mode") != "text":
+                    return ToolExecutionResult(
+                        ok=True,
+                        data=result,
+                        provider_id=_ARTIFACT_PROVIDER_ID,
+                        tool_name=_ARTIFACT_READER_NAME,
+                    )
                 return _fit_artifact_page_result(
                     result,
-                    max_characters=_core_result_character_budget(context.runtime_config),
+                    max_characters=max_characters,
                 )
 
             registry.register(
@@ -1451,18 +1544,51 @@ class ChatService:
                     definitions=lambda _context: (
                         ChatTool(
                             name="read_tool_artifact",
-                            description="分页读取工具产生的短期 Artifact，可按关键词定位。",
+                            description=(
+                                "读取工具产生的短期 Artifact。JSON 优先使用 inspect 查看结构、"
+                                "get 按路径读取、search 返回关键词命中的完整对象；旧文本使用 text。"
+                            ),
                             parameters={
                                 "type": "object",
                                 "properties": {
                                     "handle": {"type": "string"},
-                                    "offset": {"type": "integer", "minimum": 0},
+                                    "operation": {
+                                        "type": "string",
+                                        "enum": ["inspect", "get", "search", "text"],
+                                        "description": (
+                                            "JSON 使用 inspect/get/search；"
+                                            "省略或 text 保持旧文本读取"
+                                        ),
+                                    },
+                                    "path": {
+                                        "type": "array",
+                                        "items": {
+                                            "anyOf": [
+                                                {"type": "string"},
+                                                {"type": "integer"},
+                                            ]
+                                        },
+                                        "maxItems": 32,
+                                        "description": (
+                                            "相对返回中 logical_root 的 JSON 路径，"
+                                            "对象键用字符串、数组下标用整数"
+                                        ),
+                                    },
+                                    "offset": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "description": "JSON 的键/元素/匹配偏移，或 text 字符偏移",
+                                    },
                                     "limit": {
                                         "type": "integer",
                                         "minimum": 1,
                                         "maximum": 32000,
+                                        "description": "JSON 条目数，或 text 最大字符数",
                                     },
-                                    "query": {"type": "string"},
+                                    "query": {
+                                        "type": "string",
+                                        "description": "search 关键词，或 text 的字符串定位词",
+                                    },
                                 },
                                 "required": ["handle"],
                                 "additionalProperties": False,

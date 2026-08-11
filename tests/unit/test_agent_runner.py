@@ -53,6 +53,14 @@ def test_merge_function_tools_is_stable_by_tool_name() -> None:
     assert merged[1].description == "new"
 
 
+def test_only_explicit_successful_json_results_are_reusable() -> None:
+    assert AgentRunner._tool_result_reusable('{"ok":true}')
+    assert AgentRunner._tool_result_reusable('{"ok":true,"retryable":false}')
+    assert not AgentRunner._tool_result_reusable('{"ok":false,"error":"tool_limit_exceeded"}')
+    assert not AgentRunner._tool_result_reusable('{"ok":true,"retryable":true}')
+    assert not AgentRunner._tool_result_reusable("plain text")
+
+
 class EmptyAfterToolProvider(LLMProvider):
     """Return a tool call, an empty final answer, then a usable retry."""
 
@@ -246,6 +254,7 @@ class TerminalMutationBackend(VoiceEffectBackend):
             {
                 "ok": True,
                 "mutation_committed": True,
+                "finalize_after_commit": True,
                 "public_message": "任务已取消。",
             },
             ensure_ascii=False,
@@ -253,6 +262,46 @@ class TerminalMutationBackend(VoiceEffectBackend):
 
     def post_commit_recovery_text(self) -> str | None:
         return "任务已取消。" if self.committed else None
+
+
+class ChainedMutationProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    async def complete(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        if len(self.requests) <= 2:
+            assert request.tools
+            step = len(self.requests)
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id=f"mutation-{step}",
+                        function=ToolFunction(
+                            name="send_voice",
+                            arguments=json.dumps({"step": step}),
+                        ),
+                    ),
+                ),
+            )
+        assert request.tools
+        return ChatResponse(content="两步都完成了。", latency_seconds=0)
+
+
+class NonTerminalMutationBackend(VoiceEffectBackend):
+    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
+        del runtime
+        self.effects.append(f"{name}:{arguments_json}")
+        return json.dumps(
+            {
+                "ok": True,
+                "mutation_committed": True,
+                "public_message": "当前步骤已经提交。",
+            },
+            ensure_ascii=False,
+        )
 
 
 def _agent_runtime() -> AgentRuntime:
@@ -366,7 +415,7 @@ async def test_agent_runner_reserves_last_request_for_final_text() -> None:
 
 
 @pytest.mark.asyncio
-async def test_successful_mutation_short_circuits_when_only_finalization_budget_remains() -> None:
+async def test_successful_mutation_uses_reserved_finalization_request() -> None:
     provider = FinalizationBudgetProvider()
     backend = TerminalMutationBackend()
     runtime = replace(_agent_runtime(), max_model_requests=2)
@@ -377,11 +426,52 @@ async def test_successful_mutation_short_circuits_when_only_finalization_budget_
         backend,
     )
 
-    assert result.text == "任务已取消。"
-    assert result.model_requests == 1
+    assert result.text == "根据已有结果回答。"
+    assert result.model_requests == 2
     assert result.tool_calls_used == 1
-    assert len(provider.requests) == 1
+    assert len(provider.requests) == 2
+    assert provider.requests[0].tools
+    assert provider.requests[1].tools == ()
     assert backend.effects == ["send_voice"]
+
+
+@pytest.mark.asyncio
+async def test_successful_mutation_forces_a_tool_free_final_reply_before_budget_end() -> None:
+    provider = FinalizationBudgetProvider()
+    backend = TerminalMutationBackend()
+    runtime = replace(_agent_runtime(), max_model_requests=6)
+
+    result = await AgentRunner(provider, ConcurrencyManager(1)).run(
+        (ChatMessage(role="user", content="创建一次操作"),),
+        runtime,
+        backend,
+    )
+
+    assert result.text == "根据已有结果回答。"
+    assert result.model_requests == 2
+    assert result.tool_calls_used == 1
+    assert len(provider.requests) == 2
+    assert provider.requests[0].tools
+    assert provider.requests[1].tools == ()
+    assert backend.effects == ["send_voice"]
+
+
+@pytest.mark.asyncio
+async def test_non_terminal_mutation_can_continue_with_another_tool_round() -> None:
+    provider = ChainedMutationProvider()
+    backend = NonTerminalMutationBackend()
+
+    result = await AgentRunner(provider, ConcurrencyManager(1)).run(
+        (ChatMessage(role="user", content="先完成一步，再继续下一步"),),
+        _agent_runtime(),
+        backend,
+    )
+
+    assert result.text == "两步都完成了。"
+    assert result.model_requests == 3
+    assert result.tool_calls_used == 2
+    assert len(backend.effects) == 2
+    assert all(request.tools for request in provider.requests)
 
 
 def test_voice_effect_cannot_complete_chat_without_text() -> None:

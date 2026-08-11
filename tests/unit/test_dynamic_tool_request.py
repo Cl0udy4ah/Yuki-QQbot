@@ -165,6 +165,8 @@ async def test_reply_target_control_survives_tool_mode_none_and_is_bounded() -> 
 
     assert [tool.name for tool in definitions] == ["set_reply_target"]
     assert backend.counts_toward_limit("set_reply_target", agent_runtime) is False
+    assert backend.counts_toward_limit("read_tool_artifact", agent_runtime) is False
+    assert backend.counts_toward_limit("business_tool", agent_runtime) is True
     arguments = json.dumps({"event_id": 42})
     call = ToolCall(
         id="reply-target",
@@ -184,6 +186,60 @@ async def test_reply_target_control_survives_tool_mode_none_and_is_bounded() -> 
     repeated = json.loads(await backend.execute("set_reply_target", "{}", agent_runtime))
     assert repeated["ok"] is False
     assert repeated["outcome"] == "reply_target_already_selected"
+
+
+@pytest.mark.asyncio
+async def test_artifact_reads_do_not_add_a_separate_internal_budget() -> None:
+    calls: list[str] = []
+
+    async def execute(name: str, _arguments: str, _runtime: object) -> object:
+        calls.append(name)
+        return {"ok": True, "data": {"read": len(calls)}}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _runtime: (
+                ChatTool(
+                    name="read_tool_artifact",
+                    description="read",
+                    parameters={"type": "object", "properties": {}},
+                ),
+            ),
+            execute=execute,
+        )
+    )
+    backend = _ChatAgentBackend(_Service(registry), _runtime())  # type: ignore[arg-type]
+    agent_runtime = SimpleNamespace(max_model_requests=10)
+    exposed = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
+    assert "read_tool_artifact" in exposed
+    calls_in_batch = tuple(
+        ToolCall(
+            id=f"artifact-{index}",
+            function=ToolFunction(
+                name="read_tool_artifact",
+                arguments=json.dumps({"handle": f"handle-{index}"}),
+            ),
+        )
+        for index in range(5)
+    )
+    backend.begin_batch(calls_in_batch, agent_runtime)
+
+    results = [
+        json.loads(
+            await backend.execute(
+                call.function.name,
+                call.function.arguments,
+                agent_runtime,
+            )
+        )
+        for call in calls_in_batch
+    ]
+
+    assert len(calls) == 5
+    assert all(result["ok"] is True for result in results)
 
 
 @pytest.mark.asyncio

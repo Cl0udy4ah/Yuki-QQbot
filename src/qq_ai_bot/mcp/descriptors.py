@@ -27,6 +27,7 @@ def descriptor_from_mcp_tool(
     destructive = bool(annotations.get("destructiveHint", False))
     idempotent_hint = annotations.get("idempotentHint")
     idempotent = read_only if idempotent_hint is None else bool(idempotent_hint)
+    finalize_after_commit = bool(annotations.get("finalizeAfterCommit", False))
     config = manager.server_config(item.server_id)
     if config is None:
         raise ValueError(f"unknown MCP server: {item.server_id}")
@@ -83,4 +84,5 @@ def descriptor_from_mcp_tool(
         result_kind="mcp_content",
         schema_version=item.metadata_hash,
         provider_metadata={"mcp_annotations": dict(annotations)},
+        finalize_after_commit=finalize_after_commit,
     )

@@ -101,9 +101,15 @@ class MCPToolBinding:
             conversation_key=context.conversation_key,
             record_invocation=self.record_invocation,
         )
+        mutation_committed = resolve_mutation_commit(result, descriptor)
         return replace(
             result,
-            mutation_committed=resolve_mutation_commit(result, descriptor),
+            mutation_committed=mutation_committed,
+            finalize_after_commit=(
+                True
+                if mutation_committed and descriptor.finalize_after_commit
+                else result.finalize_after_commit
+            ),
         )
 
 

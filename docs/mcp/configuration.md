@@ -10,8 +10,11 @@ Yuki 只读取 `MCP_CONFIG_PATH` 指定的 UTF-8 JSON，不扫描或导入其他
 `yuki.scope/summary/tags/toolAnnotations`。`command` 与 `url` 必须且只能填写一个。
 
 `toolAnnotations` 按远端工具名覆盖 MCP 标准提示字段：`readOnlyHint`、`destructiveHint`、
-`idempotentHint` 和 `openWorldHint`。它适合修正未完整声明 Annotation 的第三方 Server；只影响
-Tool Kernel 的调度元数据，不会改写远端 Schema 或绕过工具本身的鉴权。配置变化会使旧工具缓存失效。
+`idempotentHint` 和 `openWorldHint`。另有 Yuki 本地扩展 `finalizeAfterCommit`：仅在该工具确认
+提交成功后，关闭后续工具并进入最终回复，适用于创建待支付订单这类必须防止模型继续操作的交易终点。
+普通发歌、发消息、记忆修改和自动化创建不应设置它，因为这些副作用之后仍可能有合法后续步骤。
+这些提示只影响 Tool Kernel 的调度元数据，不会改写远端 Schema 或绕过工具本身的鉴权。配置变化会
+使旧工具缓存失效。
 
 Secret 只能写成 `${ENV_NAME}` 并放在 `.env` 或宿主环境中。Yuki 不把解析后的 Header、Cookie、
 环境变量值写入日志、数据库、Prompt 或状态接口。麦当劳预设使用官方端点和 Bearer Token，完整启用

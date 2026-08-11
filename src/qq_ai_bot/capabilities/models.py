@@ -83,6 +83,7 @@ class CapabilityDescriptor:
     bundle_scopes: tuple[str, ...] = ()
     scope_summaries: tuple[tuple[str, str], ...] = ()
     provider_metadata: dict[str, Any] | None = None
+    finalize_after_commit: bool = False
 
     @property
     def scope_id(self) -> str:

@@ -77,6 +77,7 @@
           "query-meals": {"readOnlyHint": true, "idempotentHint": true},
           "query-meal-detail": {"readOnlyHint": true, "idempotentHint": true},
           "calculate-price": {"readOnlyHint": true, "idempotentHint": true},
+          "create-order": {"finalizeAfterCommit": true},
           "query-order": {"readOnlyHint": true, "idempotentHint": true},
           "order-list": {"readOnlyHint": true, "idempotentHint": true},
           "campaign-calendar": {"readOnlyHint": true, "idempotentHint": true},

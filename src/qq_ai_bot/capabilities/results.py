@@ -30,6 +30,7 @@ class ToolExecutionResult:
     public_message: str | None = None
     retryable: bool = False
     mutation_committed: bool | None = None
+    finalize_after_commit: bool | None = None
     provider_id: str = ""
     tool_name: str = ""
     metadata: dict[str, Any] | None = None
@@ -56,9 +57,12 @@ class ToolArtifactWriter(Protocol):
         self,
         handle_id: str,
         *,
+        operation: str = "text",
+        path: tuple[str | int, ...] = (),
         offset: int = 0,
         limit: int = 8000,
         query: str = "",
+        max_characters: int = 8000,
     ) -> dict[str, Any] | None: ...
 
 
@@ -102,8 +106,7 @@ class ToolResultBudgeter:
             return BudgetedToolResult(text=text)
         artifact_id: str | None = None
         recursive_artifact_read = (
-            result.provider_id == "artifacts"
-            and result.tool_name == "read_tool_artifact"
+            result.provider_id == "artifacts" and result.tool_name == "read_tool_artifact"
         )
         if self._artifacts is not None and not recursive_artifact_read:
             artifact_id = await self._artifacts.write_artifact(
@@ -113,14 +116,21 @@ class ToolResultBudgeter:
                 media_type="application/json",
                 retention_seconds=self._artifact_retention_seconds,
             )
-        summary = _bounded_payload(payload, item_limit=self._item_limit)
-        important = _important_fields(payload)
-        if important:
-            summary["important_fields"] = important
-        summary["truncated"] = True
-        summary["original_characters"] = len(text)
+        important: dict[str, object] = {}
         if artifact_id:
-            summary["artifact_handle"] = artifact_id
+            summary = _artifact_manifest(
+                payload,
+                result=result,
+                artifact_id=artifact_id,
+                original_characters=len(text),
+            )
+        else:
+            summary = _bounded_payload(payload, item_limit=self._item_limit)
+            important = _important_fields(payload)
+            if important:
+                summary["important_fields"] = important
+            summary["truncated"] = True
+            summary["original_characters"] = len(text)
         rendered = json.dumps(summary, ensure_ascii=False, default=str)
         if self._max_characters is not None and len(rendered) > self._max_characters:
             minimal = {
@@ -129,7 +139,13 @@ class ToolResultBudgeter:
                 "original_characters": len(text),
                 "artifact_handle": artifact_id,
                 "public_message": result.public_message,
-                "important_fields": important or None,
+                "retryable": result.retryable,
+                "mutation_committed": result.mutation_committed,
+                "finalize_after_commit": result.finalize_after_commit,
+                "mode": summary.get("mode"),
+                "root_type": summary.get("root_type"),
+                "available_operations": summary.get("available_operations"),
+                "important_fields": (important or None) if not artifact_id else None,
             }
             rendered = json.dumps(
                 {key: value for key, value in minimal.items() if value is not None},
@@ -168,6 +184,8 @@ def normalize_legacy_result(
         public = raw.pop("public_message", raw.pop("detail", None))
         committed_value = raw.pop("mutation_committed", None)
         committed = None if committed_value is None else bool(committed_value)
+        finalize_value = raw.pop("finalize_after_commit", None)
+        finalize_after_commit = None if finalize_value is None else bool(finalize_value)
         retryable = bool(raw.pop("retryable", False))
         data = raw.pop("data", raw if raw else None)
         return ToolExecutionResult(
@@ -177,6 +195,7 @@ def normalize_legacy_result(
             public_message=str(public) if public is not None else None,
             retryable=retryable,
             mutation_committed=False if not ok else committed,
+            finalize_after_commit=finalize_after_commit if ok else None,
             provider_id=provider_id,
             tool_name=tool_name,
         )
@@ -244,6 +263,72 @@ def _bounded_payload(value: object, *, item_limit: int | None) -> dict[str, Any]
         return item
 
     return {str(key): bounded(item) for key, item in value.items()}
+
+
+def _artifact_manifest(
+    payload: dict[str, Any],
+    *,
+    result: ToolExecutionResult,
+    artifact_id: str,
+    original_characters: int,
+) -> dict[str, Any]:
+    logical_root = payload.get("data", payload)
+    root_type = _json_type(logical_root)
+    manifest: dict[str, Any] = {
+        "ok": result.ok,
+        "retryable": result.retryable,
+        "truncated": True,
+        "artifact_handle": artifact_id,
+        "mode": "text" if isinstance(logical_root, str) else "json",
+        "logical_root": "data" if "data" in payload else "$",
+        "root_type": root_type,
+        "original_characters": original_characters,
+    }
+    if result.mutation_committed is not None:
+        manifest["mutation_committed"] = result.mutation_committed
+    if result.finalize_after_commit is not None:
+        manifest["finalize_after_commit"] = result.finalize_after_commit
+    if result.public_message:
+        manifest["public_message"] = result.public_message
+    if isinstance(logical_root, dict):
+        keys = sorted((str(key) for key in logical_root), key=str.casefold)
+        selected = keys[:24]
+        manifest["total_children"] = len(keys)
+        manifest["children"] = {
+            key: _shape_label(logical_root[key]) for key in selected if key in logical_root
+        }
+        manifest["children_truncated"] = len(selected) < len(keys)
+        manifest["available_operations"] = ["inspect", "get", "search"]
+    elif isinstance(logical_root, list):
+        manifest["total_children"] = len(logical_root)
+        manifest["item_types"] = sorted({_json_type(item) for item in logical_root[:24]})
+        manifest["available_operations"] = ["inspect", "get", "search"]
+    else:
+        manifest["available_operations"] = ["text"]
+    return manifest
+
+
+def _json_type(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, (int, float)):
+        return "number"
+    return type(value).__name__
+
+
+def _shape_label(value: object) -> str:
+    kind = _json_type(value)
+    if isinstance(value, (dict, list, str)):
+        return f"{kind}[{len(value)}]"
+    return kind
 
 
 def _important_fields(value: object) -> dict[str, object]:
