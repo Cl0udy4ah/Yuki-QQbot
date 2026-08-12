@@ -65,7 +65,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 stop=stop_after_attempt(self._max_retries + 1),
                 wait=wait_random_exponential(multiplier=0.25, max=2),
                 retry=retry_if_exception_type(
-                    (httpx.ConnectError, httpx.TimeoutException, RetryableProviderError)
+                    (httpx.TransportError, RetryableProviderError)
                 ),
                 reraise=True,
             ):
@@ -73,7 +73,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     response = await self._post(request)
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
-        except (httpx.ConnectError, RetryableProviderError) as exc:
+        except (httpx.TransportError, RetryableProviderError) as exc:
             raise LLMUnavailableError("LLM is temporarily unavailable") from exc
 
         latency = time.perf_counter() - started

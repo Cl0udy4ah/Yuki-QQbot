@@ -76,6 +76,37 @@ async def test_5xx_is_retried_and_then_succeeds() -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_error_is_retried_and_then_succeeds() -> None:
+    attempts = 0
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadError("synthetic", request=http_request)
+        return httpx.Response(
+            200,
+            request=http_request,
+            json={"id": "request-1", "choices": [{"message": {"content": "answer"}}]},
+        )
+
+    async with httpx.AsyncClient(
+        base_url="https://provider.test/v1", transport=httpx.MockTransport(handler)
+    ) as client:
+        provider = OpenAICompatibleProvider(
+            base_url="https://provider.test/v1",
+            api_key="secret",
+            timeout_seconds=1,
+            max_retries=1,
+            client=client,
+        )
+        response = await provider.complete(request())
+
+    assert attempts == 2
+    assert response.content == "answer"
+
+
+@pytest.mark.asyncio
 async def test_empty_provider_response_is_rejected() -> None:
     def handler(http_request: httpx.Request) -> httpx.Response:
         return httpx.Response(

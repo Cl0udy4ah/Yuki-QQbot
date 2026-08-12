@@ -129,6 +129,16 @@ class SelfReflectionService:
                 max_output_tokens=self._settings.memory_self_reflection_max_output_tokens,
                 allow_text_json=True,
                 compact_schema=True,
+                validation_retries=1,
+                validation_repair_hint=(
+                    "A long experience must be moved to the top-level episodes array and contain "
+                    "only content and importance. Never use self_episode or episode as a proposal "
+                    "category. A proposal category must be exactly one of self_fact, "
+                    "self_preference, self_reflection, or self_principle, and every proposal must "
+                    "include reason. After moving a legacy episode-shaped item, do not leave a "
+                    "placeholder proposal for it; use an empty proposals array when no separate "
+                    "dynamic fact change remains."
+                ),
             ),
             translate_cancellation=False,
         )

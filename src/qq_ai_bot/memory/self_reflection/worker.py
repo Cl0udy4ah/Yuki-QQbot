@@ -15,6 +15,7 @@ from qq_ai_bot.memory.self_reflection.models import (
 )
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
+from qq_ai_bot.model_runtime.structured import StructuredTaskError
 
 logger = logging.getLogger(__name__)
 
@@ -140,14 +141,17 @@ class SelfReflectionWorker:
             except asyncio.CancelledError:
                 raise
             except (OSError, RuntimeError, ValueError) as exc:
-                await self._repository.fail(batch.run_id, type(exc).__name__)
+                error_category = _error_category(exc)
+                await self._repository.fail(batch.run_id, error_category)
                 failed += 1
                 self._metrics.increment("self_reflection_failed")
                 logger.warning(
-                    "memory_self_reflection_failed run_id=%d trigger=%s error_category=%s",
+                    "memory_self_reflection_failed run_id=%d trigger=%s error_category=%s "
+                    "error_detail=%s",
                     batch.run_id,
                     batch.trigger_reason,
-                    type(exc).__name__,
+                    error_category,
+                    _error_detail(exc),
                 )
         await self._repository.cleanup_receipts()
         return SelfReflectionCycleResult(
@@ -192,3 +196,16 @@ class SelfReflectionWorker:
                 )
             except TimeoutError:
                 pass
+
+
+def _error_category(exc: BaseException) -> str:
+    if isinstance(exc, StructuredTaskError):
+        return f"StructuredTaskError:{exc.reason_code}"[:64]
+    return type(exc).__name__[:64]
+
+
+def _error_detail(exc: BaseException) -> str:
+    if isinstance(exc, StructuredTaskError):
+        detail = exc.detail or "none"
+        return f"attempts={exc.attempts} {detail}"[:600]
+    return "none"
