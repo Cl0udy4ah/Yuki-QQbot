@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import random
-import re
 import time
 from dataclasses import replace
 from typing import Protocol, cast
@@ -78,7 +77,6 @@ from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
-from qq_ai_bot.memory.validation import event_requests_memory_mutation
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
@@ -425,7 +423,14 @@ class _ChatAgentBackend(AgentToolBackend):
             tuple(entry.descriptor for entry in self._catalog.entries),
             replace(
                 policy_context,
-                tool_selection=ToolSelection(mode=self._runtime.tool_mode, scopes=()),
+                tool_selection=ToolSelection(
+                    mode=(
+                        ToolMode.INHERIT
+                        if self._runtime.origin is TurnOrigin.USER_MESSAGE
+                        else self._runtime.tool_mode
+                    ),
+                    scopes=(),
+                ),
             ),
         )
         authority_visible_names = {descriptor.model_name for descriptor in authority_visible}
@@ -477,6 +482,7 @@ class _ChatAgentBackend(AgentToolBackend):
                     entry
                     for entry in filtered_catalog.entries
                     if entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
+                    or entry.descriptor.model_name in self._requested_tool_names
                 ),
             )
         if self._runtime.selected_tool_names is not None:
@@ -555,6 +561,7 @@ class _ChatAgentBackend(AgentToolBackend):
         if (
             self._runtime.tool_groups
             and not selected_scopes
+            and self._runtime.origin is not TurnOrigin.USER_MESSAGE
             and not any(
                 entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
                 for entry in filtered_catalog.entries
@@ -582,7 +589,7 @@ class _ChatAgentBackend(AgentToolBackend):
         definitions = tuple(entry.descriptor.as_chat_tool() for entry in budgeted.entries)
         exposed_names = {tool.name for tool in definitions}
         may_request_more = bool(
-            self._runtime.tool_mode is not ToolMode.NONE
+            self._runtime.origin is TurnOrigin.USER_MESSAGE
             and self._requestable_catalog is not None
             and any(
                 entry.descriptor.model_name not in exposed_names
@@ -940,6 +947,11 @@ class _ChatAgentBackend(AgentToolBackend):
                 # the successful result available so the model can summarize it.
                 self._admin_retry_constraint = None
                 self._admin_terminal_failure = None
+            elif bool(decoded.get("retryable")):
+                self._admin_terminal_failure = None
+                self._admin_retry_constraint = self._retry_identity(call)
+                if self._admin_retry_constraint is None:
+                    self._tools_closed = True
             elif (decoded.get("error") or decoded.get("error_code")) in _ADMIN_RETRYABLE_ERRORS:
                 self._admin_terminal_failure = decoded
                 self._admin_retry_constraint = self._retry_identity(call)
@@ -1201,6 +1213,12 @@ class _ChatAgentBackend(AgentToolBackend):
         selected = self._runtime.selected_tool_names
         self._runtime = replace(
             self._runtime,
+            tool_mode=(
+                ToolMode.INHERIT
+                if self._runtime.tool_mode is ToolMode.NONE
+                and self._runtime.origin is TurnOrigin.USER_MESSAGE
+                else self._runtime.tool_mode
+            ),
             tool_groups=frozenset((*self._runtime.tool_groups, *loaded_scopes)),
             selected_tool_names=(
                 None if selected is None else frozenset((*selected, *loaded_names))
@@ -1710,15 +1728,10 @@ class ChatService:
                 return 1
 
             source_display_requested = self._source_policy.requested(content)
-            memory_mutation_intent = event_requests_memory_mutation(
-                content,
-                bot_aliases=self._settings.bot_aliases,
-            )
             planner_emoji_only = bool(
                 planned_turn is not None
                 and planned_turn.plan.emoji.is_exclusive
                 and planned_turn.plan.tool_mode is ToolMode.NONE
-                and not memory_mutation_intent
             )
             if planner_emoji_only:
                 messages: tuple[ChatMessage, ...] = ()
@@ -1760,18 +1773,6 @@ class ChatService:
                         ),
                     ),
                 )
-            if memory_mutation_intent:
-                messages = (
-                    *messages,
-                    ChatMessage(
-                        role="system",
-                        content=(
-                            "当前消息明确要求变更长期记忆，memory_change 已作为候选能力提供。"
-                            "请根据用户真实意图自主决定具体操作；只有工具返回 ok=true 且"
-                            "outcome 表示已提交后，才能声称记忆已经创建、修改、删除或恢复。"
-                        ),
-                    ),
-                )
             gateway = (
                 cast(OneBotToolGateway, sender)
                 if callable(getattr(sender, "call_api", None))
@@ -1807,8 +1808,6 @@ class ChatService:
             tool_groups = planner_tool_groups
             if scheduled_automation_allowed and (planned_turn is None or planner_scopes_explicit):
                 tool_groups = frozenset((*tool_groups, ToolGroup.AUTOMATION.value))
-            if memory_mutation_intent:
-                tool_groups = frozenset((*tool_groups, ToolGroup.MEMORY.value))
             web_route = self._web_router.select(content, runtime_config.web.mode)
             web_scope_authorized = not planner_scopes_explicit or any(
                 scope == ToolGroup.WEB.value or scope.startswith(f"{ToolGroup.WEB.value}.")
@@ -1854,7 +1853,7 @@ class ChatService:
                 origin=(TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE),
                 tool_mode=(
                     ToolMode.INHERIT
-                    if scheduled_automation_allowed or memory_mutation_intent
+                    if scheduled_automation_allowed
                     else (
                         planned_turn.plan.tool_mode
                         if planned_turn is not None
@@ -1875,7 +1874,7 @@ class ChatService:
                 planner_intent=(planned_turn.plan.intent if planned_turn is not None else ""),
                 scheduled_automation_intent=scheduled_automation_allowed,
                 max_model_requests_override=(
-                    1 if fallback_plan and not memory_mutation_intent else None
+                    1 if fallback_plan else None
                 ),
                 native_web_fallback=bool(
                     web_route is not None and web_route.provider is WebProvider.TAVILY
@@ -2608,49 +2607,10 @@ class ChatService:
                 catalog.entries,
                 inherited_priority_scopes,
             )
-        candidates = self._retain_turn_required_tools(
-            candidates,
-            catalog.entries,
-            runtime,
-        )
         return replace(
             runtime,
             selected_tool_names=frozenset(item.descriptor.model_name for item in candidates),
         )
-
-    @staticmethod
-    def _retain_turn_required_tools(
-        selected: list[UnifiedToolCatalogEntry],
-        available: tuple[UnifiedToolCatalogEntry, ...],
-        runtime: ToolRuntime,
-    ) -> list[UnifiedToolCatalogEntry]:
-        """Keep deterministic event/query-bound tools even when the flash reranker omits them."""
-
-        required_names: set[str] = set()
-        if ToolGroup.MEMORY.value in runtime.tool_groups:
-            inbound = runtime.inbound
-            referenced_people = any(
-                user_id not in {inbound.sender.user_id, inbound.bot_user_id}
-                for user_id in inbound.mentioned_user_ids
-            ) or bool(
-                inbound.reply_sender_user_id and inbound.reply_sender_user_id != inbound.bot_user_id
-            )
-            lookup_text = f"{runtime.selection_query} {runtime.planner_intent}"
-            contains_qq = re.search(r"(?<!\d)[1-9]\d{4,19}(?!\d)", lookup_text) is not None
-            if referenced_people or contains_qq or "记忆" in lookup_text:
-                required_names.add("get_person_memories")
-            planner_groups = runtime.planner_tool_groups or frozenset()
-            if not runtime.planner_scopes_explicit and ToolGroup.MEMORY.value not in planner_groups:
-                required_names.add("memory_change")
-
-        selected_names = {item.descriptor.model_name for item in selected}
-        retained = list(selected)
-        for item in available:
-            name = item.descriptor.model_name
-            if name in required_names and name not in selected_names:
-                retained.append(item)
-                selected_names.add(name)
-        return retained
 
     @staticmethod
     def _retain_required_tools(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import re
 import shutil
 import sqlite3
 import subprocess
@@ -622,19 +621,12 @@ class MemoryQualityRunner:
     @staticmethod
     def _claim_payload(claim: QualityClaim) -> dict[str, object]:
         data = claim.model_dump(mode="json", exclude={"event_ref"}, exclude_none=True)
-        # Quality v1 fixtures predate the explicit attribution contract. Preserve
-        # their deterministic meaning without weakening production validation.
         if claim.scope_type == MemoryScopeType.GROUP.value or claim.subject_ref == "group":
             data["subject_basis"] = "group"
         elif claim.subject_ref.startswith("mentioned_"):
             data["subject_basis"] = "mentioned_subject"
         elif claim.subject_ref == "reply_author":
             data["subject_basis"] = "reply_subject"
-        elif re.search(
-            r"(?:^|[，。！？；：,.!?;:\s]|记住)(?:我|我的)(?:最|是|有|在|喜欢|讨厌|准备|计划)",
-            claim.evidence_quote,
-        ):
-            data["subject_basis"] = "first_person"
         return dict(data)
 
     @staticmethod

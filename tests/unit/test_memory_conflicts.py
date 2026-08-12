@@ -118,6 +118,7 @@ def test_subject_resolver_only_exposes_trusted_mentions_and_reply_author() -> No
     assert [item.subject_ref for item in available] == [
         "speaker",
         "group",
+        "named_member",
         "mentioned_1",
         "reply_author",
     ]

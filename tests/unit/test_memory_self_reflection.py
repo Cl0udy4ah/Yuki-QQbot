@@ -249,7 +249,7 @@ async def test_reflection_schedule_slot_and_daily_budget_are_idempotent(
     episodes = await repository.claim_due(
         scheduled_slot="2026-08-08:20",
         local_date="2026-08-08",
-        event_threshold=12,
+        event_threshold=2,
         character_threshold=6000,
         max_wait_seconds=28800,
         max_sessions=3,

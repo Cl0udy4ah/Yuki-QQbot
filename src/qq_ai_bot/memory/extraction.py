@@ -21,11 +21,11 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
 
-EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v2"
-EXTRACTION_SCHEMA_VERSION = "2"
-SOURCE_ADAPTATION_VERSION = "2"
-BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v1"
-BATCH_EXTRACTION_SCHEMA_VERSION = "1"
+EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v3"
+EXTRACTION_SCHEMA_VERSION = "3"
+SOURCE_ADAPTATION_VERSION = "3"
+BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v2"
+BATCH_EXTRACTION_SCHEMA_VERSION = "2"
 
 
 class _ExtractionModel(BaseModel):
@@ -59,6 +59,7 @@ class MemoryExtractionInput(_ExtractionModel):
 class MemoryClaim(_ExtractionModel):
     operation: MemoryClaimOperation = MemoryClaimOperation.ASSERT
     subject_ref: str = Field(min_length=1, max_length=32)
+    subject_name: str | None = Field(default=None, min_length=1, max_length=128)
     scope_type: MemoryScopeType
     kind: MemoryKind = MemoryKind.FACT
     memory_key: str = Field(min_length=1, max_length=128)

@@ -2,35 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.memory.enums import MemoryScopeType, SelfMemoryVisibility
-from qq_ai_bot.memory.extraction import AvailableSubject
+from qq_ai_bot.memory.extraction import AvailableSubject, MemoryClaim
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
-
-_NAMED_SUBJECT = re.compile(
-    r"(?:^|[，。！？；：,.!?;:\s])"
-    r"(?P<name>[\u4e00-\u9fff·]{2,8}|[A-Za-z][A-Za-z0-9_.-]{1,31})"
-    r"(?=\s*(?:不是|没有|不会|不能|住在|来自|负责|擅长|喜欢|讨厌|想要|已经|"
-    r"曾经|今年|是|有|爱|想|会|能|在|叫|姓))"
-)
-_IGNORED_NAMES = frozenset(
-    {
-        "我们",
-        "你们",
-        "他们",
-        "自己",
-        "今天",
-        "昨天",
-        "明天",
-        "现在",
-        "最近",
-        "以后",
-    }
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +68,14 @@ class SubjectResolver:
                     display_label="当前群",
                     allowed_scopes=(MemoryScopeType.GROUP,),
                     relation_to_speaker="current_group",
+                )
+            )
+            available.append(
+                AvailableSubject(
+                    subject_ref="named_member",
+                    display_label="模型明确给出的当前群成员姓名",
+                    allowed_scopes=(MemoryScopeType.PERSON_GROUP,),
+                    relation_to_speaker="current_group_name_requires_resolution",
                 )
             )
             resolved.append(
@@ -158,56 +144,68 @@ class SubjectResolver:
 
 
 class SubjectContextBuilder:
-    """Add only uniquely resolved current-group names to the trusted alias set."""
+    """Resolve only names explicitly declared by the extraction model."""
 
     def __init__(
         self,
         people: PeopleRepository | None = None,
         *,
-        bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪"),
+        bot_aliases: tuple[str, ...] | None = None,
     ) -> None:
+        del bot_aliases
         self._people = people
-        self._ignored_names = {
-            *(name.casefold() for name in _IGNORED_NAMES),
-            *(alias.casefold() for alias in bot_aliases if alias.strip()),
-        }
 
     async def build(self, event: EventRecord) -> SubjectResolutionContext:
-        base = SubjectResolver.context(event)
+        return SubjectResolver.context(event)
+
+    async def resolve_claim_names(
+        self,
+        event: EventRecord,
+        claims: tuple[MemoryClaim, ...],
+        context: SubjectResolutionContext,
+    ) -> tuple[tuple[MemoryClaim, ...], SubjectResolutionContext]:
         if self._people is None or event.scope_type is not ScopeType.GROUP or not event.group_id:
-            return base
-        names = tuple(
-            dict.fromkeys(
-                match.group("name")
-                for match in _NAMED_SUBJECT.finditer(event.content)
-                if match.group("name").casefold() not in self._ignored_names
-            )
-        )[:3]
-        if not names:
-            return base
-        available = list(base.available_subjects)
-        resolved = list(base.resolved_subjects)
-        known_user_ids = {value.subject_user_id for _, value in resolved if value.subject_user_id}
-        number = 0
-        for name in names:
-            matches = await self._people.find_group_members_by_exact_name(name, event.group_id)
-            if len(matches) != 1 or matches[0] in known_user_ids:
+            return claims, context
+        available = list(context.available_subjects)
+        resolved = list(context.resolved_subjects)
+        refs_by_user: dict[str, str] = {}
+        updated: list[MemoryClaim] = []
+        for claim in claims:
+            name = (claim.subject_name or "").strip()
+            if claim.subject_ref != "named_member" or not name:
+                updated.append(claim)
                 continue
-            number += 1
-            ref = f"named_{number}"
-            available.append(
-                AvailableSubject(
-                    subject_ref=ref,
-                    display_label=f"当前群唯一成员：{name}",
-                    allowed_scopes=(MemoryScopeType.PERSON_GROUP,),
-                    relation_to_speaker="unique_group_name",
-                )
+            matches = await self._people.search_group_member_names(
+                name,
+                event.group_id,
+                minimum_score=0.35,
             )
-            resolved.append(
-                (
-                    f"{ref}:person_group",
-                    ResolvedSubject(MemoryScopeType.PERSON_GROUP, matches[0], event.group_id),
+            exact = tuple(item for item in matches if item.exact)
+            if len(exact) != 1:
+                updated.append(claim)
+                continue
+            match = exact[0]
+            ref = refs_by_user.get(match.user_id)
+            if ref is None:
+                ref = f"named_{len(refs_by_user) + 1}"
+                refs_by_user[match.user_id] = ref
+                available.append(
+                    AvailableSubject(
+                        subject_ref=ref,
+                        display_label=f"当前群唯一成员：{match.display_name}",
+                        allowed_scopes=(MemoryScopeType.PERSON_GROUP,),
+                        relation_to_speaker="unique_group_name",
+                    )
                 )
-            )
-            known_user_ids.add(matches[0])
-        return SubjectResolutionContext(tuple(available), tuple(resolved))
+                resolved.append(
+                    (
+                        f"{ref}:person_group",
+                        ResolvedSubject(
+                            MemoryScopeType.PERSON_GROUP,
+                            match.user_id,
+                            event.group_id,
+                        ),
+                    )
+                )
+            updated.append(claim.model_copy(update={"subject_ref": ref}))
+        return tuple(updated), SubjectResolutionContext(tuple(available), tuple(resolved))

@@ -1236,6 +1236,122 @@ async def test_group_member_can_create_group_and_third_party_group_memory(
     assert person_group_fact.group_id == "3001"
 
 
+@pytest.mark.parametrize(
+    "content",
+    (
+        "江环是@鬼頭桃菜，你记错了",
+        "@鬼頭桃菜是江环，这次请按这个主体纠正",
+    ),
+)
+@pytest.mark.asyncio
+async def test_mentioned_subject_is_not_rejected_by_chinese_word_order(
+    database: Database,
+    content: str,
+) -> None:
+    service, facts, ledger, _processor = _service(database)
+    event = await _event(
+        ledger,
+        message_id=f"mentioned-word-order-{hashlib.sha256(content.encode()).hexdigest()[:8]}",
+        sender_user_id="1001",
+        content=content,
+        group_id="3001",
+        mentioned_user_ids=("2002",),
+    )
+
+    result = await service.mutate(
+        MemoryMutationRequest(
+            operation=MemoryMutationOperation.CREATE,
+            target=MemoryMutationTarget(
+                subject_ref="mentioned_user",
+                scope_type=MemoryScopeType.PERSON_GROUP,
+            ),
+            new_content="江环是鬼頭桃菜",
+            memory_key="identity:jianghuan",
+            category="identity",
+            evidence_quote=content,
+        ),
+        _context(event),
+    )
+
+    assert result.ok and result.new_fact_id is not None
+    fact = await facts.get_fact(result.new_fact_id)
+    assert fact is not None
+    assert fact.subject_user_id == "2002"
+    assert fact.authority is MemoryAuthority.THIRD_PARTY
+
+
+@pytest.mark.asyncio
+async def test_named_member_fuzzy_candidates_can_be_selected_by_agent(database: Database) -> None:
+    service, facts, ledger, _processor = _service(database)
+    people = PeopleRepository(database)
+    await people.observe(
+        user_id="2002",
+        nickname="鬼頭桃菜",
+        group_id="3001",
+        group_card="江环",
+    )
+    event = await _event(
+        ledger,
+        message_id="named-member-fuzzy",
+        sender_user_id="1001",
+        content="江圜是鬼頭桃菜",
+        group_id="3001",
+    )
+    settings = make_settings("sqlite+aiosqlite:///:memory:")
+    tools = AgentToolService(
+        settings=settings,
+        ledger=ledger,
+        memories=facts,
+        memory_mutations=service,
+        actions=AgentActionRepository(database),
+    )
+    runtime = ToolRuntime(
+        inbound=InboundMessage(
+            message_id=event.platform_message_id,
+            event_type="message",
+            scope_type=ScopeType.GROUP,
+            sender=SenderIdentity(user_id="1001"),
+            text=event.content,
+            group_id="3001",
+            bot_user_id="8000",
+        ),
+        gateway=None,
+        allow_generic_onebot=False,
+        conversation_key="group:3001",
+        trigger_message_id=event.platform_message_id,
+        actor_user_id="1001",
+        current_group_id="3001",
+        origin=TurnOrigin.USER_MESSAGE,
+    )
+    arguments = {
+        "operation": "create",
+        "target": {
+            "subject_ref": "named_member",
+            "scope_type": "person_group",
+            "subject_name": "江圜",
+        },
+        "new_content": "江环是鬼頭桃菜",
+        "memory_key": "identity:jianghuan",
+        "category": "identity",
+        "evidence_quote": event.content,
+    }
+
+    unresolved = json.loads(
+        await tools.execute("memory_change", json.dumps(arguments, ensure_ascii=False), runtime)
+    )
+    assert unresolved["error"] == "subject_resolution_required"
+    assert unresolved["retryable"] is True
+    assert unresolved["data"]["candidates"][0]["user_id"] == "2002"
+
+    arguments["target"]["candidate_ref"] = "member_candidate_1"
+    committed = json.loads(
+        await tools.execute("memory_change", json.dumps(arguments, ensure_ascii=False), runtime)
+    )
+    assert committed["ok"] is True
+    fact = await facts.get_fact(committed["data"]["new_fact_id"])
+    assert fact is not None and fact.subject_user_id == "2002"
+
+
 @pytest.mark.asyncio
 async def test_reassign_is_one_atomic_versioned_group_operation(database: Database) -> None:
     service, facts, ledger, _processor = _service(database)

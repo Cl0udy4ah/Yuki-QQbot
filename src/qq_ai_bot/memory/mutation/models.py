@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qq_ai_bot.memory.enums import MemoryKind, MemoryReviewState, MemoryScopeType, MemoryStatus
 from qq_ai_bot.persistence.repository_records import EventRecord
@@ -60,6 +60,11 @@ class SelfMemoryVisibilityMode(StrEnum):
     GLOBAL = "global"
 
 
+class MemoryMutationRequestBasis(StrEnum):
+    USER_REQUESTED = "user_requested"
+    AGENT_INITIATED = "agent_initiated"
+
+
 SELF_MEMORY_CATEGORIES: tuple[str, ...] = (
     "self_fact",
     "self_preference",
@@ -78,12 +83,28 @@ class MemoryMutationTarget(_MutationModel):
 
     subject_ref: str = Field(min_length=1, max_length=32)
     scope_type: MemoryScopeType
+    subject_name: str | None = Field(default=None, min_length=1, max_length=128)
+    candidate_ref: str | None = Field(
+        default=None,
+        pattern=r"^member_candidate_[1-5]$",
+    )
+
+    @model_validator(mode="after")
+    def validate_named_target(self) -> MemoryMutationTarget:
+        named = self.subject_ref.strip().casefold() == "named_member"
+        if named:
+            if self.scope_type is not MemoryScopeType.PERSON_GROUP or not self.subject_name:
+                raise ValueError("named_member requires subject_name and person_group scope")
+        elif self.subject_name is not None or self.candidate_ref is not None:
+            raise ValueError("subject_name and candidate_ref require named_member")
+        return self
 
 
 class MemoryMutationRequest(_MutationModel):
     """One requested semantic operation from any Memory V2 write entrypoint."""
 
     operation: MemoryMutationOperation
+    request_basis: MemoryMutationRequestBasis = MemoryMutationRequestBasis.USER_REQUESTED
     fact_id: int | None = Field(default=None, ge=1)
     merge_fact_id: int | None = Field(default=None, ge=1)
     target: MemoryMutationTarget | None = None

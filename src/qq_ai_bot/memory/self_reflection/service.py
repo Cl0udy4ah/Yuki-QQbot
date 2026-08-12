@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import re
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
@@ -59,7 +58,6 @@ from qq_ai_bot.services.concurrency import ConcurrencyManager
 
 logger = logging.getLogger(__name__)
 
-_PRIVATE_IDENTIFIER = re.compile(r"(?:QQ\s*[:：]?\s*\d{5,}|\b\d{7,12}\b)", re.IGNORECASE)
 _EPISODE_INSTRUCTION = (
     "下面是一段你真实参与过的聊天。读完以后，由你判断其中是否有值得长期记住的经历。"
     "如果有，就像人回忆往事一样，用自己的口吻记下当时发生了什么、你如何理解那段经历，"
@@ -575,11 +573,3 @@ class SelfReflectionService:
             raise ValueError("only abstract self memory may be global")
         if proposal.kind is not None and proposal.kind.value == "episode":
             raise ValueError("episodes cannot be global")
-        content = proposal.content or ""
-        names = {
-            item.sender_display_name
-            for item in batch.events
-            if item.sender_user_id != item.bot_user_id
-        }
-        if _PRIVATE_IDENTIFIER.search(content) or any(name and name in content for name in names):
-            raise ValueError("global self reflection contains participant identity")

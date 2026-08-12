@@ -42,6 +42,7 @@ from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.query import MemoryQueryBuilder
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import (
@@ -404,9 +405,10 @@ class AgentToolService:
                         "（包括由当前群消息触发的自主回应）"
                         "创建、纠正、撤销、恢复、争议、合并、改归属或更新记忆元数据；"
                         f"不能把 {bot_name} 自己的输出当证据，也不能传 QQ 号、群号或事件 ID。"
-                        "target.subject_ref 只能使用 current_speaker、current_group、"
+                        "target.subject_ref 可使用 current_speaker、current_group、"
                         "mentioned_user、mentioned_user_1 等本轮可验证别名，或"
-                        f"replied_message_author；{bot_name} 自我记忆使用 self + self。"
+                        "replied_message_author；正文中的当前群姓名使用 named_member 并填写"
+                        f" subject_name；{bot_name} 自我记忆使用 self + self。"
                         f"自我记忆仅在功能开启且 {bot_name} 根据当前真实用户消息形成自己的"
                         "判断时变更，visibility"
                         "只能用 current_scope 或 global；global 只适合抽象偏好、反思和原则，"
@@ -454,6 +456,7 @@ class AgentToolService:
                                             "mentioned_user_4",
                                             "mentioned_user_5",
                                             "replied_message_author",
+                                            "named_member",
                                             "self",
                                         ],
                                     },
@@ -461,12 +464,36 @@ class AgentToolService:
                                         "type": "string",
                                         "enum": ["person", "person_group", "group", "self"],
                                     },
+                                    "subject_name": {
+                                        "type": "string",
+                                        "maxLength": 128,
+                                        "description": "subject_ref=named_member 时填写当前群姓名",
+                                    },
+                                    "candidate_ref": {
+                                        "type": "string",
+                                        "enum": [
+                                            "member_candidate_1",
+                                            "member_candidate_2",
+                                            "member_candidate_3",
+                                            "member_candidate_4",
+                                            "member_candidate_5",
+                                        ],
+                                        "description": "姓名歧义后从工具返回候选中选择",
+                                    },
                                 },
                                 required=("subject_ref", "scope_type"),
                             ),
                             "visibility": {
                                 "type": "string",
                                 "enum": ["current_scope", "global"],
+                            },
+                            "request_basis": {
+                                "type": "string",
+                                "enum": ["user_requested", "agent_initiated"],
+                                "description": (
+                                    "用户要求变更时用 user_requested；"
+                                    "自主决定时用 agent_initiated"
+                                ),
                             },
                             "new_content": {"type": "string", "maxLength": 4000},
                             "memory_key": {"type": "string", "maxLength": 128},
@@ -1574,22 +1601,72 @@ class AgentToolService:
                 error="untrusted_trigger_event",
                 detail="工具运行时与真实入站消息不一致",
             )
-        result = await service.mutate(
-            request,
-            MemoryMutationContext(
-                event=event,
-                conversation_key=runtime.conversation_key,
-                turn_origin=runtime.origin.value,
-                delegation_mode="main_agent",
-                trigger_actor_user_id=event.sender_user_id,
-                decision_actor_type=MemoryDecisionActorType.AGENT,
-                decision_actor_id="main_agent",
-                executed_by_bot_user_id=runtime.inbound.bot_user_id,
-                actor_is_superuser=(
-                    runtime.actor_is_superuser and event.sender_user_id in self._settings.superusers
-                ),
+        context = MemoryMutationContext(
+            event=event,
+            conversation_key=runtime.conversation_key,
+            turn_origin=runtime.origin.value,
+            delegation_mode="main_agent",
+            trigger_actor_user_id=event.sender_user_id,
+            decision_actor_type=MemoryDecisionActorType.AGENT,
+            decision_actor_id="main_agent",
+            executed_by_bot_user_id=runtime.inbound.bot_user_id,
+            actor_is_superuser=(
+                runtime.actor_is_superuser and event.sender_user_id in self._settings.superusers
             ),
         )
+        named_target: ResolvedSubject | None = None
+        if request.target is not None and request.target.subject_ref == "named_member":
+            group_id = event.group_id
+            subject_name = request.target.subject_name or ""
+            if group_id is None:
+                return self._result(
+                    error="named_subject_requires_group",
+                    detail="普通姓名只能在当前群成员中解析",
+                )
+            matches = await self._people.search_group_member_names(subject_name, group_id)
+            exact = tuple(item for item in matches if item.exact)
+            chosen = exact[0] if len(exact) == 1 and request.target.candidate_ref is None else None
+            if request.target.candidate_ref is not None:
+                position = int(request.target.candidate_ref.removeprefix("member_candidate_")) - 1
+                if 0 <= position < len(matches):
+                    chosen = matches[position]
+            if chosen is None:
+                candidates = [
+                    {
+                        "candidate_ref": f"member_candidate_{index}",
+                        "display_name": item.display_name,
+                        "nickname": item.nickname,
+                        "group_card": item.group_card,
+                        "matched_alias": item.matched_alias,
+                        "user_id": item.user_id,
+                        "similarity": round(item.score, 4),
+                        "exact": item.exact,
+                    }
+                    for index, item in enumerate(matches, start=1)
+                ]
+                return self._result(
+                    data={
+                        "reason_code": "subject_resolution_required",
+                        "subject_name": subject_name,
+                        "candidates": candidates,
+                        "requires_user_decision": True,
+                    },
+                    error="subject_resolution_required",
+                    detail=(
+                        "当前群姓名不能唯一确定；可以选择 candidate_ref 重试，"
+                        "也可以自行询问用户"
+                    ),
+                    retryable=True,
+                )
+            named_target = ResolvedSubject(
+                MemoryScopeType.PERSON_GROUP,
+                chosen.user_id,
+                group_id,
+            )
+        if named_target is None:
+            result = await service.mutate(request, context)
+        else:
+            result = await service.mutate_resolved(request, context, target=named_target)
         payload: dict[str, Any] = {
             "ok": result.ok,
             "mutation_id": result.mutation_id,
@@ -2015,9 +2092,21 @@ class AgentToolService:
             "occurred_at": row.occurred_at.isoformat(),
         }
 
-    def _result(self, *, data: Any = None, error: str | None = None, detail: str = "") -> str:
+    def _result(
+        self,
+        *,
+        data: Any = None,
+        error: str | None = None,
+        detail: str = "",
+        retryable: bool = False,
+    ) -> str:
         if error:
-            payload = {"ok": False, "error": error, "detail": detail}
+            payload = {
+                "ok": False,
+                "error": error,
+                "detail": detail,
+                "retryable": retryable,
+            }
             if data is not None:
                 payload["data"] = data
         else:
