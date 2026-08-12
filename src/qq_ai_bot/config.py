@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, PrivateAttr, field_validator, model_validator
+from pydantic import AliasChoices, Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from qq_ai_bot.domain.messages import ReasoningEffort
@@ -156,15 +156,22 @@ class Settings(BaseSettings):
     memory_self_reflection_schedule_hours: str = "4,12,20"
     memory_self_reflection_timezone: str = "Asia/Shanghai"
     memory_self_reflection_poll_seconds: float = 60.0
-    memory_self_reflection_max_sessions_per_run: int = 3
-    memory_self_reflection_max_daily_calls: int = 9
+    memory_self_reflection_max_batches_per_run: int = Field(
+        default=12,
+        validation_alias=AliasChoices(
+            "MEMORY_SELF_REFLECTION_MAX_BATCHES_PER_RUN",
+            "MEMORY_SELF_REFLECTION_MAX_SESSIONS_PER_RUN",
+        ),
+    )
+    memory_self_reflection_max_batches_per_conversation_per_run: int = 7
+    memory_self_reflection_max_daily_calls: int = 36
     memory_self_reflection_event_threshold: int = 50
     memory_self_reflection_character_threshold: int = 8000
     memory_self_reflection_low_event_threshold: int = 30
     memory_self_reflection_low_character_threshold: int = 4800
     memory_self_reflection_natural_gap_seconds: float = 300.0
     memory_self_reflection_max_wait_seconds: float = 28800.0
-    memory_self_reflection_max_events: int = 50
+    memory_self_reflection_max_events: int = 100
     memory_self_reflection_max_characters: int = 8000
     memory_self_reflection_max_output_tokens: int = 2400
     memory_self_reflection_tool_receipt_characters: int = 2000

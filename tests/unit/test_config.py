@@ -62,6 +62,7 @@ def test_yuki_persona_file_is_required_and_expands_fixed_placeholder(
 
     settings = Settings.model_validate(
         {
+            "BOT_PERSONA_FILE": None,
             "yuki_persona_file": persona_file,
             "system_prompt_file": prompt_file,
         }
@@ -73,12 +74,22 @@ def test_yuki_persona_file_is_required_and_expands_fixed_placeholder(
 
 def test_yuki_persona_file_must_exist_and_not_be_empty(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="cannot read YUKI_PERSONA_FILE"):
-        Settings.model_validate({"yuki_persona_file": tmp_path / "missing.md"})
+        Settings.model_validate(
+            {
+                "BOT_PERSONA_FILE": None,
+                "yuki_persona_file": tmp_path / "missing.md",
+            }
+        )
 
     empty = tmp_path / "empty-persona.md"
     empty.write_text("\n", encoding="utf-8")
     with pytest.raises(ValidationError, match="YUKI_PERSONA_FILE must not be empty"):
-        Settings.model_validate({"yuki_persona_file": empty})
+        Settings.model_validate(
+            {
+                "BOT_PERSONA_FILE": None,
+                "yuki_persona_file": empty,
+            }
+        )
 
 
 def test_legacy_prompt_without_placeholder_is_not_duplicated(tmp_path: Path) -> None:
@@ -245,7 +256,10 @@ def test_planner_and_plugin_defaults_are_domain_validated_without_arbitrary_caps
     assert settings.memory_self_reflection_low_event_threshold == 30
     assert settings.memory_self_reflection_low_character_threshold == 4800
     assert settings.memory_self_reflection_natural_gap_seconds == 300
-    assert settings.memory_self_reflection_max_events == 50
+    assert settings.memory_self_reflection_max_batches_per_run == 12
+    assert settings.memory_self_reflection_max_batches_per_conversation_per_run == 7
+    assert settings.memory_self_reflection_max_daily_calls == 36
+    assert settings.memory_self_reflection_max_events == 100
     assert settings.emoji_selector_candidate_count == 3
     assert settings.emoji_selector_score_gap == 0.75
     assert settings.emoji_selector_timeout_seconds == 2
@@ -277,6 +291,16 @@ def test_memory_limits_are_configurable_positive_values() -> None:
     assert Settings.model_validate({"person_group_memory_max_entries": 500})
     with pytest.raises(ValidationError, match="greater than 0"):
         Settings.model_validate({"person_group_memory_max_entries": 0})
+
+
+def test_legacy_self_reflection_session_limit_env_alias_is_supported() -> None:
+    settings = Settings(
+        _env_file=None,
+        MEMORY_SELF_REFLECTION_MAX_SESSIONS_PER_RUN=5,
+        memory_self_reflection_max_batches_per_conversation_per_run=4,
+    )
+
+    assert settings.memory_self_reflection_max_batches_per_run == 5
 
 
 @pytest.mark.parametrize(

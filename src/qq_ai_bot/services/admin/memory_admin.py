@@ -752,9 +752,9 @@ class MemoryAdminService:
             raise RuntimeError("Self Reflection Worker 当前不可用")
         cycle = await self._self_reflection.run_now()
         return SelfReflectionManualRun(
-            attempted_conversations=cycle.attempted_conversations,
-            completed_conversations=cycle.completed_conversations,
-            failed_conversations=cycle.failed_conversations,
+            attempted_batches=cycle.attempted_batches,
+            completed_batches=cycle.completed_batches,
+            failed_batches=cycle.failed_batches,
             proposal_count=cycle.proposal_count,
             committed_count=cycle.committed_count,
             health=await self._self_reflection.health(),

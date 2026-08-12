@@ -158,6 +158,7 @@ class SelfReflectionRepository:
         natural_gap_seconds: float | None = None,
         context_events: int = 4,
         force: bool = False,
+        excluded_conversation_keys: frozenset[str] = frozenset(),
     ) -> tuple[SelfReflectionBatch, ...]:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
@@ -176,6 +177,12 @@ class SelfReflectionRepository:
             state_query = select(MemorySelfReflectionStateModel).where(
                 MemorySelfReflectionStateModel.pending_events > 0
             )
+            if excluded_conversation_keys:
+                state_query = state_query.where(
+                    MemorySelfReflectionStateModel.conversation_key_hash.not_in(
+                        excluded_conversation_keys
+                    )
+                )
             if not force:
                 state_query = state_query.where(
                     or_(

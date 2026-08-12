@@ -220,9 +220,9 @@ class SelfReflectionHealth(_Contract):
 class SelfReflectionCycleResult:
     """Content-free outcome of one bounded worker cycle."""
 
-    attempted_conversations: int = 0
-    completed_conversations: int = 0
-    failed_conversations: int = 0
+    attempted_batches: int = 0
+    completed_batches: int = 0
+    failed_batches: int = 0
     proposal_count: int = 0
     committed_count: int = 0
 
@@ -231,9 +231,9 @@ class SelfReflectionCycleResult:
 class SelfReflectionManualRun:
     """Content-free result returned by the explicit administrator command."""
 
-    attempted_conversations: int
-    completed_conversations: int
-    failed_conversations: int
+    attempted_batches: int
+    completed_batches: int
+    failed_batches: int
     proposal_count: int
     committed_count: int
     health: SelfReflectionHealth

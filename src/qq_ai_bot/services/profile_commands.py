@@ -210,12 +210,12 @@ class ProfileCommandHandler:
                 usage = (
                     f"{reflection_health.calls_today}/{reflection_result.max_daily_calls}"
                 )
-                if reflection_result.attempted_conversations:
+                if reflection_result.attempted_batches:
                     return (
                         "Self Reflection 本轮结束："
-                        f"尝试 {reflection_result.attempted_conversations} 个会话，"
-                        f"成功 {reflection_result.completed_conversations} 个，"
-                        f"失败 {reflection_result.failed_conversations} 个；"
+                        f"尝试 {reflection_result.attempted_batches} 个批次，"
+                        f"成功 {reflection_result.completed_batches} 个，"
+                        f"失败 {reflection_result.failed_batches} 个；"
                         f"生成 {reflection_result.proposal_count} 条 proposal，"
                         f"实际写入 {reflection_result.committed_count} 条；"
                         f"今日反思批次 {usage}；"

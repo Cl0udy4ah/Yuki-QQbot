@@ -188,15 +188,16 @@ class MemorySettings(DomainSettings):
     memory_self_reflection_schedule_hours: str
     memory_self_reflection_timezone: str
     memory_self_reflection_poll_seconds: float = Field(gt=0)
-    memory_self_reflection_max_sessions_per_run: int = Field(gt=0, le=3)
-    memory_self_reflection_max_daily_calls: int = Field(gt=0, le=9)
+    memory_self_reflection_max_batches_per_run: int = Field(gt=0, le=100)
+    memory_self_reflection_max_batches_per_conversation_per_run: int = Field(gt=0, le=25)
+    memory_self_reflection_max_daily_calls: int = Field(gt=0, le=365)
     memory_self_reflection_event_threshold: int = Field(gt=0)
     memory_self_reflection_character_threshold: int = Field(gt=0)
     memory_self_reflection_low_event_threshold: int = Field(gt=0)
     memory_self_reflection_low_character_threshold: int = Field(gt=0)
     memory_self_reflection_natural_gap_seconds: float = Field(gt=0)
     memory_self_reflection_max_wait_seconds: float = Field(gt=0)
-    memory_self_reflection_max_events: int = Field(gt=0, le=50)
+    memory_self_reflection_max_events: int = Field(gt=0, le=100)
     memory_self_reflection_max_characters: int = Field(gt=0, le=8000)
     memory_self_reflection_max_output_tokens: int = Field(gt=0)
     memory_self_reflection_tool_receipt_characters: int = Field(gt=0, le=8000)
@@ -276,6 +277,13 @@ class MemorySettings(DomainSettings):
             raise ValueError("memory self-reflection schedule must contain three hours")
         if len(set(hours)) != 3:
             raise ValueError("memory self-reflection schedule hours must be unique")
+        if (
+            self.memory_self_reflection_max_batches_per_conversation_per_run
+            > self.memory_self_reflection_max_batches_per_run
+        ):
+            raise ValueError(
+                "memory self-reflection per-conversation batch limit cannot exceed run limit"
+            )
         if (
             self.memory_self_reflection_low_event_threshold
             > self.memory_self_reflection_event_threshold
