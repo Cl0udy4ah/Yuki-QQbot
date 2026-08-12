@@ -55,6 +55,7 @@ from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.time.formatting import local_datetime, utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +215,7 @@ class SelfReflectionService:
         renderer = ChatEventPromptRenderer(
             all_events,
             bot_display_name=self._settings.bot_display_name,
+            timezone=self._settings.memory_self_reflection_timezone,
         )
         event_map = {f"event_{index}": event for index, event in enumerate(batch.events, 1)}
         rendered_events: list[SelfReflectionEvent] = []
@@ -224,7 +226,10 @@ class SelfReflectionService:
                 rendered_events.append(
                     SelfReflectionEvent(
                         ref=ref,
-                        occurred_at=event.occurred_at,
+                        occurred_at=local_datetime(
+                            event.occurred_at,
+                            self._settings.memory_self_reflection_timezone,
+                        ),
                         direction=event.direction,
                         rendered=rendered,
                     )
@@ -247,7 +252,10 @@ class SelfReflectionService:
         context_rows = [
             SelfReflectionContextEvent(
                 ref=f"context_{index}",
-                occurred_at=event.occurred_at,
+                occurred_at=local_datetime(
+                    event.occurred_at,
+                    self._settings.memory_self_reflection_timezone,
+                ),
                 direction=event.direction,
                 rendered=rendered,
             )
@@ -305,7 +313,14 @@ class SelfReflectionService:
                 previous_episode=(
                     SelfReflectionPreviousEpisode(
                         content=previous_episode.content,
-                        valid_from=previous_episode.valid_from,
+                        valid_from=(
+                            local_datetime(
+                                previous_episode.valid_from,
+                                self._settings.memory_self_reflection_timezone,
+                            )
+                            if previous_episode.valid_from is not None
+                            else None
+                        ),
                         importance=previous_episode.importance,
                     )
                     if previous_episode is not None
@@ -524,7 +539,7 @@ class SelfReflectionService:
                 confidence=0.9,
                 importance=proposal.importance,
                 evidence_quote=anchor.content[:500],
-                valid_from=batch.events[0].occurred_at.isoformat(),
+                valid_from=utc_iso(batch.events[0].occurred_at),
             ),
             MemoryMutationContext(
                 event=anchor,

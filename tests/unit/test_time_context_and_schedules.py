@@ -11,7 +11,13 @@ from qq_ai_bot.automation.models import (
     OnceSchedule,
     WeeklySchedule,
 )
-from qq_ai_bot.time.formatting import local_iso, local_text
+from qq_ai_bot.time.formatting import (
+    local_datetime,
+    local_iso,
+    local_text,
+    stored_utc,
+    utc_iso,
+)
 from qq_ai_bot.time.schedules import initial_run_at, next_run_at, schedule_after_completion
 from qq_ai_bot.time.service import TimeContextService
 
@@ -29,6 +35,15 @@ def test_utc_storage_is_rendered_as_china_local_time() -> None:
 
     assert local_iso(stored, "Asia/Shanghai") == "2026-07-27T03:35:44+08:00"
     assert local_text(stored, "Asia/Shanghai") == "2026-07-27 03:35:44"
+
+
+def test_naive_database_timestamp_is_treated_as_utc_at_the_display_boundary() -> None:
+    stored = datetime(2026, 8, 12, 16, 30)
+
+    assert stored_utc(stored) == datetime(2026, 8, 12, 16, 30, tzinfo=UTC)
+    assert utc_iso(stored) == "2026-08-12T16:30:00+00:00"
+    assert local_datetime(stored, "Asia/Shanghai").isoformat() == "2026-08-13T00:30:00+08:00"
+    assert local_iso(stored, "Asia/Shanghai") == "2026-08-13T00:30:00+08:00"
 
 
 @pytest.mark.asyncio

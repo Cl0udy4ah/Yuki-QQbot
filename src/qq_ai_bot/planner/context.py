@@ -27,6 +27,7 @@ from qq_ai_bot.planner.necessity import ReplyNecessityFeatures, ReplyNecessitySc
 from qq_ai_bot.planner.repository import PlannerRepository, PlannerVoiceCadence
 from qq_ai_bot.speech.models import VoicePreferenceMode
 from qq_ai_bot.speech.preference_repository import VoicePreferenceRepository
+from qq_ai_bot.time.formatting import local_iso
 
 _PLANNER_HISTORY_LIMIT = 10
 
@@ -69,6 +70,7 @@ class PlannerContextBuilder:
         emoji_requests: EmojiRequestDetector | None = None,
         bot_display_name: str = "Yuki",
         bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪"),
+        timezone: str = "Asia/Shanghai",
     ) -> None:
         self._ledger = ledger
         self._relationships = relationships
@@ -77,6 +79,7 @@ class PlannerContextBuilder:
         self._planner_runs = planner_runs
         self._bot_display_name = bot_display_name
         self._bot_aliases = bot_aliases
+        self._timezone = timezone
         self._emoji_requests = emoji_requests or EmojiRequestDetector(bot_aliases)
 
     async def build(
@@ -149,6 +152,7 @@ class PlannerContextBuilder:
         renderer = ChatEventPromptRenderer(
             renderer_rows,
             bot_display_name=self._bot_display_name,
+            timezone=self._timezone,
         )
         rendered_history = tuple((row, renderer.reference_message(row)) for row in history_rows)
         visible_history = tuple(
@@ -314,7 +318,7 @@ class PlannerContextBuilder:
                     "external_source": event.external_source or "external",
                     "event_type": event.external_event_type or "event",
                     "summary": event.content[:4_000],
-                    "occurred_at": event.occurred_at.isoformat(),
+                    "occurred_at": local_iso(event.occurred_at, self._timezone),
                     "agent_intent": agent_intent[:1_000],
                     "content_trust": "external_untrusted",
                 },

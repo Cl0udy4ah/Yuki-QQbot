@@ -55,6 +55,7 @@ from qq_ai_bot.planner.models import ToolGroup, ToolMode
 from qq_ai_bot.services.reply_target import ReplyTargetControl
 from qq_ai_bot.services.turn_coordinator import TurnToken
 from qq_ai_bot.speech.reply_effect import PendingVoiceReplyEffect
+from qq_ai_bot.time.formatting import local_iso
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import (
     WebMode,
@@ -2089,7 +2090,7 @@ class AgentToolService:
             "group_id": row.group_id,
             "direction": row.direction,
             "content": row.content,
-            "occurred_at": row.occurred_at.isoformat(),
+            "occurred_at": local_iso(row.occurred_at, self._settings.default_timezone),
         }
 
     def _result(

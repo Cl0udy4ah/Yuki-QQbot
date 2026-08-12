@@ -23,6 +23,7 @@ from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.time.formatting import local_datetime
 
 _EXTRACTION_INSTRUCTION_TEMPLATE = """\
 从 primary_event 提取对未来聊天有用、稳定且可验证的记忆 claim。
@@ -101,12 +102,14 @@ class MemoryEventExtractor:
         people: PeopleRepository | None = None,
         bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪"),
         bot_display_name: str = "Yuki",
+        timezone: str = "Asia/Shanghai",
     ) -> None:
         self._models = models
         self._structured = StructuredTaskRunner(models)
         self._concurrency = concurrency
         self._subjects = SubjectContextBuilder(people, bot_aliases=bot_aliases)
         self._bot_display_name = bot_display_name
+        self._timezone = timezone
         self._extraction_instruction = _EXTRACTION_INSTRUCTION_TEMPLATE.format(
             bot_name=bot_display_name
         )
@@ -131,7 +134,7 @@ class MemoryEventExtractor:
             primary_event=PrimaryEvent(
                 scope_type=event.scope_type,
                 content=event.content,
-                occurred_at=event.occurred_at,
+                occurred_at=local_datetime(event.occurred_at, self._timezone),
             ),
             available_subjects=subject_context.available_subjects,
             conversation_context=tuple(
@@ -186,7 +189,7 @@ class MemoryEventExtractor:
                 scope_type=event.scope_type,
                 sender_label=self._sender_label(event)[:128],
                 content=event.content[:8000],
-                occurred_at=event.occurred_at,
+                occurred_at=local_datetime(event.occurred_at, self._timezone),
                 available_subjects=context.available_subjects,
             )
             for event, context in zip(selected_events, contexts, strict=True)

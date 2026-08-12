@@ -152,6 +152,7 @@ class ConversationModule:
             planner_runs=persistence.planner_runs,
             bot_display_name=settings.bot_display_name,
             bot_aliases=settings.bot_aliases,
+            timezone=settings.default_timezone,
         )
         reply_sequence = ReplySequenceManager(self._turns)
         _route, chat_profile = self._model_runtime.router.route(ModelTask.CHAT_AGENT)
