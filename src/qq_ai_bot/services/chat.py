@@ -1873,9 +1873,7 @@ class ChatService:
                 selection_query=content,
                 planner_intent=(planned_turn.plan.intent if planned_turn is not None else ""),
                 scheduled_automation_intent=scheduled_automation_allowed,
-                max_model_requests_override=(
-                    1 if fallback_plan else None
-                ),
+                max_model_requests_override=(1 if fallback_plan else None),
                 native_web_fallback=bool(
                     web_route is not None and web_route.provider is WebProvider.TAVILY
                 ),

@@ -492,8 +492,7 @@ class AgentToolService:
                                 "type": "string",
                                 "enum": ["user_requested", "agent_initiated"],
                                 "description": (
-                                    "用户要求变更时用 user_requested；"
-                                    "自主决定时用 agent_initiated"
+                                    "用户要求变更时用 user_requested；自主决定时用 agent_initiated"
                                 ),
                             },
                             "new_content": {"type": "string", "maxLength": 4000},
@@ -1654,8 +1653,7 @@ class AgentToolService:
                     },
                     error="subject_resolution_required",
                     detail=(
-                        "当前群姓名不能唯一确定；可以选择 candidate_ref 重试，"
-                        "也可以自行询问用户"
+                        "当前群姓名不能唯一确定；可以选择 candidate_ref 重试，也可以自行询问用户"
                     ),
                     retryable=True,
                 )

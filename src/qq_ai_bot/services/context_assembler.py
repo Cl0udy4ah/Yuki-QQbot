@@ -922,9 +922,7 @@ class ContextAssembler:
             messages=tuple(item for _, _, item in selected),
             anchor_event_id=(selected[0][0] if selected else fallback_anchor_event_id),
             rolled=anchor_event_id is not None,
-            event_ids=tuple(
-                event_id for _, event_ids, _ in selected for event_id in event_ids
-            ),
+            event_ids=tuple(event_id for _, event_ids, _ in selected for event_id in event_ids),
         )
 
     def _external_event_context(

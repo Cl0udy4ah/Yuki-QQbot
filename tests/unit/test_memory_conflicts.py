@@ -538,12 +538,9 @@ def test_lifecycle_protects_explicit_from_staleness_but_honors_deadline() -> Non
         }
     )
     assert policy.reason(explicit, now=now, config=config) is None
-    expired_explicit = explicit.model_copy(
-        update={"valid_until": now - timedelta(seconds=1)}
-    )
+    expired_explicit = explicit.model_copy(update={"valid_until": now - timedelta(seconds=1)})
     assert (
-        policy.reason(expired_explicit, now=now, config=config)
-        is MemoryInvalidationReason.EXPIRED
+        policy.reason(expired_explicit, now=now, config=config) is MemoryInvalidationReason.EXPIRED
     )
     important = base.model_copy(update={"importance": 5})
     assert policy.reason(important, now=now, config=config) is None

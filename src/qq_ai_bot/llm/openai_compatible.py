@@ -64,9 +64,7 @@ class OpenAICompatibleProvider(LLMProvider):
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(self._max_retries + 1),
                 wait=wait_random_exponential(multiplier=0.25, max=2),
-                retry=retry_if_exception_type(
-                    (httpx.TransportError, RetryableProviderError)
-                ),
+                retry=retry_if_exception_type((httpx.TransportError, RetryableProviderError)),
                 reraise=True,
             ):
                 with attempt:

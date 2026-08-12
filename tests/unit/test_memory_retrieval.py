@@ -320,9 +320,7 @@ async def test_relevant_chat_adds_one_current_scope_self_episode_without_explici
         runtime=runtime,
         self_recall=False,
     )
-    auto_self = [
-        hit for hit in automatic.hits if hit.target.role is MemoryTargetRole.CURRENT_SELF
-    ]
+    auto_self = [hit for hit in automatic.hits if hit.target.role is MemoryTargetRole.CURRENT_SELF]
     assert len(auto_self) == 1
     assert auto_self[0].fact.id in {first.id, second.id}
     assert auto_self[0].fact.id != other_group.id
@@ -335,9 +333,7 @@ async def test_relevant_chat_adds_one_current_scope_self_episode_without_explici
         self_recall=True,
     )
     explicit_self_ids = {
-        hit.fact.id
-        for hit in explicit.hits
-        if hit.target.role is MemoryTargetRole.CURRENT_SELF
+        hit.fact.id for hit in explicit.hits if hit.target.role is MemoryTargetRole.CURRENT_SELF
     }
     assert {first.id, second.id} <= explicit_self_ids
     assert other_group.id not in explicit_self_ids

@@ -46,6 +46,7 @@ class ToolInvocationCoordinator:
                 tuple((call, unavailable, False) for call in calls),
                 0,
             )
+
         def counts_toward_limit(call: ToolCall) -> bool:
             check = getattr(backend, "counts_toward_limit", None)
             return not callable(check) or bool(check(call.function.name, runtime))

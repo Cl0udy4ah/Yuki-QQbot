@@ -174,8 +174,7 @@ class StructuredTaskRunner:
                 attempts = attempt + 1
                 if attempt >= validation_retries:
                     logger.warning(
-                        "structured_task_validation_failed task=%s attempts=%d "
-                        "reason=%s detail=%s",
+                        "structured_task_validation_failed task=%s attempts=%d reason=%s detail=%s",
                         task.value,
                         attempts,
                         exc.reason_code,

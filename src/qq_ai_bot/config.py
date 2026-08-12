@@ -573,11 +573,7 @@ class Settings(BaseSettings):
     def _load_system_prompt_file(self) -> Self:
         """Load the shared UTF-8 persona without changing prompt assembly semantics."""
 
-        persona_file = (
-            self.bot_persona_file
-            or self.yuki_persona_file
-            or Path("config/persona.md")
-        )
+        persona_file = self.bot_persona_file or self.yuki_persona_file or Path("config/persona.md")
         if (
             self.bot_persona_file is None
             and persona_file == Path("config/yuki_persona_core.md")

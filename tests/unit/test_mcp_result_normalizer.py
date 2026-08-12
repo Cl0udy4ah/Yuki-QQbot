@@ -101,9 +101,7 @@ def test_single_json_text_is_promoted_redacted_and_keeps_non_text_blocks() -> No
             },
         }
     ]
-    assert result.content == (
-        {"type": "image", "data": "base64-image", "mimeType": "image/png"},
-    )
+    assert result.content == ({"type": "image", "data": "base64-image", "mimeType": "image/png"},)
 
 
 def test_plain_and_error_text_redact_inline_credentials_without_json_promotion() -> None:

@@ -148,10 +148,7 @@ def normalize_reply_target(
     a group conversation where disambiguation is useful.
     """
 
-    if (
-        requested_event_id is None
-        or requested_event_id not in planner_input.known_event_ids
-    ):
+    if requested_event_id is None or requested_event_id not in planner_input.known_event_ids:
         return None
     if (
         planner_input.scope_type is ScopeType.PRIVATE

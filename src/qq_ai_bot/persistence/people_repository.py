@@ -57,9 +57,7 @@ def normalize_person_name(value: str) -> str:
 
     normalized = unicodedata.normalize("NFKC", value).casefold()
     return "".join(
-        character
-        for character in normalized
-        if unicodedata.category(character)[0] in {"L", "N"}
+        character for character in normalized if unicodedata.category(character)[0] in {"L", "N"}
     )
 
 

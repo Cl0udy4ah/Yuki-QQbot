@@ -440,12 +440,8 @@ async def test_planner_history_excludes_the_separate_current_message() -> None:
     )
 
     assert [message.role for message in planner_input.history_messages] == ["assistant"]
-    assert planner_input.history_messages[0].content == (
-        "[Yuki|QQ:9999]\n#1>上一条回复"
-    )
-    assert planner_input.current_message.content == (
-        "[远野|QQ:1001]\n#2>有时候还要学会调用工具"
-    )
+    assert planner_input.history_messages[0].content == ("[Yuki|QQ:9999]\n#1>上一条回复")
+    assert planner_input.current_message.content == ("[远野|QQ:1001]\n#2>有时候还要学会调用工具")
     assert planner_input.known_event_ids == (1, 2)
     assert planner_input.necessity.pending_message_count == 1
 

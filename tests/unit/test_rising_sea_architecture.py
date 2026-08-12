@@ -330,9 +330,7 @@ async def test_structured_runner_repairs_one_invalid_function_result() -> None:
     assert len(executor.requests) == 2
     assert executor.requests[1].messages[:2] == executor.requests[0].messages
     assert "previous_invalid_result" in (executor.requests[1].messages[2].content or "")
-    assert "Keep the value field as an integer." in (
-        executor.requests[1].messages[2].content or ""
-    )
+    assert "Keep the value field as an integer." in (executor.requests[1].messages[2].content or "")
 
 
 @pytest.mark.asyncio

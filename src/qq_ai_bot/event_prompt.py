@@ -87,9 +87,7 @@ class ChatEventPromptRenderer:
     ) -> tuple[tuple[int, tuple[int, ...], ChatMessage], ...]:
         """Group adjacent visible events from one immutable sender identity."""
 
-        grouped: list[
-            tuple[int, tuple[int, ...], ChatMessage, tuple[str, str, str] | None]
-        ] = []
+        grouped: list[tuple[int, tuple[int, ...], ChatMessage, tuple[str, str, str] | None]] = []
         for row in rows:
             message = self.reference_message(row)
             rendered = (message.content or "").strip()
@@ -179,8 +177,7 @@ class ChatEventPromptRenderer:
         if mention_field:
             fields.append(mention_field)
         return (
-            f"[{self._row_display_name(row)}|QQ:{row.sender_user_id}]\n"
-            f"{'|'.join(fields)}>{content}"
+            f"[{self._row_display_name(row)}|QQ:{row.sender_user_id}]\n{'|'.join(fields)}>{content}"
         )
 
     def render_inbound(self, inbound: InboundMessage, content: str) -> str:

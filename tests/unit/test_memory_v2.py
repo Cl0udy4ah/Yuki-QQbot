@@ -237,10 +237,13 @@ def test_validator_rejects_non_event_evidence_but_trusts_model_paraphrase() -> N
     event = _event()
     validator = MemoryClaimValidator()
     assert validator.validate(_claim(evidence_quote="上下文里有人准备考研"), event) is None
-    assert validator.validate(
-        _claim(content="准备出国", evidence_quote="我准备考研"),
-        event,
-    ) is not None
+    assert (
+        validator.validate(
+            _claim(content="准备出国", evidence_quote="我准备考研"),
+            event,
+        )
+        is not None
+    )
 
 
 def test_validator_allows_grounded_chinese_paraphrase_without_suffix_match() -> None:
@@ -286,14 +289,17 @@ def test_validator_does_not_parse_named_other_from_prose(
 ) -> None:
     event = replace(_event(scope_type=ScopeType.GROUP, group_id="3001"), content=text)
 
-    assert MemoryClaimValidator().validate(
-        _claim(
-            scope_type="person_group",
-            content=content,
-            evidence_quote=text,
-        ),
-        event,
-    ) is not None
+    assert (
+        MemoryClaimValidator().validate(
+            _claim(
+                scope_type="person_group",
+                content=content,
+                evidence_quote=text,
+            ),
+            event,
+        )
+        is not None
+    )
 
 
 @pytest.mark.parametrize(

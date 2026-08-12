@@ -227,9 +227,7 @@ class MemoryContextService:
         selected_ids = {hit.fact.id for hit in selected}
         blocks = tuple(
             block.model_copy(
-                update={
-                    "hits": tuple(hit for hit in block.hits if hit.fact.id in selected_ids)
-                }
+                update={"hits": tuple(hit for hit in block.hits if hit.fact.id in selected_ids)}
             )
             for block in result.blocks
         )
@@ -262,9 +260,7 @@ class MemoryContextService:
                 "hits": (*primary.hits, *new_hits),
                 "candidate_count": primary.candidate_count + additional.candidate_count,
                 "selected_count": primary.selected_count + len(new_hits),
-                "semantic_degraded": (
-                    primary.semantic_degraded or additional.semantic_degraded
-                ),
+                "semantic_degraded": (primary.semantic_degraded or additional.semantic_degraded),
             }
         )
 

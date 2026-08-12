@@ -70,7 +70,8 @@ class AttributionPolicy:
         if claim.subject_ref == "speaker":
             return (
                 MemoryPolicyDecision.accept()
-                if basis in {
+                if basis
+                in {
                     MemorySubjectBasis.FIRST_PERSON,
                     MemorySubjectBasis.OMITTED_SELF,
                 }

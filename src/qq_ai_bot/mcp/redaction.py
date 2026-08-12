@@ -68,11 +68,7 @@ def redact_sensitive_data(value: Any) -> Any:
 
     if isinstance(value, dict):
         return {
-            str(key): (
-                "[redacted]"
-                if is_sensitive_key(str(key))
-                else redact_sensitive_data(child)
-            )
+            str(key): ("[redacted]" if is_sensitive_key(str(key)) else redact_sensitive_data(child))
             for key, child in value.items()
         }
     if isinstance(value, list):
