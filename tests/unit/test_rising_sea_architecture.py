@@ -231,6 +231,21 @@ class _StructuredExecutor:
         return self.mode
 
 
+class _SequencedStructuredExecutor(_StructuredExecutor):
+    def __init__(
+        self,
+        responses: tuple[ChatResponse, ...],
+        mode: StructuredOutputMode,
+    ) -> None:
+        super().__init__(responses[-1], mode)
+        self.responses = list(responses)
+
+    async def execute(self, task: ModelTask, request: ChatRequest) -> ChatResponse:
+        assert task is ModelTask.PLANNER
+        self.requests.append(request)
+        return self.responses.pop(0)
+
+
 @pytest.mark.asyncio
 async def test_structured_runner_uses_schema_channel_and_rejects_extra_text() -> None:
     executor = _StructuredExecutor(
@@ -272,6 +287,81 @@ async def test_structured_runner_uses_schema_channel_and_rejects_extra_text() ->
             max_output_tokens=100,
             allow_text_json=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_structured_runner_repairs_one_invalid_function_result() -> None:
+    executor = _SequencedStructuredExecutor(
+        (
+            ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="invalid",
+                        function=ToolFunction(name="emit_result", arguments='{"value":'),
+                    ),
+                ),
+            ),
+            ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(
+                        id="repaired",
+                        function=ToolFunction(name="emit_result", arguments='{"value":7}'),
+                    ),
+                ),
+            ),
+        ),
+        StructuredOutputMode.FUNCTION_TOOL,
+    )
+
+    result = await StructuredTaskRunner(executor).run(
+        task=ModelTask.PLANNER,
+        instruction="Return one result.",
+        structured_input={"input": 1},
+        output_model=_Output,
+        validation_retries=1,
+        validation_repair_hint="Keep the value field as an integer.",
+    )
+
+    assert result.value == 7
+    assert len(executor.requests) == 2
+    assert executor.requests[1].messages[:2] == executor.requests[0].messages
+    assert "previous_invalid_result" in (executor.requests[1].messages[2].content or "")
+    assert "Keep the value field as an integer." in (executor.requests[1].messages[2].content or "")
+
+
+@pytest.mark.asyncio
+async def test_structured_runner_reports_exhausted_validation_reason() -> None:
+    invalid = ChatResponse(
+        content="",
+        latency_seconds=0,
+        tool_calls=(
+            ToolCall(
+                id="invalid",
+                function=ToolFunction(name="emit_result", arguments='{"other":7}'),
+            ),
+        ),
+    )
+    executor = _SequencedStructuredExecutor(
+        (invalid, invalid),
+        StructuredOutputMode.FUNCTION_TOOL,
+    )
+
+    with pytest.raises(StructuredTaskError) as captured:
+        await StructuredTaskRunner(executor).run(
+            task=ModelTask.PLANNER,
+            instruction="Return one result.",
+            structured_input={},
+            output_model=_Output,
+            validation_retries=1,
+        )
+
+    assert captured.value.reason_code == "schema_validation"
+    assert captured.value.attempts == 2
+    assert "value:missing" in captured.value.detail
 
 
 class _CapturingModelProvider:

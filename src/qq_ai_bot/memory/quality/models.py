@@ -54,6 +54,9 @@ class QualityClaim(_QualityModel):
     importance: int = Field(default=3, ge=1, le=5)
     confidence: float = Field(default=0.9, ge=0, le=1)
     source_type: str = "automatic"
+    subject_basis: str = "omitted_self"
+    retention: str = "durable"
+    source_style: str = "natural_statement"
     temporal_mode: str = "persistent"
     valid_from: str | None = None
     valid_until: str | None = None

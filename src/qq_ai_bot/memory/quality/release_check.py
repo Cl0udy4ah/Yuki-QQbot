@@ -49,9 +49,7 @@ class MemoryReleaseCheck:
             )
         )
         head = self._alembic_head()
-        items.append(
-            self._item("alembic_head", head == _ALEMBIC_HEAD, f"Alembic head is {head}")
-        )
+        items.append(self._item("alembic_head", head == _ALEMBIC_HEAD, f"Alembic head is {head}"))
         try:
             suite = load_quality_suite(self._root / "tests/fixtures/memory_quality/v1")
             items.append(

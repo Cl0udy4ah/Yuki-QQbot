@@ -6,6 +6,7 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -36,14 +37,12 @@ from qq_ai_bot.memory.extraction import (
 from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
 from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.memory.subjects import SubjectResolver
-from qq_ai_bot.memory.validation import (
-    MemoryClaimValidator,
-    event_requests_memory_mutation,
-)
+from qq_ai_bot.memory.subjects import SubjectContextBuilder, SubjectResolver
+from qq_ai_bot.memory.validation import MemoryClaimValidator
 from qq_ai_bot.memory.worker import MemoryWorker
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import MemoryJobModel
+from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.concurrency import ConcurrencyManager
@@ -89,6 +88,31 @@ def _claim(**overrides: object) -> MemoryClaim:
     return MemoryClaim.model_validate(values)
 
 
+def test_production_memory_path_has_no_legacy_semantic_detectors() -> None:
+    root = Path(__file__).parents[2] / "src/qq_ai_bot"
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            root / "memory/quality_policy.py",
+            root / "memory/validation.py",
+            root / "memory/subjects.py",
+            root / "memory/self_reflection/repository.py",
+            root / "memory/self_reflection/service.py",
+            root / "services/chat.py",
+        )
+    )
+    for forbidden in (
+        "event_requests_memory_mutation",
+        "event_requests_explicit_memory",
+        "_semantically_anchored",
+        "_LEADING_NAMED_OTHER",
+        "_NAMED_SUBJECT",
+        "_HIGH_VALUE",
+        "_PRIVATE_IDENTIFIER",
+    ):
+        assert forbidden not in source
+
+
 def test_extraction_schema_rejects_model_selected_identity_fields() -> None:
     with pytest.raises(ValidationError):
         MemoryClaim.model_validate({**_claim().model_dump(), "user_id": "2002"})
@@ -127,6 +151,7 @@ def test_subject_resolver_only_allows_primary_speaker_and_current_group() -> Non
     assert [item.subject_ref for item in SubjectResolver.available(group)] == [
         "speaker",
         "group",
+        "named_member",
     ]
     assert (
         SubjectResolver.resolve(
@@ -157,6 +182,44 @@ def test_validator_owns_event_and_speaker_identity() -> None:
     assert evidence.source_speaker_user_id == "1001"
 
 
+@pytest.mark.asyncio
+async def test_model_declared_group_name_is_resolved_without_parsing_event_text(
+    database: Database,
+) -> None:
+    people = PeopleRepository(database)
+    await people.observe(
+        user_id="2002",
+        nickname="鬼頭桃菜",
+        group_id="3001",
+        group_card="江环",
+    )
+    event = replace(
+        _event(scope_type=ScopeType.GROUP, group_id="3001"),
+        content="这段正文没有固定的姓名谓词格式",
+    )
+    builder = SubjectContextBuilder(people)
+    context = await builder.build(event)
+    claims, context = await builder.resolve_claim_names(
+        event,
+        (
+            _claim(
+                subject_ref="named_member",
+                subject_name="江环",
+                scope_type="person_group",
+                subject_basis=MemorySubjectBasis.NAMED_UNRESOLVED,
+                evidence_quote=event.content,
+                content="江环是鬼頭桃菜",
+            ),
+        ),
+        context,
+    )
+
+    assert claims[0].subject_ref == "named_1"
+    resolved = context.resolve("named_1:person_group")
+    assert resolved is not None
+    assert resolved.subject_user_id == "2002"
+
+
 def test_validator_rejects_unknown_subject_and_private_group_claims() -> None:
     event = _event()
     validator = MemoryClaimValidator()
@@ -170,7 +233,7 @@ def test_validator_rejects_unknown_subject_and_private_group_claims() -> None:
     )
 
 
-def test_validator_rejects_context_only_or_semantically_different_claims() -> None:
+def test_validator_rejects_non_event_evidence_but_trusts_model_paraphrase() -> None:
     event = _event()
     validator = MemoryClaimValidator()
     assert validator.validate(_claim(evidence_quote="上下文里有人准备考研"), event) is None
@@ -179,7 +242,7 @@ def test_validator_rejects_context_only_or_semantically_different_claims() -> No
             _claim(content="准备出国", evidence_quote="我准备考研"),
             event,
         )
-        is None
+        is not None
     )
 
 
@@ -198,28 +261,7 @@ def test_validator_allows_grounded_chinese_paraphrase_without_suffix_match() -> 
     assert result.claim.fact.content == "用户喜欢美式咖啡"
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "请记住我喜欢咖啡",
-        "删除这条长期记忆",
-        "把这条记忆纠正一下",
-        "Yuki 你记错了",
-        "please update this memory",
-    ],
-)
-def test_explicit_memory_mutation_intent_is_detected(text: str) -> None:
-    assert event_requests_memory_mutation(text)
-
-
-def test_configured_bot_alias_is_used_for_memory_mutation_intent() -> None:
-    assert event_requests_memory_mutation(
-        "米卡记错了",
-        bot_aliases=("Mika", "米卡"),
-    )
-
-
-def test_configured_bot_alias_cannot_fall_back_to_sender_memory() -> None:
+def test_backend_does_not_infer_bot_subject_from_text() -> None:
     text = "Mika 是 CI runner"
     event = replace(_event(), content=text)
     result = MemoryClaimValidator(bot_aliases=("Mika", "米卡")).validate_claim_result(
@@ -231,14 +273,7 @@ def test_configured_bot_alias_cannot_fall_back_to_sender_memory() -> None:
         event,
     )
 
-    assert not result.ok
-    assert result.candidate_type == "self"
-
-
-def test_memory_discussion_is_not_treated_as_mutation_intent() -> None:
-    assert not event_requests_memory_mutation("记忆模块的架构应该怎么设计")
-    assert not event_requests_memory_mutation("按修改路径修复记忆模块的错误")
-    assert not event_requests_memory_mutation("你还记得我们第一次测试吗？")
+    assert result.ok
 
 
 @pytest.mark.parametrize(
@@ -248,7 +283,7 @@ def test_memory_discussion_is_not_treated_as_mutation_intent() -> None:
         ("廉政这爱好倒是挺稳定的，六年前到现在都没变", "廉政的爱好很稳定"),
     ],
 )
-def test_validator_rejects_named_other_misattributed_to_speaker(
+def test_validator_does_not_parse_named_other_from_prose(
     text: str,
     content: str,
 ) -> None:
@@ -263,7 +298,7 @@ def test_validator_rejects_named_other_misattributed_to_speaker(
             ),
             event,
         )
-        is None
+        is not None
     )
 
 
@@ -287,13 +322,14 @@ def test_validator_keeps_first_person_and_subjectless_self_reports(text: str) ->
     )
 
 
-def test_interaction_preferences_are_not_stored_as_person_facts() -> None:
+def test_memory_kind_comes_from_model_declaration() -> None:
     event = _event()
     event = replace(event, content="以后回复我时请简短一点")
     validated = MemoryClaimValidator().validate_claim(
         _claim(
             content="回复时简短一点",
             evidence_quote="以后回复我时请简短一点",
+            kind="preference",
         ),
         event,
     )
@@ -304,7 +340,7 @@ def test_interaction_preferences_are_not_stored_as_person_facts() -> None:
 @pytest.mark.parametrize(
     ("text", "basis", "expected_reason"),
     [
-        ("你今天花了 5.36", MemorySubjectBasis.ADDRESSED_SECOND_PERSON, "second_person"),
+        ("你今天花了 5.36", MemorySubjectBasis.ADDRESSED_SECOND_PERSON, "speaker_basis"),
         ("Yuki 是 CI runner", MemorySubjectBasis.ABOUT_YUKI, "self_candidate"),
     ],
 )
@@ -365,6 +401,7 @@ def test_explicit_request_can_override_retention_but_not_attribution() -> None:
             evidence_quote="请记住我今天第一次钓到鱼",
             retention=MemoryRetention.TRANSIENT,
             source_style=MemorySourceStyle.INSTRUCTION,
+            source_type=MemorySourceType.EXPLICIT,
         ),
         event,
     )

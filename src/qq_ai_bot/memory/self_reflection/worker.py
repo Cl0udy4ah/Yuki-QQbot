@@ -15,6 +15,7 @@ from qq_ai_bot.memory.self_reflection.models import (
 )
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
 from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
+from qq_ai_bot.model_runtime.structured import StructuredTaskError
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +49,11 @@ class SelfReflectionWorker:
         self._task = asyncio.create_task(self._run(), name="memory-self-reflection-worker")
         logger.info(
             "memory_self_reflection_started schedule_hours=%s timezone=%s "
-            "max_sessions=%d max_daily_calls=%d",
+            "max_batches=%d max_batches_per_conversation=%d max_daily_calls=%d",
             ",".join(str(item) for item in sorted(self._hours)),
             self._settings.memory_self_reflection_timezone,
-            self._settings.memory_self_reflection_max_sessions_per_run,
+            self._settings.memory_self_reflection_max_batches_per_run,
+            self._settings.memory_self_reflection_max_batches_per_conversation_per_run,
             self._settings.memory_self_reflection_max_daily_calls,
         )
 
@@ -80,7 +82,7 @@ class SelfReflectionWorker:
     ) -> int:
         async with self._process_lock:
             result = await self._process_cycle(now=now, force=force)
-            return result.completed_conversations
+            return result.completed_batches
 
     async def _process_cycle(
         self,
@@ -92,68 +94,86 @@ class SelfReflectionWorker:
         local = (now or datetime.now(UTC)).astimezone(self._timezone)
         if not force and local.hour not in self._hours:
             return SelfReflectionCycleResult()
-        slot = (
-            f"{local.date().isoformat()}:manual:{local.strftime('%H%M%S%f')}"
+        base_slot = (
+            f"{local.date().isoformat()}:m:{local.strftime('%H%M%S%f')}"
             if force
             else f"{local.date().isoformat()}:{local.hour:02d}"
         )
-        batches = await self._repository.claim_due(
-            scheduled_slot=slot,
-            local_date=local.date().isoformat(),
-            event_threshold=self._settings.memory_self_reflection_event_threshold,
-            character_threshold=self._settings.memory_self_reflection_character_threshold,
-            low_event_threshold=(self._settings.memory_self_reflection_low_event_threshold),
-            low_character_threshold=(self._settings.memory_self_reflection_low_character_threshold),
-            natural_gap_seconds=(self._settings.memory_self_reflection_natural_gap_seconds),
-            max_wait_seconds=self._settings.memory_self_reflection_max_wait_seconds,
-            max_sessions=self._settings.memory_self_reflection_max_sessions_per_run,
-            max_daily_calls=self._settings.memory_self_reflection_max_daily_calls,
-            max_events=self._settings.memory_self_reflection_max_events,
-            max_characters=self._settings.memory_self_reflection_max_characters,
-            context_events=4,
-            force=force,
-        )
+        attempted = 0
         completed = 0
         failed = 0
         proposal_count = 0
         committed_count = 0
-        for batch in batches:
-            try:
-                proposals, committed = await self._service.reflect(batch)
-                await self._repository.complete(
-                    batch,
-                    proposals=proposals,
-                    committed=committed,
-                )
-                completed += 1
-                proposal_count += proposals
-                committed_count += committed
-                logger.info(
-                    "memory_self_reflection_completed run_id=%d trigger=%s "
-                    "events=%d proposals=%d committed=%d",
-                    batch.run_id,
-                    batch.trigger_reason,
-                    len(batch.events),
-                    proposals,
-                    committed,
-                )
-            except asyncio.CancelledError:
-                raise
-            except (OSError, RuntimeError, ValueError) as exc:
-                await self._repository.fail(batch.run_id, type(exc).__name__)
-                failed += 1
-                self._metrics.increment("self_reflection_failed")
-                logger.warning(
-                    "memory_self_reflection_failed run_id=%d trigger=%s error_category=%s",
-                    batch.run_id,
-                    batch.trigger_reason,
-                    type(exc).__name__,
-                )
+        failed_conversation_keys: set[str] = set()
+        for round_index in range(
+            self._settings.memory_self_reflection_max_batches_per_conversation_per_run
+        ):
+            remaining = self._settings.memory_self_reflection_max_batches_per_run - attempted
+            if remaining <= 0:
+                break
+            batches = await self._repository.claim_due(
+                scheduled_slot=f"{base_slot}:r{round_index + 1:02d}",
+                local_date=local.date().isoformat(),
+                event_threshold=self._settings.memory_self_reflection_event_threshold,
+                character_threshold=self._settings.memory_self_reflection_character_threshold,
+                low_event_threshold=self._settings.memory_self_reflection_low_event_threshold,
+                low_character_threshold=(
+                    self._settings.memory_self_reflection_low_character_threshold
+                ),
+                natural_gap_seconds=self._settings.memory_self_reflection_natural_gap_seconds,
+                max_wait_seconds=self._settings.memory_self_reflection_max_wait_seconds,
+                max_sessions=remaining,
+                max_daily_calls=self._settings.memory_self_reflection_max_daily_calls,
+                max_events=self._settings.memory_self_reflection_max_events,
+                max_characters=self._settings.memory_self_reflection_max_characters,
+                context_events=4,
+                force=force,
+                excluded_conversation_keys=frozenset(failed_conversation_keys),
+            )
+            if not batches:
+                break
+            attempted += len(batches)
+            for batch in batches:
+                try:
+                    proposals, committed = await self._service.reflect(batch)
+                    await self._repository.complete(
+                        batch,
+                        proposals=proposals,
+                        committed=committed,
+                    )
+                    completed += 1
+                    proposal_count += proposals
+                    committed_count += committed
+                    logger.info(
+                        "memory_self_reflection_completed run_id=%d trigger=%s "
+                        "events=%d proposals=%d committed=%d",
+                        batch.run_id,
+                        batch.trigger_reason,
+                        len(batch.events),
+                        proposals,
+                        committed,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except (OSError, RuntimeError, ValueError) as exc:
+                    error_category = _error_category(exc)
+                    await self._repository.fail(batch.run_id, error_category)
+                    failed_conversation_keys.add(batch.state.conversation_key_hash)
+                    failed += 1
+                    self._metrics.increment("self_reflection_failed")
+                    logger.warning(
+                        "memory_self_reflection_failed run_id=%d trigger=%s error_category=%s "
+                        "error_detail=%s",
+                        batch.run_id,
+                        batch.trigger_reason,
+                        error_category,
+                        _error_detail(exc),
+                    )
         await self._repository.cleanup_receipts()
         return SelfReflectionCycleResult(
-            attempted_conversations=len(batches),
-            completed_conversations=completed,
-            failed_conversations=failed,
+            attempted_batches=attempted,
+            completed_batches=completed,
+            failed_batches=failed,
             proposal_count=proposal_count,
             committed_count=committed_count,
         )
@@ -192,3 +212,16 @@ class SelfReflectionWorker:
                 )
             except TimeoutError:
                 pass
+
+
+def _error_category(exc: BaseException) -> str:
+    if isinstance(exc, StructuredTaskError):
+        return f"StructuredTaskError:{exc.reason_code}"[:64]
+    return type(exc).__name__[:64]
+
+
+def _error_detail(exc: BaseException) -> str:
+    if isinstance(exc, StructuredTaskError):
+        detail = exc.detail or "none"
+        return f"attempts={exc.attempts} {detail}"[:600]
+    return "none"

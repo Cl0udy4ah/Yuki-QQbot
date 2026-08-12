@@ -736,12 +736,8 @@ class PermissionCatalogService:
         descriptors = [
             replace(
                 descriptor,
-                display_name=descriptor.display_name.format(
-                    bot_name=self._bot_display_name
-                ),
-                description=descriptor.description.format(
-                    bot_name=self._bot_display_name
-                ),
+                display_name=descriptor.display_name.format(bot_name=self._bot_display_name),
+                description=descriptor.description.format(bot_name=self._bot_display_name),
             )
             for descriptor in (
                 *_BASE_SELF_SERVICE_CAPABILITIES,

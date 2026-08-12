@@ -346,8 +346,7 @@ async def test_native_web_sources_are_persisted_before_backend_rendering(
 
     assert result.sent_messages == 1
     assert sender.messages[0].text == (
-        "公开文档确认了该信息：\n\n"
-        "来源：\n1. Native docs\n   https://example.com/native-docs"
+        "公开文档确认了该信息：\n\n来源：\n1. Native docs\n   https://example.com/native-docs"
     )
     stored = await WebSearchSourceRepository(database).for_trigger(
         conversation_key="private:1001",

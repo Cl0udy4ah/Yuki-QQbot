@@ -236,6 +236,22 @@ class _CountingBackend(_Backend):
         return await super().execute(name, arguments_json, runtime)
 
 
+class _MutationBackend(_Backend):
+    async def execute(self, name: str, arguments_json: str, runtime: AgentRuntime) -> str:
+        del name, arguments_json, runtime
+        return json.dumps(
+            {
+                "ok": True,
+                "mutation_committed": True,
+                "finalize_after_commit": True,
+                "data": {"status": "pending_payment"},
+            }
+        )
+
+    def post_commit_recovery_text(self) -> str | None:
+        return "操作已经提交。"
+
+
 def _runtime(
     max_requests: int = 4,
     *,
@@ -323,6 +339,47 @@ async def test_responses_continuation_never_removes_declared_function_tools() ->
     ).run((ChatMessage(role="user", content="run"),), _runtime(), _ChangingBackend())
 
     assert {tool.name for tool in executor.requests[1].tools} == {"demo", "new_tool"}
+
+
+@pytest.mark.asyncio
+async def test_responses_committed_mutation_keeps_schema_but_forces_tool_choice_none() -> None:
+    continuation = ProviderContinuation(provider="deepseek", protocol="responses", payload=())
+    executor = _ResponsesExecutor(
+        [
+            ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(
+                    ToolCall(id="mutation-1", function=ToolFunction(name="demo", arguments="{}")),
+                ),
+                continuation=continuation,
+            ),
+            ChatResponse(
+                content="订单已经创建，等待支付。",
+                latency_seconds=0,
+                continuation=continuation,
+            ),
+        ]
+    )
+
+    result = await AgentRunner(
+        cast(TaskModelExecutor, executor),
+        ConcurrencyManager(1),
+    ).run((ChatMessage(role="user", content="create"),), _runtime(), _MutationBackend())
+
+    assert result.text == "订单已经创建，等待支付。"
+    assert len(executor.requests) == 2
+    assert executor.requests[1].tools
+    assert executor.requests[1].tool_choice == "none"
+    assert executor.requests[1].function_outputs == (
+        FunctionCallOutput(
+            call_id="mutation-1",
+            output=(
+                '{"ok": true, "mutation_committed": true, '
+                '"finalize_after_commit": true, "data": {"status": "pending_payment"}}'
+            ),
+        ),
+    )
 
 
 @pytest.mark.asyncio

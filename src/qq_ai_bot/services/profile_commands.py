@@ -207,15 +207,13 @@ class ProfileCommandHandler:
                     return "格式：/ai memory self-reflection run"
                 reflection_result = await self._memory_admin.self_reflection_run(actor)
                 reflection_health = reflection_result.health
-                usage = (
-                    f"{reflection_health.calls_today}/{reflection_result.max_daily_calls}"
-                )
-                if reflection_result.attempted_conversations:
+                usage = f"{reflection_health.calls_today}/{reflection_result.max_daily_calls}"
+                if reflection_result.attempted_batches:
                     return (
                         "Self Reflection 本轮结束："
-                        f"尝试 {reflection_result.attempted_conversations} 个会话，"
-                        f"成功 {reflection_result.completed_conversations} 个，"
-                        f"失败 {reflection_result.failed_conversations} 个；"
+                        f"尝试 {reflection_result.attempted_batches} 个批次，"
+                        f"成功 {reflection_result.completed_batches} 个，"
+                        f"失败 {reflection_result.failed_batches} 个；"
                         f"生成 {reflection_result.proposal_count} 条 proposal，"
                         f"实际写入 {reflection_result.committed_count} 条；"
                         f"今日反思批次 {usage}；"
@@ -226,9 +224,7 @@ class ProfileCommandHandler:
                 elif reflection_health.pending_conversations == 0:
                     reason = "当前没有待处理会话"
                 else:
-                    reason = (
-                        f"待处理会话尚无 {self._bot_display_name} 已发送回复或可信工具结果"
-                    )
+                    reason = f"待处理会话尚无 {self._bot_display_name} 已发送回复或可信工具结果"
                 return f"Self Reflection 本轮未处理会话：{reason}；今日反思批次 {usage}。"
             if operation in {"show", "explain", "history"}:
                 if len(parts) != 1 or not parts[0].isdigit():

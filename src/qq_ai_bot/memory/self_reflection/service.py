@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import re
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.conversations import ScopeType
@@ -56,10 +55,10 @@ from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.time.formatting import local_datetime, utc_iso
 
 logger = logging.getLogger(__name__)
 
-_PRIVATE_IDENTIFIER = re.compile(r"(?:QQ\s*[:：]?\s*\d{5,}|\b\d{7,12}\b)", re.IGNORECASE)
 _EPISODE_INSTRUCTION = (
     "下面是一段你真实参与过的聊天。读完以后，由你判断其中是否有值得长期记住的经历。"
     "如果有，就像人回忆往事一样，用自己的口吻记下当时发生了什么、你如何理解那段经历，"
@@ -131,6 +130,16 @@ class SelfReflectionService:
                 max_output_tokens=self._settings.memory_self_reflection_max_output_tokens,
                 allow_text_json=True,
                 compact_schema=True,
+                validation_retries=1,
+                validation_repair_hint=(
+                    "A long experience must be moved to the top-level episodes array and contain "
+                    "only content and importance. Never use self_episode or episode as a proposal "
+                    "category. A proposal category must be exactly one of self_fact, "
+                    "self_preference, self_reflection, or self_principle, and every proposal must "
+                    "include reason. After moving a legacy episode-shaped item, do not leave a "
+                    "placeholder proposal for it; use an empty proposals array when no separate "
+                    "dynamic fact change remains."
+                ),
             ),
             translate_cancellation=False,
         )
@@ -206,6 +215,7 @@ class SelfReflectionService:
         renderer = ChatEventPromptRenderer(
             all_events,
             bot_display_name=self._settings.bot_display_name,
+            timezone=self._settings.memory_self_reflection_timezone,
         )
         event_map = {f"event_{index}": event for index, event in enumerate(batch.events, 1)}
         rendered_events: list[SelfReflectionEvent] = []
@@ -216,7 +226,10 @@ class SelfReflectionService:
                 rendered_events.append(
                     SelfReflectionEvent(
                         ref=ref,
-                        occurred_at=event.occurred_at,
+                        occurred_at=local_datetime(
+                            event.occurred_at,
+                            self._settings.memory_self_reflection_timezone,
+                        ),
                         direction=event.direction,
                         rendered=rendered,
                     )
@@ -239,7 +252,10 @@ class SelfReflectionService:
         context_rows = [
             SelfReflectionContextEvent(
                 ref=f"context_{index}",
-                occurred_at=event.occurred_at,
+                occurred_at=local_datetime(
+                    event.occurred_at,
+                    self._settings.memory_self_reflection_timezone,
+                ),
                 direction=event.direction,
                 rendered=rendered,
             )
@@ -297,7 +313,14 @@ class SelfReflectionService:
                 previous_episode=(
                     SelfReflectionPreviousEpisode(
                         content=previous_episode.content,
-                        valid_from=previous_episode.valid_from,
+                        valid_from=(
+                            local_datetime(
+                                previous_episode.valid_from,
+                                self._settings.memory_self_reflection_timezone,
+                            )
+                            if previous_episode.valid_from is not None
+                            else None
+                        ),
                         importance=previous_episode.importance,
                     )
                     if previous_episode is not None
@@ -516,7 +539,7 @@ class SelfReflectionService:
                 confidence=0.9,
                 importance=proposal.importance,
                 evidence_quote=anchor.content[:500],
-                valid_from=batch.events[0].occurred_at.isoformat(),
+                valid_from=utc_iso(batch.events[0].occurred_at),
             ),
             MemoryMutationContext(
                 event=anchor,
@@ -575,11 +598,3 @@ class SelfReflectionService:
             raise ValueError("only abstract self memory may be global")
         if proposal.kind is not None and proposal.kind.value == "episode":
             raise ValueError("episodes cannot be global")
-        content = proposal.content or ""
-        names = {
-            item.sender_display_name
-            for item in batch.events
-            if item.sender_user_id != item.bot_user_id
-        }
-        if _PRIVATE_IDENTIFIER.search(content) or any(name and name in content for name in names):
-            raise ValueError("global self reflection contains participant identity")

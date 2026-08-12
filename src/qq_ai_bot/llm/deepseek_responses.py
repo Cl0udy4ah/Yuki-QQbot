@@ -318,9 +318,7 @@ class DeepSeekResponsesProvider(LLMProvider):
             )
             calls.extend(textual_calls)
             content = ""
-            continuation_output = [
-                item for item in output if item is not last_assistant_message
-            ]
+            continuation_output = [item for item in output if item is not last_assistant_message]
             continuation_output.extend(
                 {
                     "id": f"fc_{call.id}",

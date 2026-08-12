@@ -58,8 +58,12 @@ class RecordingSelfReflectionService:
 
 
 class FailingSelfReflectionService:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def reflect(self, batch: SelfReflectionBatch) -> tuple[int, int]:
         del batch
+        self.calls += 1
         raise ValueError("invalid reflection input")
 
 
@@ -75,8 +79,8 @@ class RecordingSelfReflectionWorker:
     def __init__(self) -> None:
         self.calls = 0
         self.result = SelfReflectionCycleResult(
-            attempted_conversations=1,
-            completed_conversations=1,
+            attempted_batches=1,
+            completed_batches=1,
         )
 
     async def run_now(self) -> SelfReflectionCycleResult:
@@ -249,7 +253,7 @@ async def test_reflection_schedule_slot_and_daily_budget_are_idempotent(
     episodes = await repository.claim_due(
         scheduled_slot="2026-08-08:20",
         local_date="2026-08-08",
-        event_threshold=12,
+        event_threshold=2,
         character_threshold=6000,
         max_wait_seconds=28800,
         max_sessions=3,
@@ -317,12 +321,113 @@ async def test_manual_reflection_skips_schedule_and_volume_thresholds(
 
     assert await worker.process_once(datetime(2026, 8, 10, 1, tzinfo=UTC)) == 0
     result = await worker.run_now()
-    assert result.attempted_conversations == 1
-    assert result.completed_conversations == 1
-    assert result.failed_conversations == 0
+    assert result.attempted_batches == 1
+    assert result.completed_batches == 1
+    assert result.failed_batches == 0
     assert len(service.batches) == 1
     assert service.batches[0].trigger_reason == "manual"
     assert len(service.batches[0].events) == 2
+
+
+@pytest.mark.asyncio
+async def test_cycle_can_process_multiple_non_overlapping_batches_from_one_conversation(
+    database: Database,
+) -> None:
+    settings = Settings.model_validate(
+        {
+            "database_url": database.url,
+            "memory_self_reflection_event_threshold": 2,
+            "memory_self_reflection_low_event_threshold": 1,
+            "memory_self_reflection_low_character_threshold": 1,
+            "memory_self_reflection_max_events": 2,
+            "memory_self_reflection_max_batches_per_run": 3,
+            "memory_self_reflection_max_batches_per_conversation_per_run": 3,
+            "memory_self_reflection_max_daily_calls": 10,
+        }
+    )
+    ledger = EventLedgerRepository(database)
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    event_ids: list[int] = []
+    for index in range(8):
+        sender_is_bot = index % 2 == 1
+        event, _ = await ledger.append(
+            bot_user_id="8000",
+            platform_message_id=f"multi-batch-{index}",
+            scope_type=ScopeType.GROUP,
+            sender_user_id="8000" if sender_is_bot else "1001",
+            direction="outbound" if sender_is_bot else "inbound",
+            content=f"连续窗口消息 {index}",
+            group_id="3001",
+            sender_is_bot=sender_is_bot,
+        )
+        event_ids.append(event.id)
+    service = RecordingSelfReflectionService()
+    worker = SelfReflectionWorker(
+        settings=settings,
+        repository=repository,
+        service=cast(SelfReflectionService, service),
+        metrics=MemoryLifecycleMetrics(),
+    )
+
+    result = await worker.run_now()
+
+    assert result.attempted_batches == 3
+    assert result.completed_batches == 3
+    assert [[event.id for event in batch.events] for batch in service.batches] == [
+        event_ids[0:2],
+        event_ids[2:4],
+        event_ids[4:6],
+    ]
+    async with database.sessions() as session:
+        state = await session.scalar(select(MemorySelfReflectionStateModel))
+    assert state is not None
+    assert state.last_event_id == event_ids[5]
+    assert state.pending_events == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_conversation_is_not_retried_in_the_same_cycle(database: Database) -> None:
+    settings = Settings.model_validate(
+        {
+            "database_url": database.url,
+            "memory_self_reflection_event_threshold": 2,
+            "memory_self_reflection_low_event_threshold": 1,
+            "memory_self_reflection_low_character_threshold": 1,
+            "memory_self_reflection_max_events": 2,
+            "memory_self_reflection_max_batches_per_run": 7,
+            "memory_self_reflection_max_batches_per_conversation_per_run": 7,
+            "memory_self_reflection_max_daily_calls": 10,
+        }
+    )
+    ledger = EventLedgerRepository(database)
+    repository = SelfReflectionRepository(database)
+    await repository.scan_new_events()
+    for index in range(4):
+        sender_is_bot = index % 2 == 1
+        await ledger.append(
+            bot_user_id="8000",
+            platform_message_id=f"failed-multi-batch-{index}",
+            scope_type=ScopeType.GROUP,
+            sender_user_id="8000" if sender_is_bot else "1001",
+            direction="outbound" if sender_is_bot else "inbound",
+            content=f"失败窗口消息 {index}",
+            group_id="3001",
+            sender_is_bot=sender_is_bot,
+        )
+    service = FailingSelfReflectionService()
+    worker = SelfReflectionWorker(
+        settings=settings,
+        repository=repository,
+        service=cast(SelfReflectionService, service),
+        metrics=MemoryLifecycleMetrics(),
+    )
+
+    result = await worker.run_now()
+
+    assert result.attempted_batches == 1
+    assert result.failed_batches == 1
+    assert service.calls == 1
 
 
 @pytest.mark.asyncio
@@ -352,18 +457,19 @@ async def test_failed_reflection_batch_is_not_reported_as_completed(
         group_id="3001",
         sender_is_bot=True,
     )
+    service = FailingSelfReflectionService()
     worker = SelfReflectionWorker(
         settings=settings,
         repository=repository,
-        service=cast(SelfReflectionService, FailingSelfReflectionService()),
+        service=cast(SelfReflectionService, service),
         metrics=MemoryLifecycleMetrics(),
     )
 
     result = await worker.run_now()
 
-    assert result.attempted_conversations == 1
-    assert result.completed_conversations == 0
-    assert result.failed_conversations == 1
+    assert result.attempted_batches == 1
+    assert result.completed_batches == 0
+    assert result.failed_batches == 1
     assert result.proposal_count == 0
     assert result.committed_count == 0
 
@@ -409,16 +515,16 @@ async def test_self_reflection_command_requires_superuser_and_reports_usage(
 
     result = await handler.memory(actor=admin, argument="self-reflection run")
 
-    assert "尝试 1 个会话，成功 1 个，失败 0 个" in result
+    assert "尝试 1 个批次，成功 1 个，失败 0 个" in result
     assert "实际写入 0 条" in result
-    assert "今日反思批次 1/9" in result
+    assert "今日反思批次 1/36" in result
     assert worker.calls == 1
     worker.result = SelfReflectionCycleResult(
-        attempted_conversations=1,
-        failed_conversations=1,
+        attempted_batches=1,
+        failed_batches=1,
     )
     failed_result = await handler.memory(actor=admin, argument="self-reflection run")
-    assert "尝试 1 个会话，成功 0 个，失败 1 个" in failed_result
+    assert "尝试 1 个批次，成功 0 个，失败 1 个" in failed_result
     assert "实际写入 0 条" in failed_result
     assert worker.calls == 2
     assert "只有超级管理员" in await handler.memory(

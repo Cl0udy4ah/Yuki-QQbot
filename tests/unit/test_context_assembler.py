@@ -525,6 +525,15 @@ async def test_exact_name_lookup_is_unique_to_the_current_group(database: Databa
         "1003",
     )
 
+    exact = await people.search_group_member_names(" 本群名片 ", "2001")
+    assert exact[0].user_id == "1001"
+    assert exact[0].exact
+
+    fuzzy = await people.search_group_member_names("本群名片片", "2001")
+    assert fuzzy[0].user_id == "1001"
+    assert not fuzzy[0].exact
+    assert fuzzy[0].score >= 0.35
+
 
 @pytest.mark.asyncio
 async def test_sqlite_connections_enable_wal_and_bounded_busy_wait(database: Database) -> None:

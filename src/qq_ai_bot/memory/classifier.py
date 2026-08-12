@@ -15,6 +15,7 @@ from qq_ai_bot.model_runtime.executor import ModelExecutor
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.time.formatting import utc_iso
 
 _INSTRUCTION = """\
 你只负责判断一条新记忆陈述与有限候选之间的语义关系。
@@ -109,8 +110,8 @@ class MemoryRelationClassifier:
                 category=claim.fact.category,
                 content=claim.fact.content,
                 authority=claim.fact.authority.value,
-                valid_from=claim.fact.valid_from.isoformat() if claim.fact.valid_from else None,
-                valid_until=claim.fact.valid_until.isoformat() if claim.fact.valid_until else None,
+                valid_from=utc_iso(claim.fact.valid_from),
+                valid_until=utc_iso(claim.fact.valid_until),
             ),
             candidates=tuple(
                 _ClassifierCandidate(
@@ -120,8 +121,8 @@ class MemoryRelationClassifier:
                     content=row.fact.content,
                     authority=row.fact.authority.value,
                     status=row.fact.status.value,
-                    valid_from=row.fact.valid_from.isoformat() if row.fact.valid_from else None,
-                    valid_until=row.fact.valid_until.isoformat() if row.fact.valid_until else None,
+                    valid_from=utc_iso(row.fact.valid_from),
+                    valid_until=utc_iso(row.fact.valid_until),
                 )
                 for row in candidates
             ),

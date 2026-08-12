@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import random
-import re
 import time
 from dataclasses import replace
 from typing import Protocol, cast
@@ -78,7 +77,6 @@ from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
-from qq_ai_bot.memory.validation import event_requests_memory_mutation
 from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, require_model_executor
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
@@ -353,6 +351,7 @@ class _ChatAgentBackend(AgentToolBackend):
         self._admin_terminal_failure: dict[str, object] | None = None
         self._completed_admin_mutations: set[tuple[str, str]] = set()
         self._committed_mutation_messages: list[str] = []
+        self._mutation_committed = False
         self._automation_persisted = False
         self._batch: list[ToolCall] = []
         self._catalog: UnifiedToolCatalog | None = None
@@ -424,7 +423,14 @@ class _ChatAgentBackend(AgentToolBackend):
             tuple(entry.descriptor for entry in self._catalog.entries),
             replace(
                 policy_context,
-                tool_selection=ToolSelection(mode=self._runtime.tool_mode, scopes=()),
+                tool_selection=ToolSelection(
+                    mode=(
+                        ToolMode.INHERIT
+                        if self._runtime.origin is TurnOrigin.USER_MESSAGE
+                        else self._runtime.tool_mode
+                    ),
+                    scopes=(),
+                ),
             ),
         )
         authority_visible_names = {descriptor.model_name for descriptor in authority_visible}
@@ -476,6 +482,7 @@ class _ChatAgentBackend(AgentToolBackend):
                     entry
                     for entry in filtered_catalog.entries
                     if entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
+                    or entry.descriptor.model_name in self._requested_tool_names
                 ),
             )
         if self._runtime.selected_tool_names is not None:
@@ -554,6 +561,7 @@ class _ChatAgentBackend(AgentToolBackend):
         if (
             self._runtime.tool_groups
             and not selected_scopes
+            and self._runtime.origin is not TurnOrigin.USER_MESSAGE
             and not any(
                 entry.descriptor.exposure is CapabilityExposure.DIRECT_ALWAYS
                 for entry in filtered_catalog.entries
@@ -581,7 +589,7 @@ class _ChatAgentBackend(AgentToolBackend):
         definitions = tuple(entry.descriptor.as_chat_tool() for entry in budgeted.entries)
         exposed_names = {tool.name for tool in definitions}
         may_request_more = bool(
-            self._runtime.tool_mode is not ToolMode.NONE
+            self._runtime.origin is TurnOrigin.USER_MESSAGE
             and self._requestable_catalog is not None
             and any(
                 entry.descriptor.model_name not in exposed_names
@@ -668,6 +676,7 @@ class _ChatAgentBackend(AgentToolBackend):
         )
 
     def begin_batch(self, calls: tuple[ToolCall, ...], runtime: AgentRuntime) -> None:
+        del runtime
         self._batch = list(calls)
 
     def did_use_web(self) -> bool:
@@ -695,6 +704,21 @@ class _ChatAgentBackend(AgentToolBackend):
         call = self._batch.pop(call_index)
         if name == _SET_REPLY_TARGET_NAME:
             return self._set_reply_target(arguments_json)
+        if self._tools_closed:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": (
+                        "mutation_already_committed" if self._mutation_committed else "tools_closed"
+                    ),
+                    "detail": (
+                        "本轮已有修改成功提交，后续工具调用已关闭。"
+                        if self._mutation_committed
+                        else "本轮工具调用已因之前的终止错误关闭。"
+                    ),
+                },
+                ensure_ascii=False,
+            )
         if name == REQUEST_TOOLS_NAME:
             return self._request_tools(arguments_json)
         if name not in self._callable_tool_names:
@@ -739,9 +763,7 @@ class _ChatAgentBackend(AgentToolBackend):
         is_web_tool = ToolGroup.WEB.value in effective_descriptor.scope_ids
         config = self._runtime.runtime_config
         assert config is not None
-        mutation_identity = (
-            (call.function.name, call.function.arguments) if self._is_mutating_call(call) else None
-        )
+        mutation_identity = self._mutation_identity(call)
         mutation_committed = False
         if mutation_identity is not None and mutation_identity in self._completed_admin_mutations:
             result = json.dumps(
@@ -823,13 +845,21 @@ class _ChatAgentBackend(AgentToolBackend):
                         provider_id=descriptor.provider_id,
                         tool_name=descriptor.provider_tool_name or descriptor.model_name,
                     )
-                mutation_committed = resolve_mutation_commit(
+                mutation_committed = self._is_mutating_call(call) and resolve_mutation_commit(
                     outcome,
                     effective_descriptor,
+                )
+                should_finalize_after_commit = bool(
+                    mutation_committed
+                    and (
+                        outcome.finalize_after_commit is True
+                        or effective_descriptor.finalize_after_commit
+                    )
                 )
                 outcome = replace(
                     outcome,
                     mutation_committed=mutation_committed,
+                    finalize_after_commit=True if should_finalize_after_commit else None,
                 )
                 tooling = config.tooling
                 mcp = config.mcp
@@ -911,11 +941,17 @@ class _ChatAgentBackend(AgentToolBackend):
                 if mutation_identity is not None and mutation_committed:
                     self._completed_admin_mutations.add(mutation_identity)
                     self._remember_committed_mutation(decoded)
+                    self._mutation_committed = True
             elif (decoded.get("error") or decoded.get("error_code")) == "duplicate_mutation":
                 # A prior identical call already committed in this turn. Keep
                 # the successful result available so the model can summarize it.
                 self._admin_retry_constraint = None
                 self._admin_terminal_failure = None
+            elif bool(decoded.get("retryable")):
+                self._admin_terminal_failure = None
+                self._admin_retry_constraint = self._retry_identity(call)
+                if self._admin_retry_constraint is None:
+                    self._tools_closed = True
             elif (decoded.get("error") or decoded.get("error_code")) in _ADMIN_RETRYABLE_ERRORS:
                 self._admin_terminal_failure = decoded
                 self._admin_retry_constraint = self._retry_identity(call)
@@ -965,7 +1001,13 @@ class _ChatAgentBackend(AgentToolBackend):
     def _remember_committed_mutation(self, result: dict[str, object]) -> None:
         message = str(result.get("public_message") or "").strip()
         if not message:
-            message = "操作已成功完成。"
+            receipt = json.dumps(
+                result,
+                ensure_ascii=False,
+                default=str,
+                separators=(",", ":"),
+            )
+            message = f"操作已经提交。以下是工具返回的结果：\n{receipt}"
         if message not in self._committed_mutation_messages:
             self._committed_mutation_messages.append(message)
 
@@ -979,6 +1021,12 @@ class _ChatAgentBackend(AgentToolBackend):
             self._catalog.by_model_name(call.function.name) if self._catalog is not None else None
         )
         descriptor = entry.descriptor if entry is not None else None
+        admin_tools = getattr(self._service, "_admin_tools", None)
+        if descriptor is not None and descriptor.provider_id == "admin" and admin_tools is not None:
+            return cast(AdminToolService, admin_tools).is_mutating_call(
+                call.function.name,
+                call.function.arguments,
+            )
         return bool(
             descriptor is not None
             and self._effective_descriptor(call, descriptor).risk is not CapabilityRisk.READ
@@ -1032,10 +1080,26 @@ class _ChatAgentBackend(AgentToolBackend):
         return self._effective_descriptor(call, descriptor).risk is not CapabilityRisk.READ
 
     def counts_toward_limit(self, name: str, runtime: AgentRuntime) -> bool:
-        """Keep local reply composition outside the business-tool call budget."""
+        """Keep local response controls and Artifact reads outside the business budget."""
 
         del runtime
-        return name != _SET_REPLY_TARGET_NAME
+        return name not in {_SET_REPLY_TARGET_NAME, _ARTIFACT_READER_NAME}
+
+    def _mutation_identity(self, call: ToolCall) -> tuple[str, str] | None:
+        if not self._is_mutating_call(call):
+            return None
+        try:
+            arguments = json.loads(call.function.arguments)
+        except json.JSONDecodeError:
+            normalized = call.function.arguments.strip()
+        else:
+            normalized = json.dumps(
+                arguments,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        return call.function.name, normalized
 
     def _response_control_definitions(self) -> tuple[ChatTool, ...]:
         if self._runtime.reply_target_control is None or self._runtime.origin not in {
@@ -1149,6 +1213,12 @@ class _ChatAgentBackend(AgentToolBackend):
         selected = self._runtime.selected_tool_names
         self._runtime = replace(
             self._runtime,
+            tool_mode=(
+                ToolMode.INHERIT
+                if self._runtime.tool_mode is ToolMode.NONE
+                and self._runtime.origin is TurnOrigin.USER_MESSAGE
+                else self._runtime.tool_mode
+            ),
             tool_groups=frozenset((*self._runtime.tool_groups, *loaded_scopes)),
             selected_tool_names=(
                 None if selected is None else frozenset((*selected, *loaded_names))
@@ -1424,24 +1494,65 @@ class ChatService:
                 if not isinstance(decoded, dict):
                     raise ValueError("artifact arguments must be an object")
                 handle = str(decoded.get("handle", ""))
+                operation = str(decoded.get("operation", "text"))
+                raw_path = decoded.get("path", [])
+                if not isinstance(raw_path, list) or any(
+                    isinstance(part, bool) or not isinstance(part, (str, int)) for part in raw_path
+                ):
+                    return ToolExecutionResult(
+                        ok=False,
+                        error_code="artifact_path_invalid",
+                        public_message="Artifact path 必须是字符串键和整数下标组成的数组",
+                        provider_id=_ARTIFACT_PROVIDER_ID,
+                        tool_name=_ARTIFACT_READER_NAME,
+                    )
                 offset = int(decoded.get("offset", 0))
                 limit = int(decoded.get("limit", 8000))
                 query = str(decoded.get("query", ""))
+                max_characters = _core_result_character_budget(context.runtime_config)
                 result = await artifacts.read(
                     handle,
+                    operation=operation,
+                    path=tuple(raw_path),
                     offset=offset,
                     limit=limit,
                     query=query,
+                    max_characters=max_characters,
                 )
                 if result is None:
-                    return {
-                        "ok": False,
-                        "error": "artifact_not_found",
-                        "detail": "Artifact 不存在或已过期",
+                    return ToolExecutionResult(
+                        ok=False,
+                        error_code="artifact_not_found",
+                        public_message="Artifact 不存在或已过期",
+                        provider_id=_ARTIFACT_PROVIDER_ID,
+                        tool_name=_ARTIFACT_READER_NAME,
+                    )
+                error_code = result.get("error_code")
+                if isinstance(error_code, str):
+                    detail = str(result.get("detail") or "Artifact 读取失败")
+                    error_data = {
+                        key: value
+                        for key, value in result.items()
+                        if key not in {"error_code", "detail"}
                     }
+                    return ToolExecutionResult(
+                        ok=False,
+                        data=error_data or None,
+                        error_code=error_code,
+                        public_message=detail,
+                        provider_id=_ARTIFACT_PROVIDER_ID,
+                        tool_name=_ARTIFACT_READER_NAME,
+                    )
+                if result.get("mode") != "text":
+                    return ToolExecutionResult(
+                        ok=True,
+                        data=result,
+                        provider_id=_ARTIFACT_PROVIDER_ID,
+                        tool_name=_ARTIFACT_READER_NAME,
+                    )
                 return _fit_artifact_page_result(
                     result,
-                    max_characters=_core_result_character_budget(context.runtime_config),
+                    max_characters=max_characters,
                 )
 
             registry.register(
@@ -1451,18 +1562,51 @@ class ChatService:
                     definitions=lambda _context: (
                         ChatTool(
                             name="read_tool_artifact",
-                            description="分页读取工具产生的短期 Artifact，可按关键词定位。",
+                            description=(
+                                "读取工具产生的短期 Artifact。JSON 优先使用 inspect 查看结构、"
+                                "get 按路径读取、search 返回关键词命中的完整对象；旧文本使用 text。"
+                            ),
                             parameters={
                                 "type": "object",
                                 "properties": {
                                     "handle": {"type": "string"},
-                                    "offset": {"type": "integer", "minimum": 0},
+                                    "operation": {
+                                        "type": "string",
+                                        "enum": ["inspect", "get", "search", "text"],
+                                        "description": (
+                                            "JSON 使用 inspect/get/search；"
+                                            "省略或 text 保持旧文本读取"
+                                        ),
+                                    },
+                                    "path": {
+                                        "type": "array",
+                                        "items": {
+                                            "anyOf": [
+                                                {"type": "string"},
+                                                {"type": "integer"},
+                                            ]
+                                        },
+                                        "maxItems": 32,
+                                        "description": (
+                                            "相对返回中 logical_root 的 JSON 路径，"
+                                            "对象键用字符串、数组下标用整数"
+                                        ),
+                                    },
+                                    "offset": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "description": "JSON 的键/元素/匹配偏移，或 text 字符偏移",
+                                    },
                                     "limit": {
                                         "type": "integer",
                                         "minimum": 1,
                                         "maximum": 32000,
+                                        "description": "JSON 条目数，或 text 最大字符数",
                                     },
-                                    "query": {"type": "string"},
+                                    "query": {
+                                        "type": "string",
+                                        "description": "search 关键词，或 text 的字符串定位词",
+                                    },
                                 },
                                 "required": ["handle"],
                                 "additionalProperties": False,
@@ -1584,15 +1728,10 @@ class ChatService:
                 return 1
 
             source_display_requested = self._source_policy.requested(content)
-            memory_mutation_intent = event_requests_memory_mutation(
-                content,
-                bot_aliases=self._settings.bot_aliases,
-            )
             planner_emoji_only = bool(
                 planned_turn is not None
                 and planned_turn.plan.emoji.is_exclusive
                 and planned_turn.plan.tool_mode is ToolMode.NONE
-                and not memory_mutation_intent
             )
             if planner_emoji_only:
                 messages: tuple[ChatMessage, ...] = ()
@@ -1634,18 +1773,6 @@ class ChatService:
                         ),
                     ),
                 )
-            if memory_mutation_intent:
-                messages = (
-                    *messages,
-                    ChatMessage(
-                        role="system",
-                        content=(
-                            "当前消息明确要求变更长期记忆，memory_change 已作为候选能力提供。"
-                            "请根据用户真实意图自主决定具体操作；只有工具返回 ok=true 且"
-                            "outcome 表示已提交后，才能声称记忆已经创建、修改、删除或恢复。"
-                        ),
-                    ),
-                )
             gateway = (
                 cast(OneBotToolGateway, sender)
                 if callable(getattr(sender, "call_api", None))
@@ -1681,8 +1808,6 @@ class ChatService:
             tool_groups = planner_tool_groups
             if scheduled_automation_allowed and (planned_turn is None or planner_scopes_explicit):
                 tool_groups = frozenset((*tool_groups, ToolGroup.AUTOMATION.value))
-            if memory_mutation_intent:
-                tool_groups = frozenset((*tool_groups, ToolGroup.MEMORY.value))
             web_route = self._web_router.select(content, runtime_config.web.mode)
             web_scope_authorized = not planner_scopes_explicit or any(
                 scope == ToolGroup.WEB.value or scope.startswith(f"{ToolGroup.WEB.value}.")
@@ -1728,7 +1853,7 @@ class ChatService:
                 origin=(TurnOrigin.AUTONOMOUS_GROUP if autonomous else TurnOrigin.USER_MESSAGE),
                 tool_mode=(
                     ToolMode.INHERIT
-                    if scheduled_automation_allowed or memory_mutation_intent
+                    if scheduled_automation_allowed
                     else (
                         planned_turn.plan.tool_mode
                         if planned_turn is not None
@@ -1748,9 +1873,7 @@ class ChatService:
                 selection_query=content,
                 planner_intent=(planned_turn.plan.intent if planned_turn is not None else ""),
                 scheduled_automation_intent=scheduled_automation_allowed,
-                max_model_requests_override=(
-                    1 if fallback_plan and not memory_mutation_intent else None
-                ),
+                max_model_requests_override=(1 if fallback_plan else None),
                 native_web_fallback=bool(
                     web_route is not None and web_route.provider is WebProvider.TAVILY
                 ),
@@ -2482,49 +2605,10 @@ class ChatService:
                 catalog.entries,
                 inherited_priority_scopes,
             )
-        candidates = self._retain_turn_required_tools(
-            candidates,
-            catalog.entries,
-            runtime,
-        )
         return replace(
             runtime,
             selected_tool_names=frozenset(item.descriptor.model_name for item in candidates),
         )
-
-    @staticmethod
-    def _retain_turn_required_tools(
-        selected: list[UnifiedToolCatalogEntry],
-        available: tuple[UnifiedToolCatalogEntry, ...],
-        runtime: ToolRuntime,
-    ) -> list[UnifiedToolCatalogEntry]:
-        """Keep deterministic event/query-bound tools even when the flash reranker omits them."""
-
-        required_names: set[str] = set()
-        if ToolGroup.MEMORY.value in runtime.tool_groups:
-            inbound = runtime.inbound
-            referenced_people = any(
-                user_id not in {inbound.sender.user_id, inbound.bot_user_id}
-                for user_id in inbound.mentioned_user_ids
-            ) or bool(
-                inbound.reply_sender_user_id and inbound.reply_sender_user_id != inbound.bot_user_id
-            )
-            lookup_text = f"{runtime.selection_query} {runtime.planner_intent}"
-            contains_qq = re.search(r"(?<!\d)[1-9]\d{4,19}(?!\d)", lookup_text) is not None
-            if referenced_people or contains_qq or "记忆" in lookup_text:
-                required_names.add("get_person_memories")
-            planner_groups = runtime.planner_tool_groups or frozenset()
-            if not runtime.planner_scopes_explicit and ToolGroup.MEMORY.value not in planner_groups:
-                required_names.add("memory_change")
-
-        selected_names = {item.descriptor.model_name for item in selected}
-        retained = list(selected)
-        for item in available:
-            name = item.descriptor.model_name
-            if name in required_names and name not in selected_names:
-                retained.append(item)
-                selected_names.add(name)
-        return retained
 
     @staticmethod
     def _retain_required_tools(

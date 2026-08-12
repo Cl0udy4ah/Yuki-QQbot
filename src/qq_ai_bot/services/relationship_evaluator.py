@@ -15,6 +15,7 @@ from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
 from qq_ai_bot.persistence.repositories import RelationshipJobRecord
 from qq_ai_bot.services.concurrency import ConcurrencyManager
+from qq_ai_bot.time.formatting import local_iso
 
 RELATIONSHIP_REASON_CODES = frozenset(
     {
@@ -151,7 +152,10 @@ class LLMRelationshipEvaluator:
                         "sender_user_id": event.sender_user_id,
                         "direction": event.direction,
                         "content": event.content,
-                        "occurred_at": event.occurred_at.isoformat(),
+                        "occurred_at": local_iso(
+                            event.occurred_at,
+                            self._settings.default_timezone,
+                        ),
                     }
                     for event in tuple(
                         event

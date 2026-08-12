@@ -163,8 +163,10 @@ async def test_reply_target_control_survives_tool_mode_none_and_is_bounded() -> 
 
     definitions = backend.definitions(agent_runtime, web_was_used=False)
 
-    assert [tool.name for tool in definitions] == ["set_reply_target"]
+    assert [tool.name for tool in definitions] == ["request_tools", "set_reply_target"]
     assert backend.counts_toward_limit("set_reply_target", agent_runtime) is False
+    assert backend.counts_toward_limit("read_tool_artifact", agent_runtime) is False
+    assert backend.counts_toward_limit("business_tool", agent_runtime) is True
     arguments = json.dumps({"event_id": 42})
     call = ToolCall(
         id="reply-target",
@@ -184,6 +186,95 @@ async def test_reply_target_control_survives_tool_mode_none_and_is_bounded() -> 
     repeated = json.loads(await backend.execute("set_reply_target", "{}", agent_runtime))
     assert repeated["ok"] is False
     assert repeated["outcome"] == "reply_target_already_selected"
+
+
+@pytest.mark.asyncio
+async def test_user_message_can_request_authorized_tools_from_tool_mode_none() -> None:
+    calls: list[str] = []
+    service = _Service(_registry(calls))
+    runtime = replace(
+        _runtime(),
+        tool_mode=ToolMode.NONE,
+        tool_groups=frozenset(),
+        selected_tool_names=frozenset(),
+        planner_scopes_explicit=True,
+    )
+    backend = _ChatAgentBackend(service, runtime)  # type: ignore[arg-type]
+    agent_runtime = SimpleNamespace()
+
+    assert {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)} == {
+        REQUEST_TOOLS_NAME
+    }
+    arguments = json.dumps(
+        {"query": "搜索并发送网易云单曲", "max_results": 1},
+        ensure_ascii=False,
+    )
+    call = ToolCall(
+        id="request-from-none",
+        function=ToolFunction(name=REQUEST_TOOLS_NAME, arguments=arguments),
+    )
+    backend.begin_batch((call,), agent_runtime)
+    requested = json.loads(await backend.execute(REQUEST_TOOLS_NAME, arguments, agent_runtime))
+
+    assert requested["ok"] is True
+    assert requested["data"]["loaded_tools"][0]["name"] == "song_share"
+    assert "song_share" in {
+        tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)
+    }
+
+
+@pytest.mark.asyncio
+async def test_artifact_reads_do_not_add_a_separate_internal_budget() -> None:
+    calls: list[str] = []
+
+    async def execute(name: str, _arguments: str, _runtime: object) -> object:
+        calls.append(name)
+        return {"ok": True, "data": {"read": len(calls)}}
+
+    registry = ToolProviderRegistry()
+    registry.register(
+        InProcessToolProvider(
+            provider_id="core",
+            source=CapabilityTrustSource.CORE,
+            definitions=lambda _runtime: (
+                ChatTool(
+                    name="read_tool_artifact",
+                    description="read",
+                    parameters={"type": "object", "properties": {}},
+                ),
+            ),
+            execute=execute,
+        )
+    )
+    backend = _ChatAgentBackend(_Service(registry), _runtime())  # type: ignore[arg-type]
+    agent_runtime = SimpleNamespace(max_model_requests=10)
+    exposed = {tool.name for tool in backend.definitions(agent_runtime, web_was_used=False)}
+    assert "read_tool_artifact" in exposed
+    calls_in_batch = tuple(
+        ToolCall(
+            id=f"artifact-{index}",
+            function=ToolFunction(
+                name="read_tool_artifact",
+                arguments=json.dumps({"handle": f"handle-{index}"}),
+            ),
+        )
+        for index in range(5)
+    )
+    backend.begin_batch(calls_in_batch, agent_runtime)
+
+    results = [
+        json.loads(
+            await backend.execute(
+                call.function.name,
+                call.function.arguments,
+                agent_runtime,
+            )
+        )
+        for call in calls_in_batch
+    ]
+
+    assert len(calls) == 5
+    assert all(result["ok"] is True for result in results)
 
 
 @pytest.mark.asyncio
@@ -411,68 +502,8 @@ def test_explicit_scope_exposes_complete_package_despite_inherited_count_limit()
     assert exposed == {"album_share", "song_share", REQUEST_TOOLS_NAME}
 
 
-def test_person_memory_lookup_survives_flash_reranker_omission() -> None:
-    calls: list[str] = []
-
-    async def execute(name: str, _arguments: str, _runtime: object) -> object:
-        calls.append(name)
-        return {"ok": True}
-
-    registry = ToolProviderRegistry()
-    registry.register(
-        InProcessToolProvider(
-            provider_id="core",
-            source=CapabilityTrustSource.CORE,
-            definitions=lambda _runtime: (
-                _tool("get_group_memories", "查询群整体记忆"),
-                _tool("get_person_memories", "查询某个群友在本群的记忆"),
-            ),
-            execute=execute,
-        )
-    )
-    catalog = registry.catalog(object())
-    group_only = [catalog.by_model_name("get_group_memories")]
-    selected = [item for item in group_only if item is not None]
-    runtime = replace(
-        _runtime(),
-        tool_groups=frozenset({"memory"}),
-        selection_query="查一下917568554的群记忆",
-        planner_intent="查询群友信息",
-    )
-
-    retained = ChatService._retain_turn_required_tools(selected, catalog.entries, runtime)
-
-    assert {item.descriptor.model_name for item in retained} == {
-        "get_group_memories",
-        "get_person_memories",
-    }
-
-
-def test_deterministic_memory_scope_keeps_mutation_tool_in_compact_initial_set() -> None:
-    registry = ToolProviderRegistry()
-    registry.register(
-        InProcessToolProvider(
-            provider_id="core",
-            source=CapabilityTrustSource.CORE,
-            definitions=lambda _runtime: (
-                _tool("get_person_memories", "read durable memory"),
-                _tool("memory_change", "change durable memory"),
-            ),
-            execute=lambda *_args: None,  # type: ignore[arg-type]
-        )
-    )
-    catalog = registry.catalog(object())
-    runtime = replace(
-        _runtime(),
-        tool_groups=frozenset({"memory"}),
-        planner_scopes_explicit=False,
-        planner_tool_groups=frozenset(),
-        selection_query="remember this as durable memory",
-    )
-
-    retained = ChatService._retain_turn_required_tools([], catalog.entries, runtime)
-
-    assert {item.descriptor.model_name for item in retained} == {"memory_change"}
+def test_memory_tools_are_not_forced_by_query_text() -> None:
+    assert not hasattr(ChatService, "_retain_turn_required_tools")
 
 
 @pytest.mark.asyncio

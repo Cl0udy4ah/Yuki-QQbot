@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import unicodedata
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
@@ -33,6 +36,29 @@ from qq_ai_bot.persistence.repository_records import (
     GroupSetting,
     PrivateUserSetting,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class GroupMemberNameMatch:
+    user_id: str
+    nickname: str
+    group_card: str
+    matched_alias: str
+    score: float
+    exact: bool
+
+    @property
+    def display_name(self) -> str:
+        return self.group_card or self.nickname or self.user_id
+
+
+def normalize_person_name(value: str) -> str:
+    """Normalize identity labels without inferring any linguistic role."""
+
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return "".join(
+        character for character in normalized if unicodedata.category(character)[0] in {"L", "N"}
+    )
 
 
 class PeopleRepository:
@@ -272,6 +298,90 @@ class PeopleRepository:
         async with self._database.sessions() as session:
             values = (await session.scalars(statement)).all()
         return tuple(values)
+
+    async def search_group_member_names(
+        self,
+        name: str,
+        group_id: str,
+        *,
+        limit: int = 5,
+        minimum_score: float = 0.35,
+    ) -> tuple[GroupMemberNameMatch, ...]:
+        """Return deterministic current-group identity candidates for a model-supplied name."""
+
+        query = normalize_person_name(name)
+        if not query or limit <= 0:
+            return ()
+        alias_in_group = and_(
+            PersonAliasModel.user_id == MembershipModel.user_id,
+            PersonAliasModel.group_scope.in_(("", group_id)),
+        )
+        statement = (
+            select(
+                MembershipModel.user_id,
+                PersonModel.nickname,
+                MembershipModel.group_card,
+                PersonAliasModel.alias,
+            )
+            .join(PersonModel, PersonModel.user_id == MembershipModel.user_id)
+            .outerjoin(PersonAliasModel, alias_in_group)
+            .where(MembershipModel.group_id == group_id)
+            .order_by(MembershipModel.user_id, PersonAliasModel.last_seen_at.desc())
+        )
+        async with self._database.sessions() as session:
+            rows = (await session.execute(statement)).all()
+        identities: dict[str, tuple[str, str, set[str]]] = {}
+        for user_id, nickname, group_card, alias in rows:
+            current = identities.setdefault(
+                str(user_id),
+                (str(nickname or ""), str(group_card or ""), set()),
+            )
+            if alias:
+                current[2].add(str(alias))
+        matches: list[GroupMemberNameMatch] = []
+        for user_id, (nickname, group_card, aliases) in identities.items():
+            labels = tuple(dict.fromkeys((group_card, nickname, *sorted(aliases))))
+            best_alias = ""
+            best_score = 0.0
+            best_exact = False
+            for label in labels:
+                candidate = normalize_person_name(label)
+                if not candidate:
+                    continue
+                exact = candidate == query
+                if exact:
+                    score = 1.0
+                elif query in candidate or candidate in query:
+                    score = 0.75 + 0.25 * (
+                        min(len(query), len(candidate)) / max(len(query), len(candidate))
+                    )
+                else:
+                    score = SequenceMatcher(None, query, candidate).ratio()
+                if score > best_score or (
+                    score == best_score and label.casefold() < best_alias.casefold()
+                ):
+                    best_alias = label
+                    best_score = score
+                    best_exact = exact
+            if best_alias and best_score >= minimum_score:
+                matches.append(
+                    GroupMemberNameMatch(
+                        user_id=user_id,
+                        nickname=nickname,
+                        group_card=group_card,
+                        matched_alias=best_alias,
+                        score=best_score,
+                        exact=best_exact,
+                    )
+                )
+        matches.sort(
+            key=lambda item: (
+                -item.score,
+                item.display_name.casefold(),
+                item.user_id,
+            )
+        )
+        return tuple(matches[: min(limit, 5)])
 
     async def find_people_by_exact_name(self, name: str) -> tuple[str, ...]:
         """Resolve one exact nickname or historical alias across all conversations."""

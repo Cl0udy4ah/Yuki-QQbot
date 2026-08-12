@@ -138,10 +138,7 @@ class ReplySequenceManager:
     ) -> ReplySequenceResult:
         chunks = () if suppress_text else self.render(text, plan=plan, runtime=runtime)
         outbound_messages = [*before_messages]
-        outbound_messages.extend(
-            OutboundMessage(text=chunk)
-            for chunk in chunks
-        )
+        outbound_messages.extend(OutboundMessage(text=chunk) for chunk in chunks)
         outbound_messages.extend(after_messages)
         if reply_to_message_id is not None and outbound_messages:
             outbound_messages[0] = replace(
@@ -182,9 +179,7 @@ class ReplySequenceManager:
                             try:
                                 receipt = await sender.send(failure_message)
                                 if not isinstance(receipt, OutboundSendReceipt):
-                                    raise TypeError(
-                                        "outbound sender returned no delivery receipt"
-                                    )
+                                    raise TypeError("outbound sender returned no delivery receipt")
                             except Exception as retry_exc:
                                 failure = retry_exc
                             else:

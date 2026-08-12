@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.memory.self_reflection.models import (
@@ -28,11 +26,6 @@ from qq_ai_bot.persistence.models import (
     MemoryToolReceiptModel,
 )
 from qq_ai_bot.persistence.repository_helpers import _event_record
-
-_HIGH_VALUE = re.compile(
-    r"(?:你.{0,6}(?:说错|弄错|记错|理解错)|第一次(?:测试|成功|完成)|终于(?:成功|修好)|"
-    r"以后应该|下次记得|我对你|你让我|别再|纠正一下|其实不是)"
-)
 
 
 def conversation_key_hash(
@@ -65,6 +58,11 @@ class SelfReflectionRepository:
                     MemorySelfReflectionStateModel.private_peer_user_id.is_not(None),
                 )
                 .values(private_peer_user_id=None, updated_at=now)
+            )
+            await session.execute(
+                update(MemorySelfReflectionStateModel)
+                .where(MemorySelfReflectionStateModel.high_value_signal.is_(True))
+                .values(high_value_signal=False, updated_at=now)
             )
             runtime = await session.get(MemorySelfReflectionRuntimeModel, 1)
             if runtime is None:
@@ -136,9 +134,7 @@ class SelfReflectionRepository:
                 state.has_yuki_reply = state.has_yuki_reply or (
                     row.direction == "outbound" and row.sender_user_id == row.bot_user_id
                 )
-                state.high_value_signal = state.high_value_signal or bool(
-                    row.direction == "inbound" and _HIGH_VALUE.search(content)
-                )
+                state.high_value_signal = False
                 state.updated_at = now
             if rows:
                 runtime.last_scanned_event_id = rows[-1].id
@@ -162,6 +158,7 @@ class SelfReflectionRepository:
         natural_gap_seconds: float | None = None,
         context_events: int = 4,
         force: bool = False,
+        excluded_conversation_keys: frozenset[str] = frozenset(),
     ) -> tuple[SelfReflectionBatch, ...]:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
@@ -180,31 +177,23 @@ class SelfReflectionRepository:
             state_query = select(MemorySelfReflectionStateModel).where(
                 MemorySelfReflectionStateModel.pending_events > 0
             )
-            if not force:
-                high_value_ready: ColumnElement[bool] = (
-                    MemorySelfReflectionStateModel.high_value_signal.is_(True)
-                )
-                if low_event_threshold is not None and low_character_threshold is not None:
-                    high_value_ready = and_(
-                        high_value_ready,
-                        or_(
-                            MemorySelfReflectionStateModel.pending_events >= low_event_threshold,
-                            MemorySelfReflectionStateModel.pending_characters
-                            >= low_character_threshold,
-                        ),
+            if excluded_conversation_keys:
+                state_query = state_query.where(
+                    MemorySelfReflectionStateModel.conversation_key_hash.not_in(
+                        excluded_conversation_keys
                     )
+                )
+            if not force:
                 state_query = state_query.where(
                     or_(
                         MemorySelfReflectionStateModel.pending_events >= event_threshold,
                         MemorySelfReflectionStateModel.pending_characters >= character_threshold,
                         MemorySelfReflectionStateModel.pending_since <= waited_before,
-                        high_value_ready,
                     )
                 )
             states = (
                 await session.scalars(
                     state_query.order_by(
-                        MemorySelfReflectionStateModel.high_value_signal.desc(),
                         MemorySelfReflectionStateModel.pending_since.asc(),
                     ).limit(available * 3)
                 )
@@ -369,8 +358,6 @@ class SelfReflectionRepository:
         event_threshold: int,
         character_threshold: int,
     ) -> str:
-        if row.high_value_signal:
-            return "high_value"
         if row.pending_events >= event_threshold:
             return "event_count"
         if row.pending_characters >= character_threshold:
@@ -505,10 +492,7 @@ class SelfReflectionRepository:
                 for item in remaining
             )
             state.has_tool_result = has_tool
-            state.high_value_signal = any(
-                item.direction == "inbound" and _HIGH_VALUE.search(item.content)
-                for item in nonempty
-            )
+            state.high_value_signal = False
             state.updated_at = now
 
     async def fail(self, run_id: int, error_category: str) -> None:
@@ -559,5 +543,5 @@ class SelfReflectionRepository:
             pending_since=row.pending_since,
             has_yuki_reply=row.has_yuki_reply,
             has_tool_result=row.has_tool_result or has_tool,
-            high_value_signal=row.high_value_signal,
+            high_value_signal=False,
         )

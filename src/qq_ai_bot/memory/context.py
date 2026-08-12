@@ -27,9 +27,10 @@ from qq_ai_bot.memory.models import (
 from qq_ai_bot.memory.query import MemoryQueryBuilder, normalize_query_text
 from qq_ai_bot.memory.retrieval import MemoryRetriever
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.time.formatting import local_iso
 
 
-def fact_context(fact: MemoryFact) -> dict[str, Any]:
+def fact_context(fact: MemoryFact, timezone: str = "Asia/Shanghai") -> dict[str, Any]:
     return {
         "fact_id": fact.id,
         "kind": fact.kind.value,
@@ -41,18 +42,24 @@ def fact_context(fact: MemoryFact) -> dict[str, Any]:
         "authority": fact.authority.value,
         "reported": fact.authority is MemoryAuthority.THIRD_PARTY,
         "contested": fact.conflict_state is MemoryConflictState.CONTESTED,
-        "updated_at": fact.updated_at.isoformat(),
+        "updated_at": local_iso(fact.updated_at, timezone),
     }
 
 
-def retrieval_fact_context(hit: MemoryRetrievalHit) -> dict[str, Any]:
+def retrieval_fact_context(
+    hit: MemoryRetrievalHit,
+    timezone: str = "Asia/Shanghai",
+) -> dict[str, Any]:
     return {
-        **fact_context(hit.fact),
+        **fact_context(hit.fact, timezone),
         "retrieval_reason": hit.selection_reason,
     }
 
 
-def self_retrieval_fact_context(hit: MemoryRetrievalHit) -> dict[str, Any]:
+def self_retrieval_fact_context(
+    hit: MemoryRetrievalHit,
+    timezone: str = "Asia/Shanghai",
+) -> dict[str, Any]:
     """Expose useful self content without visibility identities or audit internals."""
 
     context = {
@@ -64,15 +71,15 @@ def self_retrieval_fact_context(hit: MemoryRetrievalHit) -> dict[str, Any]:
         "importance": hit.fact.importance,
     }
     if hit.fact.kind is MemoryKind.EPISODE and hit.fact.valid_from is not None:
-        context["occurred_at"] = hit.fact.valid_from.isoformat()
+        context["occurred_at"] = local_iso(hit.fact.valid_from, timezone)
     return context
 
 
-def entity_block(block: MemoryContextBlock) -> dict[str, Any]:
+def entity_block(block: MemoryContextBlock, timezone: str = "Asia/Shanghai") -> dict[str, Any]:
     return {
         "subject_user_id": block.subject_user_id,
         "group_id": block.group_id,
-        "facts": [fact_context(fact) for fact in block.facts],
+        "facts": [fact_context(fact, timezone) for fact in block.facts],
     }
 
 
@@ -220,9 +227,7 @@ class MemoryContextService:
         selected_ids = {hit.fact.id for hit in selected}
         blocks = tuple(
             block.model_copy(
-                update={
-                    "hits": tuple(hit for hit in block.hits if hit.fact.id in selected_ids)
-                }
+                update={"hits": tuple(hit for hit in block.hits if hit.fact.id in selected_ids)}
             )
             for block in result.blocks
         )
@@ -255,9 +260,7 @@ class MemoryContextService:
                 "hits": (*primary.hits, *new_hits),
                 "candidate_count": primary.candidate_count + additional.candidate_count,
                 "selected_count": primary.selected_count + len(new_hits),
-                "semantic_degraded": (
-                    primary.semantic_degraded or additional.semantic_degraded
-                ),
+                "semantic_degraded": (primary.semantic_degraded or additional.semantic_degraded),
             }
         )
 

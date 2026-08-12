@@ -253,12 +253,12 @@ async def test_textual_dsml_tool_call_is_recovered_without_leaking_markup() -> N
                             {
                                 "type": "output_text",
                                 "text": (
-                                    '<｜｜DSML｜｜tool_calls>\n'
+                                    "<｜｜DSML｜｜tool_calls>\n"
                                     '<｜｜DSML｜｜invoke name="read_tool_artifact">\n'
                                     '<｜｜DSML｜｜parameter name="query" string="true">'
-                                    '麦当劳 套餐</｜｜DSML｜｜parameter>\n'
-                                    '</｜｜DSML｜｜invoke>\n'
-                                    '</｜｜DSML｜｜tool_calls>'
+                                    "麦当劳 套餐</｜｜DSML｜｜parameter>\n"
+                                    "</｜｜DSML｜｜invoke>\n"
+                                    "</｜｜DSML｜｜tool_calls>"
                                 ),
                             }
                         ],
@@ -326,10 +326,10 @@ async def test_textual_dsml_call_to_undeclared_tool_is_rejected() -> None:
                         "type": "message",
                         "role": "assistant",
                         "content": (
-                            '<｜｜DSML｜｜tool_calls>'
+                            "<｜｜DSML｜｜tool_calls>"
                             '<｜｜DSML｜｜invoke name="unknown_tool">'
-                            '</｜｜DSML｜｜invoke>'
-                            '</｜｜DSML｜｜tool_calls>'
+                            "</｜｜DSML｜｜invoke>"
+                            "</｜｜DSML｜｜tool_calls>"
                         ),
                     }
                 ],

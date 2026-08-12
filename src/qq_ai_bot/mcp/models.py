@@ -33,6 +33,7 @@ class MCPToolAnnotationOverride(_StrictModel):
     destructive_hint: bool | None = Field(default=None, alias="destructiveHint")
     idempotent_hint: bool | None = Field(default=None, alias="idempotentHint")
     open_world_hint: bool | None = Field(default=None, alias="openWorldHint")
+    finalize_after_commit: bool | None = Field(default=None, alias="finalizeAfterCommit")
 
 
 class MCPAutomationMetadata(_StrictModel):

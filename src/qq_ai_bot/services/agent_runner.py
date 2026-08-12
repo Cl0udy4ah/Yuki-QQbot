@@ -581,11 +581,19 @@ class AgentRunner:
             )
             batch, executed = coordinated.calls, coordinated.executed_count
             calls_used += executed
+            finalizing_commit_in_batch = False
             for call, result, _was_executed in batch:
                 try:
                     outcome = json.loads(result)
                 except json.JSONDecodeError:
                     outcome = {}
+                if (
+                    isinstance(outcome, dict)
+                    and outcome.get("ok") is True
+                    and outcome.get("mutation_committed") is True
+                    and outcome.get("finalize_after_commit") is True
+                ):
+                    finalizing_commit_in_batch = True
                 logger.info(
                     "agent_tool_complete tool=%s ok=%s error=%s reused=%s",
                     call.function.name,
@@ -604,6 +612,15 @@ class AgentRunner:
                     )
                 else:
                     messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
+            if finalizing_commit_in_batch:
+                force_finalization = True
+                reusable_tool_results.clear()
+                logger.info(
+                    "agent_terminal_mutation_force_finalization "
+                    "tool_calls_used=%d model_requests=%d",
+                    calls_used,
+                    request_index + 1,
+                )
             fingerprint = tuple(
                 (call.function.name, self._tool_call_signature(call)[1], result)
                 for call, result, _was_executed in batch
@@ -615,8 +632,7 @@ class AgentRunner:
             previous_batch_fingerprint = fingerprint
             if coordinated.reused_count == len(batch) and batch:
                 logger.info(
-                    "agent_tool_batch_reused "
-                    "reused_calls=%d tool_calls_used=%d",
+                    "agent_tool_batch_reused reused_calls=%d tool_calls_used=%d",
                     coordinated.reused_count,
                     calls_used,
                 )
@@ -641,25 +657,12 @@ class AgentRunner:
             if calls_used >= runtime.max_tool_calls or (
                 request_index + 2 >= runtime.max_model_requests
             ):
-                recovered = self._recover_committed_mutation(
-                    tools,
-                    calls_used=calls_used,
-                    model_requests=request_index + 1,
-                    web_was_used=web_was_used,
-                    native_events=native_events,
-                    citations=citations,
-                    response_status=response_status,
-                    web_route=web_route,
-                    exception_category="successful_side_effect_short_circuit",
+                force_finalization = True
+                logger.info(
+                    "agent_final_reply_budget_reserved tool_calls_used=%d model_requests=%d",
+                    calls_used,
+                    request_index + 1,
                 )
-                if recovered is not None:
-                    logger.info(
-                        "agent_successful_side_effect_short_circuit "
-                        "tool_calls_used=%d model_requests=%d",
-                        calls_used,
-                        request_index + 1,
-                    )
-                    return recovered
             if tools is not None:
                 effect_probe = getattr(tools, "did_use_web", None)
                 if callable(effect_probe) and effect_probe():
@@ -733,9 +736,7 @@ class AgentRunner:
             max_parallel_calls=max_parallel_calls,
         )
         unique_results = {call.id: result for call, result, _executed in coordinated.calls}
-        unique_executed = {
-            call.id: executed for call, _result, executed in coordinated.calls
-        }
+        unique_executed = {call.id: executed for call, _result, executed in coordinated.calls}
 
         ordered: list[tuple[ToolCall, str, bool]] = []
         for call in calls:
@@ -786,8 +787,12 @@ class AgentRunner:
         try:
             payload = json.loads(result)
         except json.JSONDecodeError:
-            return True
-        return not (isinstance(payload, dict) and payload.get("retryable") is True)
+            return False
+        return bool(
+            isinstance(payload, dict)
+            and payload.get("ok") is True
+            and payload.get("retryable") is not True
+        )
 
     @staticmethod
     def _successful_side_effect(
@@ -808,10 +813,7 @@ class AgentRunner:
         if committed is not None:
             return committed is True
         probe = getattr(tools, "is_side_effecting", None)
-        return bool(
-            callable(probe)
-            and probe(call.function.name, call.function.arguments, runtime)
-        )
+        return bool(callable(probe) and probe(call.function.name, call.function.arguments, runtime))
 
     @staticmethod
     def _is_side_effecting(
@@ -822,10 +824,7 @@ class AgentRunner:
         if tools is None:
             return False
         probe = getattr(tools, "is_side_effecting", None)
-        return bool(
-            callable(probe)
-            and probe(call.function.name, call.function.arguments, runtime)
-        )
+        return bool(callable(probe) and probe(call.function.name, call.function.arguments, runtime))
 
     @staticmethod
     def _record_failure_usage(

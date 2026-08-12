@@ -96,6 +96,7 @@ class MemoryWorker:
             people=people,
             bot_aliases=settings.bot_aliases,
             bot_display_name=settings.bot_display_name,
+            timezone=settings.default_timezone,
         )
         self.processor = processor or MemoryClaimProcessor(
             settings=settings,

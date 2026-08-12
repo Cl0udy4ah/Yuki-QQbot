@@ -7,6 +7,7 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryMutationOperation,
     MemoryMutationOutcome,
     MemoryMutationRequest,
+    MemoryMutationRequestBasis,
     MemoryMutationResult,
     MemoryMutationTarget,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "MemoryMutationOperation",
     "MemoryMutationOutcome",
     "MemoryMutationRequest",
+    "MemoryMutationRequestBasis",
     "MemoryMutationResult",
     "MemoryMutationTarget",
 ]

@@ -388,7 +388,7 @@ async def test_empty_model_response_is_user_safe(database: Database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_explicit_memory_request_restores_memory_scope_after_planner_none(
+async def test_planner_none_keeps_generic_tool_request_gateway(
     database: Database,
 ) -> None:
     provider = FakeLLMProvider(lambda _request: "我会按工具回执确认是否记住。")
@@ -414,7 +414,9 @@ async def test_explicit_memory_request_restores_memory_scope_after_planner_none(
     )
 
     assert provider.requests
-    assert "memory_change" in {tool.name for tool in provider.requests[-1].tools}
+    tool_names = {tool.name for tool in provider.requests[-1].tools}
+    assert "request_tools" in tool_names
+    assert "memory_change" not in tool_names
 
 
 @pytest.mark.asyncio

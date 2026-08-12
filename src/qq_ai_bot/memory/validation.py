@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from functools import lru_cache
 
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
@@ -21,114 +20,12 @@ from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
 from qq_ai_bot.memory.quality_policy import (
     AttributionPolicy,
     RetentionPolicy,
-    compile_bot_subject_pattern,
 )
 from qq_ai_bot.memory.subjects import SubjectResolutionContext, SubjectResolver
 from qq_ai_bot.memory.temporal import MemoryTemporalResolver
 from qq_ai_bot.persistence.repository_records import EventRecord
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
-_EXPLICIT_MEMORY_PATTERNS = (
-    re.compile(r"(?:记住|别忘|请保存|加入记忆)"),
-    re.compile(r"^(?:请|要|一定要|以后)?记得(?!.*[吗么？?])"),
-)
-_MEMORY_COMMAND_PREFIX = re.compile(r"^(?:请)?(?:记住|记得|别忘|保存|加入记忆)\s*")
-_INTERACTION_MARKERS = (
-    "回复",
-    "回答",
-    "称呼",
-    "语音",
-    "表情",
-    "格式",
-    "简短",
-    "句号",
-    "引用",
-    "机器人",
-)
-_NAMED_OTHER_PREFIX = re.compile(
-    r"^(?:(?:据说|听说|我听说|我觉得|听人说|其实|不过|而且|原来|好像|感觉|话说)\s*)?"
-    r"(?P<subject>[\u4e00-\u9fff·]{2,8}|[A-Za-z][A-Za-z0-9_.-]{1,31})\s*"
-    r"(?:不是|没有|不会|不能|住在|来自|负责|擅长|喜欢|讨厌|想要|已经|曾经|今年|"
-    r"是|有|爱|想|会|能|在|叫|姓|这(?:个|些|种|爱好|习惯|人)|"
-    r"那(?:个|些|种|爱好|习惯|人))"
-)
-_SELF_OR_TOPIC_SUBJECTS = frozenset(
-    {
-        "本人",
-        "自己",
-        "咱们",
-        "我们",
-        "俺们",
-        "现在",
-        "最近",
-        "以后",
-        "之前",
-        "一直",
-        "已经",
-        "曾经",
-        "平时",
-        "通常",
-        "目前",
-        "今天",
-        "昨天",
-        "明天",
-        "比较",
-        "非常",
-        "特别",
-        "目标",
-        "计划",
-        "梦想",
-        "爱好",
-        "工作",
-        "职业",
-        "生日",
-        "家乡",
-        "名字",
-        "昵称",
-        "习惯",
-        "口味",
-        "偏好",
-        "性格",
-        "愿望",
-        "专业",
-        "学校",
-        "公司",
-    }
-)
-
-
-@lru_cache(maxsize=32)
-def _memory_mutation_patterns(bot_aliases: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
-    aliases = tuple(dict.fromkeys(alias for alias in bot_aliases if alias.strip()))
-    named_possessives = "|".join(f"{re.escape(alias)}的" for alias in aliases)
-    optional_owner = r"这条|那条|某条|我的|你的|长期"
-    if named_possessives:
-        optional_owner = f"{optional_owner}|{named_possessives}"
-    memory_object = (
-        rf"(?:{optional_owner})?记忆"
-        r"(?!功能|模块|系统|代码|接口|工具|数据库|数据表|实现|逻辑|设计|架构)"
-    )
-    bot_subjects = "|".join(re.escape(alias) for alias in aliases)
-    mistaken_subject = rf"(?:你|{bot_subjects})?" if bot_subjects else r"(?:你)?"
-    return (
-        re.compile(r"(?:记住|别忘|请保存|加入记忆)"),
-        re.compile(r"^(?:请|要|一定要|以后)?记得(?!.*[吗么？?])"),
-        re.compile(
-            r"(?:删除|删掉|移除|清除|忘掉|忘记|撤销|恢复|还原|纠正|更正|修正|修改|更新|"
-            rf"合并|调整|改归属).{{0,16}}{memory_object}",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            rf"{memory_object}.{{0,16}}(?:删除|删掉|移除|清除|忘掉|忘记|撤销|恢复|"
-            r"还原|纠正|更正|修正|修改|更新|合并|调整|改归属)",
-            re.IGNORECASE,
-        ),
-        re.compile(rf"{mistaken_subject}记错了", re.IGNORECASE),
-        re.compile(
-            r"\b(?:remember|forget|correct|update|delete|remove|restore)\b.{0,24}\bmemor(?:y|ies)\b",
-            re.IGNORECASE,
-        ),
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,32 +74,6 @@ def normalize_memory_text(value: str, *, maximum: int) -> str:
     return " ".join(_CONTROL.sub(" ", value).split())[:maximum].strip()
 
 
-def event_requests_explicit_memory(value: str) -> bool:
-    """Return whether the trusted event explicitly asks Yuki to retain a memory."""
-
-    normalized = " ".join(value.split())
-    return bool(
-        normalized and any(pattern.search(normalized) for pattern in _EXPLICIT_MEMORY_PATTERNS)
-    )
-
-
-def event_requests_memory_mutation(
-    value: str,
-    *,
-    bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪"),
-) -> bool:
-    """Conservatively detect an explicit request to change durable memory."""
-
-    normalized = " ".join(value.split())
-    return bool(
-        normalized
-        and any(
-            pattern.search(normalized)
-            for pattern in _memory_mutation_patterns(bot_aliases)
-        )
-    )
-
-
 class MemoryClaimValidator:
     """Turn a claim into trusted persistence input or reject it without guessing."""
 
@@ -212,16 +83,12 @@ class MemoryClaimValidator:
         temporal: MemoryTemporalResolver | None = None,
         *,
         timezone_name: str = "Asia/Shanghai",
-        bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪"),
+        bot_aliases: tuple[str, ...] | None = None,
     ) -> None:
+        del bot_aliases
         self._resolver = resolver or SubjectResolver()
         self._temporal = temporal or MemoryTemporalResolver()
         self._timezone_name = timezone_name
-        self._bot_subject_pattern = compile_bot_subject_pattern(bot_aliases)
-        self._interaction_markers = (
-            *_INTERACTION_MARKERS,
-            *(alias.casefold() for alias in bot_aliases if alias.strip()),
-        )
 
     def validate(
         self,
@@ -300,13 +167,12 @@ class MemoryClaimValidator:
             claim,
             event,
             resolved,
-            bot_subject_pattern=self._bot_subject_pattern,
         )
         if attribution.candidate_type is not None:
             raise _MemoryClaimCandidate(attribution.reason_code, attribution.candidate_type)
         if not attribution.accepted:
             raise _MemoryClaimRejected(attribution.reason_code)
-        explicit_request = event_requests_explicit_memory(event.content)
+        explicit_request = claim.source_type is MemorySourceType.EXPLICIT
         retention = RetentionPolicy.evaluate(
             claim,
             event,
@@ -323,28 +189,14 @@ class MemoryClaimValidator:
         content = normalize_memory_text(claim.content, maximum=4000)
         if not key or not category or not content:
             raise _MemoryClaimRejected("incomplete_claim_fields")
-        if not event_requests_explicit_memory(event.content) and not self._semantically_anchored(
-            content,
-            quote,
-        ):
-            raise _MemoryClaimRejected("semantic_not_anchored")
         kind = claim.kind
         if claim.retention is MemoryRetention.MEANINGFUL_EPISODE:
             kind = MemoryKind.EPISODE
-        lowered = f"{key} {category} {content} {quote}".casefold()
-        if any(marker in lowered for marker in self._interaction_markers):
-            kind = MemoryKind.PREFERENCE
         subject_is_speaker = resolved.subject_user_id == event.sender_user_id
         is_third_party = bool(resolved.subject_user_id) and not subject_is_speaker
-        if subject_is_speaker and self._appears_to_describe_named_other(quote):
-            raise _MemoryClaimRejected("named_other_attributed_to_speaker")
         if is_third_party and resolved.scope_type is not MemoryScopeType.PERSON_GROUP:
             raise _MemoryClaimRejected("third_party_scope_not_person_group")
         source_type = claim.source_type
-        if source_type is MemorySourceType.EXPLICIT and not event_requests_explicit_memory(
-            event.content
-        ):
-            source_type = MemorySourceType.AUTOMATIC
         if is_third_party:
             source_type = MemorySourceType.AUTOMATIC
             authority = MemoryAuthority.THIRD_PARTY
@@ -402,61 +254,6 @@ class MemoryClaimValidator:
             retention=claim.retention.value,
             source_style=claim.source_style.value,
         )
-
-    @staticmethod
-    def _appears_to_describe_named_other(quote: str) -> bool:
-        """Reject high-confidence named third-person text attributed to the speaker.
-
-        The extractor has no authority to resolve ordinary names.  This deliberately
-        narrow guard catches a leading name plus a person-like predicate while keeping
-        first-person and common subjectless self-report forms available.
-        """
-
-        compact = quote.strip().lstrip("，。！？、,.!?：:；;（）()[]【】 ")
-        compact = _MEMORY_COMMAND_PREFIX.sub("", compact).lstrip(
-            "，。！？、,.!?：:；;（）()[]【】 "
-        )
-        matched = _NAMED_OTHER_PREFIX.match(compact)
-        if matched is None:
-            return False
-        subject = matched.group("subject")
-        predicate_tail = compact[matched.end("subject") :].lstrip()
-        if re.match(r"^(?:都)?(?:叫|称|称呼)我", predicate_tail):
-            return False
-        return not (subject.startswith(("我", "咱", "俺")) or subject in _SELF_OR_TOPIC_SUBJECTS)
-
-    @staticmethod
-    def _semantically_anchored(content: str, quote: str) -> bool:
-        """Conservatively reject claims derived from context instead of this event."""
-
-        def compact(value: str) -> str:
-            return "".join(char.casefold() for char in value if char.isalnum())
-
-        claim_text = compact(content)
-        evidence_text = compact(quote)
-        if not claim_text or not evidence_text:
-            return False
-        if claim_text in evidence_text or evidence_text in claim_text:
-            return True
-        is_cjk = any("\u4e00" <= char <= "\u9fff" for char in evidence_text)
-        width = 2 if is_cjk else 3
-        if len(claim_text) < width or len(evidence_text) < width:
-            return False
-        claim_grams = {
-            claim_text[index : index + width] for index in range(len(claim_text) - width + 1)
-        }
-        evidence_grams = {
-            evidence_text[index : index + width] for index in range(len(evidence_text) - width + 1)
-        }
-        overlap = len(claim_grams & evidence_grams)
-        if is_cjk:
-            cjk_claim = "".join(char for char in claim_text if "\u4e00" <= char <= "\u9fff")
-            if len(cjk_claim) >= 2 and cjk_claim[-2:] in evidence_text:
-                return True
-        required_overlap = 2
-        return overlap >= required_overlap and overlap / min(
-            len(claim_grams), len(evidence_grams)
-        ) >= (0.2 if is_cjk else 0.3)
 
     @staticmethod
     def _evidence_relation(

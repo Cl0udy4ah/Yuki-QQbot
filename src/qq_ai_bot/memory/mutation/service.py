@@ -54,6 +54,7 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryMutationOperation,
     MemoryMutationOutcome,
     MemoryMutationRequest,
+    MemoryMutationRequestBasis,
     MemoryMutationResult,
     MemoryMutationTarget,
     SelfMemoryVisibilityMode,
@@ -64,7 +65,6 @@ from qq_ai_bot.memory.subjects import ResolvedSubject, SubjectResolver
 from qq_ai_bot.memory.temporal import MemoryTemporalResolver
 from qq_ai_bot.memory.validation import (
     ValidatedMemoryClaim,
-    event_requests_explicit_memory,
     normalize_memory_text,
 )
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
@@ -534,7 +534,7 @@ class MemoryMutationService:
         )
         if not quote:
             raise MemoryMutationRejected("memory_evidence_quote_required")
-        authority, source_type = self._provenance(target, context)
+        authority, source_type = self._provenance(target, context, request)
         evidence = MemoryEvidenceCreate(
             event_id=(None if context.evidence_tool_receipt_id is not None else event.id),
             tool_receipt_id=context.evidence_tool_receipt_id,
@@ -766,7 +766,7 @@ class MemoryMutationService:
                 fact.visibility_group_id,
             )
         )
-        authority, source_type = self._provenance(target, prepared.context)
+        authority, source_type = self._provenance(target, prepared.context, request)
         temporal = None
         if request.valid_from is not None or request.valid_until is not None:
             temporal = self._temporal.resolve(
@@ -915,7 +915,7 @@ class MemoryMutationService:
                 )
             except ValueError as exc:
                 raise MemoryMutationRejected("invalid_memory_temporal_range") from exc
-            authority, _source_type = self._provenance(direct_target, context)
+            authority, _source_type = self._provenance(direct_target, context, request)
             return ValidatedMemoryClaim(
                 operation=claim.operation,
                 fact=MemoryFactCreate(
@@ -1251,6 +1251,7 @@ class MemoryMutationService:
     def _provenance(
         target: ResolvedSubject,
         context: MemoryMutationContext,
+        request: MemoryMutationRequest,
     ) -> tuple[MemoryAuthority, MemorySourceType]:
         if target.scope_type is MemoryScopeType.SELF:
             return MemoryAuthority.AGENT_REFLECTION, MemorySourceType.AUTOMATIC
@@ -1258,7 +1259,11 @@ class MemoryMutationService:
             return MemoryAuthority.THIRD_PARTY, MemorySourceType.AUTOMATIC
         if target.scope_type is MemoryScopeType.GROUP:
             return MemoryAuthority.GROUP_REPORT, MemorySourceType.AUTOMATIC
-        if event_requests_explicit_memory(context.event.content):
+        if (
+            context.decision_actor_type
+            not in {MemoryDecisionActorType.REFLECTION, MemoryDecisionActorType.SYSTEM}
+            and request.request_basis is MemoryMutationRequestBasis.USER_REQUESTED
+        ):
             return MemoryAuthority.EXPLICIT, MemorySourceType.EXPLICIT
         return MemoryAuthority.SELF_REPORT, MemorySourceType.AUTOMATIC
 

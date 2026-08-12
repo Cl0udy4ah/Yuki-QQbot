@@ -33,6 +33,7 @@ from qq_ai_bot.persistence.repositories import (
     RelationshipRepository,
 )
 from qq_ai_bot.prompting import ContextBudgeter, ContextContribution
+from qq_ai_bot.time.formatting import local_iso
 from qq_ai_bot.time.models import TimeContext
 from qq_ai_bot.time.service import TimeContextService
 
@@ -170,7 +171,7 @@ class ContextAssembler:
                 "display_name": profile.display_name,
                 "aliases": list(aliases),
                 "facts": [
-                    retrieval_fact_context(hit)
+                    retrieval_fact_context(hit, self._settings.default_timezone)
                     for hit in hits_by_role.get(MemoryTargetRole.CURRENT_PERSON, ())
                 ],
                 **(
@@ -190,7 +191,10 @@ class ContextAssembler:
         self_hits = hits_by_role.get(MemoryTargetRole.CURRENT_SELF, ())
         if self_hits:
             context["current_self"] = {
-                "facts": [self_retrieval_fact_context(hit) for hit in self_hits]
+                "facts": [
+                    self_retrieval_fact_context(hit, self._settings.default_timezone)
+                    for hit in self_hits
+                ]
             }
         context["available_memory_subjects"] = await self._available_memory_subjects(
             inbound,
@@ -202,14 +206,14 @@ class ContextAssembler:
                 "user_id": inbound.sender.user_id,
                 "group_id": inbound.group_id,
                 "facts": [
-                    retrieval_fact_context(hit)
+                    retrieval_fact_context(hit, self._settings.default_timezone)
                     for hit in hits_by_role.get(MemoryTargetRole.CURRENT_PERSON_GROUP, ())
                 ],
             }
             context["current_group"] = {
                 "group_id": inbound.group_id,
                 "facts": [
-                    retrieval_fact_context(hit)
+                    retrieval_fact_context(hit, self._settings.default_timezone)
                     for hit in hits_by_role.get(MemoryTargetRole.CURRENT_GROUP, ())
                 ],
             }
@@ -239,7 +243,10 @@ class ContextAssembler:
                     if target.role is MemoryTargetRole.REFERENCED_PERSON
                     else "group_facts"
                 )
-                entry[key] = [retrieval_fact_context(hit) for hit in block.hits]
+                entry[key] = [
+                    retrieval_fact_context(hit, self._settings.default_timezone)
+                    for hit in block.hits
+                ]
             if referenced:
                 context["referenced_people"] = list(referenced.values())
 
@@ -262,6 +269,7 @@ class ContextAssembler:
             inbound=inbound,
             content=content,
             bot_display_name=self._settings.bot_display_name,
+            timezone=self._settings.default_timezone,
             character_budget=history_budget,
             event_limit=runtime.context.local_event_limit,
             low_watermark_ratio=self._settings.history_window_low_watermark_ratio,
@@ -294,7 +302,7 @@ class ContextAssembler:
             metadata_payload=metadata_payload,
             history_messages=history_messages,
             current_message=current_message,
-            recent_delivery=self._recent_delivery(recent),
+            recent_delivery=self._recent_delivery(recent, self._settings.default_timezone),
             current_time=current_time,
             current_relationship=current_relationship,
             metrics=metrics,
@@ -358,12 +366,18 @@ class ContextAssembler:
         if event.group_id is not None:
             context["current_group"] = {
                 "group_id": event.group_id,
-                "facts": [retrieval_fact_context(hit) for hit in group_hits],
+                "facts": [
+                    retrieval_fact_context(hit, self._settings.default_timezone)
+                    for hit in group_hits
+                ],
             }
         self_hits = hits_by_role.get(MemoryTargetRole.CURRENT_SELF, ())
         if self_hits:
             context["current_self"] = {
-                "facts": [self_retrieval_fact_context(hit) for hit in self_hits]
+                "facts": [
+                    self_retrieval_fact_context(hit, self._settings.default_timezone)
+                    for hit in self_hits
+                ]
             }
         external_events = self._external_event_context(recent)
         if external_events:
@@ -386,6 +400,7 @@ class ContextAssembler:
             recent,
             current_event=event,
             bot_display_name=self._settings.bot_display_name,
+            timezone=self._settings.default_timezone,
             character_budget=max(
                 0,
                 self._settings.max_context_characters - metadata_characters,
@@ -405,7 +420,7 @@ class ContextAssembler:
             metadata_payload=metadata_payload,
             history_messages=history,
             current_message=current_message,
-            recent_delivery=self._recent_delivery(recent),
+            recent_delivery=self._recent_delivery(recent, self._settings.default_timezone),
             current_time=current_time,
             current_relationship=None,
             metrics=ContextMetrics(
@@ -421,6 +436,7 @@ class ContextAssembler:
     @staticmethod
     def _recent_delivery(
         recent: tuple[EventRecord, ...],
+        timezone: str = "Asia/Shanghai",
     ) -> tuple[dict[str, object], ...]:
         """Project confirmed outbound delivery metadata for the exact conversation."""
 
@@ -455,7 +471,7 @@ class ContextAssembler:
             delivered.append(
                 {
                     "platform_message_id": row.platform_message_id,
-                    "sent_at": row.occurred_at.isoformat(),
+                    "sent_at": local_iso(row.occurred_at, timezone),
                     "has_text": has_text,
                     "media_kinds": media_kinds,
                 }
@@ -803,10 +819,12 @@ class ContextAssembler:
         low_watermark_ratio: float,
         anchor_event_id: int | None,
         bot_display_name: str = "Yuki",
+        timezone: str = "Asia/Shanghai",
     ) -> _BoundedMessages:
         renderer = ChatEventPromptRenderer(
             recent,
             bot_display_name=bot_display_name,
+            timezone=timezone,
         )
         current_row = next(
             (row for row in reversed(recent) if row.platform_message_id == inbound.message_id),
@@ -904,9 +922,7 @@ class ContextAssembler:
             messages=tuple(item for _, _, item in selected),
             anchor_event_id=(selected[0][0] if selected else fallback_anchor_event_id),
             rolled=anchor_event_id is not None,
-            event_ids=tuple(
-                event_id for _, event_ids, _ in selected for event_id in event_ids
-            ),
+            event_ids=tuple(event_id for _, event_ids, _ in selected for event_id in event_ids),
         )
 
     def _external_event_context(
@@ -926,7 +942,7 @@ class ContextAssembler:
                 "source_plugin_id": row.source_plugin_id or "",
                 "event_type": row.external_event_type or "event",
                 "summary": row.content[:4_000],
-                "occurred_at": row.occurred_at.isoformat(),
+                "occurred_at": local_iso(row.occurred_at, self._settings.default_timezone),
                 "payload": payload,
                 "content_trust": "external_untrusted",
             }
@@ -955,10 +971,12 @@ class ContextAssembler:
         low_watermark_ratio: float,
         anchor_event_id: int | None,
         bot_display_name: str = "Yuki",
+        timezone: str = "Asia/Shanghai",
     ) -> _BoundedMessages:
         renderer = ChatEventPromptRenderer(
             recent,
             bot_display_name=bot_display_name,
+            timezone=timezone,
         )
         trigger = renderer.render_reference_event(current_event)
         history_rows = tuple(row for row in recent if row.id != current_event.id)
